@@ -15,7 +15,7 @@ const HOME: &str = "http://tauri.localhost/";
 #[cfg(not(any(windows, target_os = "android")))]
 const HOME: &str = "tauri://localhost/";
 
-/// 注入到每个页面（包括服务端页面）的脚本：Ctrl/⌘+Shift+L 回到服务器列表。
+/// 注入到每个页面（包括服务端页面）的脚本：Ctrl/⌘+Shift+L 或左边缘小标签回到服务器列表。
 /// 只做页面跳转，不调用任何客户端接口（服务端页面本来也没有 IPC 权限）。
 fn shortcut_script() -> String {
     format!(
@@ -23,10 +23,28 @@ fn shortcut_script() -> String {
   if (window.__cosyeeShell) return;
   window.__cosyeeShell = true;
   var home = {home:?};
+  var list = home + 'index.html?list=1';
+  // 页面左边缘一个半透明小标签：点一下回服务器列表（本地页面自己不显示）。快捷键之外的可见入口，手机上也能用
+  function addTab() {{
+    if (location.href.indexOf(home) === 0 || document.getElementById('__cosyee_back')) return;
+    var b = document.createElement('div');
+    b.id = '__cosyee_back';
+    b.textContent = '‹';
+    b.title = '回到服务器列表';
+    b.setAttribute('style', 'position:fixed;left:0;top:50%;transform:translateY(-50%);z-index:2147483647;width:20px;height:56px;'
+      + 'display:flex;align-items:center;justify-content:center;font:24px/1 sans-serif;color:#fff;background:rgba(74,144,226,.55);'
+      + 'border-radius:0 10px 10px 0;opacity:.45;cursor:pointer;user-select:none;-webkit-user-select:none;');
+    b.onmouseenter = function () {{ b.style.opacity = '1'; }};
+    b.onmouseleave = function () {{ b.style.opacity = '.45'; }};
+    b.onclick = function () {{ location.href = list; }};
+    (document.body || document.documentElement).appendChild(b);
+  }}
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addTab); else addTab();
+  window.addEventListener('load', addTab);
   window.addEventListener('keydown', function (e) {{
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'L' || e.key === 'l')) {{
       e.preventDefault();
-      location.href = home + 'index.html?list=1';
+      location.href = list;
     }}
   }}, true);
 }})();"#,
@@ -77,16 +95,17 @@ pub fn run() {
                 .min_inner_size(420.0, 360.0);
             builder.build()?;
 
-            // macOS：系统菜单栏（保留默认的编辑菜单，否则 ⌘C / ⌘V 不可用）+「连接」菜单。
-            // 服务端断开时页面会变成空白，注入的快捷键失效，菜单仍然能回到服务器列表。
-            #[cfg(target_os = "macos")]
+            // 桌面端：菜单栏（保留默认菜单，否则 ⌘C / ⌘V 不可用）+「连接」菜单：服务器列表 / 重新加载 / 停止本机服务。
+            // 服务端断开时页面会变成空白，注入的脚本失效，菜单仍然能回到服务器列表、停掉本机服务。
+            #[cfg(desktop)]
             {
                 use tauri::menu::{Menu, MenuItem, Submenu};
                 use tauri::Manager;
                 let menu = Menu::default(app.handle())?;
                 let list = MenuItem::with_id(app, "servers", "服务器列表", true, Some("CmdOrCtrl+Shift+L"))?;
                 let reload = MenuItem::with_id(app, "reload", "重新加载", true, Some("CmdOrCtrl+R"))?;
-                menu.append(&Submenu::with_items(app, "连接", true, &[&list, &reload])?)?;
+                let stop = MenuItem::with_id(app, "stop", "停止本机服务", true, None::<&str>)?;
+                menu.append(&Submenu::with_items(app, "连接", true, &[&list, &reload, &stop])?)?;
                 app.set_menu(menu)?;
                 app.on_menu_event(|app, e| {
                     let Some(w) = app.get_webview_window("main") else { return };
@@ -100,6 +119,15 @@ pub fn run() {
                             if let Ok(u) = w.url() {
                                 let _ = w.navigate(u);
                             }
+                        }
+                        "stop" => {
+                            // 先回到列表（页面是本机服务时不会白屏），再停服务
+                            if let Ok(u) = format!("{HOME}index.html?list=1").parse() {
+                                let _ = w.navigate(u);
+                            }
+                            tauri::async_runtime::spawn(async {
+                                let _ = local::local_stop().await;
+                            });
                         }
                         _ => {}
                     }

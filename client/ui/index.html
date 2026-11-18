@@ -311,6 +311,8 @@
     $('l-stop').onclick = function () { lrun('停止', function () { return invoke('local_stop'); }); };
     $('l-open').onclick = function () { connect(ensureLocalEntry()); };
     lrefresh();
+    // 菜单「停止本机服务」等是在页面外改的状态，定时刷新
+    setInterval(function () { if (!lbusy && !document.hidden) lrefresh(); }, 3000);
   }
 
   // 启动时自动连接（从服务端页面按快捷键回来时带 ?list=1，不自动连接）
