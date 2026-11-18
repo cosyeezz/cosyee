@@ -3,6 +3,10 @@ node_modules/
 dist/
 desktop/release/
 *.tsbuildinfo
+# Tauri 客户端：Rust 构建目录、android init 生成的工程（CI 里现生成）、图标源图（scripts/make-icon.mjs 生成）
+client/src-tauri/target/
+client/src-tauri/gen/
+client/app-icon.png
 
 # 本地临时文件（浏览器 profile、cookie、调试输出）
 .tmp/

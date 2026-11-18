@@ -1,6 +1,21 @@
+import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { hostAllowed } from './http.js';
-import { TOKEN_HEADER, allowedHostnames, allowedOrigins, cookieName, originAllowed, readCookie, requestAuthorized, tokenOk } from './security.js';
+import {
+  TAILSCALE_MODE,
+  TOKEN_HEADER,
+  allowedHostnames,
+  allowedOrigins,
+  connectionAllowed,
+  cookieName,
+  isTailscaleAddr,
+  listenAddress,
+  originAllowed,
+  readCookie,
+  requestAuthorized,
+  tailscaleAddrs,
+  tokenOk,
+} from './security.js';
 
 describe('Origin / Host', () => {
   it('白名单', () => {
@@ -73,6 +88,73 @@ describe('监听非本机地址时的 Host / Origin 白名单', () => {
     expect(hostAllowed('192.168.1.23:7878', 7878, '192.168.1.23')).toBe(true);
     expect(hostAllowed('192.168.1.24:7878', 7878, '192.168.1.23')).toBe(false);
     expect(originAllowed('http://192.168.1.23:7878', 7878, '192.168.1.23')).toBe(true);
+  });
+});
+
+const TS_IFACES = {
+  lo: [{ address: '127.0.0.1', family: 'IPv4' }],
+  eth0: [{ address: '192.168.1.23', family: 'IPv4' }],
+  // 运营商 CGNAT 地址：地址段和 Tailscale 相同，但不是 Tailscale 网卡
+  wan0: [{ address: '100.70.0.9', family: 'IPv4' }],
+  Tailscale: [
+    { address: '100.106.9.14', family: 'IPv4' },
+    { address: 'fd7a:115c:a1e0::1234', family: 'IPv6' },
+  ],
+} as unknown as NodeJS.Dict<import('node:os').NetworkInterfaceInfo[]>;
+
+describe('Tailscale 模式', () => {
+  it('地址段判断', () => {
+    expect(isTailscaleAddr('100.64.0.1')).toBe(true);
+    expect(isTailscaleAddr('100.127.255.255')).toBe(true);
+    expect(isTailscaleAddr('::ffff:100.106.9.14')).toBe(true);
+    expect(isTailscaleAddr('fd7a:115c:a1e0::1')).toBe(true);
+    expect(isTailscaleAddr('100.63.0.1')).toBe(false);
+    expect(isTailscaleAddr('100.128.0.1')).toBe(false);
+    expect(isTailscaleAddr('192.168.1.2')).toBe(false);
+    expect(isTailscaleAddr(undefined)).toBe(false);
+  });
+  it('只认 Tailscale 网卡上的地址（排除运营商 CGNAT 网卡）', () => {
+    expect(tailscaleAddrs(TS_IFACES)).toEqual(['100.106.9.14', 'fd7a:115c:a1e0::1234']);
+  });
+  it('连接过滤：本机回环、tailnet -> Tailscale 地址放行，其它断开', () => {
+    const ok = (l: string, r: string) => connectionAllowed(l, r, TAILSCALE_MODE, TS_IFACES);
+    expect(ok('127.0.0.1', '127.0.0.1')).toBe(true);
+    expect(ok('::ffff:127.0.0.1', '::ffff:127.0.0.1')).toBe(true);
+    expect(ok('::ffff:100.106.9.14', '::ffff:100.101.2.3')).toBe(true);
+    expect(ok('100.106.9.14', '192.168.1.50')).toBe(false); // 来源不是 tailnet
+    expect(ok('192.168.1.23', '192.168.1.50')).toBe(false); // 局域网
+    expect(ok('192.168.1.23', '100.101.2.3')).toBe(false); // 打到局域网网卡
+    expect(ok('100.70.0.9', '100.70.0.1')).toBe(false); // 运营商 CGNAT 网卡
+    expect(ok('127.0.0.1', '100.101.2.3')).toBe(false);
+    // 非 Tailscale 模式不在 TCP 层过滤
+    expect(connectionAllowed('192.168.1.23', '192.168.1.50', '0.0.0.0', TS_IFACES)).toBe(true);
+  });
+  it('监听 0.0.0.0', () => {
+    expect(listenAddress(TAILSCALE_MODE)).toBe('0.0.0.0');
+    expect(listenAddress('127.0.0.1')).toBe('127.0.0.1');
+  });
+  it('Host：Tailscale 地址、本机名、*.ts.net 通过；局域网 IP 和其它域名拒绝', () => {
+    const ip = tailscaleAddrs().find((a) => !a.includes(':'));
+    if (ip) expect(hostAllowed(`${ip}:7878`, 7878, TAILSCALE_MODE)).toBe(true);
+    expect(hostAllowed(`${os.hostname()}:7878`, 7878, TAILSCALE_MODE)).toBe(true);
+    expect(hostAllowed('127.0.0.1:7878', 7878, TAILSCALE_MODE)).toBe(true);
+    expect(hostAllowed('pc.tail1234.ts.net:7878', 7878, TAILSCALE_MODE)).toBe(true);
+    expect(hostAllowed('pc.tail1234.ts.net', 7878, TAILSCALE_MODE)).toBe(true); // tailscale serve 反代
+    expect(hostAllowed('pc.tail1234.ts.net:9999', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(hostAllowed('evil.com:7878', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(hostAllowed('ts.net.evil.com:7878', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(hostAllowed('192.168.1.23:7878', 7878, TAILSCALE_MODE)).toBe(false);
+    // 非 Tailscale 模式不认 ts.net
+    expect(hostAllowed('pc.tail1234.ts.net:7878', 7878, '0.0.0.0')).toBe(false);
+    expect(hostAllowed('pc.tail1234.ts.net', 7878)).toBe(false);
+  });
+  it('Origin：http://*.ts.net:端口 与 https://*.ts.net（tailscale serve）', () => {
+    expect(originAllowed('http://pc.tail1234.ts.net:7878', 7878, TAILSCALE_MODE)).toBe(true);
+    expect(originAllowed('https://pc.tail1234.ts.net', 7878, TAILSCALE_MODE)).toBe(true);
+    expect(originAllowed('https://pc.tail1234.ts.net:8443', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(originAllowed('http://pc.tail1234.ts.net:9999', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(originAllowed('http://evil.com:7878', 7878, TAILSCALE_MODE)).toBe(false);
+    expect(originAllowed('https://pc.tail1234.ts.net', 7878, '0.0.0.0')).toBe(false);
   });
 });
 

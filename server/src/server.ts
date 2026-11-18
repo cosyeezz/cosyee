@@ -16,7 +16,7 @@ import { Pins } from './pins.js';
 import { Previews } from './preview.js';
 import type { Spawner } from './reveal.js';
 import { isSafeId } from './paths.js';
-import { originAllowed, requestAuthorized } from './security.js';
+import { TAILSCALE_MODE, connectionAllowed, listenAddress, originAllowed, requestAuthorized } from './security.js';
 import { Sessions } from './sessions.js';
 import { Trash } from './trash.js';
 import { DotState } from './state.js';
@@ -40,7 +40,10 @@ export interface StartOptions {
   version?: string;
   /** 桌面版访问令牌：设置后每个 HTTP 请求与 WS 升级都必须带 x-cosyee-token 头，否则 403；不设置则行为不变（网页版） */
   authToken?: string;
-  /** 监听地址，默认 127.0.0.1；0.0.0.0 / 具体 IP 时 Host / Origin 白名单随之放宽（见 security.allowedHostnames） */
+  /**
+   * 监听地址，默认 127.0.0.1；0.0.0.0 / 具体 IP 时 Host / Origin 白名单随之放宽（见 security.allowedHostnames）。
+   * 'tailscale'：只接受本机和 tailnet 内的连接（见 security.TAILSCALE_MODE）。
+   */
   host?: string;
   /** 「在文件管理器中打开」用的 spawn（测试替换，默认 explorer.exe / open / xdg-open） */
   spawner?: Spawner;
@@ -68,15 +71,18 @@ function readVersion(): string {
 }
 
 function findWebDist(): string | null {
-  const dir = path.resolve(SERVER_ROOT, '..', 'web', 'dist');
-  return fs.existsSync(path.join(dir, 'index.html')) ? dir : null;
+  // 独立服务端包（server/scripts/bundle.mjs）：server.mjs 同目录下的 web/；源码运行：仓库里的 web/dist
+  for (const dir of [path.join(HERE, 'web'), path.resolve(SERVER_ROOT, '..', 'web', 'dist')]) {
+    if (fs.existsSync(path.join(dir, 'index.html'))) return dir;
+  }
+  return null;
 }
 
 const HEARTBEAT_MS = 30_000;
 
 export async function startServer(opts: StartOptions = {}): Promise<RunningServer> {
   const bindHost = opts.host ?? process.env.COSYEE_HOST ?? '127.0.0.1';
-  if (net.isIPv4(bindHost) === false) throw new Error(`监听地址必须是 IPv4 地址: ${bindHost}`);
+  if (bindHost !== TAILSCALE_MODE && !net.isIPv4(bindHost)) throw new Error(`监听地址必须是 IPv4 地址或 tailscale: ${bindHost}`);
   const wantPort = opts.port ?? (process.env.COSYEE_PORT ? Number(process.env.COSYEE_PORT) : 7878);
   const webDist = opts.webDist === undefined ? findWebDist() : opts.webDist;
 
@@ -183,6 +189,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const server = http.createServer((req, res) => {
     void handler(req, res);
   });
+  // Tailscale 模式：不是本机、也不是从 tailnet 打到本机 Tailscale 地址的连接，在 TCP 层直接断开
+  server.on('connection', (socket) => {
+    if (!connectionAllowed(socket.localAddress, socket.remoteAddress, bindHost)) socket.destroy();
+  });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
@@ -244,7 +254,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(wantPort, bindHost, () => {
+    server.listen(wantPort, listenAddress(bindHost), () => {
       server.off('error', reject);
       resolve();
     });

@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "bundle": "node scripts/bundle.mjs"
   },
   "dependencies": {
     "@cosyee/shared": "*",
@@ -18,7 +19,8 @@
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "esbuild": "^0.28.2"
   },
   "version": "0.1.0"
 }

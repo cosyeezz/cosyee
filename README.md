@@ -33,6 +33,7 @@ Cosyee: http://127.0.0.1:5273/
 | `server/` | 后端：一个会话一个 `claude` 进程（stream-json 双向）、读取 `~/.claude/projects` 下的会话记录、工作空间、选择窗口、预览、上下文 |
 | `web/` | 前端：React + Vite。`core/reducer.ts` 把 CLI 事件归约成回合视图，`ui/` 下是各组件 |
 | `desktop/` | 桌面版（Electron）：主进程 + preload，打包配置，构建脚本 |
+| `client/` | 轻量客户端（Tauri 2，Windows / macOS / Android）：服务器列表页 `ui/` + Rust 外壳 `src-tauri/` |
 | `icons/` | 图标（由设计会话维护，未完成的图标显示占位方块） |
 | `spike/` | 验证阶段的探测脚本与结论（`FINDINGS.md`、`FINDINGS2.md`） |
 
@@ -42,6 +43,55 @@ Cosyee: http://127.0.0.1:5273/
 npm run typecheck   # 各工作区的类型检查
 npm test            # 后端与前端单测
 ```
+
+## 多台设备使用（Tailscale + 轻量客户端）
+
+一台机器跑服务端，其它电脑 / 手机装几 MB 的客户端连过去。设备之间走 [Tailscale](https://tailscale.com) 内网，**不用任何令牌**。
+
+### 1. 服务端：Tailscale 模式
+
+```bash
+COSYEE_HOST=tailscale npm start      # 源码运行（PowerShell：$env:COSYEE_HOST='tailscale'; npm start）
+```
+
+或者用发布页的独立服务端包 `cosyee-server_*.zip`（不用拉源码）：解压后 Windows 双击 `start.cmd`，macOS / Linux 运行 `./start.sh`，默认就是 Tailscale 模式。需要 Node.js 24+ 和已登录的 Claude Code CLI。自己打包：`npm run pack:server`，输出到 `server/dist/cosyee-server/`。
+
+Tailscale 模式下后端监听所有网卡，但在 TCP 层只接受两种连接，其它直接断开：
+
+- 本机回环（`127.0.0.1` → `127.0.0.1`）；
+- 来源是 tailnet 地址（`100.64.0.0/10`、`fd7a:115c:a1e0::/48`），且连的是本机 **Tailscale 网卡**上的地址（按网卡名识别，运营商 CGNAT 同段地址不算）。
+
+Host / Origin 白名单额外放行 Tailscale IP、本机名（MagicDNS 短名）和 `*.ts.net`（含 `tailscale serve` 反代出来的 `https://<机器名>.<tailnet>.ts.net`）。启动时控制台会打印可用地址。
+
+> ⚠️ tailnet 里的任何设备都能让模型在服务端机器上执行任意命令。共享了设备或开了 Tailscale Funnel 的 tailnet 不要用，或者用 Tailscale ACL 限制只有你自己的设备能访问 7878 端口。
+
+### 2. 客户端（`client/`，Tauri 2）
+
+客户端只是一个系统 WebView 外壳：首页是服务器列表（存在本地），选中后整页打开服务端网页。没有业务逻辑，也不需要随服务端升级。
+
+| 平台 | 安装包 | 说明 |
+|---|---|---|
+| Windows | `*_windows_x64_setup.exe` / `*_portable.exe` | 用系统自带的 WebView2 |
+| macOS | `*_macos_universal.dmg` | 未经 Apple 公证：拖进「应用程序」后执行一次 `xattr -cr /Applications/Cosyee.app` |
+| Android | `*_android_arm64.apk` | 允许安装未知来源应用 |
+
+- 添加服务器：填 Tailscale IP 或机器名，端口不写默认 7878，例如 `100.106.9.14`、`my-pc`、`https://my-pc.xxx.ts.net`。
+- 回到服务器列表：`Ctrl+Shift+L`（macOS `⌘⇧L` 或菜单「连接 → 服务器列表」）；Android 用返回键。
+- 本地开发：`npm run dev:client`；本地打包：`npm run build:client`（需要 Rust 工具链）。改图标：改 `client/scripts/make-icon.mjs` 后 `npm run icon -w client`。
+
+### 3. 其它电脑也想用本机后端
+
+装客户端的同时，在那台电脑上跑独立服务端包（见上文），然后在客户端里添加 `127.0.0.1`。每台电脑的后端各用各的 `~/.claude` 会话和登录状态，互不影响。只给本机用、不想让 tailnet 访问时，用 `COSYEE_HOST=127.0.0.1` 启动。
+
+### 4. 发布
+
+推送 `v*` 标签触发 `.github/workflows/release.yml`，构建 Windows / macOS / Android 客户端和独立服务端包，上传到同名 Release：
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Android 签名用仓库 secrets：`ANDROID_KEYSTORE_B64`（PKCS12 密钥库 base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。**密钥丢了以后发的 APK 无法覆盖安装旧版本**，请自行备份。
 
 ## 桌面版（Electron）
 
@@ -67,6 +117,7 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 
 | 变量 | 作用 |
 |---|---|
+| `COSYEE_HOST` | 监听地址，默认 `127.0.0.1`；`tailscale` 为 Tailscale 模式（见上文） |
 | `COSYEE_PORT` | 后端端口，默认 7878 |
 | `COSYEE_WEB_PORT` | 开发模式前端（Vite）端口，默认 5273；前后端都读这个变量 |
 | `COSYEE_CLAUDE` | `claude` 可执行文件的路径，默认从 PATH 查找 |
@@ -99,7 +150,7 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 
 ## 安全
 
-- 后端只监听 `127.0.0.1`，网页版不使用 token（桌面版见上文 token 机制）；靠校验 Host（防 DNS rebinding）和 Origin（防其它网页跨站调用）保护。本机上的其它程序仍可直接访问接口，请只在你信任的机器上使用。
+- 后端默认只监听 `127.0.0.1`（Tailscale 模式见上文），网页版不使用 token（桌面版见上文 token 机制）；靠校验 Host（防 DNS rebinding）和 Origin（防其它网页跨站调用）保护。本机上的其它程序仍可直接访问接口，请只在你信任的机器上使用。
 - 只能预览经系统选择窗口选出的文件，以及你粘贴进输入框的图片。
 - 粘贴图片会存到 `~/.cosyee/pastes/`（`paste-时间戳-随机串.扩展名`）。只收 png / jpeg / gif / webp，按文件头判断类型，单张不超过 20MB；这些文件不会自动清理，需要时自己删。
 - 不修改 `~/.claude` 下的配置；唯一的写入是「改名」时在会话记录末尾追加标题行（与 CLI 自己的 `/rename` 相同）。**例外**：用了多账号时，添加的账号里改过的 MCP 配置会同步回 `~/.claude.json`（见上文「多账号」）。

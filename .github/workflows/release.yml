@@ -1,0 +1,219 @@
+# 发布流水线：推送 v* 标签（例如 git tag v0.2.0 && git push origin v0.2.0）时
+#   - Windows：NSIS 安装包 + 免安装 exe
+#   - macOS：通用（Intel + Apple 芯片）dmg，ad-hoc 签名（未公证，首次打开需 xattr -cr）
+#   - Android：arm64 APK（用仓库 secrets 里的密钥签名）
+#   - 独立服务端包：给需要本地后端的电脑用
+# 全部上传到同名 GitHub Release。手动触发（workflow_dispatch）只构建、产物留在 Actions 里，不发 Release。
+#
+# 需要的仓库 secrets（Android 签名，换密钥会导致已安装的旧版本无法覆盖升级）：
+#   ANDROID_KEYSTORE_B64       PKCS12 密钥库的 base64
+#   ANDROID_KEYSTORE_PASSWORD  密钥库密码
+#   ANDROID_KEY_ALIAS          密钥别名
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+  NODE_VERSION: '24'
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" == v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(node -p "require('./client/src-tauri/tauri.conf.json').version")-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本：$v"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: client/src-tauri }
+      - run: npm ci
+      - name: 写入版本号
+        shell: bash
+        run: node client/scripts/set-version.mjs "$VERSION"
+      - name: 构建
+        working-directory: client
+        run: npx tauri build --bundles nsis
+      - name: 整理产物
+        shell: bash
+        run: |
+          mkdir -p out
+          cp client/src-tauri/target/release/bundle/nsis/*-setup.exe "out/Cosyee_${VERSION}_windows_x64_setup.exe"
+          cp client/src-tauri/target/release/Cosyee.exe "out/Cosyee_${VERSION}_windows_x64_portable.exe"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: out/*, if-no-files-found: error }
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: 'aarch64-apple-darwin,x86_64-apple-darwin' }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: client/src-tauri }
+      - run: npm ci
+      - name: 写入版本号
+        run: node client/scripts/set-version.mjs "$VERSION"
+      - name: 构建
+        working-directory: client
+        run: npx tauri build --target universal-apple-darwin --bundles dmg
+      - name: 整理产物
+        run: |
+          mkdir -p out
+          cp client/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/Cosyee_${VERSION}_macos_universal.dmg"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: macos, path: out/*, if-no-files-found: error }
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查签名 secrets
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          AL: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ] || [ -z "$AL" ]; then
+            echo "::error::缺少 Android 签名 secrets（ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS）"
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-linux-android }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: client/src-tauri }
+      - name: NDK
+        run: |
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          ls "$ANDROID_NDK_LATEST_HOME" > /dev/null
+      - run: npm ci
+      - name: 写入版本号
+        run: node client/scripts/set-version.mjs "$VERSION"
+      - name: 生成 Android 工程
+        working-directory: client
+        run: |
+          npx tauri android init --ci
+          gradle=src-tauri/gen/android/app/build.gradle.kts
+          # release 包默认禁止明文 http；服务端走 Tailscale 内网的 http://100.x.x.x:7878，必须放开
+          sed -i 's/manifestPlaceholders\["usesCleartextTraffic"\] = "false"/manifestPlaceholders["usesCleartextTraffic"] = "true"/' "$gradle"
+          if grep -q 'usesCleartextTraffic"\] = "false"' "$gradle"; then
+            echo "::error::没能放开 usesCleartextTraffic（Tauri 模板变了？）"; exit 1
+          fi
+          grep -q 'usesCleartextTraffic' src-tauri/gen/android/app/src/main/AndroidManifest.xml \
+            || { echo "::error::AndroidManifest.xml 里没有 usesCleartextTraffic 占位"; exit 1; }
+          # 应用图标
+          cp -r src-tauri/icons/android/* src-tauri/gen/android/app/src/main/res/
+      - name: 构建
+        working-directory: client
+        run: npx tauri android build --apk --target aarch64 --ci
+      - name: 签名
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          apk=$(find client/src-tauri/gen/android/app/build/outputs/apk -name '*release-unsigned.apk' | head -n1)
+          [ -n "$apk" ] || { echo "::error::找不到未签名的 APK"; find client/src-tauri/gen/android/app/build/outputs -type f; exit 1; }
+          bt="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n1)"
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/release.p12"
+          mkdir -p out
+          "$bt/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" sign --ks "$RUNNER_TEMP/release.p12" --ks-type PKCS12 \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --ks-key-alias "$ALIAS" \
+            --out "out/Cosyee_${VERSION}_android_arm64.apk" "$RUNNER_TEMP/aligned.apk"
+          "$bt/apksigner" verify --print-certs "out/Cosyee_${VERSION}_android_arm64.apk"
+          rm -f "$RUNNER_TEMP/release.p12"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: out/*, if-no-files-found: error }
+
+  server:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - run: npm ci
+      - name: 打包
+        run: COSYEE_VERSION="$VERSION" npm run pack:server
+      - name: 压缩
+        run: |
+          mkdir -p out
+          (cd server/dist && zip -qr "../../out/cosyee-server_${VERSION}.zip" cosyee-server)
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: { name: server, path: out/*, if-no-files-found: error }
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, windows, macos, android, server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la out
+          cat > notes.md <<'EOF'
+          ## 下载
+
+          | 平台 | 文件 |
+          | --- | --- |
+          | Windows | `*_windows_x64_setup.exe`（安装版）或 `*_windows_x64_portable.exe`（免安装，需系统自带 WebView2） |
+          | macOS | `*_macos_universal.dmg`。未经 Apple 公证，拖进「应用程序」后在终端执行一次 `xattr -cr /Applications/Cosyee.app` |
+          | Android | `*_android_arm64.apk` |
+          | 本地后端 | `cosyee-server_*.zip`，需要 Node.js 24+ 和已登录的 Claude Code CLI，解压后运行 `start.cmd` / `start.sh` |
+
+          客户端只是外壳：打开后添加服务端地址（Tailscale IP 或机器名，端口默认 7878）。
+          EOF
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --title "Cosyee $TAG" --notes-file notes.md

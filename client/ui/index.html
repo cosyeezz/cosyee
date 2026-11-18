@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Cosyee</title>
+<style>
+  :root {
+    --bg: #1a1a1a; --bg-elev: #242424; --bg-input: #2b2b2b; --bg-hover: #303030;
+    --border: #353535; --border-strong: #454545;
+    --text: #ececec; --text-2: #b4b4b4; --text-3: #8a8a8a;
+    --accent: #4a90e2; --ok: #3ddc97; --danger: #ff5d5d;
+    --r: 10px;
+    font-family: Inter, "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.6; color: var(--text); background: var(--bg);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; justify-content: center;
+         padding: max(48px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+  main { width: 100%; max-width: 520px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: .2px; }
+  .sub { color: var(--text-3); margin: 0 0 28px; font-size: 13px; }
+  .section-title { font-size: 12px; color: var(--text-3); margin: 0 0 8px; }
+  ul { list-style: none; margin: 0 0 24px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  li { display: flex; align-items: center; gap: 8px; background: var(--bg-elev); border: 1px solid var(--border);
+       border-radius: var(--r); padding: 10px 10px 10px 14px; cursor: pointer; transition: border-color .12s, background .12s; }
+  li:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+  li .info { flex: 1; min-width: 0; }
+  li .name { font-weight: 500; }
+  li .url { color: var(--text-3); font-size: 12px; font-family: "JetBrains Mono", Consolas, monospace;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .tag { font-size: 11px; color: var(--accent); border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; }
+  .empty { color: var(--text-3); background: var(--bg-elev); border: 1px dashed var(--border-strong);
+           border-radius: var(--r); padding: 16px; margin-bottom: 24px; font-size: 13px; }
+  button { font: inherit; color: var(--text); background: var(--bg-input); border: 1px solid var(--border);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--border-strong); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.icon { background: transparent; border-color: transparent; color: var(--text-3); padding: 4px 8px; }
+  button.icon:hover { color: var(--danger); }
+  form { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .row { display: flex; gap: 8px; }
+  input[type=text] { font: inherit; color: var(--text); background: var(--bg-input); border: 1px solid var(--border);
+                     border-radius: 8px; padding: 8px 12px; width: 100%; outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  label.check { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; margin-top: 20px; }
+  .hint { color: var(--text-3); font-size: 12px; margin-top: 28px; border-top: 1px solid var(--border); padding-top: 14px; }
+  .hint p { margin: 0 0 4px; }
+  code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--text-2); }
+  #status { display: none; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--r);
+            padding: 14px; margin-bottom: 24px; }
+  #status.show { display: block; }
+  #status.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
+  #status .msg { margin-bottom: 10px; }
+  #status .msg small { display: block; color: var(--text-3); margin-top: 4px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Cosyee</h1>
+  <p class="sub">选择要连接的服务端。手机和其它电脑需要先登录同一个 Tailscale 网络。</p>
+
+  <div id="status" role="status" aria-live="polite">
+    <div class="msg"></div>
+    <div class="actions"></div>
+  </div>
+
+  <p class="section-title">服务器</p>
+  <ul id="list"></ul>
+  <div id="empty" class="empty" hidden>还没有服务器。在下面填入服务端的 Tailscale 地址或机器名，例如 <code>100.106.9.14</code>、<code>my-pc</code>；本机运行的服务端填 <code>127.0.0.1</code>。</div>
+
+  <p class="section-title">添加服务器</p>
+  <form id="add" autocomplete="off">
+    <input type="text" id="addr" placeholder="地址，例如 100.106.9.14 或 my-pc:7878" required autocapitalize="off" spellcheck="false">
+    <div class="row">
+      <input type="text" id="name" placeholder="名称（可选）">
+      <button class="primary" type="submit">添加</button>
+    </div>
+  </form>
+
+  <label class="check"><input type="checkbox" id="auto"> 启动时自动连接上次使用的服务器</label>
+
+  <div class="hint">
+    <p>回到这个页面：<code>Ctrl+Shift+L</code>（macOS <code>⌘⇧L</code>，或菜单「连接 → 服务器列表」）；安卓用返回键。</p>
+    <p>端口不写时默认 7878。</p>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto';
+  var $ = function (id) { return document.getElementById(id); };
+  var invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+
+  function load() { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { return []; } }
+  function save(list) { localStorage.setItem(KEY, JSON.stringify(list)); }
+
+  /** 用户输入 -> 规范化的 URL（无协议补 http://，http 无端口补 7878）。不合法返回 null。 */
+  function normalize(input) {
+    var s = input.trim();
+    if (!s) return null;
+    if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+    var u;
+    try { u = new URL(s); } catch (e) { return null; }
+    if (u.protocol === 'http:' && !u.port) u.port = '7878';
+    return u.origin;
+  }
+
+  var connecting = 0;
+  function showStatus(text, detail, buttons, isError) {
+    var box = $('status');
+    box.className = 'show' + (isError ? ' error' : '');
+    var msg = box.querySelector('.msg');
+    msg.textContent = text;
+    if (detail) { var sm = document.createElement('small'); sm.textContent = detail; msg.appendChild(sm); }
+    var act = box.querySelector('.actions');
+    act.textContent = '';
+    (buttons || []).forEach(function (b) {
+      var el = document.createElement('button');
+      el.type = 'button';
+      el.textContent = b.label;
+      if (b.primary) el.className = 'primary';
+      el.onclick = b.onClick;
+      act.appendChild(el);
+    });
+  }
+  function hideStatus() { $('status').className = ''; }
+
+  function go(server) { location.href = server.url + '/'; }
+
+  async function connect(server) {
+    var my = ++connecting;
+    localStorage.setItem(LAST, server.id);
+    render();
+    showStatus('正在连接 ' + server.name + '…', server.url, [{ label: '取消', onClick: function () { connecting++; hideStatus(); } }]);
+    var ok = true;
+    if (invoke) {
+      var u = new URL(server.url);
+      var port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+      try { ok = await invoke('probe', { host: u.hostname.replace(/^\[|\]$/g, ''), port: port }); } catch (e) { ok = true; }
+    }
+    if (my !== connecting) return; // 已取消或又点了别的
+    if (ok) return go(server);
+    showStatus('连不上 ' + server.name, '确认服务端已启动（Tailscale 模式），并且这台设备已登录同一个 Tailscale 网络。', [
+      { label: '重试', primary: true, onClick: function () { connect(server); } },
+      { label: '仍然打开', onClick: function () { go(server); } },
+      { label: '关闭', onClick: hideStatus },
+    ], true);
+  }
+
+  function render() {
+    var list = load(), last = localStorage.getItem(LAST);
+    var ul = $('list');
+    ul.textContent = '';
+    $('empty').hidden = list.length > 0;
+    list.forEach(function (s) {
+      var li = document.createElement('li');
+      li.tabIndex = 0;
+      var info = document.createElement('div'); info.className = 'info';
+      var n = document.createElement('div'); n.className = 'name'; n.textContent = s.name;
+      var u = document.createElement('div'); u.className = 'url'; u.textContent = s.url;
+      info.appendChild(n); info.appendChild(u);
+      li.appendChild(info);
+      if (s.id === last) { var t = document.createElement('span'); t.className = 'tag'; t.textContent = '上次'; li.appendChild(t); }
+      var del = document.createElement('button');
+      del.type = 'button'; del.className = 'icon'; del.textContent = '删除'; del.title = '删除这个服务器';
+      del.onclick = function (e) {
+        e.stopPropagation();
+        save(load().filter(function (x) { return x.id !== s.id; }));
+        render();
+      };
+      li.appendChild(del);
+      li.onclick = function () { connect(s); };
+      li.onkeydown = function (e) { if (e.key === 'Enter') connect(s); };
+      ul.appendChild(li);
+    });
+  }
+
+  $('add').onsubmit = function (e) {
+    e.preventDefault();
+    var url = normalize($('addr').value);
+    if (!url) { showStatus('地址格式不对', '例如 100.106.9.14、my-pc:7878 或 https://my-pc.tailxxxx.ts.net', [{ label: '关闭', onClick: hideStatus }], true); return; }
+    var list = load();
+    if (list.some(function (x) { return x.url === url; })) { showStatus('这个服务器已经在列表里了', url, [{ label: '关闭', onClick: hideStatus }]); return; }
+    var name = $('name').value.trim() || new URL(url).hostname;
+    var s = { id: String(Date.now()), name: name, url: url };
+    list.push(s);
+    save(list);
+    $('addr').value = ''; $('name').value = '';
+    hideStatus();
+    render();
+  };
+
+  var auto = $('auto');
+  auto.checked = localStorage.getItem(AUTO) !== '0';
+  auto.onchange = function () { localStorage.setItem(AUTO, auto.checked ? '1' : '0'); };
+
+  render();
+
+  // 启动时自动连接（从服务端页面按快捷键回来时带 ?list=1，不自动连接）
+  if (!/[?&]list=1\b/.test(location.search) && auto.checked) {
+    var last = localStorage.getItem(LAST);
+    var s = load().filter(function (x) { return x.id === last; })[0];
+    if (s) connect(s);
+  }
+})();
+</script>
+</body>
+</html>
