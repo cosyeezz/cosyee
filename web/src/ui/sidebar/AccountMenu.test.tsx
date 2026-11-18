@@ -56,11 +56,14 @@ afterEach(() => {
 const list = (l: AccountEntry[], mode: AccountMode = 'switch'): AccountList => ({ mode, list: l, login: null });
 
 describe('entryTitle / entrySubtitle', () => {
-  it('默认账号显示「默认账号」，备注名与套餐用 · 连接，没凭据的标「需要登录」', () => {
-    expect(entrySubtitle(entry({}))).toBe('默认账号 · Pro');
+  it('不出现「默认账号」：备注名与套餐用 · 连接，没凭据的标「需要登录」', () => {
+    expect(entrySubtitle(entry({}))).toBe('Pro');
+    expect(entryTitle(entry({ name: null }))).toBe('Claude 账号');
+    expect(entryTitle(entry({ name: null, loggedIn: false }))).toBe('未登录账号');
     const w = entry({ id: 'a1', label: '工作', name: null, plan: null, loggedIn: false, isDefault: false });
     expect(entryTitle(w)).toBe('工作');
     expect(entrySubtitle(w)).toBe('需要登录');
+    expect(entrySubtitle(entry({ label: '个人' }))).toBe('个人 · Pro');
   });
 });
 
@@ -77,6 +80,40 @@ describe('AccountMenu', () => {
     expect(items[1].textContent).toContain('Bob');
     expect(items[1].textContent).toContain('工作');
     expect(button('添加账号')).toBeDefined();
+  });
+
+  it('菜单打开时并行读取每个已登录账号的额度，显示进度条与重置说明；失败只显示淡提示', async () => {
+    const soon = Date.now() + (2 * 60 + 14) * 60_000;
+    routes = {
+      'GET /api/accounts': () => ({ body: list([
+        entry({}),
+        entry({ id: 'a1', label: '工作', name: 'Bob', active: false, isDefault: false }),
+        entry({ id: 'a2', name: null, loggedIn: false, active: false, isDefault: false }),
+      ]) }),
+      'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [
+        { kind: 'session', percent: 32, severity: 'normal', resetsAt: soon },
+        { kind: 'weekly', percent: 91, severity: 'warning', resetsAt: null },
+      ] } }),
+      'GET /api/usage?account=a1': () => ({ status: 500, body: { error: 'x' } }),
+    };
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    click(document.querySelector('[aria-label="账户菜单"]')!);
+    // 额度请求还没返回前显示骨架
+    expect(document.querySelectorAll('[data-testid="quota-skeleton"]').length).toBeLessThanOrEqual(2);
+    await flush();
+    const items = document.querySelectorAll('.cz-sidebar__menu-item');
+    expect(items[0].textContent).toContain('会话 32% · 2小时14分后重置');
+    expect(items[0].textContent).toContain('本周 91%');
+    const bars = items[0].querySelectorAll('[role="progressbar"]');
+    expect(bars.length).toBe(2);
+    expect(bars[0].getAttribute('aria-valuenow')).toBe('32');
+    expect(items[0].querySelector('.cz-acctq__row.is-warning')).not.toBeNull();
+    expect(items[1].textContent).toContain('额度读取失败');
+    // 没登录的账号不取额度
+    expect(calls.filter((c) => c.url.startsWith('/api/usage')).map((c) => c.url).sort()).toEqual(['/api/usage?account=a1', '/api/usage?account=default']);
+    expect(document.body.textContent).not.toContain('默认账号');
+    // 额度读取失败不影响切换
+    expect((items[1].querySelector('.cz-sidebar__menu-main') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('有执行中的会话时提示，强制切换带 force 并刷新页面', async () => {

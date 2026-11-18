@@ -83,6 +83,7 @@ describe('toContextUsage', () => {
     );
     expect(r.skills).toEqual([
       { name: 'impeccable', mode: 'on', tokens: 60, source: 'userSettings' },
+      { name: 'init', mode: 'off', tokens: null, source: null },
       { name: 'anthropic-skills:pdf', mode: 'on', tokens: 50, source: 'syncedSkills' },
       { name: 'schedule', mode: 'user-invocable-only', tokens: null, source: null },
       { name: 'anthropic-skills:xlsx', mode: 'off', tokens: null, source: 'plugin' },
@@ -93,6 +94,29 @@ describe('toContextUsage', () => {
       cosyeeOverrides: { 'anthropic-skills:xlsx': 'on' },
     });
     expect(back.skills).toEqual([{ name: 'anthropic-skills:xlsx', mode: 'on', tokens: 9, source: 'syncedSkills' }]);
+  });
+
+  it('skills：磁盘上的 skill 一并列出（含已关闭 / 还没加载的），标出能否移除；刚移除的藏起来', () => {
+    const disk = [
+      { name: 'mine', source: 'userSettings' as const, dir: '/u/mine', removable: true },
+      { name: 'proj', source: 'projectSettings' as const, dir: '/p/proj', removable: true },
+      { name: 'anthropic-skills:pdf', source: 'plugin' as const, dir: '/pl/pdf', removable: false },
+      { name: 'gone', source: 'userSettings' as const, dir: '/u/gone', removable: true },
+    ];
+    const r = toContextUsage({ skills: { skillFrontmatter: [{ name: 'mine', source: 'userSettings', tokens: 7 }] } }, 1, {
+      initSkills: ['mine'],
+      diskSkills: disk,
+      hidden: ['gone'],
+      // settings.json 里关掉的、磁盘上没有的内置 skill 也要列出来
+      overrides: { 'skill-creator': 'off', verify: 'on' },
+    });
+    expect(r.skills.map((x) => x.name).sort()).toEqual(['anthropic-skills:pdf', 'mine', 'proj', 'skill-creator']);
+    const by = (n: string) => r.skills.find((x) => x.name === n)!;
+    expect(by('mine')).toMatchObject({ mode: 'on', tokens: 7, removable: true });
+    // 磁盘上有、进程里没加载：用磁盘来源，状态按 on 处理但没有 token
+    expect(by('proj')).toMatchObject({ mode: 'on', tokens: null, source: 'projectSettings', removable: true });
+    expect(by('anthropic-skills:pdf')).toMatchObject({ source: 'plugin', removable: false });
+    expect(by('skill-creator')).toMatchObject({ mode: 'off', tokens: null });
   });
 
   it('mcpServers：以 mcp_status 为准，工具 token 按规范化名匹配', () => {
@@ -136,5 +160,10 @@ describe('toContextUsage', () => {
   it('mcpTools 取 serverName', () => {
     const r = toContextUsage({ totalTokens: 10, maxTokens: 100, mcpTools: [{ name: 't', serverName: 's', tokens: 5, isLoaded: true }] });
     expect(r.mcpTools).toEqual([{ name: 't', server: 's', tokens: 5 }]);
+  });
+
+  it('tools：有就带上，没有就不出现', () => {
+    expect(toContextUsage({}, 0, { tools: ['Bash', 'Read'] }).tools).toEqual(['Bash', 'Read']);
+    expect('tools' in toContextUsage({}, 0, {})).toBe(false);
   });
 });

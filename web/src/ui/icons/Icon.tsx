@@ -17,10 +17,14 @@ export type IconName =
   | 'file' | 'image' | 'compact'
   // 选中回复
   | 'reply' | 'copy'
+  // 会话流滚动导航（回到上一个 / 下一个交付点）
+  | 'arrow-up' | 'arrow-down'
   // 侧栏
   | 'search' | 'pin' | 'trash' | 'restore' | 'folder-reveal'
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
-  | 'thinking';
+  | 'thinking'
+  // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
+  | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo';
 
 export interface IconProps {
   name: IconName;
@@ -41,6 +45,40 @@ const hasDesign = (name: string): boolean =>
 /** 输入框与菜单用的简单线条图标（设计稿未提供前的实现），16×16 画布 */
 const SIMPLE: Record<string, JSX.Element> = {
   plus: <path d="M8 3v10M3 8h10" />,
+  // skill 状态：开=圆里打勾；手动=圆角方框里一道斜杠（/名字）；关=圆里斜线
+  'skill-on': (
+    <>
+      <circle cx="8" cy="8" r="5.8" />
+      <path d="M5.4 8.2l1.8 1.8 3.4-3.7" />
+    </>
+  ),
+  'skill-manual': (
+    <>
+      <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="3.2" />
+      <path d="M9.3 5.2L6.7 10.8" />
+    </>
+  ),
+  'skill-off': (
+    <>
+      <circle cx="8" cy="8" r="5.8" />
+      <path d="M3.9 12.1l8.2-8.2" />
+    </>
+  ),
+  // 魔法棒 + 两颗火花：一键推荐配置
+  wand: (
+    <>
+      <path d="M2.8 13.2L9.6 6.4" />
+      <path d="M8.4 5.2l2.4 2.4" />
+      <path d="M12.4 1.8v3.2M10.8 3.4H14" />
+      <path d="M4.2 2.6v2M3.2 3.6h2" />
+    </>
+  ),
+  undo: (
+    <>
+      <path d="M3.6 6.4h5.8a3.3 3.3 0 010 6.6H6" />
+      <path d="M6.1 3.7L3.4 6.4l2.7 2.7" />
+    </>
+  ),
   'chevron-right': <path d="M6 4l4 4-4 4" />,
   // 新建会话：缺一角的方框 + 铅笔
   'new-chat': (
@@ -147,6 +185,8 @@ const SIMPLE: Record<string, JSX.Element> = {
   compact: <path d="M3 8h10M5.5 2.5L8 5l2.5-2.5M5.5 13.5L8 11l2.5 2.5" />,
   'chevron-down': <path d="M4 6l4 4 4-4" />,
   'chevron-up': <path d="M4 10l4-4 4 4" />,
+  'arrow-up': <path d="M8 13V3M3.8 7.2L8 3l4.2 4.2" />,
+  'arrow-down': <path d="M8 3v10M3.8 8.8L8 13l4.2-4.2" />,
   mic: (
     <>
       <rect x="6" y="1.8" width="4" height="7.4" rx="2" />

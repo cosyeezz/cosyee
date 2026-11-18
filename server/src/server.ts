@@ -21,7 +21,10 @@ import { Sessions } from './sessions.js';
 import { Trash } from './trash.js';
 import { DotState } from './state.js';
 import { UsageProvider, fetchUsage } from './usage.js';
-import { StateStore, Workspaces } from './workspaces.js';
+import { HttpError, StateStore, Workspaces } from './workspaces.js';
+
+/** state.json 里最多保留多少个会话的配置记录（超出丢最久没用的） */
+const MAX_SESSION_CONFIGS = 2000;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_ROOT = path.resolve(HERE, '..');
@@ -101,6 +104,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   sessions.setFlags({
     isDeleted: (id) => trash.isDeleted(id),
     pinKind: (id) => pins.kind(id),
+    configOf: (id) => store.state.sessionConfigs[id] ?? null,
     // 并行模式下会话列表标出账号：正在运行的进程用的账号优先，否则看绑定
     accountOf: (id) => {
       if (!accounts || accounts.mode() !== 'parallel') return null;
@@ -114,10 +118,44 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     pins,
     timings: opts.timings,
     claudePath: opts.claudePath,
+    configs: {
+      get: (id) => store.state.sessionConfigs[id] ?? null,
+      set: (id, c) => {
+        const cur = store.state.sessionConfigs[id];
+        if (cur && cur.model === c.model && cur.effort === c.effort && !!cur.ultracode === !!c.ultracode) return;
+        delete store.state.sessionConfigs[id]; // 重新插入，保持「最近使用」在末尾
+        store.state.sessionConfigs[id] = { model: c.model, effort: c.effort, ...(c.ultracode ? { ultracode: true } : {}) };
+        const keys = Object.keys(store.state.sessionConfigs);
+        for (const k of keys.slice(0, Math.max(0, keys.length - MAX_SESSION_CONFIGS))) delete store.state.sessionConfigs[k];
+        store.save();
+      },
+    },
+    tools: {
+      get: () => store.state.disabledTools,
+      set: (names) => {
+        store.state.disabledTools = [...names];
+        store.save();
+      },
+      known: () => store.state.knownTools,
+      setKnown: (names) => {
+        const cur = store.state.knownTools;
+        if (cur.length === names.length && cur.every((n, i) => n === names[i])) return;
+        store.state.knownTools = [...names];
+        store.save();
+      },
+    },
     skills: {
       get: () => store.state.skillOverrides,
       set: (name, mode) => {
         store.state.skillOverrides[name] = mode;
+        store.save();
+      },
+      remove: (name) => {
+        delete store.state.skillOverrides[name];
+        store.save();
+      },
+      setMany: (modes) => {
+        Object.assign(store.state.skillOverrides, modes);
         store.save();
       },
     },
@@ -144,7 +182,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     },
   };
   const usage = {
-    get: (refresh: boolean, session?: string | null) => {
+    get: (refresh: boolean, session?: string | null, accountId?: string | null) => {
+      // account 优先（账号菜单里逐个账号看额度）：必须是已存在的账号，各账号各自缓存
+      if (accountId) {
+        const dir = accounts?.dirFor(accountId) ?? (accountId === DEFAULT_ID ? null : undefined);
+        if (dir === undefined) throw new HttpError(404, '账号不存在');
+        return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), accountId, dir).get(refresh);
+      }
       const a = session && isSafeId(session) && accounts ? accounts.resolve(session) : activeAccount();
       return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), a.id, a.dir).get(refresh);
     },

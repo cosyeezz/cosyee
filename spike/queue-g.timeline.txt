@@ -1,0 +1,32 @@
++0.00s -> {"type":"user","uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f","message":{"role":"user","content":"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"}}
++1.72s <- {"type":"command_lifecycle","command_uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f","state":"queued","uuid":"39064462-3967-4781-947c-2b1bd0c765a1","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++1.73s <- {"type":"command_lifecycle","command_uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f","state":"started","uuid":"9c27ec1c-4053-4f99-8975-ff783f91710f","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++2.00s <- {"type":"system","subtype":"init","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","interrupt_send_now_v1","interrupt_requeue_taken_v1","msg_lifecycle_v1","request_marker_lists_v1","ask_user_question_unanswered_v1","lifecycle_wakeup_source_v1","sdk_mcp_tools_list_changed","sdk_mcp_manifests","mcp_read_resource_v1","mcp_tool_ui_meta_v1","ui_surface_v1","mcp_call_result_not_for_model_v1","mcp_call_check_permissions_v1","voice_call_talk_line_v1","withdrawn_files_note_v2","ui_pane_widget_v1","reload_plugins_refuse_if_busy_v1","silent_resend_files_v1"],"model":"claude-haiku-5-5"}
++2.02s <- {"type":"system","subtype":"status","status":"requesting","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6","uuid":"2d5bd9de-81d1-415f-8e63-a647083e5a98","user_message_uuids":["d4619280-b4c5-40fe-83bc-75ac31f6450f"]}
++3.73s <- {"type":"user","keys":"uuid,timestamp,isReplay","isReplay":true,"uuid":"d4619280","blocks":["str::\"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。\""]}
++3.73s <- stream_event:message_start
++3.73s <- stream_event:content_block_start
++4.02s <- {"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"estimated_tokens_delta":50,"session_id":"7c33d5d5-464c-418b-b735-45984bad93c6","uuid":"d2d9a5c8-c5a6-4a75-8076-c6786dfe04f6","user_message_uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f"}
++4.09s <- {"type":"system","subtype":"thinking_tokens","estimated_tokens":204,"estimated_tokens_delta":154,"session_id":"7c33d5d5-464c-418b-b735-45984bad93c6","uuid":"008dffab-a746-488b-a5d3-0d0b8f0f9e06","user_message_uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f"}
++4.11s <- {"type":"assistant","keys":"uuid,timestamp,request_id,thinking_duration_ms,thinking_display,user_message_uuid,user_message_uuids","uuid":"f7a3ad52","blocks":["thinking::\"\""]}
++4.11s <- stream_event:content_block_stop
++4.11s <- stream_event:content_block_start
++4.32s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"203e6f03","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Sleep 4 seconds (run 1 of 3)\"}"]}
++4.34s <- stream_event:content_block_stop
++4.35s <- stream_event:message_delta:tool_use
++4.39s <- stream_event:message_stop
++4.39s <- {"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795014000,"rateLimitType":"seven_day","utilization":0.91,"overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"surpassedThreshold":0.75,"unifiedWindows":{"five_hour":{"utilization":0.28,"resetsAt":1795007400,"status":"allowed"},"seven_day":{"utilization":0.91,"resetsAt":17…
++5.13s ## send M2 later + M3 next
++5.13s -> {"type":"user","priority":"later","uuid":"7af1a8be-4b5e-4c2e-82db-3dd4dfdf78ef","message":{"role":"user","content":"请只回复 Q2-OK，不要用工具。"}}
++5.13s -> {"type":"user","priority":"next","uuid":"30c72328-f407-4b37-9d23-550ef280349e","message":{"role":"user","content":"最后说一句 Q3-OK"}}
++5.13s <- {"type":"command_lifecycle","command_uuid":"7af1a8be-4b5e-4c2e-82db-3dd4dfdf78ef","state":"queued","uuid":"526fc4af-2508-4938-8bfa-6d3cca6dd04e","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++5.14s <- {"type":"command_lifecycle","command_uuid":"30c72328-f407-4b37-9d23-550ef280349e","state":"queued","uuid":"5611c88f-3c85-41f1-b0d3-3fcae201ac72","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++5.54s ## interrupt cancel_queued
++5.54s -> {"type":"control_request","request_id":"q9i0k4x","request":{"subtype":"interrupt","cancel_queued":true}}
++5.54s <- {"type":"command_lifecycle","command_uuid":"7af1a8be-4b5e-4c2e-82db-3dd4dfdf78ef","state":"cancelled","uuid":"c1f4e000-13e1-4999-aea6-f91f865cc4fd","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++5.54s <- {"type":"command_lifecycle","command_uuid":"30c72328-f407-4b37-9d23-550ef280349e","state":"cancelled","uuid":"73e534cd-8d80-4016-bb8b-9b2fe76562f2","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}
++5.54s <- {"type":"control_response","response":{"subtype":"success","request_id":"q9i0k4x","response":{"still_queued":[],"cancelled":["7af1a8be-4b5e-4c2e-82db-3dd4dfdf78ef","30c72328-f407-4b37-9d23-550ef280349e"]}}}
++5.61s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"45e3eb60","blocks":["tool_result::\"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a fil"]}
++5.62s <- {"type":"user","keys":"uuid,timestamp","uuid":"c875ef61","blocks":["text::\"[Request interrupted by user for tool use]\""]}
++5.63s <- {"type":"result","subtype":"error_during_execution","stop_reason":"tool_use","terminal_reason":"aborted_tools","is_error":true,"result":"","num_turns":3}
++5.64s <- {"type":"command_lifecycle","command_uuid":"d4619280-b4c5-40fe-83bc-75ac31f6450f","state":"cancelled","uuid":"627e7cea-0052-4119-98a2-336c85640849","session_id":"7c33d5d5-464c-418b-b735-45984bad93c6"}

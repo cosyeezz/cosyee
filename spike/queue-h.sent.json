@@ -1,0 +1,69 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "uuid": "be465380-0c7f-4c14-a3be-ff6c368950d0",
+   "message": {
+    "role": "user",
+    "content": "只回复 OK，不要用工具。"
+   }
+  }
+ },
+ {
+  "t": 3634,
+  "o": {
+   "type": "control_request",
+   "request_id": "q2n3k7m",
+   "request": {
+    "subtype": "rewind_conversation",
+    "target_message_uuid": "b29a50c7-29f4-4acf-9a55-ae284d1eebce"
+   }
+  }
+ },
+ {
+  "t": 3637,
+  "o": {
+   "type": "control_request",
+   "request_id": "qppgr4b",
+   "request": {
+    "subtype": "rewind_conversation",
+    "target_message_uuid": "12ad8b67-28a8-4a09-9a62-7e184fb7cd74"
+   }
+  }
+ },
+ {
+  "t": 3637,
+  "o": {
+   "type": "control_request",
+   "request_id": "q19a3x8",
+   "request": {
+    "subtype": "rewind_files",
+    "user_message_id": "be465380-0c7f-4c14-a3be-ff6c368950d0"
+   }
+  }
+ },
+ {
+  "t": 3638,
+  "o": {
+   "type": "control_request",
+   "request_id": "qmnl76z",
+   "request": {
+    "subtype": "rewind_conversation",
+    "target_message_uuid": "be465380-0c7f-4c14-a3be-ff6c368950d0"
+   }
+  }
+ },
+ {
+  "t": 5293,
+  "o": {
+   "type": "user",
+   "priority": "next",
+   "uuid": "52dc634e-33e9-4c3e-bef3-ea7fd15d9e51",
+   "message": {
+    "role": "user",
+    "content": "只回复 IDLE-NEXT-OK，不要用工具。"
+   }
+  }
+ }
+]

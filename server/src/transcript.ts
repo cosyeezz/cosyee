@@ -65,6 +65,8 @@ export interface Scan {
   aiTitle?: string;
   /** 最后一条带时间戳的消息（user/assistant/system/attachment）时间，毫秒 */
   lastTs?: number;
+  /** 主线程最后一条 assistant 消息的模型（message.model，原始 id；<synthetic> 不算） */
+  model?: string;
 }
 
 export function newScan(): Scan {
@@ -123,6 +125,9 @@ export function scanLines(lines: string[], into: Scan = newScan()): Scan {
     }
     if (!into.cwd && typeof e.cwd === 'string' && e.cwd) into.cwd = e.cwd;
     if ((type === 'user' || type === 'assistant') && !e.isSidechain) into.hasMessages = true;
+    if (type === 'assistant' && !e.isSidechain && typeof e.message?.model === 'string' && e.message.model && !e.message.model.startsWith('<')) {
+      into.model = e.message.model;
+    }
     if (TS_TYPES.has(type) && typeof e.timestamp === 'string') {
       const t = Date.parse(e.timestamp);
       if (Number.isFinite(t) && (into.lastTs === undefined || t > into.lastTs)) into.lastTs = t;
@@ -150,6 +155,7 @@ export function mergeScans(head: Scan, tail: Scan): Scan {
     userTitle: tail.userTitle ?? head.userTitle,
     aiTitle: tail.aiTitle ?? head.aiTitle,
     lastTs: tail.lastTs ?? head.lastTs,
+    model: tail.model ?? head.model,
   };
 }
 

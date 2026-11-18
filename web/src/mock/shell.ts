@@ -83,7 +83,7 @@ export const mockContextUsage: ContextUsage = {
   ],
   skills: [
     { name: 'anthropic-skills:docx', mode: 'on', tokens: 210, source: 'syncedSkills' },
-    { name: 'impeccable', mode: 'on', tokens: 67, source: 'userSettings' },
+    { name: 'impeccable', mode: 'on', tokens: 67, source: 'userSettings', removable: true },
     { name: 'anthropic-skills:pdf', mode: 'on', tokens: 180, source: 'syncedSkills' },
     { name: 'schedule', mode: 'user-invocable-only', tokens: null, source: null },
     { name: 'anthropic-skills:xlsx', mode: 'off', tokens: null, source: 'plugin' },

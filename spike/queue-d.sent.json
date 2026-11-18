@@ -1,0 +1,69 @@
+[
+ {
+  "t": 2,
+  "o": {
+   "type": "user",
+   "uuid": "679de99c-532e-435e-992e-630d4088cde8",
+   "message": {
+    "role": "user",
+    "content": "请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"
+   }
+  }
+ },
+ {
+  "t": 3220,
+  "o": {
+   "type": "user",
+   "priority": "later",
+   "uuid": "c85e7602-9469-4818-bd04-e04228c4263f",
+   "message": {
+    "role": "user",
+    "content": "请只回复 LATER-OK，不要用工具。"
+   }
+  }
+ },
+ {
+  "t": 3627,
+  "o": {
+   "type": "control_request",
+   "request_id": "qssaczw",
+   "request": {
+    "subtype": "cancel_async_message",
+    "message_uuid": "c85e7602-9469-4818-bd04-e04228c4263f"
+   }
+  }
+ },
+ {
+  "t": 3939,
+  "o": {
+   "type": "control_request",
+   "request_id": "qrdb1pk",
+   "request": {
+    "subtype": "cancel_async_message",
+    "message_uuid": "c85e7602-9469-4818-bd04-e04228c4263f"
+   }
+  }
+ },
+ {
+  "t": 3940,
+  "o": {
+   "type": "control_request",
+   "request_id": "qhr423h",
+   "request": {
+    "subtype": "cancel_async_message",
+    "message_uuid": "0154b137-c7a7-486d-ad0f-4d2b07c6831e"
+   }
+  }
+ },
+ {
+  "t": 25446,
+  "o": {
+   "type": "control_request",
+   "request_id": "q5y3lvg",
+   "request": {
+    "subtype": "cancel_async_message",
+    "message_uuid": "679de99c-532e-435e-992e-630d4088cde8"
+   }
+  }
+ }
+]

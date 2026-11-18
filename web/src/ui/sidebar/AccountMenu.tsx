@@ -10,6 +10,7 @@ import { Icon } from '../icons/Icon';
 import { ConfirmActionButton } from './ActionButtons';
 import { AccountDialog } from './AccountDialog';
 import { AccountModeSwitch } from './AccountModeSwitch';
+import { AccountQuota, type QuotaState } from './AccountQuota';
 import { avatarColor, avatarInitial } from './avatar';
 import { useDismiss } from './useDismiss';
 
@@ -29,16 +30,15 @@ export const accountPage = { reload: () => window.location.reload() };
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** 行标题：显示名，读不到时用备注名 */
+/** 行标题：显示名，读不到时用备注名；都没有就叫「Claude 账号」（没登录的叫「未登录账号」） */
 export function entryTitle(a: AccountEntry): string {
-  return a.name ?? (a.label || (a.isDefault ? '默认账号' : '未登录账号'));
+  return a.name ?? (a.label || (a.loggedIn ? 'Claude 账号' : '未登录账号'));
 }
 
-/** 行副标题：备注名（默认账号显示「默认账号」）· 套餐 · 需要登录 */
+/** 行副标题：备注名 · 套餐 · 需要登录 */
 export function entrySubtitle(a: AccountEntry): string {
   const parts: string[] = [];
-  const label = a.label || (a.isDefault ? '默认账号' : '');
-  if (label && label !== entryTitle(a)) parts.push(label);
+  if (a.label && a.label !== entryTitle(a)) parts.push(a.label);
   if (a.plan) parts.push(a.plan);
   if (!a.loggedIn) parts.push('需要登录');
   return parts.join(' · ');
@@ -68,6 +68,21 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     if (open) load();
   }, [open, load, version]);
   const parallel = data?.mode === 'parallel';
+
+  /** 每个已登录账号的额度：菜单打开时并行读取（服务端各账号各自缓存），读不到只显示一行淡提示，不影响切换 */
+  const [quotas, setQuotas] = useState<Record<string, QuotaState>>({});
+  const quotaIds = (data?.list ?? []).filter((a) => a.loggedIn).map((a) => a.id).join(',');
+  useEffect(() => {
+    if (!open || !quotaIds) return;
+    let alive = true;
+    for (const id of quotaIds.split(',')) {
+      api.usage(false, null, id).then(
+        (info) => alive && setQuotas((q) => ({ ...q, [id]: info && info.limits.length ? { status: 'ok', info } : { status: 'none' } })),
+        () => alive && setQuotas((q) => ({ ...q, [id]: q[id]?.status === 'ok' ? q[id]! : { status: 'fail' } })),
+      );
+    }
+    return () => { alive = false; };
+  }, [open, quotaIds]);
 
   const doSwitch = async (id: string, force = false) => {
     setError(null);
@@ -192,6 +207,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                     <span className="cz-sidebar__menu-text">
                       <span className="cz-sidebar__menu-name">{title}</span>
                       {sub && <span className="cz-sidebar__menu-path">{sub}</span>}
+                      {a.loggedIn && <AccountQuota state={quotas[a.id] ?? { status: 'loading' }} />}
                     </span>
                     {switching === a.id ? (
                       <span className="cz-sidebar__acct-tag">切换中…</span>

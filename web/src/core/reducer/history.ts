@@ -16,6 +16,7 @@ import {
   type Draft,
 } from './core';
 import { arr, isObj, str } from './util';
+import { cachePointOf, pushCachePoint } from './cacheHit';
 
 /** 不是用户说的话的 user 文本（标签开头） */
 const NOISE_RE = /^\s*<(?:bash-[\w-]+|local-command-[\w-]+|task-notification|system-reminder|tick|teammate-message|cross-session-message|command-[\w-]+)[\s>]/;
@@ -71,15 +72,106 @@ function closeCur(ctx: Ctx, running: boolean): void {
   ctx.cur = null;
 }
 
-function openTurn(ctx: Ctx, text: string, at: number): void {
+function openTurn(ctx: Ctx, text: string, at: number, extra?: { userId?: string; steer?: boolean }): void {
   closeCur(ctx, false);
-  ctx.cur = { turn: makeTurn(ctx.turns.length, text, at), book: newBook(at), now: at };
+  ctx.cur = { turn: makeTurn(ctx.turns.length, text, at, extra), book: newBook(at), now: at };
+}
+
+/** 这条条目是不是真实的用户输入（会开新轮的 user 文本） */
+function isUserPrompt(raw: Record<string, unknown>): boolean {
+  if (raw.type !== 'user' || raw.isMeta === true || raw.isCompactSummary === true) return false;
+  const text = userText(isObj(raw.message) ? raw.message.content : undefined);
+  if (text === null || text.startsWith(INTERRUPT_PREFIX)) return false;
+  return realUserText(text) !== null;
+}
+
+/**
+ * 按 uuid / parentUuid 过滤掉被 rewind 废弃的分支（CLI 的 rewind 不截断文件，而是从旧节点另起一支，旧支留在文件里）。
+ * 做法：从文件里最后一个带 uuid 的条目沿 parentUuid 回溯到根，得到「当前链」；不在链上的条目里，
+ * 只有「所在分支的起点是一条真实用户输入」的才丢弃（rewind 的新旧分支一定从用户输入分叉）。
+ * 起点不是用户输入的链外条目（例如并行工具调用里的兄弟 tool_result）一律保留，避免误删。
+ * 保守处理：没有 uuid 的条目原样保留；compact 边界（parentUuid 为空、logicalParentUuid 指向压缩前）沿 logicalParentUuid 接上；
+ * 链断了（父节点不在文件里且无法接上）、出现环、没有 uuid 时整体不过滤，结果与过滤前完全一致。
+ */
+function activeBranch(entries: unknown[]): unknown[] {
+  interface Node {
+    parent: string | null;
+    logical: string | null;
+    prompt: boolean;
+  }
+  const nodes = new Map<string, Node>();
+  let leaf: string | null = null;
+  for (const raw of entries) {
+    if (!isObj(raw) || raw.isSidechain === true) continue;
+    const id = str(raw.uuid);
+    if (!id) continue;
+    nodes.set(id, { parent: str(raw.parentUuid) || null, logical: str(raw.logicalParentUuid) || null, prompt: isUserPrompt(raw) });
+    leaf = id;
+  }
+  if (!leaf) return entries;
+
+  /** 上一个节点：先 parentUuid，缺失时用 logicalParentUuid（compact 边界）。undefined = 链断；null = 到根 */
+  const up = (n: Node): string | null | undefined => {
+    if (n.parent && nodes.has(n.parent)) return n.parent;
+    if (n.logical && nodes.has(n.logical)) return n.logical;
+    return n.parent ? undefined : null;
+  };
+
+  const chain = new Set<string>();
+  for (let cur: string | null = leaf; cur; ) {
+    if (chain.has(cur)) return entries; // 环
+    chain.add(cur);
+    const next = up(nodes.get(cur)!);
+    if (next === undefined) return entries; // 链断
+    cur = next;
+  }
+  if (chain.size === nodes.size) return entries;
+
+  const dead = new Map<string, boolean>();
+  const isDead = (id: string): boolean => {
+    const known = dead.get(id);
+    if (known !== undefined) return known;
+    const path: string[] = [];
+    let cur: string | null = id;
+    let verdict = false;
+    while (cur) {
+      const hit = dead.get(cur);
+      if (hit !== undefined) {
+        verdict = hit;
+        break;
+      }
+      if (chain.has(cur)) {
+        verdict = false;
+        break;
+      }
+      path.push(cur);
+      const node: Node = nodes.get(cur)!;
+      const next = up(node);
+      if (next === undefined || next === null || path.length > nodes.size) {
+        verdict = node.prompt; // 分支起点（根或父节点缺失）：是用户输入才算废弃支
+        break;
+      }
+      if (chain.has(next)) {
+        verdict = node.prompt; // 从链上分叉出去的第一个节点
+        break;
+      }
+      cur = next;
+    }
+    for (const p of path) dead.set(p, verdict);
+    return verdict;
+  };
+
+  return entries.filter((raw) => {
+    if (!isObj(raw) || raw.isSidechain === true) return true;
+    const id = str(raw.uuid);
+    return !id || !isDead(id);
+  });
 }
 
 function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx {
   const ctx: Ctx = { turns: [], cur: null, last: null, meta: {}, sub };
   let last = 0;
-  for (const raw of entries) {
+  for (const raw of sub ? entries : activeBranch(entries)) {
     if (!isObj(raw)) continue;
     const at = entryTime(raw, last);
     last = at;
@@ -110,7 +202,17 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
           break;
         }
         const real = realUserText(text);
-        if (real !== null) openTurn(ctx, real, at);
+        if (real !== null) openTurn(ctx, real, at, { userId: str(raw.uuid) || undefined });
+        break;
+      }
+      case 'attachment': {
+        // steering 插话：CLI 在工具轮之间把它并入上下文，transcript 里没有 user 条目，只有 queued_command 附件。
+        // 在 UI 上单独成一轮（steer），其后的模型输出归它；source_uuid 即我们发送时的 id
+        const a = raw.attachment;
+        if (sub || !isObj(a) || a.type !== 'queued_command' || a.commandMode !== 'prompt') break;
+        const prompt = typeof a.prompt === 'string' ? a.prompt : userText(a.prompt);
+        const real = prompt ? realUserText(prompt) : null;
+        if (real !== null) openTurn(ctx, real, at, { userId: str(a.source_uuid) || undefined, steer: true });
         break;
       }
       case 'assistant': {
@@ -119,6 +221,10 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         if (!ctx.cur) break;
         touch(ctx.cur, '');
         applyAssistantMessage(ctx.cur, '', raw.message);
+        if (!sub) {
+          const p = cachePointOf(raw.message, ctx.turns.length);
+          if (p) pushCachePoint((ctx.meta.cache ??= []), p);
+        }
         break;
       }
       case 'system': {
@@ -129,7 +235,7 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         break;
       }
       default:
-        break; // attachment / queue-operation / ai-title / ... 全部忽略
+        break; // queue-operation / last-prompt / ai-title / 其他附件 ... 全部忽略
     }
   }
   closeCur(ctx, running);

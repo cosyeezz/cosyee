@@ -1,0 +1,104 @@
+[
+ {
+  "t": 2,
+  "o": {
+   "type": "user",
+   "uuid": "afb2b6c4-9b5b-471f-933b-b689adeab5c1",
+   "message": {
+    "role": "user",
+    "content": "记住数字 1，回复 OK"
+   }
+  }
+ },
+ {
+  "t": 3746,
+  "o": {
+   "type": "user",
+   "uuid": "41a3b145-250e-4b65-a0a4-d1fdcbaaf32a",
+   "message": {
+    "role": "user",
+    "content": "记住数字 2，回复 OK"
+   }
+  }
+ },
+ {
+  "t": 6258,
+  "o": {
+   "type": "control_request",
+   "request_id": "qnzh6by",
+   "request": {
+    "subtype": "rewind_files",
+    "user_message_id": "41a3b145-250e-4b65-a0a4-d1fdcbaaf32a",
+    "dry_run": true
+   }
+  }
+ },
+ {
+  "t": 6260,
+  "o": {
+   "type": "control_request",
+   "request_id": "qystf93",
+   "request": {
+    "subtype": "rewind_conversation",
+    "target_message_uuid": "41a3b145-250e-4b65-a0a4-d1fdcbaaf32a"
+   }
+  }
+ },
+ {
+  "t": 8334,
+  "o": {
+   "type": "user",
+   "uuid": "499a6a5c-9742-43cc-a9aa-09868ad6617c",
+   "message": {
+    "role": "user",
+    "content": "我让你记住过哪些数字？只回答数字。"
+   }
+  }
+ },
+ {
+  "t": 11053,
+  "o": {
+   "type": "user",
+   "uuid": "c1066ab3-a7f3-4c7d-bd0f-f0c14dc7d0a4",
+   "message": {
+    "role": "user",
+    "content": "请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"
+   }
+  }
+ },
+ {
+  "t": 12897,
+  "o": {
+   "type": "control_request",
+   "request_id": "qqyka9z",
+   "request": {
+    "subtype": "rewind_conversation",
+    "target_message_uuid": "c1066ab3-a7f3-4c7d-bd0f-f0c14dc7d0a4",
+    "interrupt_if_running": true
+   }
+  }
+ },
+ {
+  "t": 19100,
+  "o": {
+   "type": "user",
+   "uuid": "068f636d-c109-4961-98c7-4c8ca68673d8",
+   "message": {
+    "role": "user",
+    "content": "我让你记住过哪些数字？以及我刚才让你做过什么事？一句话。"
+   }
+  }
+ },
+ {
+  "t": 21600,
+  "o": {
+   "type": "control_request",
+   "request_id": "qa2yzkt",
+   "request": {
+    "subtype": "rewind_files",
+    "user_message_id": "afb2b6c4-9b5b-471f-933b-b689adeab5c1",
+    "dry_run": true
+   }
+  }
+ }
+]

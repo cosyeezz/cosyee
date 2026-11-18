@@ -129,3 +129,36 @@ export function parseUserText(text: string): { userText: string; attachments: At
   });
   return { userText, attachments };
 }
+
+/**
+ * 把消息文本里的 `@"路径"` 拆成片段（文字 / 标签），用于把撤回 / 回退的原文还原回输入框。
+ * 识别规则与 parseUserText 相同；标签的 label 留空，由编辑区按出现顺序重新编号。没有引用时返回单个文本片段（空串返回 []）。
+ */
+export function splitMentions(text: string): Segment[] {
+  const out: Segment[] = [];
+  let pos = 0;
+  const pushText = (s: string) => {
+    if (!s) return;
+    const last = out[out.length - 1];
+    if (last && last.t === 'text') last.text += s;
+    else out.push({ t: 'text', text: s });
+  };
+  for (const m of text.matchAll(MENTION_RE)) {
+    let path = m[1] ?? m[2] ?? '';
+    let tail = '';
+    if (m[1] === undefined) {
+      const t = TRAILING_PUNCT_RE.exec(path);
+      if (t) {
+        tail = t[0];
+        path = path.slice(0, t.index);
+      }
+      if (path === '') continue;
+    }
+    pushText(text.slice(pos, m.index));
+    out.push({ t: 'chip', kind: guessKind(path), path, label: '' });
+    pushText(tail);
+    pos = m.index! + m[0].length;
+  }
+  pushText(text.slice(pos));
+  return out;
+}

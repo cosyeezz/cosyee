@@ -18,10 +18,12 @@ export function thinkingFirstLine(text: string, max = 200): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
-/** 思考行的标签。有文本：「思考中…」/「已思考」；无文本时带上 token 数（未知则省略）。 */
-export function thinkingLabel(step: Pick<ThinkingStep, 'text' | 'tokens' | 'streaming'>): string {
-  const base = step.streaming ? '思考中' : '已思考';
+/**
+ * 思考行里没有文本时的附注：只有 token 数（「1,234 tokens」），未知则为空串。
+ * 不再带「思考中 / 已思考」之类的措辞——进行中直接显示内容，完成后显示第一行。
+ */
+export function thinkingTokensLabel(step: Pick<ThinkingStep, 'text' | 'tokens'>): string {
+  if (hasThinkingText(step.text)) return '';
   const tokens = typeof step.tokens === 'number' && step.tokens > 0 ? step.tokens : undefined;
-  if (hasThinkingText(step.text) || tokens === undefined) return step.streaming ? `${base}…` : base;
-  return `${base}（${tokens.toLocaleString('en-US')} tokens）`;
+  return tokens === undefined ? '' : `${tokens.toLocaleString('en-US')} tokens`;
 }

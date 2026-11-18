@@ -1,0 +1,84 @@
++0.00s -> {"type":"user","uuid":"8885b600-825b-4377-8729-28a21eb4f6bf","message":{"role":"user","content":"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"}}
++0.62s <- {"type":"command_lifecycle","command_uuid":"8885b600-825b-4377-8729-28a21eb4f6bf","state":"queued","uuid":"a960c9af-595d-4d4c-a9f9-173ec0cda166","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++0.62s <- {"type":"command_lifecycle","command_uuid":"8885b600-825b-4377-8729-28a21eb4f6bf","state":"started","uuid":"42c611e9-6ba8-4db5-94ea-8ef6898dff5a","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++1.78s <- {"type":"system","subtype":"init","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","interrupt_send_now_v1","interrupt_requeue_taken_v1","msg_lifecycle_v1","request_marker_lists_v1","ask_user_question_unanswered_v1","lifecycle_wakeup_source_v1","sdk_mcp_tools_list_changed","sdk_mcp_manifests","mcp_read_resource_v1","mcp_tool_ui_meta_v1","ui_surface_v1","mcp_call_result_not_for_model_v1","mcp_call_check_permissions_v1","voice_call_talk_line_v1","withdrawn_files_note_v2","ui_pane_widget_v1","reload_plugins_refuse_if_busy_v1","silent_resend_files_v1"],"model":"claude-haiku-5-5"}
++1.79s <- {"type":"system","subtype":"status","status":"requesting","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"e4f15d4d-e5a8-4f9e-8789-736de2ee8ff3","user_message_uuids":["8885b600-825b-4377-8729-28a21eb4f6bf"]}
++2.53s <- {"type":"user","keys":"uuid,timestamp,isReplay","isReplay":true,"uuid":"8885b600","blocks":["str::\"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。\""]}
++2.53s <- stream_event:message_start
++2.53s <- stream_event:content_block_start
++2.84s <- {"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"estimated_tokens_delta":50,"session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"508435cb-7e5b-407f-9bfa-260f5bdfcfe6","user_message_uuid":"8885b600-825b-4377-8729-28a21eb4f6bf"}
++2.93s <- {"type":"system","subtype":"thinking_tokens","estimated_tokens":198,"estimated_tokens_delta":148,"session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"562f7df8-053d-483f-8572-1ca2485ac9fe","user_message_uuid":"8885b600-825b-4377-8729-28a21eb4f6bf"}
++2.93s <- {"type":"assistant","keys":"uuid,timestamp,request_id,thinking_duration_ms,thinking_display,user_message_uuid,user_message_uuids","uuid":"85ced64a","blocks":["thinking::\"\""]}
++2.93s <- stream_event:content_block_stop
++2.93s <- stream_event:content_block_start
++3.14s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"f096f5b3","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Sleep 4 seconds (run 1 of 3)\"}"]}
++3.15s <- stream_event:content_block_stop
++3.18s <- stream_event:message_delta:tool_use
++3.18s <- stream_event:message_stop
++3.18s <- {"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795014000,"rateLimitType":"seven_day","utilization":0.91,"overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"surpassedThreshold":0.75,"unifiedWindows":{"five_hour":{"utilization":0.26,"resetsAt":1795007400,"status":"allowed"},"seven_day":{"utilization":0.91,"resetsAt":17…
++3.94s ## send M2 later
++3.94s -> {"type":"user","priority":"later","uuid":"055e0e58-6180-4ef0-bde0-9704c6eb8943","message":{"role":"user","content":"请只回复 FOLLOW-OK，不要用工具。"}}
++3.94s <- {"type":"command_lifecycle","command_uuid":"055e0e58-6180-4ef0-bde0-9704c6eb8943","state":"queued","uuid":"32605f34-2bde-4b16-87db-3005b5e5270e","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++6.84s <- {"type":"system","subtype":"task_started","task_id":"b6zwmafly","run_id":"0mwlyphe8-dd86ca45","tool_use_id":"toolu_01WeRQQML9DbnnerD7oseRYG","description":"Sleep 4 seconds (run 1 of 3)","is_backgrounded":false,"task_type":"local_bash","uuid":"d08fcf9b-5b33-479f-b795-57a2262eea3c","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++7.94s <- {"type":"system","subtype":"task_notification","task_id":"b6zwmafly","run_id":"0mwlyphe8-dd86ca45","tool_use_id":"toolu_01WeRQQML9DbnnerD7oseRYG","status":"completed","output_file":"","summary":"Sleep 4 seconds (run 1 of 3)","uuid":"80c2bbb3-84f7-40a0-b50e-8a2026591b23","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++7.95s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"19dd0d4c","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-b-xb2MBp\""]}
++7.96s <- {"type":"system","subtype":"status","status":"requesting","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"0e3fcada-b64a-4cca-9ffe-a5322eac063b","user_message_uuids":["8885b600-825b-4377-8729-28a21eb4f6bf"]}
++8.79s <- stream_event:message_start
++8.79s <- stream_event:content_block_start
++8.79s <- stream_event:content_block_delta:text_delta
++8.97s <- stream_event:content_block_delta:text_delta
++8.97s <- stream_event:content_block_delta:text_delta
++8.97s <- stream_event:content_block_delta:text_delta
++8.97s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"5af910cc","blocks":["text::\"第 1 次 `sleep 4` 已完成。\""]}
++8.97s <- stream_event:content_block_stop
++8.97s <- stream_event:content_block_start
++9.11s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"d43a562c","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Sleep 4 seconds (run 2 of 3)\"}"]}
++9.12s <- stream_event:content_block_stop
++9.12s <- stream_event:message_delta:tool_use
++9.12s <- stream_event:message_stop
++12.13s <- {"type":"system","subtype":"task_started","task_id":"bh3bhe255","run_id":"0mwlyplhb-5c046415","tool_use_id":"toolu_01MRT4gFNwudkDtDJfW1Y3Pw","description":"Sleep 4 seconds (run 2 of 3)","is_backgrounded":false,"task_type":"local_bash","uuid":"4633179b-ed75-4d89-be4c-db1e76215fc0","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++13.22s <- {"type":"system","subtype":"task_notification","task_id":"bh3bhe255","run_id":"0mwlyplhb-5c046415","tool_use_id":"toolu_01MRT4gFNwudkDtDJfW1Y3Pw","status":"completed","output_file":"","summary":"Sleep 4 seconds (run 2 of 3)","uuid":"8b7e4fbf-0137-42ee-aeb1-64dfc71d49f7","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++13.23s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"0d11a334","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-b-xb2MBp\""]}
++13.24s <- {"type":"system","subtype":"status","status":"requesting","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"51e569c6-dac5-43a6-baca-5a1d6f9b5489","user_message_uuids":["8885b600-825b-4377-8729-28a21eb4f6bf"]}
++14.07s <- stream_event:message_start
++14.07s <- stream_event:content_block_start
++14.07s <- stream_event:content_block_delta:text_delta
++14.07s <- stream_event:content_block_delta:text_delta
++14.18s <- stream_event:content_block_delta:text_delta
++14.19s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"53d3b056","blocks":["text::\"第 2 次 `sleep 4` 已完成。\""]}
++14.19s <- stream_event:content_block_stop
++14.19s <- stream_event:content_block_start
++14.34s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"dc89a3a8","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Sleep 4 seconds (run 3 of 3)\"}"]}
++14.34s <- stream_event:content_block_stop
++14.34s <- stream_event:message_delta:tool_use
++14.35s <- stream_event:message_stop
++17.36s <- {"type":"system","subtype":"task_started","task_id":"bugvlc842","run_id":"0mwlyppie-fc6101e4","tool_use_id":"toolu_01NNy8mvsg4odeJkb5Ju2Kdo","description":"Sleep 4 seconds (run 3 of 3)","is_backgrounded":false,"task_type":"local_bash","uuid":"5f1d0d67-d6d9-4c8b-bb27-c0dde396ea82","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++18.45s <- {"type":"system","subtype":"task_notification","task_id":"bugvlc842","run_id":"0mwlyppie-fc6101e4","tool_use_id":"toolu_01NNy8mvsg4odeJkb5Ju2Kdo","status":"completed","output_file":"","summary":"Sleep 4 seconds (run 3 of 3)","uuid":"c4b286b7-417c-489a-bf05-33272b3f567c","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++18.45s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"5c45fb51","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-b-xb2MBp\""]}
++18.46s <- {"type":"system","subtype":"status","status":"requesting","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"aa11d31c-1675-4cb7-aec2-e46cbd108004","user_message_uuids":["8885b600-825b-4377-8729-28a21eb4f6bf"]}
++19.18s <- stream_event:message_start
++19.18s <- stream_event:content_block_start
++19.18s <- stream_event:content_block_delta:text_delta
++19.21s <- stream_event:content_block_delta:text_delta
++19.23s <- stream_event:content_block_delta:text_delta
++19.23s <- stream_event:content_block_delta:text_delta
++19.23s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"89127e33","blocks":["text::\"第 3 次 `sleep 4` 已完成。\\n\\nDONE-M1\""]}
++19.23s <- stream_event:content_block_stop
++19.25s <- stream_event:message_delta:end_turn
++19.25s <- stream_event:message_stop
++19.26s <- {"type":"result","subtype":"success","stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"result":"第 3 次 `sleep 4` 已完成。\n\nDONE-M1","num_turns":4}
++19.26s <- {"type":"command_lifecycle","command_uuid":"8885b600-825b-4377-8729-28a21eb4f6bf","state":"completed","uuid":"32170209-4d29-4327-9d94-8eb8787b3672","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++19.26s <- {"type":"command_lifecycle","command_uuid":"055e0e58-6180-4ef0-bde0-9704c6eb8943","state":"started","uuid":"c69398eb-7ff4-489c-915f-a7eb17cdf407","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}
++19.28s <- {"type":"system","subtype":"init","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","interrupt_send_now_v1","interrupt_requeue_taken_v1","msg_lifecycle_v1","request_marker_lists_v1","ask_user_question_unanswered_v1","lifecycle_wakeup_source_v1","sdk_mcp_tools_list_changed","sdk_mcp_manifests","mcp_read_resource_v1","mcp_tool_ui_meta_v1","ui_surface_v1","mcp_call_result_not_for_model_v1","mcp_call_check_permissions_v1","voice_call_talk_line_v1","withdrawn_files_note_v2","ui_pane_widget_v1","reload_plugins_refuse_if_busy_v1","silent_resend_files_v1"],"model":"claude-haiku-5-5"}
++19.28s <- {"type":"system","subtype":"status","status":"requesting","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517","uuid":"b0ceb5a6-8b3d-4fd3-ada9-8156b2bee67a","user_message_uuids":["055e0e58-6180-4ef0-bde0-9704c6eb8943"]}
++20.06s <- {"type":"user","keys":"uuid,timestamp,isReplay","isReplay":true,"uuid":"055e0e58","blocks":["str::\"请只回复 FOLLOW-OK，不要用工具。\""]}
++20.06s <- stream_event:message_start
++20.06s <- stream_event:content_block_start
++20.06s <- stream_event:content_block_delta:text_delta
++20.12s <- stream_event:content_block_delta:text_delta
++20.13s <- {"type":"assistant","keys":"uuid,timestamp,request_id,user_message_uuid,user_message_uuids","uuid":"3b45b611","blocks":["text::\"FOLLOW-OK\""]}
++20.13s <- stream_event:content_block_stop
++20.14s <- stream_event:message_delta:end_turn
++20.14s <- stream_event:message_stop
++20.15s <- {"type":"result","subtype":"success","stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"result":"FOLLOW-OK","num_turns":1}
++20.15s <- {"type":"command_lifecycle","command_uuid":"055e0e58-6180-4ef0-bde0-9704c6eb8943","state":"completed","uuid":"81a14619-ff16-41ab-8332-f4871ae349f3","session_id":"0c42ba04-9c6f-4712-9045-f48cd9a27517"}

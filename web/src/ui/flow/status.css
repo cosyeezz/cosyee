@@ -3,19 +3,25 @@
 
 /* 主短语 */
 .cz-st { font-weight: 500; }
-/* 进行中：流光扫过文字（调用工具配色） */
-.cz-st-tool {
-  --s1: var(--tk-b); --s2: var(--tk-b); --s3: var(--tk-a);
+/* 进行中：流光扫过文字。三种配色取自参考动效：
+ *   thinking   三色（正在理解问题）  3.2s
+ *   tool       青色（模型有文字输出）2.4s
+ *   compacting 紫粉（子代理面板）    4s，更慢 */
+:is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting) {
+  --s1: var(--tk-a); --s2: var(--tk-b); --s3: var(--tk-c);
   background: linear-gradient(100deg, currentColor 0 36%, var(--s1) 45%, var(--s2) 50%, var(--s3) 55%, currentColor 64% 100%);
   background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: cz-st-sweep 2.4s linear infinite;
+  animation: cz-st-sweep 3.2s linear infinite;
 }
+.cz-st-tool { --s1: var(--tk-b); --s2: var(--tk-b); --s3: var(--tk-a); animation-duration: 2.4s; }
+.cz-st-compacting { --s1: var(--tk-a); --s2: var(--tk-c); --s3: var(--tk-a); animation-duration: 4s; }
 @keyframes cz-st-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .cz-st-done { color: var(--tk-ok); animation: cz-st-in .5s ease-out both; }
 .cz-st-error { color: var(--tk-err); animation: cz-st-in .5s ease-out both; }
+.cz-st-stopped { opacity: .62; }
 @keyframes cz-st-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* 暗色附加信息（用时 / 子代理进度 / 原因）：不加流光 */
@@ -54,11 +60,68 @@
   42%, 100% { stroke-dashoffset: -100; opacity: 0; }
 }
 
-/* 动效不跟随系统「减少动效」设置，始终播放。
- * 仅应用内显式 data-motion="reduce" 时降级：文字停在原色，图标不位移，只整体缓慢明暗表示仍在进行 */
-:root[data-motion="reduce"] :is(.cz-st-tool, .cz-st-done, .cz-st-error) { animation: none; }
-:root[data-motion="reduce"] .cz-st-tool { background: none; -webkit-text-fill-color: currentColor; }
+/* 星轨（正在理解问题） */
+.cz-ss-thinking .cz-ss-sys { transform-origin: 32px 32px; animation: cz-ss-spin 36s linear infinite; }
+.cz-ss-thinking .cz-ss-ring { fill: none; stroke: var(--tk-ink); stroke-opacity: .28; stroke-width: .6; }
+.cz-ss-thinking :is(.cz-ss-tail, .cz-ss-head) { fill: none; animation: cz-ss-run 3.6s linear infinite; }
+.cz-ss-thinking .cz-ss-head { stroke-width: 3; stroke-linecap: round; stroke-dasharray: .1 99.9; }
+.cz-ss-thinking .cz-ss-o1 { stroke: var(--tk-a); }
+.cz-ss-thinking .cz-ss-o2 { stroke: var(--tk-b); }
+.cz-ss-thinking .cz-ss-o3 { stroke: var(--tk-c); }
+.cz-ss-thinking .cz-ss-o2 :is(.cz-ss-tail, .cz-ss-head) { animation-duration: 4.7s; animation-delay: -1.5s; }
+.cz-ss-thinking .cz-ss-o3 :is(.cz-ss-tail, .cz-ss-head) { animation-duration: 6s; animation-delay: -3.8s; }
+.cz-ss-thinking .cz-ss-glow { fill: var(--tk-d); animation: cz-ss-glow 3.6s ease-in-out infinite; }
+.cz-ss-thinking .cz-ss-core { transform-origin: 32px 32px; animation: cz-ss-core 3.6s ease-in-out infinite; }
+@keyframes cz-ss-spin { to { transform: rotate(360deg); } }
+@keyframes cz-ss-run { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -100; } }
+@keyframes cz-ss-core { 0%, 100% { transform: scale(.92); } 50% { transform: scale(1.14); } }
+@keyframes cz-ss-glow { 0%, 100% { opacity: .4; } 50% { opacity: .75; } }
+
+/* 液滴（整理上下文 / 子代理面板） */
+.cz-ss-compacting .cz-ss-o { transform-origin: 32px 32px; animation: cz-ss-spin 5s linear infinite; }
+.cz-ss-compacting .cz-ss-o2 { animation-duration: 7s; animation-direction: reverse; }
+.cz-ss-compacting .cz-ss-o3 { animation-duration: 9s; }
+.cz-ss-compacting .cz-ss-o4 { animation-duration: 4.2s; animation-direction: reverse; }
+.cz-ss-compacting .cz-ss-o circle { animation: cz-ss-reach 3.2s ease-in-out infinite; }
+.cz-ss-compacting .cz-ss-o2 circle { animation-duration: 4.1s; }
+.cz-ss-compacting .cz-ss-o3 circle { animation-duration: 2.7s; }
+.cz-ss-compacting .cz-ss-o4 circle { animation-duration: 4.9s; }
+.cz-ss-compacting .cz-ss-core { transform-origin: 32px 32px; animation: cz-ss-swell 3.2s ease-in-out infinite; }
+@keyframes cz-ss-reach { 0%, 100% { transform: translateY(-21px); } 50% { transform: translateY(-3px); } }
+@keyframes cz-ss-swell { 50% { transform: scale(1.18); } }
+
+/* 子代理面板全部完成：液滴停在原地（动画暂停），文字流光由 TurnView 去掉 */
+.cz-ss-compacting.is-still * { animation-play-state: paused; }
+
+/* 完成 / 出错 / 中止：只在出现时播一次，之后静止 */
+.cz-ss-done :is(.cz-ss-r, .cz-ss-c, .cz-ss-w) { fill: none; stroke: var(--tk-ok); stroke-linecap: round; stroke-linejoin: round; }
+.cz-ss-done .cz-ss-r { stroke-width: 3; stroke-dasharray: 1; animation: cz-ss-draw .7s ease-out both; }
+.cz-ss-done .cz-ss-c { stroke-width: 4.5; stroke-dasharray: 1; animation: cz-ss-draw .4s .55s ease-out both; }
+.cz-ss-done .cz-ss-w { stroke-width: 1.5; transform-origin: 32px 32px; animation: cz-ss-burst .9s .7s ease-out both; }
+@keyframes cz-ss-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes cz-ss-burst { from { transform: scale(1); opacity: .6; } to { transform: scale(1.45); opacity: 0; } }
+.cz-ss-error .cz-ss-g { animation: cz-ss-shake .5s ease-in-out 1; }
+.cz-ss-error :is(.cz-ss-r, .cz-ss-x) { fill: none; stroke: var(--tk-err); stroke-linecap: round; }
+.cz-ss-error .cz-ss-r { stroke-width: 3; }
+.cz-ss-error .cz-ss-x { stroke-width: 4.5; }
+@keyframes cz-ss-shake { 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2.5px); } 80% { transform: translateX(1.5px); } }
+.cz-ss-stopped .cz-ss-g { transform-origin: 32px 32px; animation: cz-ss-pop .3s ease-out both; }
+.cz-ss-stopped .cz-ss-r { fill: none; stroke: var(--tk-ink); stroke-opacity: .6; stroke-width: 3; }
+.cz-ss-stopped .cz-ss-q { fill: var(--tk-ink); }
+@keyframes cz-ss-pop { from { transform: scale(.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* 动效不跟随系统「减少动效」设置，始终播放（项目约定，见 SPEC）。
+ * 仅应用内显式 data-motion="reduce" 时降级：文字停在原色，图标不位移；进行中的图标整体缓慢明暗表示仍在进行；
+ * 完成 / 出错 / 中止直接显示终态（不画线、不抖动、不缩放） */
+:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting, .cz-st-done, .cz-st-error) { animation: none; }
+:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting) { background: none; -webkit-text-fill-color: currentColor; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-n { animation: none; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-p { animation: none; opacity: 0; }
-:root[data-motion="reduce"] .cz-ss-tool { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] :is(.cz-ss-tool, .cz-ss-thinking, .cz-ss-compacting) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] :is(.cz-ss-thinking, .cz-ss-compacting) * { animation: none !important; }
+:root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o circle { transform: translateY(-12px); }
+:root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o2 circle { transform: translateY(-9px); }
+:root[data-motion="reduce"] .cz-ss-done :is(.cz-ss-r, .cz-ss-c) { animation: none; stroke-dashoffset: 0; }
+:root[data-motion="reduce"] .cz-ss-done .cz-ss-w { animation: none; opacity: 0; }
+:root[data-motion="reduce"] :is(.cz-ss-error, .cz-ss-stopped) .cz-ss-g { animation: none; }
 @keyframes cz-ss-fade { 50% { opacity: .5; } }

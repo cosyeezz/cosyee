@@ -1,23 +1,34 @@
 // 输入框：大圆角长条，左「+」、中间 contenteditable（文字与标签混排）、右侧麦克风与发送 / 停止，下方模型菜单。
 // 编辑区的内部 DOM 完全由本组件命令式维护（React 不渲染其子节点），内容变化后统一走 afterChange()。
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { PickedItem, PreviewInfo, SessionConfig, UsageInfo } from '@cosyee/shared';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
 import type { Attachment } from '@cosyee/shared';
-import { itemKind, labelChips, serialize, toAttachments, trimSegments } from '../../core/composer';
+import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
 import { buildQuotedMessage } from '../../core/quote';
 import { Icon } from '../icons/Icon';
 import { ModelMenu } from '../menus/ModelMenu';
 import { UsageMeter } from '../usage/UsageMeter';
 import { ChipPreview } from './ChipPreview';
+import { RewindPicker, type RewindTarget } from './RewindPicker';
 import { SlashMenu } from './SlashMenu';
 import { createChipElement } from './chipElement';
 import { CHIP_CLASS, insertNodesAt, isEditorEmpty, readSegments, relabelChips } from './editorDom';
+import { DRAFT_DELAY_MS, readDraft, writeDraft } from './draft';
+import { applyTextEdit, charBeforeNode, getSelectionOffsets, highlightEditor, scanEditor, setEditorContent, setSelectionOffsets } from './mdEditorDom';
+import { tokenize } from './mdHighlight';
+import { listIndentEdit, listNewlineEdit } from './mdList';
 import { filterSlash, matchSlash, type SlashItem } from './slash';
 import { cleanPastedText } from './pasteText';
 import './Composer.css';
 
+/** 双击 Esc 的最大间隔 */
+const DOUBLE_ESC_MS = 400;
+
 export interface ComposerProps {
-  onSend: (text: string, attachments: Attachment[]) => void;
+  /**
+   * 空闲时只传前两个参数；执行中 Enter 为 'next'（插话，并入当前这一轮），Ctrl+Enter 为 'later'（排队，这一轮结束后再发）。
+   */
+  onSend: (text: string, attachments: Attachment[], mode?: QueueMode) => void;
   onInterrupt: () => void;
   running: boolean;
   pick: (mode?: 'mixed' | 'files' | 'folders') => Promise<{ items: PickedItem[]; supportsMixed: boolean }>;
@@ -40,12 +51,29 @@ export interface ComposerProps {
   quote?: string | null;
   /** 点引用卡片的 ✕；发送后也会调用它清掉引用 */
   onClearQuote?: () => void;
+  /** 已发给 CLI、还没开始执行的消息（后端推送的快照）：显示在输入框上方 */
+  queue?: QueueItem[];
+  /** 排队项的「立即发送」：中断当前这一轮，马上执行它 */
+  onQueueSendNow?: (id: string) => void;
+  /** 排队项的「撤回编辑」：撤回后原文由外部通过 restoreText 填回 */
+  onQueueCancel?: (id: string) => void;
+  /** 双击 Esc 浮层里可回退的用户消息（旧 → 新，不含 steering） */
+  rewindTargets?: RewindTarget[];
+  /** 在浮层里选定了回退目标 */
+  onRewind?: (targetId: string) => void;
 }
 
 /** 给外部（选中回复）用的命令式接口 */
 export interface ComposerHandle {
   /** 把文字追加到编辑区末尾（空编辑区则直接填入），光标放到末尾并聚焦 */
   appendText: (text: string) => void;
+  /**
+   * 把撤回 / 回退的原文填回输入框（`@"路径"` 还原为标签）并聚焦。
+   * replace：替换现有内容；append：编辑区为空时直接填入，否则换行后追加。
+   */
+  restoreText: (text: string, how: 'replace' | 'append') => void;
+  /** 当前是否有未发送的内容（文字或标签） */
+  hasContent: () => boolean;
 }
 
 interface SlashState {
@@ -53,6 +81,18 @@ interface SlashState {
   node: Text;
   start: number;
   end: number;
+}
+
+/** 带 `@"路径"` 的文本 → 文字节点 + 标签元素 */
+function textToNodes(text: string): Node[] {
+  return splitMentions(text).map((seg) =>
+    seg.t === 'text' ? document.createTextNode(seg.text) : createChipElement({ kind: seg.kind, path: seg.path, label: '' }),
+  );
+}
+
+/** 单行显示：取首个非空行 */
+function oneLine(text: string): string {
+  return (text.split('\n').find((l) => l.trim()) ?? '').trim();
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, handleRef) {
@@ -69,6 +109,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [slashIdx, setSlashIdx] = useState(0);
   const slashRef = useRef<SlashState | null>(null);
   slashRef.current = slash;
+  const [rewindOpen, setRewindOpen] = useState(false);
+  const lastEsc = useRef(0);
 
   // 把会变的回调放进 ref，给 ChipPreview 传稳定引用，避免它反复请求
   const latest = useRef(props);
@@ -76,6 +118,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const previewInfo = useCallback((t: string) => latest.current.previewInfo(t), []);
   const previewRawUrl = useCallback((t: string) => latest.current.previewRawUrl(t), []);
   const closePreview = useCallback(() => setPreview(null), []);
+
+  // ───────────── 草稿（全局一份，防抖写 localStorage） ─────────────
+
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveDraftNow = useCallback(() => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = null;
+    const ed = editorRef.current;
+    if (!ed) return;
+    writeDraft(isEditorEmpty(ed) ? '' : serialize(readSegments(ed)));
+  }, []);
+  const scheduleDraft = useCallback(() => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(saveDraftNow, DRAFT_DELAY_MS);
+  }, [saveDraftNow]);
+  const clearDraft = useCallback(() => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = null;
+    writeDraft('');
+  }, []);
+  useEffect(() => {
+    // 页面关闭 / 切后台前补写一次，避免丢最后 300ms 的输入
+    const flush = () => { if (draftTimer.current) saveDraftNow(); };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+    };
+  }, [saveDraftNow]);
 
   // 记住编辑区里最后一次选区，点「+」之前的光标位置靠它
   useEffect(() => {
@@ -107,10 +178,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const m = matchSlash(text.data.slice(0, r.startOffset));
     if (!m) return setSlash(null);
     if (m.start === 0) {
-      // 在文本节点开头：前一个兄弟若是标签 / 非空白文字，则不算行首
-      const prev = text.previousSibling;
-      const prevOk = !prev || prev.nodeName === 'BR' || (prev.nodeType === Node.TEXT_NODE && /\s$/.test((prev as Text).data));
-      if (!prevOk) return setSlash(null);
+      // 在文本节点开头：前面紧邻的字符若是标签 / 非空白文字，则不算行首（着色后文本节点被拆进各种 span，所以按文档顺序找前一个字符）
+      const before = charBeforeNode(ed, text);
+      if (before !== null && !/\s/.test(before)) return setSlash(null);
     }
     if (!slashRef.current || slashRef.current.query !== m.query) setSlashIdx(0);
     setSlash({ query: m.query, node: text, start: m.start, end: r.startOffset });
@@ -130,24 +200,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     sel?.addRange(r);
     setSlash(null);
     setEmpty(false);
-  }, [slash]);
+    const ed = editorRef.current;
+    if (ed && !composing.current) highlightEditor(ed);
+    scheduleDraft();
+  }, [slash, scheduleDraft]);
 
   // ───────────── 内容变化 ─────────────
 
-  const afterChange = useCallback(() => {
+  /**
+   * skipHighlight：输入法组合期间不能动 DOM（重渲染会打断候选 / 移动光标），compositionend 之后再统一着色。
+   */
+  const afterChange = useCallback((skipHighlight = false) => {
     const ed = editorRef.current;
     if (!ed) return;
+    if (skipHighlight !== true && !composing.current) highlightEditor(ed);
     relabelChips(ed);
     setEmpty(isEditorEmpty(ed));
     setPreview((p) => (p && p.isConnected ? p : null));
     evalSlash();
-  }, [evalSlash]);
+    scheduleDraft();
+  }, [evalSlash, scheduleDraft]);
 
   // ───────────── 发送 ─────────────
-
-  // Ctrl+Enter 在运行中加入的队列：一轮结束后逐条发出
-  const queue = useRef<{ text: string; attachments: Attachment[] }[]>([]);
-  const [queued, setQueued] = useState(0);
 
   /** 读出编辑区内容并清空；空内容返回 null */
   const take = useCallback(() => {
@@ -160,30 +234,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setEmpty(true);
     setSlash(null);
     setPreview(null);
+    clearDraft();
     if (quote) latest.current.onClearQuote?.();
     return out;
-  }, [disabled, quote]);
+  }, [disabled, quote, clearDraft]);
 
-  // 运行中按 Enter 直接发出（CLI 自己排队）；空闲时同样
-  const send = useCallback(() => {
-    const m = take();
-    if (m) onSend(m.text, m.attachments);
-  }, [take, onSend]);
-
-  const enqueue = useCallback(() => {
+  // 空闲时直接发送；执行中按 mode 发给 CLI（next=插话 / later=排队），排队由后端与 CLI 维护，前端只显示快照
+  const send = useCallback((mode: QueueMode = 'next') => {
     const m = take();
     if (!m) return;
-    if (!latest.current.running) return onSend(m.text, m.attachments);
-    queue.current.push(m);
-    setQueued(queue.current.length);
+    if (latest.current.running) onSend(m.text, m.attachments, mode);
+    else onSend(m.text, m.attachments);
   }, [take, onSend]);
-
-  useEffect(() => {
-    if (running || !queue.current.length) return;
-    const m = queue.current.shift()!;
-    setQueued(queue.current.length);
-    onSend(m.text, m.attachments);
-  }, [running, onSend]);
 
   // ───────────── 选中回复：把弹层里输入的内容放进编辑区 ─────────────
 
@@ -209,7 +271,92 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       afterChange();
       ed.scrollTop = ed.scrollHeight;
     },
+    restoreText(text: string, how: 'replace' | 'append') {
+      const ed = editorRef.current;
+      if (!ed || disabled) return;
+      const nodes: Node[] = [];
+      if (how === 'append' && !isEditorEmpty(ed)) nodes.push(document.createTextNode('\n'));
+      else ed.innerHTML = '';
+      nodes.push(...textToNodes(text));
+      ed.append(...nodes);
+      ed.focus();
+      const r = document.createRange();
+      r.selectNodeContents(ed);
+      r.collapse(false);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+      afterChange();
+      ed.scrollTop = ed.scrollHeight;
+    },
+    hasContent() {
+      const ed = editorRef.current;
+      return !!ed && !isEditorEmpty(ed);
+    },
   }), [disabled, afterChange]);
+
+  // 挂载时编辑区为空就恢复草稿（`@"路径"` 还原成标签，并套上 Markdown 着色）；不抢焦点
+  useLayoutEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || !isEditorEmpty(ed)) return;
+    const d = readDraft();
+    if (!d) return;
+    ed.innerHTML = '';
+    ed.append(...textToNodes(d));
+    afterChange();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ───────────── Markdown 列表：换行续写 / 退出、Tab 缩进 ─────────────
+
+  /** 折叠光标所在的列表项里换行：续写下一项或退出列表。返回是否已处理（已处理则要 preventDefault） */
+  const continueList = useCallback((): boolean => {
+    const ed = editorRef.current;
+    if (!ed || disabled || composing.current) return false;
+    const sel = getSelectionOffsets(ed);
+    if (!sel || sel.anchor !== sel.focus) return false;
+    const { text } = scanEditor(ed);
+    const lineNo = text.slice(0, sel.focus).split('\n').length - 1;
+    const lines = tokenize(text);
+    const edit = listNewlineEdit(text, sel.focus, lines[lineNo]?.fence ?? false);
+    if (!edit) return false;
+    applyTextEdit(ed, edit);
+    afterChange();
+    return true;
+  }, [disabled, afterChange]);
+
+  /** Tab / Shift+Tab：缩进 / 反缩进选区里的列表项。返回是否已处理 */
+  const indentList = useCallback((outdent: boolean): boolean => {
+    const ed = editorRef.current;
+    if (!ed || disabled || composing.current) return false;
+    const sel = getSelectionOffsets(ed);
+    if (!sel) return false;
+    const { text, chips } = scanEditor(ed);
+    const lines = tokenize(text);
+    const start = Math.min(sel.anchor, sel.focus);
+    const end = Math.max(sel.anchor, sel.focus);
+    const res = listIndentEdit(text, start, end, outdent, (n) => lines[n]?.fence ?? false);
+    if (!res) return false;
+    if (res.text !== text) setEditorContent(ed, res.text, chips);
+    const forward = sel.anchor <= sel.focus;
+    setSelectionOffsets(ed, forward ? res.start : res.end, forward ? res.end : res.start);
+    afterChange();
+    return true;
+  }, [disabled, afterChange]);
+
+  // 软键盘 / 其它来源的「插入换行」也走列表续写（Shift+Enter 在 onKeyDown 里已处理）
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const onBeforeInput = (ev: Event) => {
+      const t = (ev as InputEvent).inputType;
+      if (t !== 'insertLineBreak' && t !== 'insertParagraph') return;
+      if ((ev as InputEvent).isComposing) return;
+      if (continueList()) ev.preventDefault();
+    };
+    ed.addEventListener('beforeinput', onBeforeInput);
+    return () => ed.removeEventListener('beforeinput', onBeforeInput);
+  }, [continueList]);
 
   // ───────────── 「+」选择文件 ─────────────
 
@@ -259,11 +406,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         return;
       }
     }
+    if (e.key === 'Escape') {
+      // 双击 Esc（400ms 内）：打开回退浮层。单击 Esc 不做任何事
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastEsc.current <= DOUBLE_ESC_MS) {
+        lastEsc.current = 0;
+        if (props.rewindTargets?.length) setRewindOpen(true);
+        else showHint('没有可回退的消息');
+      } else {
+        lastEsc.current = now;
+      }
+      return;
+    }
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // Shift+Enter 换行：在列表项里自动续写；其它情况走浏览器默认换行
+      if (continueList()) e.preventDefault();
+      return;
+    }
+    if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // 补全菜单打开时 Tab 已在上面用于选择；这里只处理列表缩进，非列表行保持默认
+      if (indentList(e.shiftKey)) e.preventDefault();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // Shift+Enter 走浏览器默认换行；Ctrl/⌘+Enter 运行中加入队列
-      if (e.ctrlKey || e.metaKey) enqueue();
-      else send();
+      // Shift+Enter 走浏览器默认换行；执行中 Enter=插话，Ctrl/⌘+Enter=排队
+      send(e.ctrlKey || e.metaKey ? 'later' : 'next');
     }
   };
 
@@ -336,10 +505,30 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const keepFocus = (e: React.MouseEvent) => e.preventDefault();
+  const queueItems = props.queue ?? [];
 
   return (
     <div className="cz-composer">
+      {queueItems.length > 0 && (
+        <ul className="cz-queue" aria-label="排队中的消息">
+          {queueItems.map((q) => (
+            <li key={q.id} className="cz-queue__item">
+              <span className={`cz-queue__tag cz-queue__tag--${q.mode}`}>{q.mode === 'next' ? '插话' : '排队'}</span>
+              <span className="cz-queue__text" title={q.text}>{oneLine(q.text)}</span>
+              <button type="button" className="cz-queue__btn" title="中断当前任务，立即执行这条" onMouseDown={keepFocus} onClick={() => props.onQueueSendNow?.(q.id)}>立即发送</button>
+              <button type="button" className="cz-queue__btn" title="撤回这条并放回输入框编辑" onMouseDown={keepFocus} onClick={() => props.onQueueCancel?.(q.id)}>撤回编辑</button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="cz-composer__boxwrap">
+      {rewindOpen && props.rewindTargets && props.rewindTargets.length > 0 && (
+        <RewindPicker
+          items={props.rewindTargets}
+          onPick={(id) => { setRewindOpen(false); props.onRewind?.(id); }}
+          onClose={() => setRewindOpen(false)}
+        />
+      )}
       {slashOpen && (
         <SlashMenu
           items={slashItems}
@@ -389,16 +578,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               suppressContentEditableWarning
               spellCheck={false}
               data-empty={empty ? 'true' : 'false'}
-              data-placeholder={running ? '按 Enter 发送，按 Ctrl+Enter 加入队列稍后发送' : '输入 / 以使用命令'}
-              onInput={afterChange}
+              data-placeholder={running ? 'Enter 插话 · Ctrl+Enter 排队' : '输入 / 以使用命令'}
+              onInput={(e) => afterChange(composing.current || (e.nativeEvent as InputEvent).isComposing === true)}
               onKeyDown={onKeyDown}
               onKeyUp={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') evalSlash(); }}
               onPaste={onPaste}
               onClick={onEditorClick}
               onMouseDown={onEditorMouseDown}
-              onBlur={() => setSlash(null)}
+              onBlur={() => { setSlash(null); setRewindOpen(false); }}
               onCompositionStart={() => { composing.current = true; }}
-              onCompositionEnd={() => { composing.current = false; afterChange(); }}
+              onCompositionEnd={() => { composing.current = false; afterChange(false); }}
               onDrop={(e) => e.preventDefault()}
               onDragOver={(e) => e.preventDefault()}
             />
@@ -418,11 +607,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             <button
               type="button"
               className="cz-composer__btn cz-composer__btn--send"
-              title={running ? '发送（Enter）· 加入队列（Ctrl+Enter）' : '发送（Enter）'}
+              title={running ? '插话（Enter）· 排队（Ctrl+Enter）' : '发送（Enter）'}
               aria-label="发送"
               disabled={disabled}
               onMouseDown={keepFocus}
-              onClick={send}
+              onClick={() => send('next')}
             >
               <Icon name="send" size={18} />
             </button>
@@ -435,7 +624,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       </div>
       {hint && <div className="cz-composer__hint" role="status">{hint}</div>}
       <div className="cz-composer__foot">
-        {queued > 0 && <span className="cz-composer__queued">队列中 {queued} 条</span>}
         <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} />
         {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
       </div>

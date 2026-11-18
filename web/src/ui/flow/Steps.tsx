@@ -6,7 +6,7 @@ import { Markdown } from './Markdown';
 import { CodeBlock } from './Markdown';
 import { toolIconName } from './toolIcon';
 import { describeToolInput, toolContentToText, truncateText } from './format';
-import { hasThinkingText, thinkingFirstLine, thinkingLabel } from './thinking';
+import { hasThinkingText, thinkingFirstLine, thinkingTokensLabel } from './thinking';
 import './flow.css';
 
 const OUTPUT_LIMIT = 2000;
@@ -15,12 +15,12 @@ const OUTPUT_LIMIT = 2000;
 const STICK_SLACK = 8;
 
 /**
- * 思考行。
- * - 进行中（streaming）默认展开，内容实时追加，内容区限高并自动滚到底；
- * - 完成后自动折叠，折叠态显示第一行；点击展开 / 收起；
+ * 思考行（不带「思考中 / 已思考」之类的措辞）。
+ * - 进行中（streaming）默认展开，直接显示思考内容，实时追加，内容区限高并自动滚到底；
+ * - 完成后自动折叠，折叠态只显示第一行，点击展开看全文 / 再点收起；
  * - 进行中用户手动收起后不再强制展开（userOpen 记住用户的选择；思考结束时清掉，回到默认折叠）；
  * - 历史记录里的思考块（非流式）默认折叠；
- * - 没有文本（模型只给 token 计数）时只显示「已思考（N tokens）」，不可展开。
+ * - 没有文本（模型只给 token 计数）时只显示图标和「N tokens」，不可展开。
  */
 export const ThinkingRow = memo(function ThinkingRow({ step }: { step: ThinkingStep }) {
   const streaming = !!step.streaming;
@@ -53,23 +53,28 @@ export const ThinkingRow = memo(function ThinkingRow({ step }: { step: ThinkingS
   const preview = useMemo(() => (hasText && !open ? thinkingFirstLine(step.text) : ''), [hasText, open, step.text]);
   const cls = `cz-flow__thinking${open ? ' is-open' : ''}${streaming ? ' is-streaming' : ''}`;
   const icon = <Icon name="thinking" size={16} className="cz-flow__step-icon cz-flow__thinking-icon" />;
-  const label = <span className="cz-flow__thinking-label">{thinkingLabel(step)}</span>;
 
   if (!hasText) {
+    const tokens = thinkingTokensLabel(step);
     return (
       <div className={cls}>
         <div className="cz-flow__row-btn cz-flow__thinking-static">
           {icon}
-          {label}
+          {tokens && <span className="cz-flow__thinking-label">{tokens}</span>}
         </div>
       </div>
     );
   }
   return (
     <div className={cls}>
-      <button type="button" className="cz-flow__row-btn" aria-expanded={open} onClick={() => setUserOpen(!open)}>
+      <button
+        type="button"
+        className="cz-flow__row-btn"
+        aria-expanded={open}
+        aria-label={preview ? undefined : open ? '收起思考内容' : '展开思考内容'}
+        onClick={() => setUserOpen(!open)}
+      >
         {icon}
-        {label}
         {preview && (
           <span className="cz-flow__thinking-preview" title={preview}>
             {preview}

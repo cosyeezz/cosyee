@@ -1,9 +1,11 @@
 // get_context_usage 响应 -> 前端的 ContextUsage（换算规则见 shared/src/protocol.ts 与 spike/FINDINGS2.md B1 §4）。
 // skills / mcpServers 另外合并 system/init 的 skills、get_settings 的 effective.skillOverrides 与 mcp_status。
+import type { DiskSkill } from './skillsDisk.js';
 import type { ContextMcpServer, ContextSkill, ContextUsage, SkillMode } from '@cosyee/shared';
 
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
+const SKILL_NAME_RE = /^[A-Za-z0-9._:@+/-]{1,200}$/;
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
 export interface ContextExtra {
@@ -13,8 +15,16 @@ export interface ContextExtra {
   overrides?: Record<string, unknown> | null;
   /** Cosyee 自己保存的 skill 状态；已关闭的 skill 不在 init 里，靠它留在列表上 */
   cosyeeOverrides?: Record<string, SkillMode> | null;
+  /** 磁盘扫描到的全部 skill（含没加载 / 已关闭的）：保证它们都列在面板上，并标出哪些能移除 */
+  diskSkills?: DiskSkill[] | null;
+  /** 刚被移除的 skill（正在运行的进程里还加载着它，列表里要藏起来） */
+  hidden?: string[] | null;
   /** mcp_status 的响应 */
   mcpStatus?: Raw | null;
+  /** Cosyee 保存的已停用内置工具 */
+  disabledTools?: string[] | null;
+  /** 内置工具名（init.tools 去掉 mcp__ 工具） */
+  tools?: string[] | null;
 }
 
 /** 插件 skill 名去掉前缀：anthropic-skills:pdf -> pdf */
@@ -34,18 +44,21 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
   };
   const modeOf = (name: string): SkillMode => toMode(overrides[name]) ?? toMode(overrides[skillBase(name)]) ?? 'on';
 
+  const hidden = new Set(extra.hidden ?? []);
+  const disk = new Map((extra.diskSkills ?? []).map((d) => [d.name, d]));
   const out: ContextSkill[] = [];
   const seen = new Set<string>();
   const used = new Set<number>();
   const push = (name: string, f: Raw | null): void => {
-    if (!name || seen.has(name)) return;
+    if (!name || seen.has(name) || hidden.has(name)) return;
     seen.add(name);
     const mode = modeOf(name);
     out.push({
       name,
       mode,
       tokens: f && mode === 'on' ? num(f.tokens) : null,
-      source: typeof f?.source === 'string' ? f.source : name.includes(':') ? 'plugin' : null,
+      source: typeof f?.source === 'string' ? f.source : (disk.get(name)?.source ?? (name.includes(':') ? 'plugin' : null)),
+      ...(extra.diskSkills ? { removable: disk.get(name)?.removable === true } : {}),
     });
   };
   const findFm = (name: string): Raw | null => {
@@ -70,6 +83,14 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
     used.add(k);
     push(f.name, f);
   });
+  // 磁盘上有、但没加载（已关闭、或本会话还没启动过）的 skill
+  for (const d of extra.diskSkills ?? []) push(d.name, findFm(d.name));
+  // settings.json 里设成「手动 / 关」、但上面都没找到的（例如别的项目 / 已卸载的插件留下的条目）
+  const seenBase = new Set(out.map((s) => skillBase(s.name)));
+  for (const [k, v] of Object.entries(extra.overrides ?? {})) {
+    const m = toMode(v);
+    if (m && m !== 'on' && SKILL_NAME_RE.test(k) && !seen.has(k) && !seenBase.has(skillBase(k))) push(k, null);
+  }
   // 按名字排序：开关后 init 里的顺序会变，排序让列表位置稳定
   return out.sort((x, y) => skillBase(x.name).localeCompare(skillBase(y.name)) || x.name.localeCompare(y.name));
 }
@@ -167,6 +188,8 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     agents,
     skills: buildSkills(raw, extra),
     mcpServers: buildMcpServers(mcpTools, extra.mcpStatus),
+    ...(extra.disabledTools ? { disabledTools: [...extra.disabledTools] } : {}),
+    ...(extra.tools ? { tools: [...extra.tools] } : {}),
     untilAutocompact,
     at,
   };

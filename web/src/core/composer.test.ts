@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  guessKind, itemKind, labelChips, parseUserText, serialize, toAttachments, trimSegments, type Segment,
+  guessKind, itemKind, labelChips, parseUserText, serialize, splitMentions, toAttachments, trimSegments, type Segment,
 } from './composer';
 
 const chip = (kind: 'file' | 'img' | 'folder', path: string): Segment => ({ t: 'chip', kind, path, label: '' });
@@ -129,5 +129,17 @@ describe('往返', () => {
     // 文本：把标签占位名换回去应与「标签显示文本」一致
     const display = labelled.map((s) => (s.t === 'text' ? s.text : s.label)).join('');
     expect(r.userText).toBe(display);
+  });
+});
+
+describe('splitMentions', () => {
+  it('把 @"路径" 与 @路径 还原为标签，其余保持文字', () => {
+    expect(splitMentions('看 @"C:\\a b\\c.ts" 和 @/src/x.ts, 好')).toEqual([
+      text('看 '), chip('file', 'C:\\a b\\c.ts'), text(' 和 '), chip('file', '/src/x.ts'), text(', 好'),
+    ]);
+  });
+  it('没有提及时返回单段文字；空串返回空数组', () => {
+    expect(splitMentions('普通文字')).toEqual([text('普通文字')]);
+    expect(splitMentions('')).toEqual([]);
   });
 });

@@ -2,7 +2,7 @@
 // 时序：先挂监听再 subscribe（后端先发 status，若本轮未结束再发 replay），同时拉历史；
 // 历史回来之前收到的 event / replay / status 先排队，历史载入后按顺序应用，避免与历史重复或丢失。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppliedSettings, ContextUsage, RunStatus, ServerMsg } from '@cosyee/shared';
+import type { AppliedSettings, ContextUsage, QueueItem, RunStatus, ServerMsg } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { applyEvent, applyReplay, applyStatus, fromHistory, initState, type ConvState } from '../core/reducer';
 
@@ -15,6 +15,8 @@ export interface SessionView {
   context: ContextUsage | null;
   /** 已向后端查过上下文缓存（无论有无）；之后仍为空才需要主动采集 */
   contextChecked: boolean;
+  /** 已发给 CLI、还没开始执行的消息（后端推送的全量快照，按发送顺序） */
+  queue: QueueItem[];
   /** 历史加载中 */
   loading: boolean;
   loadError?: string;
@@ -39,7 +41,7 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
     let loaded = fresh;
     let pending: SessionMsg[] = [];
     const cur: SessionView = {
-      id: sessionId, conv: initState(), status: null, applied: null, context: null, contextChecked: fresh, loading: !fresh,
+      id: sessionId, conv: initState(), status: null, applied: null, context: null, contextChecked: fresh, queue: [], loading: !fresh,
     };
     curRef.current = cur;
     const commit = () => { if (alive) setView({ ...cur }); };
@@ -56,6 +58,7 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
           break;
         case 'settings': cur.applied = m.applied; break;
         case 'context': cur.context = m.usage; break;
+        case 'queue': cur.queue = m.items; break;
       }
     };
 

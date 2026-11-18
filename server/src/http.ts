@@ -8,7 +8,7 @@ import { type Accounts, RunningError } from './accounts/index.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
 import { gitBranch } from './git.js';
-import { normalizeDir, pathKey } from './paths.js';
+import { isSafeId, normalizeDir, pathKey } from './paths.js';
 import { PASTE_LIMIT, PasteTypeError, savePaste } from './pastes.js';
 import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
@@ -18,7 +18,7 @@ import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAutho
 import type { Sessions } from './sessions.js';
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
-import { HttpError, SKILL_NAME_RE } from './workspaces.js';
+import { HttpError, SKILL_NAME_RE, TOOL_NAME_RE } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
 
@@ -35,7 +35,7 @@ export interface HttpDeps {
   /** 多账号；不传则账号相关接口返回 404（旧测试） */
   accounts?: Accounts;
   /** 额度：传 session 时取该会话所用账号的额度，否则取当前账号的 */
-  usage: { get(refresh: boolean, session?: string | null): Promise<UsageInfo | null> };
+  usage: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<UsageInfo | null> };
   store: StateStore;
   previews: Previews;
   pins: Pins;
@@ -323,7 +323,7 @@ export function createHandler(deps: HttpDeps) {
 
     if (p === '/api/accounts' || p.startsWith('/api/accounts/')) return accountRoutes(req, res, method, p);
 
-    if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session')));
+    if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
 
     if (method === 'POST' && p === '/api/defaults') {
       const body = await readJson(req);
@@ -340,10 +340,45 @@ export function createHandler(deps: HttpDeps) {
 
     if (method === 'POST' && p === '/api/skills') {
       const body = await readJson(req);
+      // 批量：{ modes: { 名字: mode } }；单个：{ name, mode }
+      if (body.modes !== undefined) {
+        const m = body.modes;
+        if (!m || typeof m !== 'object' || Array.isArray(m)) throw new HttpError(400, 'modes 不合法');
+        const out: Record<string, SkillMode> = {};
+        const entries = Object.entries(m as Record<string, unknown>);
+        if (entries.length > 500) throw new HttpError(400, 'modes 太多');
+        for (const [k, v] of entries) {
+          if (!SKILL_NAME_RE.test(k)) throw new HttpError(400, 'skill 名不合法');
+          if (!SKILL_MODES.includes(v as SkillMode)) throw new HttpError(400, 'mode 不合法');
+          out[k] = v as SkillMode;
+        }
+        await deps.manager.setSkillModes(out);
+        return sendJson(res, 200, { ok: true });
+      }
       if (typeof body.name !== 'string' || !SKILL_NAME_RE.test(body.name)) throw new HttpError(400, 'skill 名不合法');
       if (!SKILL_MODES.includes(body.mode as SkillMode)) throw new HttpError(400, 'mode 不合法');
       await deps.manager.setSkillMode(body.name, body.mode as SkillMode);
       return sendJson(res, 200, { ok: true });
+    }
+
+    // 启用 / 停用一个内置工具（全局保存；运行中的会话立即拦截，新启动的会话直接看不到）
+    if (method === 'POST' && p === '/api/tools') {
+      const body = await readJson(req);
+      if (typeof body.name !== 'string' || !TOOL_NAME_RE.test(body.name)) throw new HttpError(400, '工具名不合法');
+      if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
+      const disabledTools = await deps.manager.setToolEnabled(body.name, body.enabled);
+      return sendJson(res, 200, { ok: true, disabledTools });
+    }
+
+    // 移除用户级 / 项目级 skill（目录移到 ~/.cosyee/removed-skills 备份，不直接删除）
+    if (method === 'POST' && p === '/api/skills/remove') {
+      const body = await readJson(req);
+      if (typeof body.name !== 'string' || !SKILL_NAME_RE.test(body.name)) throw new HttpError(400, 'skill 名不合法');
+      const session = typeof body.session === 'string' && isSafeId(body.session) ? body.session : null;
+      // cwd 只用来定位 <cwd>/.claude/skills 的扫描范围，真正移动的目录来自扫描结果
+      const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? normalizeDir(body.cwd) : null;
+      const r = await deps.manager.removeSkill(session, body.name, cwd);
+      return sendJson(res, 200, { ok: true, backup: r.backup });
     }
 
     if (method === 'POST' && p === '/api/pick') {

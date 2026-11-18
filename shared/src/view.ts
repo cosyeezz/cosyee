@@ -66,6 +66,13 @@ export interface Attachment {
 
 export interface Turn {
   id: string;
+  /**
+   * 这一轮用户消息的 uuid：实时为 cosyee_user.id；历史为 user 条目的 uuid，steering 为 queued_command 附件的 source_uuid。
+   * rewind 的目标 id。旧数据可能没有。
+   */
+  userId?: string;
+  /** 这条用户消息是 steering（并入上一轮执行的插话）。CLI 的 rewind 选择列表不含它们 */
+  steer?: boolean;
   /** 用户消息正文（标签处为占位名，例如「比较 file1 和 folder1」） */
   userText: string;
   attachments: Attachment[];
@@ -90,6 +97,22 @@ export interface Turn {
   reason?: string;
 }
 
+/** 一次 API 请求的缓存命中情况（主线程；一条 assistant 消息 = 一次请求） */
+export interface CachePoint {
+  /** assistant message.id（去重用） */
+  id: string;
+  /** 所属轮的序号（回退时按它截断） */
+  turn: number;
+  /** 未命中缓存的输入 token */
+  input: number;
+  /** 写入缓存的 token（cache_creation_input_tokens） */
+  create: number;
+  /** 命中缓存的 token（cache_read_input_tokens） */
+  read: number;
+  /** 命中率 0–100 = read / (input + create + read) */
+  rate: number;
+}
+
 export interface SessionMeta {
   sessionId?: string;
   model?: string;
@@ -99,6 +122,8 @@ export interface SessionMeta {
   skills?: string[];
   agents?: string[];
   mcpServers?: { name: string; status: string }[];
+  /** 缓存命中率走势：每次 API 请求一个点（只含主线程，按 message.id 去重） */
+  cache?: CachePoint[];
 }
 
 export interface Conversation {

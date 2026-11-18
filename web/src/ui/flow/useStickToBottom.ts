@@ -1,14 +1,22 @@
 // 自动贴底：内容增长时跟随到底部；用户向上滚动后停止，滚回底部后恢复。
-import { useEffect, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 
 const THRESHOLD = 40;
+/** 程序化「跳到底部」后，在这段时间内（平滑滚动动画期间）不因 scroll 事件脱离贴底 */
+const PIN_MS = 900;
+
+export interface StickControls {
+  /** 滚到底部并恢复贴底（即使平滑滚动过程中内容还在增长也会跟上） */
+  pinToBottom: (behavior?: ScrollBehavior) => void;
+}
 
 /**
  * @param scrollRef 滚动容器
  * @param contentRef 容器内的内容包裹层（用 ResizeObserver 监听其高度变化）
  */
-export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: RefObject<HTMLElement>): void {
+export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: RefObject<HTMLElement>): StickControls {
   const stick = useRef(true);
+  const pinUntil = useRef(0);
 
   useEffect(() => {
     const sc = scrollRef.current;
@@ -19,14 +27,20 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
       sc.scrollTop = sc.scrollHeight;
     };
     const onScroll = () => {
+      // 平滑滚动到底的过程中会连续触发 scroll，此时还没到底，不能因此脱离贴底
+      if (Date.now() < pinUntil.current) return;
       stick.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < THRESHOLD;
     };
     // 用户主动上滚：立即脱离贴底，避免与内容增长抢滚动条
+    const release = () => {
+      stick.current = false;
+      pinUntil.current = 0;
+    };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) stick.current = false;
+      if (e.deltaY < 0) release();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') stick.current = false;
+      if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') release();
     };
 
     sc.addEventListener('scroll', onScroll, { passive: true });
@@ -44,4 +58,18 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
       ro.disconnect();
     };
   }, [scrollRef, contentRef]);
+
+  const pinToBottom = useCallback(
+    (behavior: ScrollBehavior = 'auto') => {
+      const sc = scrollRef.current;
+      if (!sc) return;
+      stick.current = true;
+      pinUntil.current = behavior === 'smooth' ? Date.now() + PIN_MS : 0;
+      if (typeof sc.scrollTo === 'function') sc.scrollTo({ top: sc.scrollHeight, behavior });
+      else sc.scrollTop = sc.scrollHeight;
+    },
+    [scrollRef],
+  );
+
+  return { pinToBottom };
 }

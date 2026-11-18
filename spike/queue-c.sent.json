@@ -1,0 +1,24 @@
+[
+ {
+  "t": 2,
+  "o": {
+   "type": "user",
+   "uuid": "53dd6dd4-ea0c-4b73-ae94-452952b1a1f5",
+   "message": {
+    "role": "user",
+    "content": "请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"
+   }
+  }
+ },
+ {
+  "t": 3321,
+  "o": {
+   "type": "user",
+   "uuid": "ddcf895e-ea54-4ffe-88e1-4eed942c40f4",
+   "message": {
+    "role": "user",
+    "content": "另外请在最后说一句 NOPRIO-OK"
+   }
+  }
+ }
+]

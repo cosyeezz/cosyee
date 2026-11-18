@@ -6,6 +6,7 @@ import type { RunStatus, Turn } from '@cosyee/shared';
 import { cloneTurn, finishTurn, isActive, type ConvState } from './reducer/core';
 import { buildFromHistory, buildSubagentTurn } from './reducer/history';
 import { applyLive } from './reducer/live';
+import { trimCache } from './reducer/cacheHit';
 import { isObj, str, toolSummary } from './reducer/util';
 import { parseUserText } from './composer';
 
@@ -45,7 +46,9 @@ export function fromHistory(entries: unknown[], opts?: { running?: boolean }): C
 
 /**
  * 订阅时的 replay：丢掉历史里最后一条真实用户消息开始的那一轮（及之后），再依次应用 replay 事件。
- * replay 里含 cosyee_user 时，只有历史最后一轮的用户消息与之相同才丢（历史还没落盘时不会误删上一轮）。
+ * replay 里含 cosyee_user 时：
+ * - 带 id：历史里有 userId 相同的轮就从那一轮起丢掉（含其后的 steering 轮），没有就不丢（历史还没落盘）；
+ * - 不带 id（旧数据）：只有历史最后一轮的用户消息与之相同才丢（历史还没落盘时不会误删上一轮）。
  * 对同一份 replay 重复调用结果相同（断线重连安全）。
  */
 export function applyReplay(s: ConvState, events: unknown[]): ConvState {
@@ -54,12 +57,27 @@ export function applyReplay(s: ConvState, events: unknown[]): ConvState {
   const last = s.turns[s.turns.length - 1];
   if (last) {
     const first = events.find((e) => isObj(e) && e.type === 'cosyee_user');
-    const same = !isObj(first) || parseUserText(str(first.text)).userText === last.userText;
-    if (same) base = { turns: s.turns.slice(0, -1), meta: s.meta, book: null };
+    const id = isObj(first) ? str(first.id) : '';
+    if (id) {
+      const at = s.turns.findIndex((t) => t.userId === id);
+      if (at >= 0) base = { turns: s.turns.slice(0, at), meta: trimCache(s.meta, at), book: null };
+    } else {
+      const same = !isObj(first) || parseUserText(str(first.text)).userText === last.userText;
+      if (same) base = { turns: s.turns.slice(0, -1), meta: trimCache(s.meta, s.turns.length - 1), book: null };
+    }
   }
   let cur = base;
   for (const e of events) cur = applyLive(cur, e, Date.now());
   return cur;
+}
+
+/**
+ * rewind 成功后的本地回退：删掉 userId 相同的那一轮及其后所有轮（含 steering 轮）。找不到目标则原样返回。
+ */
+export function rewindTo(s: ConvState, userId: string): ConvState {
+  const at = s.turns.findIndex((t) => t.userId === userId);
+  if (at < 0) return s;
+  return { turns: s.turns.slice(0, at), meta: trimCache(s.meta, at), book: null };
 }
 
 /** 子代理 jsonl 条目 → 它自己的一轮（浮层打开历史会话里的子代理时用；实时子代理直接取 turn.subagents[i].turn） */

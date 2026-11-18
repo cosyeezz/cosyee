@@ -30,6 +30,10 @@ export interface SessionSummary {
   pinned: PinKind | null;
   /** 并行模式下这个会话使用的账号 id（绑定的账号，没绑定时为当前账号）；切换模式下为 null / 不存在 */
   account?: string | null;
+  /** 这个会话最近一次使用的配置（发送 / 切换模型时由服务端记下）；没有记录的旧会话不带 */
+  config?: SessionConfig;
+  /** 没有 config 记录时，从会话记录里最后一条 assistant 消息推断出的模型（原始 id，如 claude-sonnet-5-5-20260101；前端用 canonicalModel 归一） */
+  lastModel?: string;
 }
 
 /** 「已删除」列表里的一项（软删除：只是从列表隐藏，会话记录文件原样保留） */
@@ -124,6 +128,13 @@ export interface ContextUsage {
   skills: ContextSkill[];
   /** MCP 服务器（来自 mcp_status），工具 token 来自 get_context_usage.mcpTools */
   mcpServers: ContextMcpServer[];
+  /** Cosyee 保存的「已停用的内置工具」名单（全局）；前端据此显示开关。停用后的工具不再出现在 init.tools 里，所以要单独带上 */
+  disabledTools?: string[];
+  /**
+   * 内置工具名（最近一次 system/init 的 tools，不含 mcp__ 工具）。探测进程不发消息、收不到 init，
+   * 页面重开也会错过 init，所以服务端记下来随上下文下发：本会话的优先，否则用最近一次见到的（落盘）
+   */
+  tools?: string[];
   /** 距自动压缩还剩多少 token */
   untilAutocompact: number | null;
   /** 采集时间 */
@@ -146,6 +157,8 @@ export interface ContextSkill {
   tokens: number | null;
   /** 来源：userSettings / projectSettings / plugin 等；未知为 null */
   source: string | null;
+  /** 磁盘上是用户级 / 项目级 skill，可以移除（插件、内置的不行）；读不到磁盘信息时不带 */
+  removable?: boolean;
 }
 
 /** MCP 服务器：status 取 mcp_status 的 connected / pending / failed / needs-auth / disabled；读不到 mcp_status 时为 unknown */
@@ -232,10 +245,13 @@ export interface UsageInfo {
 // GET  /api/preview/:token/info             → PreviewInfo
 // GET  /api/preview/:token/raw              → 文件原始内容（仅图片）
 // POST /api/defaults {model,effort}         → { ok: true }   记住模型与思考强度（全局，下次启动沿用）
-// GET  /api/usage?refresh=1&session=       → UsageInfo | null   订阅额度（refresh=1 跳过缓存）；带 session 时取该会话所用账号的额度（并行模式），
-//                                             否则取当前账号的
+// GET  /api/usage?refresh=1&session=&account= → UsageInfo | null   订阅额度（refresh=1 跳过缓存）；带 session 时取该会话所用账号的额度（并行模式），
+//                                             否则取当前账号的；带 account=<账号 id> 时取指定账号的（各账号各自缓存，账号菜单逐个账号显示额度用），优先于 session；账号不存在 404
 // POST /api/skills {name, mode}             → { ok: true }   设置一个 skill 的状态（全局，存 ~/.cosyee/state.json，不改 ~/.claude 配置）；
 //                                             立即下发给所有运行中的会话，订阅者随后收到新的 context
+// POST /api/skills {modes: {名字: mode}}    → { ok: true }   批量设置（「一键推荐配置」与撤销用），只落盘 / 下发 / 采集一次
+// POST /api/skills/remove {name, session?, cwd?} → { ok: true, backup }   移除用户级 / 项目级 skill：目录移到 ~/.cosyee/removed-skills（可手动放回恢复）；
+//                                             插件 / 内置 skill 不能移除（400），请改用「关」
 // POST /api/context/:id/mcp {cwd?, server, enabled} → ContextUsage | null   开关 MCP 服务器（CLI 的 mcp_toggle，
 //                                             与终端 /mcp 里的启用 / 禁用相同：按项目写进 ~/.claude.json）
 // GET  /api/context/:id                     → ContextUsage | null   最近一次采集的上下文数据
@@ -261,8 +277,32 @@ export type ClientMsg =
    * 否则后端若没有该会话的进程，用 --resume 启动。
    * text 中的标签已被替换为 @"<绝对路径>"。
    */
-  | { t: 'send'; sessionId: string; cwd: string; isNew: boolean; text: string; config: SessionConfig }
+  | {
+      t: 'send';
+      sessionId: string;
+      cwd: string;
+      isNew: boolean;
+      text: string;
+      config: SessionConfig;
+      /** 前端生成的 UUID，作为 CLI user 消息的 uuid（lifecycle / echo / transcript 的关联键，也是 rewind 的目标 id） */
+      id: string;
+      /**
+       * 只在执行中发送时有意义（空闲时一律立即开始新的一轮）：
+       * next=steering，并入当前这一轮（等当前工具返回后插入）；later=follow-up，这一轮结束后另开一轮。缺省 next。
+       */
+      mode?: QueueMode;
+    }
   | { t: 'interrupt'; sessionId: string }
+  /** 撤回一条还没开始执行的排队消息（CLI cancel_async_message）。结果用 queue.cancelled 回复 */
+  | { t: 'queue.cancel'; sessionId: string; id: string }
+  /** 立即发送一条排队消息：中断当前这一轮并马上执行它（CLI interrupt {send_now:true, message_uuid}） */
+  | { t: 'queue.sendNow'; sessionId: string; id: string }
+  /**
+   * 回退到某条用户消息（CLI rewind_conversation，执行中时带 interrupt_if_running）：它及之后的对话从上下文中移除，
+   * 原文通过 rewind.result 的 prefillText 填回输入框。没有该会话的进程时后端用 --resume 启动一个再回退。
+   * reqId 由前端生成，用于对应 rewind.result。
+   */
+  | { t: 'rewind'; sessionId: string; cwd: string; config: SessionConfig; targetId: string; reqId: string }
   /** 修改模型、强度等，下一轮生效 */
   | { t: 'config'; sessionId: string; config: SessionConfig };
 
@@ -289,6 +329,26 @@ export interface CosyeeUserEvent {
   text: string;
   /** 毫秒时间戳 */
   at: number;
+  /** 消息 uuid（= ClientMsg send 的 id）。旧缓存事件可能没有 */
+  id?: string;
+  /**
+   * start=空闲时发送，写入 stdin 时立即发出；
+   * next=steering，CLI 把它并入当前这一轮时（echo 到达）发出，前端结束当前轮、从这里起新的一轮显示；
+   * later=follow-up，CLI 开始执行它时（echo 到达）发出。
+   */
+  mode?: 'start' | QueueMode;
+}
+
+/** 执行中发送的两种排队方式 */
+export type QueueMode = 'next' | 'later';
+
+/** 已发给 CLI、还没开始执行的消息（lifecycle 处于 queued） */
+export interface QueueItem {
+  id: string;
+  text: string;
+  mode: QueueMode;
+  /** 入队时间，毫秒时间戳 */
+  at: number;
 }
 
 export type ServerMsg =
@@ -300,6 +360,12 @@ export type ServerMsg =
    */
   | { t: 'replay'; sessionId: string; events: unknown[]; status: RunStatus }
   | { t: 'status'; sessionId: string; status: RunStatus; error?: string }
+  /** 排队消息列表（完整快照）。变化时广播；订阅时紧跟 replay 发一次（没有排队也发空数组） */
+  | { t: 'queue'; sessionId: string; items: QueueItem[] }
+  /** queue.cancel 的结果。ok=true 时 text 为被撤回消息的原文，前端填回输入框；ok=false 表示已开始执行或不存在 */
+  | { t: 'queue.cancelled'; sessionId: string; id: string; ok: boolean; text?: string }
+  /** rewind 的结果。ok=true 时 prefillText 为被回退消息的原文；失败时 error 为原因 */
+  | { t: 'rewind.result'; sessionId: string; reqId: string; targetId: string; ok: boolean; prefillText?: string; error?: string }
   /** 会话列表需要刷新（新会话、状态点变化、改名） */
   | { t: 'sessions.changed'; cwd: string }
   /** 置顶 / 已删除集合变化（手动置顶、删除、恢复、自动置顶到期）：前端重取置顶、已删除与当前工作空间的会话列表 */

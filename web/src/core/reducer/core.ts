@@ -123,10 +123,12 @@ export function commit(s: ConvState, d: Draft): ConvState {
 
 // ───────────── 轮的创建与收尾 ─────────────
 
-export function makeTurn(index: number, text: string, at: number): Turn {
+export function makeTurn(index: number, text: string, at: number, extra?: { userId?: string; steer?: boolean }): Turn {
   const { userText, attachments } = parseUserText(text);
   return {
     id: `t${index}`,
+    ...(extra?.userId ? { userId: extra.userId } : {}),
+    ...(extra?.steer ? { steer: true } : {}),
     userText,
     attachments,
     status: 'understanding',

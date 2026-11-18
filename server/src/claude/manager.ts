@@ -1,9 +1,11 @@
 // 会话进程管理 + WebSocket 订阅分发。一个会话一个 Runner；订阅者按会话分组。
-import type { AppliedSettings, ClientMsg, ContextUsage, ServerMsg, SkillMode } from '@cosyee/shared';
+import path from 'node:path';
+import type { AppliedSettings, ClientMsg, ContextUsage, ServerMsg, SessionConfig, SkillMode } from '@cosyee/shared';
 import { toContextUsage } from '../context.js';
-import { isSafeId, normalizeDir } from '../paths.js';
+import { baseClaudeHome, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
 import type { Pins } from '../pins.js';
 import type { Sessions } from '../sessions.js';
+import { type DiskSkill, listDiskSkills, removeDiskSkill } from '../skillsDisk.js';
 import type { DotState } from '../state.js';
 import { HttpError } from '../workspaces.js';
 import { AutoTitle } from './autotitle.js';
@@ -23,8 +25,17 @@ export interface ManagerOptions {
   claudePath?: string;
   /** skill 状态的存取（全局，Cosyee 自己保存）；不传则不下发 skillOverrides（旧测试） */
   skills?: SkillStore;
+  /** 已停用的内置工具名单的存取（全局）；不传则不下发 permissions.deny（旧测试） */
+  tools?: ToolStore;
   /** 多账号：会话用哪个账号启动；不传则沿用当前账号（旧测试） */
   accounts?: SessionAccounts;
+  /** 每个会话最近一次使用的配置（模型 / 强度）的存取；不传则不记录（旧测试） */
+  configs?: SessionConfigStore;
+}
+
+export interface SessionConfigStore {
+  get(sessionId: string): SessionConfig | null;
+  set(sessionId: string, config: SessionConfig): void;
 }
 
 export interface SessionAccounts {
@@ -36,9 +47,26 @@ export interface SessionAccounts {
   bind(sessionId: string, accountId: string): void;
 }
 
+export interface ToolStore {
+  /** 当前已停用的工具名 */
+  get(): string[];
+  /** 整体替换（调用方保证名字已校验、去重） */
+  set(names: string[]): void;
+  /** 最近一次 init 报告的内置工具名（落盘；探测进程收不到 init 时用它） */
+  known?(): string[];
+  setKnown?(names: string[]): void;
+}
+
+/** 内置工具名（与 workspaces.ts 的 TOOL_NAME_RE 一致）；mcp__ 工具另由 MCP 一节管理 */
+const BUILTIN_TOOL_RE = /^(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
 export interface SkillStore {
   get(): Record<string, SkillMode>;
   set(name: string, mode: SkillMode): void;
+  /** 一次设置多个（只落盘一次） */
+  setMany(modes: Record<string, SkillMode>): void;
+  /** 删掉某个 skill 的已存状态（skill 被移除后不再留条目） */
+  remove(name: string): void;
 }
 
 /** MCP 服务器还在连接（pending）时，隔多久再采一次上下文、最多几次 */
@@ -65,10 +93,14 @@ export class Manager {
   private readonly timings?: Partial<RunnerTimings>;
   private readonly claudePath?: string;
   private readonly skills?: SkillStore;
+  private readonly tools?: ToolStore;
   private readonly accounts?: SessionAccounts;
+  private readonly configs?: SessionConfigStore;
   /** 会话最近一次 system/init 的 skills（带插件前缀），另按 cwd 存一份给探测进程（探测进程不发消息，收不到 init） */
   private initSkills = new Map<string, string[]>();
   private initSkillsByCwd = new Map<string, string[]>();
+  /** 会话最近一次 system/init 的内置工具名 */
+  private initTools = new Map<string, string[]>();
   /** MCP pending 重采：按会话的计时器与已重试次数 */
   private mcpRetry = new Map<string, { timer: NodeJS.Timeout | null; n: number }>();
   /** 每轮结束后仍没有标题的会话，主动让 CLI 生成一个 */
@@ -81,7 +113,9 @@ export class Manager {
     this.timings = opts.timings;
     this.claudePath = opts.claudePath;
     this.skills = opts.skills;
+    this.tools = opts.tools;
     this.accounts = opts.accounts;
+    this.configs = opts.configs;
     this.autoTitle = new AutoTitle({
       hasTitle: async (id, cwd) => {
         const s = await this.sessions.scan(id, cwd);
@@ -162,7 +196,21 @@ export class Manager {
         case 'config':
           this.requireId(msg.sessionId);
           validateConfig(msg.config);
+          this.configs?.set(msg.sessionId, msg.config); // 没有进程时也要记下：刷新页面后据此还原
           this.runners.get(msg.sessionId)?.setConfig(msg.config);
+          break;
+        case 'queue.cancel':
+          this.requireId(msg.sessionId);
+          this.requireMsgId(msg.id);
+          void this.queueCancel(client, msg.sessionId, msg.id);
+          break;
+        case 'queue.sendNow':
+          this.requireId(msg.sessionId);
+          this.requireMsgId(msg.id);
+          void this.queueSendNow(client, msg.sessionId, msg.id);
+          break;
+        case 'rewind':
+          void this.rewind(client, msg);
           break;
         default:
           throw new Error('未知消息类型');
@@ -174,6 +222,11 @@ export class Manager {
 
   private requireId(id: unknown): asserts id is string {
     if (!isSafeId(id)) throw new Error('sessionId 不合法');
+  }
+
+  /** 消息 id 必须是 UUID（CLI 要求 user 消息的 uuid 为 UUID 格式） */
+  private requireMsgId(id: unknown): asserts id is string {
+    if (!isSessionUuid(id)) throw new Error('消息 id 不合法');
   }
 
   private async subscribe(client: Client, id: string): Promise<void> {
@@ -194,6 +247,8 @@ export class Manager {
       const snap = r.snapshot();
       if (snap.events.length > 0) this.safeSend(client, { t: 'replay', sessionId: id, events: snap.events, status: snap.status });
     }
+    // 排队消息快照（紧跟 replay；没有排队也发空数组，前端据此清掉旧状态）
+    this.safeSend(client, { t: 'queue', sessionId: id, items: r ? r.queueItems() : [] });
     const st = this.settingsCache.get(id);
     if (st) this.safeSend(client, { t: 'settings', sessionId: id, applied: st });
     const ctx = this.contextCache.get(id);
@@ -207,6 +262,7 @@ export class Manager {
     if (typeof msg.cwd !== 'string' || !msg.cwd) throw new Error('cwd 不能为空');
     if (typeof msg.text !== 'string' || msg.text.trim() === '') throw new Error('消息不能为空');
     validateConfig(msg.config);
+    if (msg.id !== undefined) this.requireMsgId(msg.id); // 没带 id 的旧客户端：runner 自己生成
     const id = msg.sessionId;
     const cwd = normalizeDir(msg.cwd);
 
@@ -229,15 +285,90 @@ export class Manager {
       this.runners.set(id, r);
     }
     try {
-      r.send(msg.text, msg.config);
+      r.send(msg.text, msg.config, msg.id, msg.mode);
     } catch (e) {
       if (created && !r.alive) this.runners.delete(id);
       throw e;
     }
+    this.configs?.set(id, msg.config);
     this.cwdOf.set(id, r.cwd);
     if (this.accounts && r.accountId) this.accounts.bind(id, r.accountId);
     this.dots.viewed(id);
     this.changed(r.cwd);
+  }
+
+  // ───────────── 排队消息 / 回退 ─────────────
+
+  /** 撤回一条排队消息：结果只回给发起的连接（text 是原文，前端填回输入框） */
+  private async queueCancel(client: Client, sessionId: string, id: string): Promise<void> {
+    const r = this.runners.get(sessionId);
+    let res: { ok: boolean; text?: string } = { ok: false };
+    if (r?.alive) {
+      try {
+        res = await r.cancelQueued(id);
+      } catch { /* 进程退出 / 超时：按失败回复 */ }
+    }
+    const m: ServerMsg = { t: 'queue.cancelled', sessionId, id, ok: res.ok };
+    if (res.ok && res.text !== undefined) m.text = res.text;
+    this.safeSend(client, m);
+  }
+
+  /** 立即发送一条排队消息：中断当前轮并马上执行它。失败（已不在排队）时重发一次队列快照让前端对齐 */
+  private async queueSendNow(client: Client, sessionId: string, id: string): Promise<void> {
+    const r = this.runners.get(sessionId);
+    try {
+      if (!r?.alive) throw new Error('会话没有在运行');
+      const res = await r.sendNow(id);
+      if (res.ok) return;
+    } catch (e) {
+      this.safeSend(client, { t: 'error', message: `立即发送失败：${e instanceof Error ? e.message : String(e)}` });
+    }
+    this.safeSend(client, { t: 'queue', sessionId, items: r ? r.queueItems() : [] });
+  }
+
+  /**
+   * 回退到某条用户消息。没有进程时用 --resume 拉起一个不发消息的探测进程（CLI 在收到第一条消息前就能响应
+   * control_request，runner 启动时的 get_settings 就是这样发的），回退后它按探测进程的规则空闲回收，
+   * 之后发消息时直接复用。结果只回给发起的连接。
+   */
+  private async rewind(client: Client, msg: Extract<ClientMsg, { t: 'rewind' }>): Promise<void> {
+    const reply = (ok: boolean, extra: { prefillText?: string; error?: string } = {}): void => {
+      const m: ServerMsg = { t: 'rewind.result', sessionId: String(msg?.sessionId), reqId: String(msg?.reqId), targetId: String(msg?.targetId), ok };
+      if (extra.prefillText !== undefined) m.prefillText = extra.prefillText;
+      if (extra.error !== undefined) m.error = extra.error;
+      this.safeSend(client, m);
+    };
+    try {
+      this.requireId(msg.sessionId);
+      this.requireMsgId(msg.targetId);
+      if (typeof msg.reqId !== 'string' || !msg.reqId) throw new Error('reqId 不能为空');
+      const id = msg.sessionId;
+      let r = this.runners.get(id);
+      if (r && !r.alive) throw new Error('claude 进程正在关闭，请稍后重试');
+      if (!r) {
+        if (typeof msg.cwd !== 'string' || !msg.cwd) throw new Error('cwd 不能为空');
+        validateConfig(msg.config);
+        const cwd = normalizeDir(msg.cwd);
+        r = this.createRunner(id, cwd, false, msg.config, true);
+        this.runners.set(id, r);
+        try {
+          r.start();
+        } catch (e) {
+          if (this.runners.get(id) === r) this.runners.delete(id);
+          throw e;
+        }
+        this.cwdOf.set(id, cwd);
+      }
+      const res = await r.rewind(msg.targetId);
+      if (res.rewound === true) {
+        reply(true, { prefillText: typeof res.prefillText === 'string' ? res.prefillText : '' });
+        this.changed(r.cwd);
+      } else {
+        reply(false, { error: String(res.error ?? res.reason ?? '回退失败') });
+      }
+    } catch (e) {
+      reply(false, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   private createRunner(id: string, cwd: string, isNew: boolean, config: ClientMsgConfig, probe: boolean): Runner {
@@ -256,15 +387,20 @@ export class Manager {
       probe,
       timings: this.timings,
       claudePath: this.claudePath,
-      flagSettings: () => this.skillFlagSettings(),
+      flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings() }),
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
-          const ev = e as { type?: unknown; subtype?: unknown; skills?: unknown } | null;
+          const ev = e as { type?: unknown; subtype?: unknown; skills?: unknown; tools?: unknown } | null;
           if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.skills)) {
             const list = ev.skills.filter((x): x is string => typeof x === 'string');
             this.initSkills.set(id, list);
             this.initSkillsByCwd.set(cwd, list);
+          }
+          if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.tools)) {
+            const list = ev.tools.filter((x): x is string => typeof x === 'string' && BUILTIN_TOOL_RE.test(x));
+            this.initTools.set(id, list);
+            if (list.length) this.tools?.setKnown?.(list);
           }
           this.autoTitle.collect(id, e);
           // 一条完整的 assistant / user(tool_result) 消息落地后，上下文用量就变了：节流刷新，让右侧面板实时更新
@@ -280,6 +416,7 @@ export class Manager {
           if (wasDot) this.changed(cwd);
           if (pinChanged) this.notifySidebar();
         },
+        onQueue: (items) => this.emit(id, { t: 'queue', sessionId: id, items }),
         onSettings: (applied) => {
           this.settingsCache.set(id, { ...this.settingsCache.get(id), ...applied });
           this.emit(id, { t: 'settings', sessionId: id, applied });
@@ -316,6 +453,12 @@ export class Manager {
     return Object.keys(map).length ? { skillOverrides: { ...map } } : {};
   }
 
+  /** 启动参数里的 --settings 附加项：已停用的工具（permissions.deny）。启动时下发，模型根本看不到这些工具 */
+  private toolFlagSettings(): Record<string, unknown> {
+    const list = this.tools?.get() ?? [];
+    return list.length ? { permissions: { deny: [...list] } } : {};
+  }
+
   /**
    * 采集上下文：get_context_usage 为主，get_settings（只取 effective.skillOverrides）与 mcp_status 失败时忽略。
    * get_settings 的其余内容含个人信息，这里不保留。
@@ -327,16 +470,40 @@ export class Manager {
       r.request('mcp_status').catch(() => null),
     ]);
     const eff = (settings as { effective?: { skillOverrides?: unknown } } | null)?.effective?.skillOverrides;
+    const disk = this.scanDiskSkills(r.sessionId, r.cwd);
     const usage = toContextUsage(raw, Date.now(), {
       initSkills: this.initSkills.get(r.sessionId) ?? this.initSkillsByCwd.get(r.cwd) ?? null,
       overrides: eff && typeof eff === 'object' ? (eff as Record<string, unknown>) : null,
       cosyeeOverrides: this.skills?.get() ?? null,
+      diskSkills: disk,
+      hidden: this.hiddenSkills(disk),
       mcpStatus: mcp,
+      disabledTools: this.tools?.get() ?? null,
+      tools: this.initTools.get(r.sessionId) ?? this.tools?.known?.() ?? null,
     });
     this.contextCache.set(r.sessionId, usage);
     this.emit(r.sessionId, { t: 'context', sessionId: r.sessionId, usage });
     this.scheduleMcpRetry(r, usage);
     return usage;
+  }
+
+  private readonly removedSkills = new Set<string>();
+
+  /** 磁盘上的全部 skill（会话所用账号的配置目录 + 项目目录）；扫描失败当作读不到 */
+  private scanDiskSkills(sessionId: string, cwd: string | null): DiskSkill[] | null {
+    try {
+      const dir = this.accounts?.resolve(sessionId)?.dir ?? null;
+      return listDiskSkills(dir ?? baseClaudeHome(), cwd);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 被移除、且磁盘上确实没有了的 skill 名（磁盘上又出现就不再藏） */
+  private hiddenSkills(disk: DiskSkill[] | null): string[] {
+    const onDisk = new Set((disk ?? []).map((d) => d.name));
+    for (const n of [...this.removedSkills]) if (onDisk.has(n)) this.removedSkills.delete(n);
+    return [...this.removedSkills];
   }
 
   /** 有 MCP 服务器还在连接：过一会儿再采一次，让状态与工具列表跟上 */
@@ -457,7 +624,7 @@ export class Manager {
     const existing = this.runners.get(id);
     if (existing?.alive) return existing;
     // 配置只用于启动参数；进程随后可复用，真正发消息时 send 会按需 set_model 等
-    const probe = this.createRunner(id, cwd, !loc, { model: 'sonnet', effort: 'medium' }, true);
+    const probe = this.createRunner(id, cwd, !loc, this.configs?.get(id) ?? { model: 'sonnet', effort: 'medium' }, true);
     this.runners.set(id, probe);
     try {
       probe.start();
@@ -476,8 +643,15 @@ export class Manager {
    * （apply_flag_settings 里 skillOverrides 是整体替换，必须发完整映射），然后为有人看的会话重新采集上下文。
    */
   async setSkillMode(name: string, mode: SkillMode): Promise<void> {
+    return this.setSkillModes({ [name]: mode });
+  }
+
+  /** 批量设置（「一键推荐配置」用）：只落盘、下发、采集一次 */
+  async setSkillModes(modes: Record<string, SkillMode>): Promise<void> {
     if (!this.skills) throw new HttpError(500, '未启用 skill 设置');
-    this.skills.set(name, mode);
+    const entries = Object.entries(modes);
+    if (entries.length === 0) return;
+    this.skills.setMany(modes);
     const map = { ...this.skills.get() };
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
@@ -491,14 +665,85 @@ export class Manager {
     // 没有进程、但面板开着的会话：直接改缓存里的状态
     for (const [id, usage] of this.contextCache) {
       if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
-      const has = usage.skills.some((s) => s.name === name);
-      const skills = has
-        ? usage.skills.map((s) => (s.name === name ? { ...s, mode, tokens: mode === 'on' ? s.tokens : null } : s))
-        : [...usage.skills, { name, mode, tokens: null, source: name.includes(':') ? 'plugin' : null }];
+      let skills = usage.skills;
+      for (const [name, mode] of entries) {
+        skills = skills.some((s) => s.name === name)
+          ? skills.map((s) => (s.name === name ? { ...s, mode, tokens: mode === 'on' ? s.tokens : null } : s))
+          : [...skills, { name, mode, tokens: null, source: name.includes(':') ? 'plugin' : null }];
+      }
       const next = { ...usage, skills };
       this.contextCache.set(id, next);
       this.emit(id, { t: 'context', sessionId: id, usage: next });
     }
+  }
+
+  /**
+   * 启用 / 停用一个内置工具：先存下来（新启动的会话经 --settings 的 permissions.deny 带上），
+   * 再把完整名单下发给所有运行中的进程（apply_flag_settings 对 permissions.deny 是整体替换，实测空数组即清除）。
+   * 实测（claude 2.x）：运行中下发立即生效——被停用的工具再被调用会得到 "Permission to use X has been denied."，
+   * 但该工具仍留在模型的工具列表里（模型可能还会尝试一次）；重启 / 新会话后才会从列表里消失。
+   */
+  async setToolEnabled(name: string, enabled: boolean): Promise<string[]> {
+    if (!this.tools) throw new HttpError(500, '未启用工具设置');
+    const cur = this.tools.get();
+    const has = cur.includes(name);
+    if (enabled === !has) return [...cur];
+    const list = enabled ? cur.filter((n) => n !== name) : [...cur, name];
+    this.tools.set(list);
+    const deny = [...this.tools.get()];
+    const alive = [...this.runners.values()].filter((r) => r.alive);
+    await Promise.all(
+      alive.map(async (r) => {
+        try {
+          await r.request('apply_flag_settings', { settings: { permissions: { deny } } });
+        } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
+        if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
+      }),
+    );
+    // 没有进程、但面板开着的会话：直接改缓存里的名单
+    for (const [id, usage] of this.contextCache) {
+      if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
+      const next = { ...usage, disabledTools: deny };
+      this.contextCache.set(id, next);
+      this.emit(id, { t: 'context', sessionId: id, usage: next });
+    }
+    return deny;
+  }
+
+  /**
+   * 移除一个用户级 / 项目级 skill：目录移到 ~/.cosyee/removed-skills（可手动放回恢复），清掉它的已存状态，
+   * 并让正在运行的进程也把它关掉（进程里已加载的内容要到新会话才会真正消失）。
+   */
+  async removeSkill(sessionId: string | null, name: string, cwd: string | null): Promise<{ backup: string }> {
+    const dir = sessionId ? this.accounts?.resolve(sessionId)?.dir ?? null : null;
+    let backup: string;
+    try {
+      backup = removeDiskSkill(name, dir ?? baseClaudeHome(), cwd, path.join(cosyeeHome(), 'removed-skills'));
+    } catch (e) {
+      throw new HttpError(400, e instanceof Error ? e.message : String(e));
+    }
+    this.removedSkills.add(name);
+    this.skills?.remove(name);
+    for (const m of [this.initSkills, this.initSkillsByCwd]) {
+      for (const [k, list] of m) m.set(k, list.filter((n) => n !== name));
+    }
+    const map = { ...(this.skills?.get() ?? {}), [name]: 'off' as SkillMode };
+    const alive = [...this.runners.values()].filter((r) => r.alive);
+    await Promise.all(
+      alive.map(async (r) => {
+        try {
+          await r.request('apply_flag_settings', { settings: { skillOverrides: map } });
+        } catch { /* 进程忙 / 已退出 */ }
+        if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
+      }),
+    );
+    for (const [id, usage] of this.contextCache) {
+      if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
+      const next = { ...usage, skills: usage.skills.filter((s) => s.name !== name) };
+      this.contextCache.set(id, next);
+      this.emit(id, { t: 'context', sessionId: id, usage: next });
+    }
+    return { backup };
   }
 
   /**
@@ -567,6 +812,7 @@ export class Manager {
     this.probing.clear();
     this.initSkills.clear();
     this.initSkillsByCwd.clear();
+    this.initTools.clear();
   }
 
   /**
@@ -591,6 +837,7 @@ export class Manager {
       this.contextCache.delete(id);
       this.probing.delete(id);
       this.initSkills.delete(id);
+      this.initTools.delete(id);
     }
   }
 

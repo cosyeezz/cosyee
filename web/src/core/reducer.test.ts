@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Turn } from '@cosyee/shared';
-import { applyEvent, applyReplay, applyStatus, fromHistory, initState, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { applyEvent, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
 
 const FIX = path.resolve(__dirname, '../../../shared/fixtures');
 
@@ -377,5 +377,203 @@ describe('toolSummary', () => {
     expect(toolSummary('Foo', {})).toBe('Foo');
     expect(toolSummary('Foo', null)).toBe('Foo');
     expect(toolSummary('Foo', { query: 'hi' })).toContain('hi');
+  });
+});
+
+describe('实时：消息 id / steering / 中断', () => {
+  const res = (extra: Record<string, unknown> = {}) => ({ type: 'result', subtype: 'success', is_error: false, ...extra });
+  it('cosyee_user 带 id：新轮记 userId；mode=next 记 steer', () => {
+    let s = applyEvent(initState(), { type: 'cosyee_user', text: '开始', id: 'u1', mode: 'start', at: 1 });
+    s = applyEvent(s, { type: 'cosyee_user', text: '插话', id: 'u2', mode: 'next', at: 2 });
+    s = applyEvent(s, { type: 'cosyee_user', text: '稍后', id: 'u3', mode: 'later', at: 3 });
+    expect(s.turns.map((t) => [t.userId, t.steer ?? false, t.userText])).toEqual([
+      ['u1', false, '开始'],
+      ['u2', true, '插话'],
+      ['u3', false, '稍后'],
+    ]);
+    // 上一轮仍在执行时被新轮收尾为 done
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[1].status).toBe('done');
+    expect(s.turns[2].status).toBe('understanding');
+  });
+  it('同 id 的 cosyee_user 不重复建轮', () => {
+    let s = applyEvent(initState(), { type: 'cosyee_user', text: '插话', id: 'u1', mode: 'next', at: 1 });
+    s = applyEvent(s, { type: 'cosyee_user', text: '插话', id: 'u1', mode: 'next', at: 2 });
+    expect(s.turns).toHaveLength(1);
+  });
+  it('不带 id 的旧事件仍然每次开新轮、没有 userId', () => {
+    let s = applyEvent(initState(), user('a'));
+    s = applyEvent(s, user('a'));
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[0].userId).toBeUndefined();
+    expect(s.turns[0].steer).toBeUndefined();
+  });
+  it('terminal_reason=aborted_tools / aborted_streaming 记为 interrupted 而不是 error', () => {
+    for (const terminal of ['aborted_tools', 'aborted_streaming']) {
+      let s = applyEvent(initState(), { type: 'cosyee_user', text: 'x', id: 'u1', mode: 'start', at: 1 });
+      s = applyEvent(s, res({ is_error: true, subtype: 'error_during_execution', terminal_reason: terminal }), 5);
+      expect(s.turns[0].status).toBe('interrupted');
+    }
+  });
+});
+
+describe('applyReplay：带 id 的去重', () => {
+  const ev = [
+    { type: 'cosyee_user', text: '第一条', id: 'u1', mode: 'start', at: 1 },
+    { type: 'cosyee_user', text: '插话', id: 'u2', mode: 'next', at: 2 },
+  ];
+  it('历史已含相同 userId 的轮：从那一轮起丢掉再重放，不重复', () => {
+    const hist = fromHistory(lines('queue-a.transcript.jsonl'));
+    const sid = hist.turns[1].userId!;
+    const base = hist.turns.length;
+    const s = applyReplay(hist, [{ type: 'cosyee_user', text: '另外请在最后说一句 STEER-OK', id: sid, mode: 'next', at: 9 }]);
+    expect(s.turns).toHaveLength(base); // 丢掉 steer 轮及之后，再重放一轮
+    expect(s.turns.filter((t) => t.userId === sid)).toHaveLength(1);
+  });
+  it('历史里没有该 id（还没落盘）：保留历史，重放追加', () => {
+    let s = applyEvent(initState(), { type: 'cosyee_user', text: '旧', id: 'old', mode: 'start', at: 0 });
+    s = applyReplay(s, ev);
+    expect(s.turns.map((t) => t.userId)).toEqual(['old', 'u1', 'u2']);
+  });
+  it('重复调用结果相同', () => {
+    const once = applyReplay(initState(), ev);
+    const twice = applyReplay(once, ev);
+    expect(twice.turns.map((t) => [t.userId, t.steer])).toEqual(once.turns.map((t) => [t.userId, t.steer]));
+  });
+});
+
+describe('rewindTo', () => {
+  it('删除目标轮及其后所有轮（含 steer）；找不到原样返回', () => {
+    let s = initState();
+    for (const [id, mode] of [['u1', 'start'], ['u2', 'next'], ['u3', 'later']] as const) {
+      s = applyEvent(s, { type: 'cosyee_user', text: id, id, mode, at: 1 });
+    }
+    expect(rewindTo(s, 'u2').turns.map((t) => t.userId)).toEqual(['u1']);
+    expect(rewindTo(s, 'u1').turns).toHaveLength(0);
+    expect(rewindTo(s, 'nope')).toBe(s);
+  });
+});
+
+describe('历史：queue-* 场景（steering / 分支过滤）', () => {
+  const texts = (s: ConvState) => s.turns.map((t) => t.userText);
+  it('queue-a：steering 单独成一轮，steer=true，userId=source_uuid，其后的输出归它', () => {
+    const s = fromHistory(lines('queue-a.transcript.jsonl'));
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[0].userText).toContain('sleep 4');
+    expect(s.turns[0].steer).toBeUndefined();
+    expect(s.turns[0].userId?.startsWith('71e2f7')).toBe(true);
+    expect(s.turns[1].userText).toBe('另外请在最后说一句 STEER-OK');
+    expect(s.turns[1].steer).toBe(true);
+    expect(s.turns[1].userId?.startsWith('83a245')).toBe(true);
+    expect(s.turns[1].answer).toContain('3 次');
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[1].status).toBe('done');
+  });
+  it('queue-b：follow-up 是普通用户轮，userId=entry.uuid', () => {
+    const s = fromHistory(lines('queue-b.transcript.jsonl'));
+    expect(texts(s)).toEqual([expect.stringContaining('sleep 4'), '请只回复 FOLLOW-OK，不要用工具。']);
+    expect(s.turns.every((t) => !t.steer && t.userId)).toBe(true);
+  });
+  it('queue-f：rewind 废弃的两条分支（记住数字 2 / sleep 4）不出现', () => {
+    const s = fromHistory(lines('queue-f.transcript.jsonl'));
+    expect(texts(s)).toEqual(['记住数字 1，回复 OK', '我让你记住过哪些数字？只回答数字。', '我让你记住过哪些数字？以及我刚才让你做过什么事？一句话。']);
+    expect(s.turns[2].answer).toContain('数字是 1');
+  });
+  it('queue-h：整支被 rewind 的旧根不出现，只剩新的一轮', () => {
+    const s = fromHistory(lines('queue-h.transcript.jsonl'));
+    expect(texts(s)).toEqual(['只回复 IDLE-NEXT-OK，不要用工具。']);
+    expect(s.turns[0].answer).toBe('IDLE-NEXT-OK');
+  });
+  it('queue-d：被取消的消息只有 queue-operation，不出现在历史里', () => {
+    const s = fromHistory(lines('queue-d.transcript.jsonl'));
+    expect(s.turns).toHaveLength(1);
+    expect(s.turns[0].userText).toContain('sleep 4');
+  });
+  it('链断（父节点不在文件里）时不过滤', () => {
+    const entries = lines('queue-f.transcript.jsonl') as Record<string, unknown>[];
+    // 把最后一个带 uuid 的节点的 parentUuid 指向不存在的 uuid
+    const lastIdx = entries.map((e) => typeof e.uuid === 'string').lastIndexOf(true);
+    const broken = entries.map((e, i) => (i === lastIdx ? { ...e, parentUuid: 'missing-uuid' } : e));
+    const s = fromHistory(broken);
+    expect(s.turns.length).toBeGreaterThan(2); // 退化为不过滤：废弃分支也在
+  });
+  it('compact 边界：parentUuid 为空但 logicalParentUuid 接回压缩前，压缩前的轮保留', () => {
+    const t = '2026-01-01T00:00:00Z';
+    const u = (id: string, parent: string | null, text: string) => ({ type: 'user', uuid: id, parentUuid: parent, timestamp: t, message: { role: 'user', content: text } });
+    const a = (id: string, parent: string, text: string) => ({ type: 'assistant', uuid: id, parentUuid: parent, timestamp: t, message: { id: 'm' + id, role: 'assistant', content: [{ type: 'text', text }] } });
+    const entries = [
+      u('1', null, '压缩前的问题'),
+      a('2', '1', '答'),
+      { type: 'system', subtype: 'compact_boundary', uuid: '3', parentUuid: null, logicalParentUuid: '2', timestamp: t },
+      u('4', '3', '压缩后的问题'),
+      a('5', '4', '答2'),
+    ];
+    expect(fromHistory(entries).turns.map((x) => x.userText)).toEqual(['压缩前的问题', '压缩后的问题']);
+  });
+  it('并行工具的兄弟 tool_result（不在最终链上）不被误删', () => {
+    const t = '2026-01-01T00:00:00Z';
+    const entries = [
+      { type: 'user', uuid: 'u', parentUuid: null, timestamp: t, message: { role: 'user', content: '并行' } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u', timestamp: t, message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'a' } }] } },
+      { type: 'assistant', uuid: 'a2', parentUuid: 'a1', timestamp: t, message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'b' } }] } },
+      { type: 'user', uuid: 'r1', parentUuid: 'a1', timestamp: t, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ra' }] } },
+      { type: 'user', uuid: 'r2', parentUuid: 'a2', timestamp: t, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'rb' }] } },
+      { type: 'assistant', uuid: 'a3', parentUuid: 'r2', timestamp: t, message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: '好' }] } },
+    ];
+    const s = fromHistory(entries);
+    const tools = s.turns[0].steps.filter((x) => x.kind === 'tool');
+    expect(tools).toHaveLength(2);
+    expect(tools.every((x) => x.kind === 'tool' && x.result)).toBe(true);
+  });
+});
+
+describe('缓存命中率走势', () => {
+  const t = '2026-01-01T00:00:00Z';
+  const usage = (input: number, create: number, read: number) => ({ input_tokens: input, cache_creation_input_tokens: create, cache_read_input_tokens: read, output_tokens: 5 });
+  const asst = (id: string, u: unknown, extra: Record<string, unknown> = {}) => ({
+    type: 'assistant', timestamp: t, ...extra,
+    message: { id, role: 'assistant', content: [{ type: 'text', text: 'x' }], ...(u === undefined ? {} : { usage: u }) },
+  });
+  const hist = (...a: unknown[]) => [{ type: 'user', timestamp: t, message: { role: 'user', content: '问' } }, ...a];
+
+  it('历史：命中率 = read / (input + create + read)，同一 message.id 分多行只算一次', () => {
+    const s = fromHistory(hist(asst('m1', usage(10, 90, 900)), asst('m1', usage(10, 90, 900)), asst('m2', usage(0, 0, 100))));
+    expect(s.meta.cache?.map((p) => [p.id, Math.round(p.rate)])).toEqual([['m1', 90], ['m2', 100]]);
+    expect(s.meta.cache?.[0]).toMatchObject({ input: 10, create: 90, read: 900, turn: 0 });
+  });
+  it('历史：分母为 0、没有 usage、子代理（sidechain）都不记', () => {
+    const s = fromHistory(hist(asst('m1', usage(0, 0, 0)), asst('m2', undefined), asst('m3', usage(1, 1, 1), { isSidechain: true }), asst('m4', usage(50, 0, 50))));
+    expect(s.meta.cache?.map((p) => p.id)).toEqual(['m4']);
+  });
+  it('实时：主线程累计，子代理（parent_tool_use_id 为字符串）不记，同 id 去重', () => {
+    let s = applyEvent(initState(), user('问'), 1_000_000);
+    s = applyEvent(s, asst('m1', usage(10, 0, 90), { parent_tool_use_id: null }), 2_000_000);
+    s = applyEvent(s, asst('m1', usage(10, 0, 90), { parent_tool_use_id: null }), 2_000_000);
+    s = applyEvent(s, asst('sub', usage(10, 0, 90), { parent_tool_use_id: 'toolu_x' }), 2_000_000);
+    s = applyEvent(s, asst('m2', usage(40, 60, 0), { parent_tool_use_id: null }), 2_000_000);
+    expect(s.meta.cache?.map((p) => [p.id, Math.round(p.rate)])).toEqual([['m1', 90], ['m2', 0]]);
+  });
+  it('replay 与历史重叠不重复；rewind 丢掉被回退的轮的点', () => {
+    const base = fromHistory([
+      { type: 'user', timestamp: t, message: { role: 'user', content: '一' } }, asst('m1', usage(0, 0, 10)),
+      { type: 'user', timestamp: t, message: { role: 'user', content: '二' } }, asst('m2', usage(0, 10, 0)),
+    ]);
+    expect(base.meta.cache?.map((p) => [p.id, p.turn])).toEqual([['m1', 0], ['m2', 1]]);
+    const replayed = applyReplay(base, [{ type: 'cosyee_user', text: '二', at: 1 }, asst('m2', usage(0, 10, 0), { parent_tool_use_id: null })]);
+    expect(replayed.meta.cache?.map((p) => p.id)).toEqual(['m1', 'm2']);
+    const again = applyReplay(replayed, [{ type: 'cosyee_user', text: '二', at: 1 }, asst('m2', usage(0, 10, 0), { parent_tool_use_id: null })]);
+    expect(again.meta.cache?.map((p) => p.id)).toEqual(['m1', 'm2']);
+    let live = applyEvent(initState(), { type: 'cosyee_user', id: 'ua', text: '一', at: 1 }, 1);
+    live = applyEvent(live, asst('m1', usage(0, 0, 10), { parent_tool_use_id: null }), 2);
+    live = applyEvent(live, { type: 'cosyee_user', id: 'ub', text: '二', at: 3 }, 3);
+    live = applyEvent(live, asst('m2', usage(0, 10, 0), { parent_tool_use_id: null }), 4);
+    expect(live.meta.cache?.map((p) => p.id)).toEqual(['m1', 'm2']);
+    expect(rewindTo(live, 'ub').meta.cache?.map((p) => p.id)).toEqual(['m1']);
+  });
+  it('点数有上限', () => {
+    const many = Array.from({ length: 450 }, (_, i) => asst(`m${i}`, usage(1, 0, 1)));
+    const s = fromHistory(hist(...many));
+    expect(s.meta.cache).toHaveLength(400);
+    expect(s.meta.cache![399]!.id).toBe('m449');
   });
 });

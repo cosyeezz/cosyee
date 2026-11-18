@@ -18,11 +18,24 @@ export function formatClock(ts: number): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-/** 结束态文案：已完成 · HH:mm · 用时 3 分 5 秒（缺 endedAt 时省略对应部分） */
-export function formatDoneText(turn: Pick<Turn, 'startedAt' | 'endedAt'>): string {
+/**
+ * 具体时间戳：今天只写 HH:mm；今年其他日子「M月D日 HH:mm」；跨年「YYYY年M月D日 HH:mm」。
+ * now 为「现在」，用于判断是否今天 / 今年。
+ */
+export function formatStamp(ts: number, now: number = Date.now()): string {
+  const d = new Date(ts);
+  const n = new Date(now);
+  const clock = formatClock(ts);
+  if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return clock;
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  return d.getFullYear() === n.getFullYear() ? `${md} ${clock}` : `${d.getFullYear()}年${md} ${clock}`;
+}
+
+/** 结束态文案：已完成 · HH:mm · 用时 3 分 5 秒（缺 endedAt 时省略对应部分；非今天带日期） */
+export function formatDoneText(turn: Pick<Turn, 'startedAt' | 'endedAt'>, now: number = Date.now()): string {
   const parts = ['已完成'];
   if (turn.endedAt != null) {
-    parts.push(formatClock(turn.endedAt));
+    parts.push(formatStamp(turn.endedAt, now));
     if (turn.startedAt != null) parts.push(`用时 ${formatDuration(turn.endedAt - turn.startedAt)}`);
   }
   return parts.join(' · ');
@@ -31,12 +44,61 @@ export function formatDoneText(turn: Pick<Turn, 'startedAt' | 'endedAt'>): strin
 export interface StatusLine {
   /** 对应图标 / 文字特效：active 为进行中（understanding / running 合并），其余为结束态 */
   kind: 'active' | 'done' | 'interrupted' | 'error';
-  /** 主短语：固定措辞，进行中始终是「正在处理」，绝不显示模型文字 */
+  /**
+   * 仅 active：understanding = 模型还没有任何文本（星轨 + 正在理解问题）；
+   * text = 已有文本（神经脉冲 + 最近一段文本）。思考 / 工具调用不改变它。
+   */
+  phase?: 'understanding' | 'text';
+  /** 主短语：active 时是「正在理解问题」或模型最近一段文本的首行（去 markdown）；结束态为固定措辞 */
   text: string;
-  /** 暗色附加信息（用时、子代理进度、原因等），无则为空串 */
+  /** 暗色附加信息（时间、步数、用时、子代理进度、原因等），无则为空串 */
   meta: string;
   /** 悬停提示：完整原因等（可能比 meta 长） */
   title?: string;
+}
+
+export const UNDERSTANDING_TEXT = '正在理解问题';
+
+/**
+ * 一段模型文字 → 状态行里的单行纯文本：取首个非空行，跳过代码围栏 / 分隔线，
+ * 去掉标题、引用、列表前缀与行内 markdown 符号（加粗 / 斜体 / 行内代码 / 链接），压缩空白。
+ * 单行省略号交给 CSS，这里只按 max 兜底截断。
+ */
+export function plainFirstLine(text: string, max = 200): string {
+  for (const raw of text.split(/\r?\n/)) {
+    let s = raw.trim();
+    if (!s || /^(```|~~~)/.test(s) || /^([-*_])(\s*\1){2,}$/.test(s)) continue;
+    s = s
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^>\s?/, '')
+      .replace(/^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, '')
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/(\*\*|__)(.+?)\1/g, '$2')
+      .replace(/(^|[\s(（])([*_])([^*_\s][^*_]*?)\2(?=$|[\s).,，。！？!?）])/g, '$1$3')
+      .replace(/`+([^`]*)`+/g, '$1')
+      .replace(/~~(.+?)~~/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!s) continue;
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  }
+  return '';
+}
+
+/**
+ * 模型最近一段文本的单行形式：正在写的 answer 优先，否则 steps 里最后一段文字。
+ * 思考 / 工具调用不参与——它们既不产生也不清掉文本。没有（或只有空白 / 纯符号）返回空串。
+ */
+export function latestTextLine(turn: Pick<Turn, 'answer' | 'steps'>): string {
+  const fromAnswer = plainFirstLine(turn.answer);
+  if (fromAnswer) return fromAnswer;
+  for (let i = turn.steps.length - 1; i >= 0; i--) {
+    const s = turn.steps[i]!;
+    if (s.kind !== 'text') continue;
+    const line = plainFirstLine(s.text);
+    if (line) return line;
+  }
+  return '';
 }
 
 /** 状态行短原因：取首个非空行，压缩空白，超长截断 */
@@ -47,20 +109,29 @@ export function shortReason(reason: string | undefined, max = 60): string {
 }
 
 /**
- * 状态行：主短语固定（正在处理 / 已完成 / 已中断 / 出错了），变化的只有暗色 meta。
- * now 用于进行中的用时（组件每秒传入一次）；结束态用 endedAt。
+ * 状态行状态机。
+ * 进行中只由「是否已有文本、最近一段文本是什么」决定，思考和工具调用不改变它：
+ *   没有文本 → phase=understanding，「正在理解问题」；
+ *   有文本   → phase=text，最近一段文本的首行。
+ * 结束态：已完成（时间 · 共 N 步 · 用时）/ 已中断 / 出错了，meta 前带上结束的具体时间（非今天带日期）。
+ * now 用于进行中的用时（组件每秒传入一次）和「是否今天」；结束态用 endedAt。
  */
 export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine {
+  const stamp = turn.endedAt != null ? formatStamp(turn.endedAt, now) : '';
   switch (turn.status) {
     case 'understanding':
     case 'running': {
       const parts = [formatDuration(now - turn.startedAt)];
       const sub = subagentProgress(turn.subagents);
       if (sub.total > 0 && !sub.allDone) parts.push(`子代理 ${sub.finished}/${sub.total}`);
-      return { kind: 'active', text: '正在处理', meta: parts.join(' · ') };
+      const line = latestTextLine(turn);
+      return line
+        ? { kind: 'active', phase: 'text', text: line, meta: parts.join(' · '), title: line }
+        : { kind: 'active', phase: 'understanding', text: UNDERSTANDING_TEXT, meta: parts.join(' · ') };
     }
     case 'done': {
       const parts: string[] = [];
+      if (stamp) parts.push(stamp);
       if (turn.steps.length > 0) parts.push(`共 ${turn.steps.length} 步`);
       if (turn.endedAt != null) parts.push(`用时 ${formatDuration(turn.endedAt - turn.startedAt)}`);
       return { kind: 'done', text: '已完成', meta: parts.join(' · ') };
@@ -68,25 +139,29 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
     case 'interrupted': {
       // reducer 的默认原因就是「已中断」，与主短语重复时不再显示
       const r = shortReason(turn.reason);
-      const meta = r && r !== '已中断' ? r : '';
-      return { kind: 'interrupted', text: '已中断', meta, title: meta ? turn.reason : undefined };
+      const meta = [stamp, r && r !== '已中断' ? r : ''].filter(Boolean).join(' · ');
+      return { kind: 'interrupted', text: '已中断', meta, title: r && r !== '已中断' ? turn.reason : undefined };
     }
     case 'error': {
       const r = shortReason(turn.reason);
-      const meta = r && r !== '出错了' ? r : '';
-      return { kind: 'error', text: '出错了', meta, title: meta ? turn.reason : undefined };
+      const meta = [stamp, r && r !== '出错了' ? r : ''].filter(Boolean).join(' · ');
+      return { kind: 'error', text: '出错了', meta, title: r && r !== '出错了' ? turn.reason : undefined };
     }
   }
 }
 
 /**
  * 状态行下方的模型文字：只显示模型说的话，新的一段替换上一段。
- * 折叠时 = 正在写的 answer，没有则取 steps 里最后一段文字；
- * 展开时展开区已按时间列出所有步骤（含文字），这里只给 answer，避免重复。
+ * 进行中：只给正在写的 answer（最近一段文字已在首行显示，不再重复）；
+ * 结束后折叠时 = answer，没有则取 steps 里最后一段文字；展开时展开区已按时间列出所有步骤（含文字），这里只给 answer，避免重复。
  */
-export function getLiveText(turn: Pick<Turn, 'answer' | 'steps'>, expanded: boolean): { text: string; isAnswer: boolean } {
+export function getLiveText(
+  turn: Pick<Turn, 'answer' | 'steps'>,
+  expanded: boolean,
+  active = false,
+): { text: string; isAnswer: boolean } {
   if (turn.answer) return { text: turn.answer, isAnswer: true };
-  if (expanded) return { text: '', isAnswer: false };
+  if (expanded || active) return { text: '', isAnswer: false };
   for (let i = turn.steps.length - 1; i >= 0; i--) {
     const s = turn.steps[i]!;
     if (s.kind === 'text' && s.text.trim()) return { text: s.text, isAnswer: false };

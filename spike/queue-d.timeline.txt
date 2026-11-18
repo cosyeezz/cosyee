@@ -1,0 +1,80 @@
++0.00s -> {"type":"user","uuid":"679de99c-532e-435e-992e-630d4088cde8","message":{"role":"user","content":"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"}}
++0.63s <- {"type":"command_lifecycle","command_uuid":"679de99c-532e-435e-992e-630d4088cde8","state":"queued","uuid":"468b9fe1-83c9-4f04-a6b1-2fc19c68596e","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++0.64s <- {"type":"command_lifecycle","command_uuid":"679de99c-532e-435e-992e-630d4088cde8","state":"started","uuid":"a3a30ab3-d561-496b-b0e2-7426526e7675","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++1.49s <- {"type":"system","subtype":"init","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","interrupt_send_now_v1","interrupt_requeue_taken_v1","msg_lifecycle_v1","request_marker_lists_v1","ask_user_question_unanswered_v1","lifecycle_wakeup_source_v1","sdk_mcp_tools_list_changed","sdk_mcp_manifests","mcp_read_resource_v1","mcp_tool_ui_meta_v1","ui_surface_v1","mcp_call_result_not_for_model_v1","mcp_call_check_permissions_v1","voice_call_talk_line_v1","withdrawn_files_note_v2","ui_pane_widget_v1","reload_plugins_refuse_if_busy_v1","silent_resend_files_v1"],"model":"claude-haiku-5-5"}
++1.49s <- {"type":"system","subtype":"status","status":"requesting","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc","uuid":"d5d03ff7-79a1-4a16-94e7-c81339c8bb8c","user_message_uuids":["679de99c-532e-435e-992e-630d4088cde8"]}
++2.23s <- {"type":"user","keys":"uuid,timestamp,isReplay","isReplay":true,"uuid":"679de99c","blocks":["str::\"请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。\""]}
++2.23s <- stream_event:message_start
++2.23s <- stream_event:content_block_start
++2.41s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs,user_message_uuid,user_message_uuids","uuid":"fb8c4f97","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"First sleep 4 seconds\"}"]}
++2.42s <- stream_event:content_block_stop
++2.43s <- stream_event:message_delta:tool_use
++2.44s <- stream_event:message_stop
++2.44s <- {"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795014000,"rateLimitType":"seven_day","utilization":0.91,"overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"surpassedThreshold":0.75,"unifiedWindows":{"five_hour":{"utilization":0.26,"resetsAt":1795007400,"status":"allowed"},"seven_day":{"utilization":0.91,"resetsAt":17…
++3.22s ## send M2 later
++3.22s -> {"type":"user","priority":"later","uuid":"c85e7602-9469-4818-bd04-e04228c4263f","message":{"role":"user","content":"请只回复 LATER-OK，不要用工具。"}}
++3.22s <- {"type":"command_lifecycle","command_uuid":"c85e7602-9469-4818-bd04-e04228c4263f","state":"queued","uuid":"b7c96d4b-d14b-4f95-9bb2-75b396d25471","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++3.63s ## cancel_async_message u2
++3.63s -> {"type":"control_request","request_id":"qssaczw","request":{"subtype":"cancel_async_message","message_uuid":"c85e7602-9469-4818-bd04-e04228c4263f"}}
++3.63s <- {"type":"command_lifecycle","command_uuid":"c85e7602-9469-4818-bd04-e04228c4263f","state":"cancelled","uuid":"fd69038a-2900-40d2-a7c6-a73fa673f594","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++3.63s <- {"type":"control_response","response":{"subtype":"success","request_id":"qssaczw","response":{"cancelled":true,"message_uuid":"c85e7602-9469-4818-bd04-e04228c4263f"}}}
++3.94s ## cancel u2 again (expect fail)
++3.94s -> {"type":"control_request","request_id":"qrdb1pk","request":{"subtype":"cancel_async_message","message_uuid":"c85e7602-9469-4818-bd04-e04228c4263f"}}
++3.94s <- {"type":"control_response","response":{"subtype":"success","request_id":"qrdb1pk","response":{"cancelled":false}}}
++3.94s ## cancel unknown uuid
++3.94s -> {"type":"control_request","request_id":"qhr423h","request":{"subtype":"cancel_async_message","message_uuid":"0154b137-c7a7-486d-ad0f-4d2b07c6831e"}}
++3.94s <- {"type":"control_response","response":{"subtype":"success","request_id":"qhr423h","response":{"cancelled":false}}}
++6.13s <- {"type":"system","subtype":"task_started","task_id":"b3wgpfx5w","run_id":"0mwlypgv1-6c00d614","tool_use_id":"toolu_01NVnrdhHL7jMTsnz1QEok1F","description":"First sleep 4 seconds","is_backgrounded":false,"task_type":"local_bash","uuid":"ff28f7ff-d691-4643-ba33-45a3da9e17c8","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++7.22s <- {"type":"system","subtype":"task_notification","task_id":"b3wgpfx5w","run_id":"0mwlypgv1-6c00d614","tool_use_id":"toolu_01NVnrdhHL7jMTsnz1QEok1F","status":"completed","output_file":"","summary":"First sleep 4 seconds","uuid":"65cac611-3466-4614-b009-316c47dbb696","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++7.23s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"0dc6b4e9","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-d-lkQXnD\""]}
++7.24s <- {"type":"system","subtype":"status","status":"requesting","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc","uuid":"5c036088-afb1-496b-ad3c-495170122fe9","user_message_uuids":["679de99c-532e-435e-992e-630d4088cde8"]}
++8.00s <- stream_event:message_start
++8.00s <- stream_event:content_block_start
++8.00s <- stream_event:content_block_delta:text_delta
++8.14s <- stream_event:content_block_delta:text_delta
++8.14s <- stream_event:content_block_delta:text_delta
++8.14s <- stream_event:content_block_delta:text_delta
++8.14s <- stream_event:content_block_delta:text_delta
++8.14s <- stream_event:content_block_delta:text_delta
++8.15s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"a1076c61","blocks":["text::\"第 1 次 sleep 4 已完成，进度 1/3。\""]}
++8.15s <- stream_event:content_block_stop
++8.15s <- stream_event:content_block_start
++8.34s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"40e21aa2","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Second sleep 4 seconds\"}"]}
++8.34s <- stream_event:content_block_stop
++8.35s <- stream_event:message_delta:tool_use
++8.35s <- stream_event:message_stop
++11.36s <- {"type":"system","subtype":"task_started","task_id":"b4u7wmlxv","run_id":"0mwlypkwc-15da4b85","tool_use_id":"toolu_01LtN9faYX3ph47CMiu49XTz","description":"Second sleep 4 seconds","is_backgrounded":false,"task_type":"local_bash","uuid":"7cd914a1-d830-4678-a3db-9e4dae250a34","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++12.44s <- {"type":"system","subtype":"task_notification","task_id":"b4u7wmlxv","run_id":"0mwlypkwc-15da4b85","tool_use_id":"toolu_01LtN9faYX3ph47CMiu49XTz","status":"completed","output_file":"","summary":"Second sleep 4 seconds","uuid":"496c7e46-7eb6-425d-b0ed-8b7b2842ca47","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++12.45s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"83592c98","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-d-lkQXnD\""]}
++12.45s <- {"type":"system","subtype":"status","status":"requesting","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc","uuid":"33d581ac-38ad-4362-b8b3-0edd3b35bde1","user_message_uuids":["679de99c-532e-435e-992e-630d4088cde8"]}
++13.18s <- stream_event:message_start
++13.18s <- stream_event:content_block_start
++13.18s <- stream_event:content_block_delta:text_delta
++13.29s <- stream_event:content_block_delta:text_delta
++13.29s <- stream_event:content_block_delta:text_delta
++13.29s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"ff7dcf76","blocks":["text::\"第 2 次 sleep 4 已完成，进度 2/3。\""]}
++13.29s <- stream_event:content_block_stop
++13.29s <- stream_event:content_block_start
++13.46s <- {"type":"assistant","keys":"uuid,timestamp,request_id,wire_tool_inputs","uuid":"02eea977","blocks":["tool_use:Bash:{\"command\":\"sleep 4\",\"description\":\"Third sleep 4 seconds\"}"]}
++13.46s <- stream_event:content_block_stop
++13.46s <- stream_event:message_delta:tool_use
++13.47s <- stream_event:message_stop
++16.48s <- {"type":"system","subtype":"task_started","task_id":"bdyemz59p","run_id":"0mwlypoui-4ca62a4f","tool_use_id":"toolu_01FGWSE9JbKueCjDPZKkffRM","description":"Third sleep 4 seconds","is_backgrounded":false,"task_type":"local_bash","uuid":"2078b474-a403-4d14-a149-1dbe145060bf","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++17.57s <- {"type":"system","subtype":"task_notification","task_id":"bdyemz59p","run_id":"0mwlypoui-4ca62a4f","tool_use_id":"toolu_01FGWSE9JbKueCjDPZKkffRM","status":"completed","output_file":"","summary":"Third sleep 4 seconds","uuid":"8f9ec8a3-96be-422a-9b0c-4fbbca74dea3","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++17.58s <- {"type":"user","keys":"uuid,timestamp,tool_use_result,tool_result_meta","uuid":"b3f5f8cb","blocks":["tool_result::\"Shell cwd was reset to C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\cosyee-queue-d-lkQXnD\""]}
++17.58s <- {"type":"system","subtype":"status","status":"requesting","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc","uuid":"7d66af98-aa37-4c0e-a930-0499a40343f9","user_message_uuids":["679de99c-532e-435e-992e-630d4088cde8"]}
++18.30s <- stream_event:message_start
++18.30s <- stream_event:content_block_start
++18.30s <- stream_event:content_block_delta:text_delta
++18.33s <- stream_event:content_block_delta:text_delta
++18.34s <- stream_event:content_block_delta:text_delta
++18.36s <- stream_event:content_block_delta:text_delta
++18.36s <- {"type":"assistant","keys":"uuid,timestamp,request_id","uuid":"ff06c374","blocks":["text::\"第 3 次 sleep 4 已完成，进度 3/3。\\n\\nDONE-M1\""]}
++18.36s <- stream_event:content_block_stop
++18.38s <- stream_event:message_delta:end_turn
++18.38s <- stream_event:message_stop
++18.39s <- {"type":"result","subtype":"success","stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"result":"第 3 次 sleep 4 已完成，进度 3/3。\n\nDONE-M1","num_turns":4}
++18.39s <- {"type":"command_lifecycle","command_uuid":"679de99c-532e-435e-992e-630d4088cde8","state":"completed","uuid":"5342c488-31da-4dc0-a359-3d5acef87117","session_id":"f8a2980b-dda4-423a-b79a-dacbf32c8ecc"}
++25.45s ## cancel u1 after consumed
++25.45s -> {"type":"control_request","request_id":"q5y3lvg","request":{"subtype":"cancel_async_message","message_uuid":"679de99c-532e-435e-992e-630d4088cde8"}}
++25.45s <- {"type":"control_response","response":{"subtype":"success","request_id":"q5y3lvg","response":{"cancelled":false}}}

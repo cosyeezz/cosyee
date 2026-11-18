@@ -1,0 +1,49 @@
+[
+ {
+  "t": 3,
+  "o": {
+   "type": "user",
+   "uuid": "abbfe283-e0d7-4d5e-97a5-a9b7c748fb0c",
+   "message": {
+    "role": "user",
+    "content": "请用 Bash 工具依次运行 3 次命令 `sleep 4`（每次单独一次工具调用，不要合并、不要后台运行），每次完成后用一句话报告进度，最后说 DONE-M1。"
+   }
+  }
+ },
+ {
+  "t": 4792,
+  "o": {
+   "type": "user",
+   "priority": "later",
+   "uuid": "c427f1cf-38e1-4cd0-b377-602d71d45aef",
+   "message": {
+    "role": "user",
+    "content": "请只回复 SENDNOW-OK，不要用工具。"
+   }
+  }
+ },
+ {
+  "t": 5309,
+  "o": {
+   "type": "control_request",
+   "request_id": "q4zr0ln",
+   "request": {
+    "subtype": "interrupt",
+    "send_now": true,
+    "message_uuid": "c427f1cf-38e1-4cd0-b377-602d71d45aef"
+   }
+  }
+ },
+ {
+  "t": 12466,
+  "o": {
+   "type": "control_request",
+   "request_id": "qr562mp",
+   "request": {
+    "subtype": "interrupt",
+    "send_now": true,
+    "message_uuid": "f93bfa6f-7545-4d9d-9cdb-16f1490486ce"
+   }
+  }
+ }
+]

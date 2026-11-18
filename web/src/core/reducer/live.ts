@@ -29,14 +29,20 @@ import {
 } from './core';
 import { arr, isObj, str } from './util';
 import { resolveRun } from './resume';
+import { recordCache } from './cacheHit';
 
 const strList = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
 
 /** 事件所属的代理：顶层 parent_tool_use_id 为字符串即子代理，否则主代理 */
 const scopeOf = (e: Record<string, unknown>): string => (typeof e.parent_tool_use_id === 'string' ? e.parent_tool_use_id : '');
 
-/** 新开一轮（cosyee_user）。上一轮若仍未结束，先收尾为 done */
-export function startTurn(s: ConvState, text: string, at: number): ConvState {
+/**
+ * 新开一轮（cosyee_user）。上一轮若仍未结束，先收尾为 done。
+ * opts.id：消息 uuid（记为 Turn.userId；同 id 的轮已存在时不重复建，例如历史已含 steering 的 queued_command）；
+ * opts.steer：steering 插话——UI 上同样是新的一轮，之后 CLI 的 result 落在最后这一轮上。
+ */
+export function startTurn(s: ConvState, text: string, at: number, opts: { id?: string; steer?: boolean } = {}): ConvState {
+  if (opts.id && s.turns.some((t) => t.userId === opts.id)) return s;
   let turns = s.turns;
   const last = turns[turns.length - 1];
   if (last && isActive(last)) {
@@ -44,7 +50,7 @@ export function startTurn(s: ConvState, text: string, at: number): ConvState {
     finishTurn(c, 'done', at);
     turns = [...turns.slice(0, -1), c];
   }
-  return { turns: [...turns, makeTurn(turns.length, text, at)], meta: s.meta, book: newBook(at) };
+  return { turns: [...turns, makeTurn(turns.length, text, at, { userId: opts.id, steer: opts.steer })], meta: s.meta, book: newBook(at) };
 }
 
 function mergeInit(meta: SessionMeta, e: Record<string, unknown>): SessionMeta {
@@ -213,6 +219,7 @@ function applyResult(s: ConvState, e: Record<string, unknown>, now: number): Con
   if (isActive(d.turn)) {
     const terminal = str(e.terminal_reason);
     const failed = e.is_error === true || (str(e.subtype) !== '' && e.subtype !== 'success');
+    // aborted_tools / aborted_streaming：被用户中断（send_now / rewind），即使 is_error 为 true 也不算出错
     if (/abort|interrupt/i.test(terminal)) {
       finishTurn(d.turn, 'interrupted', now, '已中断');
     } else if (failed) {
@@ -231,7 +238,7 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
   if (!isObj(e)) return s;
   switch (e.type) {
     case 'cosyee_user':
-      return startTurn(s, str(e.text), typeof e.at === 'number' ? e.at : now);
+      return startTurn(s, str(e.text), typeof e.at === 'number' ? e.at : now, { id: str(e.id) || undefined, steer: e.mode === 'next' });
     case 'system':
       return applySystem(s, e, now);
     case 'stream_event':
@@ -243,7 +250,9 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
       if (scope !== '' && !resolveRun(s, d, { toolUseId: scope })) return s;
       touch(d, scope);
       applyAssistantMessage(d, scope, e.message);
-      return commit(s, d);
+      const next = commit(s, d);
+      // 缓存命中率：只记主线程（子代理的 usage 不算）
+      return scope === '' ? { ...next, meta: recordCache(next.meta, isObj(e.message) ? e.message : null, next.turns.length - 1) } : next;
     }
     case 'user': {
       // 只处理 tool_result；其它 user 文本（中断提示、压缩摘要、子代理 prompt 等）忽略

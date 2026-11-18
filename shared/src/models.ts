@@ -42,6 +42,24 @@ export const EFFORTS: { id: Effort; label: string; badge?: string; info?: boolea
 
 export const EFFORT_HINT = '投入程度越高，回复越详尽，但耗时越长，且会更快消耗您的使用限额。';
 
+/**
+ * 把会话记录里的完整模型 id（claude-sonnet-5-5-20260101 / claude-opus-4-8 …）归一成菜单里的 id：
+ * 精确命中菜单项 → 原样；菜单项 id + 日期后缀 → 该菜单项；否则按系列关键字落到 opus / sonnet / fable / haiku；
+ * 都不是（含 <synthetic>）返回 undefined。
+ */
+export function canonicalModel(raw: string | undefined | null): string | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const id = raw.trim().toLowerCase().replace(/\[[^\]]*\]$/, '');
+  if (!id || id.startsWith('<')) return undefined;
+  const all = [...PRIMARY_MODELS, ...MORE_MODELS];
+  const exact = all.find((m) => m.id === id);
+  if (exact) return exact.id;
+  const dated = all.find((m) => id.startsWith(m.id + '-') && /^\d{8}$/.test(id.slice(m.id.length + 1)));
+  if (dated) return dated.id;
+  const fam = PRIMARY_MODELS.find((m) => id.includes(m.id));
+  return fam?.id;
+}
+
 export function modelLabel(id: string | undefined): string {
   if (!id) return '';
   const all = [...PRIMARY_MODELS, ...MORE_MODELS];

@@ -53,3 +53,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 复制按钮：悬停所在行 / 键盘聚焦 / 刚复制完时可见；触屏（无悬停）常显 */
+.cz-header__copy {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-header__meta:hover .cz-header__copy,
+.cz-header__copy:focus-visible,
+.cz-header__copy.is-copied { opacity: 1; }
+.cz-header__copy:hover { background: var(--bg-hover); color: var(--text); }
+.cz-header__copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-header__copy.is-copied { color: var(--tk-ok, var(--accent)); }
+@media (hover: none) { .cz-header__copy { opacity: 1; } }

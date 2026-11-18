@@ -467,8 +467,9 @@
   bottom: calc(100% + var(--sp-1));
   /* 比账户栏（不含设置按钮）稍宽一些，名字不至于太挤 */
   right: auto;
-  width: max(100%, 240px);
+  width: max(100%, 280px);
 }
+.cz-sidebar__menu--up .cz-sidebar__menu-list { max-height: 420px; }
 .cz-sidebar__menu--up .cz-sidebar__menu-main:disabled { cursor: default; opacity: .7; }
 /* 账号行最多一个操作按钮：只有可移除的行悬停时才留位置 */
 .cz-sidebar__menu--up .cz-sidebar__menu-item .cz-sidebar__menu-main { padding-right: var(--sp-2); }
@@ -546,3 +547,37 @@
 .cz-acct-dlg__btn:disabled { opacity: .5; cursor: not-allowed; }
 .cz-acct-dlg__btn--primary { border-color: transparent; background: var(--accent); color: var(--on-accent); }
 .cz-acct-dlg__btn--primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+
+/* 账号行里的额度：进度条颜色阈值与输入框的额度面板一致（normal / warning / critical） */
+.cz-acctq { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
+.cz-acctq__row { --meter: var(--accent); display: flex; flex-direction: column; gap: 3px; }
+.cz-acctq__row.is-warning { --meter: var(--warn); }
+.cz-acctq__row.is-critical { --meter: var(--danger); }
+.cz-acctq__text { font-size: var(--fs-xs); line-height: 1.3; color: var(--text-2); }
+.cz-acctq__row.is-critical .cz-acctq__text { color: var(--danger); }
+.cz-acctq__track {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--meter) 14%, transparent);
+  overflow: hidden;
+}
+.cz-acctq__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--meter);
+}
+.cz-acctq__hint { display: block; margin-top: 3px; font-size: var(--fs-xs); line-height: 1.3; color: var(--text-3); opacity: .8; }
+.cz-acctq--loading { gap: 6px; }
+.cz-acctq__skel {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  animation: cz-acctq-pulse 1.4s var(--ease) infinite;
+}
+.cz-acctq__skel--short { width: 60%; }
+@keyframes cz-acctq-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .cz-acctq__skel { animation: none; } }

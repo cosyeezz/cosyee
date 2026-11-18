@@ -24,6 +24,12 @@
 }
 
 /* ---------- 滚动容器与内容列 ---------- */
+/* 外层只负责给滚动导航按钮（ScrollNav）一个定位基准，尺寸行为与原来的滚动容器一致 */
+.cz-flow__wrap {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
 .cz-flow__scroll {
   height: 100%;
   overflow-y: auto;
@@ -127,13 +133,30 @@
 .cz-flow__status[data-static] { cursor: default; }
 .cz-flow__status[data-static]:hover { background: none; }
 .cz-flow__status:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 展开后首行吸顶（粘在 .cz-flow__scroll 顶部，直到这一轮滚出视口），需要不透明底 */
+.cz-flow__status.is-open {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+}
+.cz-flow__status.is-open:hover { background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg)); }
+.cz-flow__status-icon { flex: none; }
+/* 主短语 + 附加信息：主短语可被省略号截断（进行中是模型最近一段文字，可能很长），附加信息永远完整显示 */
 .cz-flow__status-text {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
+  display: flex;
+  align-items: baseline;
   white-space: nowrap;
+}
+.cz-flow__status-main {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
+.cz-flow__status-text > .cz-st-meta { flex: none; white-space: pre; }
 /* 展开 / 收起箭头用设计图标 chevron：旋转由 icons.css 的 .ci-chevron.is-open 负责（Icon 的 open 属性），这里不要再写 transform */
 .cz-flow__chev { color: var(--text-3); }
 
@@ -182,9 +205,11 @@
 /* 没有思考文本时的静态行：不可点 */
 .cz-flow__thinking-static { cursor: default; }
 .cz-flow__thinking-static:hover { background: none; }
-.cz-flow__thinking-label { flex: none; font-weight: 500; }
+.cz-flow__thinking-label { flex: none; font-variant-numeric: tabular-nums; }
 /* 折叠态：第一行，单行省略号 */
 .cz-flow__thinking-preview { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-style: italic; }
+/* 展开态按钮里没有文字，让箭头靠右 */
+.cz-flow__thinking.is-open > .cz-flow__row-btn { justify-content: space-between; }
 .cz-flow__thinking-body {
   /* 文字与标签左对齐（让出图标宽度） */
   margin: 2px 0 0 calc(var(--sp-2) + 7px);

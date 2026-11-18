@@ -1,10 +1,11 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  Account, Attachment, Bootstrap, DeletedSession, SessionConfig, SessionSummary, SkillMode, SubagentRun, Workspace,
+  Account, Attachment, Bootstrap, DeletedSession, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, Workspace,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
-import { subagentModelFromHistory, subagentTurnFromHistory } from '../core/reducer';
+import { resolveSessionConfig } from '../core/sessionConfig';
+import { rewindTo, subagentModelFromHistory, subagentTurnFromHistory } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
@@ -39,6 +40,9 @@ export function MainApp() {
   /** 置顶（全局，可来自任何工作空间）与已删除（全局） */
   const [pins, setPins] = useState<SessionSummary[]>([]);
   const [deleted, setDeleted] = useState<DeletedSession[]>([]);
+  /** 启动时置顶 / 工作空间是否已读完（决定「启动先打开哪个会话」要等什么） */
+  const [pinsLoaded, setPinsLoaded] = useState(false);
+  const [wsLoaded, setWsLoaded] = useState(false);
   /** 打开的会话。cwd 是它所属的工作空间：从「置顶」点开别的工作空间的会话时，不改变当前工作空间与列表 */
   const [sel, setSel] = useState<{ id: string; cwd: string; fresh: boolean } | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
@@ -92,7 +96,7 @@ export function MainApp() {
         setConfig(b.defaults);
         startSocket();
         return Promise.all([
-          api.workspaces().then(setWsState),
+          api.workspaces().then(setWsState).finally(() => setWsLoaded(true)),
           api.account().then(setAccount).catch(() => setAccount(null)),
         ]);
       })
@@ -132,7 +136,8 @@ export function MainApp() {
     const seq = ++pinsSeq.current;
     api.pins()
       .then((list) => { if (seq === pinsSeq.current) setPins(list); })
-      .catch((e) => flash(`读取置顶失败：${errText(e)}`));
+      .catch((e) => flash(`读取置顶失败：${errText(e)}`))
+      .finally(() => setPinsLoaded(true));
   }, [flash]);
   const loadDeleted = useCallback(() => {
     api.deleted().then(setDeleted).catch((e) => flash(`读取已删除列表失败：${errText(e)}`));
@@ -220,7 +225,8 @@ export function MainApp() {
     if (!dir) return;
     setSel({ id, cwd: dir, fresh: false });
     setOpenSub(null);
-    setConfig(configs.current.get(id) ?? boot?.defaults ?? FALLBACK_CONFIG);
+    // 每个会话各自的配置：本页记着的 > 服务端记下的（刷新页面后也在）> 会话记录里最后用的模型 + 全局默认
+    setConfig(configs.current.get(id) ?? resolveSessionConfig(hit, boot?.defaults ?? FALLBACK_CONFIG));
     const clearDot = (l: SessionSummary[]) => l.map((s) => (s.id === id && s.dot === 'unread' ? { ...s, dot: null } : s));
     setSessions(clearDot);
     setPins(clearDot);
@@ -237,9 +243,31 @@ export function MainApp() {
     setConfig(boot?.defaults ?? FALLBACK_CONFIG);
   }, [boot]);
 
+  // 启动时：有置顶就打开第一个置顶会话（置顶可来自任何工作空间，先切到它所属的工作空间）；没有置顶走下面的老逻辑。
+  // 只在启动时做一次；之后用户主动切换工作空间仍打开该工作空间列表里的第一个
+  const startupPick = useRef(true);
+  useEffect(() => {
+    if (!startupPick.current || !boot || !pinsLoaded || !wsLoaded) return;
+    startupPick.current = false;
+    const first = pins[0];
+    if (!first) return;
+    autoPick.current = false;
+    if (samePath(first.cwd, cwd)) {
+      selectSession(first.id);
+      return;
+    }
+    api.setCurrentWorkspace(first.cwd)
+      .then(() => setWsState((w) => ({
+        current: first.cwd,
+        list: w.list.some((x) => samePath(x.path, first.cwd)) ? w.list : [...w.list, { path: first.cwd, name: first.cwd.split(/[\\/]/).filter(Boolean).pop() ?? first.cwd }],
+      })))
+      .catch(() => { /* 工作空间已不在列表里：只打开会话，不改当前工作空间 */ })
+      .finally(() => selectSession(first.id));
+  }, [boot, pins, pinsLoaded, wsLoaded, cwd, selectSession]);
+
   // 启动 / 切换工作空间后，列表加载完且没有选中会话时，自动打开列表（显示顺序）里的第一个
   useEffect(() => {
-    if (!autoPick.current || !cwd || !samePath(sessionsFor.current, cwd)) return; // 列表还没为当前工作空间加载完
+    if (startupPick.current || !autoPick.current || !cwd || !samePath(sessionsFor.current, cwd)) return; // 列表还没为当前工作空间加载完
     autoPick.current = false; // 每次只尝试一次（空列表也算），之后不再抢用户的选择
     if (sel) return;
     const first = listed[0];
@@ -249,11 +277,12 @@ export function MainApp() {
       setSel(draftSel(cwd));
       setCtxCollapsed(false);
     }
-  }, [listed, cwd, sel, selectSession]);
+  }, [listed, cwd, sel, selectSession, pinsLoaded, wsLoaded]);
 
   // ───────────── 发送、中断、配置 ─────────────
 
-  const sendText = useCallback((text: string) => {
+  /** mode 只在执行中有意义：next=插话（并入当前这一轮），later=排队（这一轮结束后再发）；空闲时后端一律立即开始新一轮 */
+  const sendText = useCallback((text: string, mode?: QueueMode) => {
     if (!selCwd) return;
     let id = sel?.id;
     let isNew = false;
@@ -261,15 +290,57 @@ export function MainApp() {
       id = crypto.randomUUID();
       isNew = true;
       setSel({ id, cwd: selCwd, fresh: true });
-      configs.current.set(id, config);
     } else if (sel?.fresh && !sentIds.current.has(id)) {
       isNew = true;
     }
     sentIds.current.add(id);
-    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config });
+    configs.current.set(id, config); // 这个会话此刻显示的配置就是实际执行的配置
+    // 消息 id 由前端生成：CLI 以它作为 user 消息的 uuid，也是之后 rewind / 撤回 / 立即发送的目标
+    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: crypto.randomUUID(), ...(mode ? { mode } : {}) });
   }, [selCwd, sel, config]);
 
-  const onSend = useCallback((text: string, _attachments: Attachment[]) => sendText(text), [sendText]);
+  const onSend = useCallback((text: string, _attachments: Attachment[], mode?: QueueMode) => sendText(text, mode), [sendText]);
+
+  const onQueueSendNow = useCallback((id: string) => {
+    if (sel) socket.send({ t: 'queue.sendNow', sessionId: sel.id, id });
+  }, [sel]);
+  const onQueueCancel = useCallback((id: string) => {
+    if (sel) socket.send({ t: 'queue.cancel', sessionId: sel.id, id });
+  }, [sel]);
+
+  /** 双击 Esc 浮层里可回退的消息：有 userId 且不是 steering 的轮（CLI 的 rewind 列表不含插话） */
+  const rewindTargets = useMemo(
+    () => turns.filter((t) => t.userId && !t.steer).map((t) => ({ id: t.userId!, text: t.userText })),
+    [turns],
+  );
+  /** 进行中的 rewind 请求 id，用来对应 rewind.result */
+  const rewindReq = useRef<string | null>(null);
+  const onRewind = useCallback((targetId: string) => {
+    if (!sel || !selCwd) return;
+    const reqId = crypto.randomUUID();
+    rewindReq.current = reqId;
+    socket.send({ t: 'rewind', sessionId: sel.id, cwd: selCwd, config, targetId, reqId });
+  }, [sel, selCwd, config]);
+
+  // 撤回 / 回退的结果：把原文填回输入框
+  const selIdRef = useRef<string | null>(null);
+  selIdRef.current = sel?.id ?? null;
+  useEffect(() => socket.on((m) => {
+    if (m.t === 'queue.cancelled') {
+      if (m.sessionId !== selIdRef.current) return;
+      if (m.ok) composerRef.current?.restoreText(m.text ?? '', 'append'); // 输入框为空直接填入，否则换行追加
+      else flash('这条消息已经开始执行，无法撤回');
+    } else if (m.t === 'rewind.result') {
+      if (m.sessionId !== selIdRef.current || m.reqId !== rewindReq.current) return;
+      rewindReq.current = null;
+      if (m.ok) {
+        patch((v) => { if (v.id === m.sessionId) v.conv = rewindTo(v.conv, m.targetId); });
+        composerRef.current?.restoreText(m.prefillText ?? '', 'replace');
+      } else {
+        flash(`回退失败：${m.error ?? '未知原因'}`);
+      }
+    }
+  }), [flash, patch]);
 
   const onInterrupt = useCallback(() => {
     if (sel) socket.send({ t: 'interrupt', sessionId: sel.id });
@@ -282,8 +353,8 @@ export function MainApp() {
     setBoot((b) => (b ? { ...b, defaults: c } : b));
     if (!sel) return;
     configs.current.set(sel.id, c);
-    // 进程在就立即下发，下一轮生效；不在则随下一次 send 带上
-    if (view && view.status && view.status !== 'exited') socket.send({ t: 'config', sessionId: sel.id, config: c });
+    // 进程在就立即下发（下一轮生效）；不在则服务端只记下，随下一次 send 带上。无论哪种都要发，服务端据此持久化这个会话的配置
+    socket.send({ t: 'config', sessionId: sel.id, config: c });
   }, [sel, view]);
 
   const onRename = useCallback((title: string) => {
@@ -336,6 +407,61 @@ export function MainApp() {
     }
     api.setSkillMode(name, mode).catch((e) => {
       flash(`设置 skill 失败：${errText(e)}`);
+      refreshContext();
+    });
+  }, [sel, patch, flash, refreshContext]);
+
+  // 批量设置 skill（一键推荐配置 / 撤销）：同样乐观更新
+  const setSkillModes = useCallback((modes: Record<string, SkillMode>) => {
+    const id = sel?.id;
+    if (id) {
+      patch((v) => {
+        if (v.id !== id || !v.context) return;
+        v.context = {
+          ...v.context,
+          skills: v.context.skills.map((s) => {
+            const mode = modes[s.name];
+            return mode ? { ...s, mode, tokens: mode === 'on' ? s.tokens : null } : s;
+          }),
+        };
+      });
+    }
+    api.setSkillModes(modes).catch((e) => {
+      flash(`批量设置 skill 失败：${errText(e)}`);
+      refreshContext();
+    });
+  }, [sel, patch, flash, refreshContext]);
+
+  // 移除 skill：先让列表里的它消失；失败则提示并重新采集
+  const removeSkill = useCallback((name: string) => {
+    const id = sel?.id;
+    if (!sel) return;
+    if (id) {
+      patch((v) => {
+        if (v.id !== id || !v.context) return;
+        v.context = { ...v.context, skills: v.context.skills.filter((s) => s.name !== name) };
+      });
+    }
+    api.removeSkill(name, isDraft(sel) ? null : sel.id, sel.cwd)
+      .then(() => flash(`已移除 skill「${name}」，已备份到 ~/.cosyee/removed-skills；新会话生效`))
+      .catch((e) => {
+        flash(`移除 skill 失败：${errText(e)}`);
+        refreshContext();
+      });
+  }, [sel, patch, flash, refreshContext]);
+
+  // 内置工具开关：乐观更新；失败则提示并重新采集
+  const toggleTool = useCallback((name: string, enabled: boolean) => {
+    const id = sel?.id;
+    if (id) {
+      patch((v) => {
+        if (v.id !== id || !v.context) return;
+        const rest = (v.context.disabledTools ?? []).filter((n) => n !== name);
+        v.context = { ...v.context, disabledTools: enabled ? rest : [...rest, name] };
+      });
+    }
+    api.setTool(name, enabled).catch((e) => {
+      flash(`${enabled ? '启用' : '停用'}工具失败：${errText(e)}`);
       refreshContext();
     });
   }, [sel, patch, flash, refreshContext]);
@@ -481,6 +607,11 @@ export function MainApp() {
           quote={quote}
           onClearQuote={onClearQuote}
           onSend={onSend}
+          queue={view?.queue}
+          onQueueSendNow={onQueueSendNow}
+          onQueueCancel={onQueueCancel}
+          rewindTargets={rewindTargets}
+          onRewind={onRewind}
           onInterrupt={onInterrupt}
           running={running}
           pick={api.pick}
@@ -536,12 +667,17 @@ export function MainApp() {
         context={
           <ContextPanel
             usage={sel && view?.id === sel.id ? view.context : null}
+            cache={sel && view?.id === sel.id ? view.conv.meta.cache : undefined}
             loading={ctxLoading}
             onRefresh={refreshContext}
             onCompact={compact}
             compactDisabled={!sel || isDraft(sel) || running}
             onCollapse={() => setCtxCollapsed(true)}
             onSkillMode={setSkillMode}
+            onSkillModes={setSkillModes}
+            onSkillRemove={removeSkill}
+            tools={sel && view?.id === sel.id ? view.conv.meta.tools : undefined}
+            onToolToggle={toggleTool}
             onMcpToggle={toggleMcp}
             mcpBusy={mcpBusy}
           />

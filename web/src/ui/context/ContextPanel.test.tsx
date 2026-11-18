@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { ContextUsage } from '@cosyee/shared';
+import type { CachePoint, ContextUsage } from '@cosyee/shared';
 import { ContextPanel } from './ContextPanel';
 import { mockContextUsage } from '../../mock/shell';
 
@@ -51,34 +51,114 @@ describe('ContextPanel 空态', () => {
 });
 
 describe('ContextPanel Skills', () => {
-  it('Skills 在 MCP 上方；展开后每个 skill 有三态，点别的状态回调 onSkillMode', () => {
+  const mount2 = (extra: Partial<React.ComponentProps<typeof ContextPanel>> = {}) =>
+    render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} {...extra} />);
+  const rowOf = (el: HTMLElement, name: string) =>
+    [...el.querySelectorAll('.cz-ctx__skill')].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === name)!;
+
+  it('Skills 在 MCP 上方；每行一个状态按钮，点开下拉选别的状态回调 onSkillMode', () => {
     const onSkillMode = vi.fn();
-    const el = render(
-      <ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} onSkillMode={onSkillMode} />,
-    );
+    const el = mount2({ onSkillMode });
     const titles = [...el.querySelectorAll('.cz-ctx__fold-title')].map((t) => t.textContent);
     expect(titles.indexOf('Skills')).toBeLessThan(titles.indexOf('MCP'));
-    expect(el.textContent).toContain('3 开');
+    expect(el.textContent).toContain('3 开 · 1 手动 · 1 关');
 
     openFold(el, 'Skills');
-    const rows = el.querySelectorAll('.cz-ctx__skill');
-    expect(rows.length).toBe(5);
-    // 插件前缀不显示；关闭的行变淡
-    const xlsx = [...rows].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === 'xlsx')!;
+    expect(el.querySelectorAll('.cz-ctx__skill').length).toBe(5);
+    // 不再有三段按钮；插件前缀不显示；关闭的行变淡
+    expect(el.querySelector('.cz-ctx__seg3')).toBeNull();
+    const xlsx = rowOf(el, 'xlsx');
     expect(xlsx.classList.contains('is-off')).toBe(true);
-    expect(xlsx.querySelector('[aria-checked="true"]')?.textContent).toBe('关');
+    const btn = xlsx.querySelector<HTMLButtonElement>('.cz-ctx__mode')!;
+    expect(btn.getAttribute('aria-label')).toContain('关');
 
-    // 点当前状态不回调；点「手动」回调完整名
-    click(xlsx.querySelector('[aria-checked="true"]'));
+    click(btn);
+    const opts = [...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')];
+    const text = (re: RegExp) => opts.find((o) => re.test(o.textContent ?? ''))!;
+    // 当前项不回调；点「手动」回调完整名
+    click(text(/^关/));
     expect(onSkillMode).not.toHaveBeenCalled();
-    click([...xlsx.querySelectorAll('[role="radio"]')].find((b) => b.textContent === '手动'));
+    click(btn);
+    const again = [...document.querySelectorAll('[role^="menuitem"]')].find((o) => /^手动/.test(o.textContent ?? ''))!;
+    click(again);
     expect(onSkillMode).toHaveBeenCalledWith('anthropic-skills:xlsx', 'user-invocable-only');
   });
 
-  it('不传 onSkillMode 时三态按钮只读', () => {
-    const el = render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />);
+  it('不传 onSkillMode 时状态按钮禁用', () => {
+    const el = mount2();
     openFold(el, 'Skills');
-    for (const b of el.querySelectorAll<HTMLButtonElement>('.cz-ctx__seg3-btn')) expect(b.disabled).toBe(true);
+    for (const b of el.querySelectorAll<HTMLButtonElement>('.cz-ctx__mode')) expect(b.disabled).toBe(true);
+  });
+
+  it('一键推荐配置：只改与推荐不同的已收录 skill；撤销恢复原状态', () => {
+    const onSkillModes = vi.fn();
+    const el = mount2({ onSkillModes });
+    openFold(el, 'Skills');
+    const preset = el.querySelector<HTMLButtonElement>('.cz-ctx__preset')!;
+    expect(preset.disabled).toBe(false);
+    click(preset);
+    // mock：docx 开→关，pdf 开→手动，xlsx 已是关→手动；impeccable(开) 与 schedule(手动) 已是推荐
+    expect(onSkillModes).toHaveBeenLastCalledWith({
+      'anthropic-skills:docx': 'off',
+      'anthropic-skills:pdf': 'user-invocable-only',
+      'anthropic-skills:xlsx': 'user-invocable-only',
+    });
+    click(el.querySelector('.cz-ctx__undo'));
+    expect(onSkillModes).toHaveBeenLastCalledWith({
+      'anthropic-skills:docx': 'on',
+      'anthropic-skills:pdf': 'on',
+      'anthropic-skills:xlsx': 'off',
+    });
+    expect(el.querySelector('.cz-ctx__undo')).toBeNull();
+  });
+
+  it('下拉里的「移除」：可移除的先行内确认再回调；插件 skill 的移除项禁用', () => {
+    const onSkillRemove = vi.fn();
+    const el = mount2({ onSkillMode: () => undefined, onSkillRemove });
+    openFold(el, 'Skills');
+    const items = () => [...document.querySelectorAll('[role^="menuitem"]')];
+    const removeItem = () => items().find((o) => /^移除/.test(o.textContent ?? '')) as HTMLElement;
+
+    // 插件 skill（没有 removable）：移除项禁用，点了也不弹确认
+    click(rowOf(el, 'pdf').querySelector('.cz-ctx__mode'));
+    expect(removeItem().textContent).toContain('不能单独移除');
+    click(removeItem());
+    expect(el.querySelector('.cz-ctx__confirm')).toBeNull();
+    expect(onSkillRemove).not.toHaveBeenCalled();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+    // 用户级 skill：点移除 → 行内确认 → 取消不回调
+    const row = rowOf(el, 'impeccable');
+    click(row.querySelector('.cz-ctx__mode'));
+    click(removeItem());
+    expect(row.querySelector('.cz-ctx__confirm')?.textContent).toContain('移除「impeccable」');
+    click([...row.querySelectorAll('.cz-ctx__confirm-btn')].find((b) => b.textContent === '取消'));
+    expect(row.querySelector('.cz-ctx__confirm')).toBeNull();
+    expect(onSkillRemove).not.toHaveBeenCalled();
+
+    // 再来一次，确认移除
+    click(row.querySelector('.cz-ctx__mode'));
+    click(removeItem());
+    click(row.querySelector('.cz-ctx__confirm-btn.is-danger'));
+    expect(onSkillRemove).toHaveBeenCalledWith('impeccable');
+  });
+
+  it('悬浮显示中文用途与建议', () => {
+    vi.useFakeTimers();
+    try {
+      const el = mount2({ onSkillMode: () => undefined });
+      openFold(el, 'Skills');
+      const row = rowOf(el, 'pdf');
+      act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+      act(() => { (row as HTMLElement).dispatchEvent(new FocusEvent('focusin', { bubbles: true })); });
+      act(() => { vi.advanceTimersByTime(400); });
+      const tip = document.querySelector('.cz-ctx__tip')!;
+      expect(tip.textContent).toContain('PDF');
+      expect(tip.textContent).toContain('建议');
+      expect(tip.textContent).toContain('手动');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -147,5 +227,139 @@ describe('ContextPanel 收起与压缩', () => {
     expect(btn.disabled).toBe(true);
     click(btn);
     expect(onCompact).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContextPanel 缓存命中率走势', () => {
+  const pt = (i: number, read: number, create: number, input: number): CachePoint => ({
+    id: 'm' + i, turn: Math.floor(i / 2), read, create, input, rate: (read / (read + create + input)) * 100,
+  });
+  const series = [pt(0, 0, 9000, 100), pt(1, 9000, 500, 50), pt(2, 9500, 400, 100), pt(3, 9900, 200, 10)];
+  const mountCache = (cache?: CachePoint[]) =>
+    render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} cache={cache} />);
+
+  it('在 Skills 上方显示；最新值用大号百分比和实心圆点标出，svg 带文字替代', () => {
+    const el = mountCache(series);
+    const subs = [...el.querySelectorAll('.cz-ctx__sub, .cz-ctx__fold-title')].map((n) => n.textContent);
+    expect(subs.indexOf('缓存命中率')).toBeGreaterThanOrEqual(0);
+    expect(subs.indexOf('缓存命中率')).toBeLessThan(subs.indexOf('Skills'));
+    expect(el.querySelector('[data-testid="cache-now"]')?.textContent).toBe('98%');
+    const svg = el.querySelector('svg.cz-ctx__cache-svg')!;
+    expect(svg.getAttribute('role')).toBe('img');
+    expect(svg.getAttribute('aria-label')).toContain('共 4 次请求');
+    expect(svg.getAttribute('aria-label')).toContain('最新 98%');
+    expect(svg.getAttribute('aria-label')).toContain('最低 0%');
+    expect(svg.querySelector('path.cz-ctx__cache-line')).not.toBeNull();
+    const dot = svg.querySelector('[data-testid="cache-last"]')!;
+    expect(Number(dot.getAttribute('r'))).toBeGreaterThanOrEqual(4); // 直径 >= 8px
+    expect(el.querySelector('[data-testid="cache-tip"]')).toBeNull();
+  });
+
+  it('悬停吸附到最近的请求并显示命中率与 token 明细；离开后消失', () => {
+    const el = mountCache(series);
+    const svg = el.querySelector('svg.cz-ctx__cache-svg') as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 280, height: 76, right: 280, bottom: 76, x: 0, y: 0, toJSON: () => ({}) });
+    // viewBox 宽 280 与实际宽度相同：x=95 约在 4 个点的第 2 个（x≈99.3）
+    act(() => { svg.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 95 })); });
+    const tip = el.querySelector('[data-testid="cache-tip"]')!;
+    expect(tip.textContent).toContain('第 2 次请求');
+    expect(tip.textContent).toContain('命中 94.2%');
+    expect(tip.textContent).toContain('读缓存 9k');
+    expect(tip.textContent).toContain('写缓存 500');
+    expect(tip.textContent).toContain('未缓存 50');
+    expect(el.querySelector('line.cz-ctx__cache-cross')).not.toBeNull();
+    act(() => { svg.dispatchEvent(new MouseEvent('pointerout', { bubbles: true })); });
+    expect(el.querySelector('[data-testid="cache-tip"]')).toBeNull();
+  });
+
+  it('键盘左右键切换请求，Esc 取消', () => {
+    const el = mountCache(series);
+    const svg = el.querySelector('svg.cz-ctx__cache-svg') as SVGSVGElement;
+    const key = (k: string) => act(() => { svg.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); });
+    key('ArrowLeft');
+    expect(el.querySelector('[data-testid="cache-tip"]')?.textContent).toContain('第 3 次请求');
+    key('Home');
+    expect(el.querySelector('[data-testid="cache-tip"]')?.textContent).toContain('第 1 次请求');
+    key('Escape');
+    expect(el.querySelector('[data-testid="cache-tip"]')).toBeNull();
+  });
+
+  it('只有一个点时不画折线，只标出圆点；没有数据时显示空态', () => {
+    const el = mountCache([series[1]]);
+    expect(el.querySelector('path.cz-ctx__cache-line')).toBeNull();
+    expect(el.querySelector('[data-testid="cache-last"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="cache-now"]')?.textContent).toBe('94%');
+    act(() => root!.render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />));
+    expect(el.querySelector('svg.cz-ctx__cache-svg')).toBeNull();
+    expect(el.textContent).toContain('发送消息后，这里显示缓存命中率走势');
+  });
+});
+
+describe('ContextPanel 工具', () => {
+  const INIT = ['Bash', 'Glob', 'WebFetch', 'mcp__github__search', 'Read'];
+  const mountTools = (extra: Partial<React.ComponentProps<typeof ContextPanel>> = {}) =>
+    render(
+      <ContextPanel usage={{ ...mockContextUsage, disabledTools: ['WebFetch', 'Notebook'] }} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={INIT} {...extra} />,
+    );
+  const toggles = (el: HTMLElement) => [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__tool [role="switch"]')];
+
+  it('在 Skills 下方、MCP 上方；只列内置工具（排除 mcp__），已停用的工具即使不在 init 里也保留，便于重新启用', () => {
+    const el = mountTools();
+    const titles = [...el.querySelectorAll('.cz-ctx__fold-title')].map((t) => t.textContent);
+    expect(titles.indexOf('工具')).toBeGreaterThan(titles.indexOf('Skills'));
+    expect(titles.indexOf('工具')).toBeLessThan(titles.indexOf('MCP'));
+    expect(el.textContent).toContain('2 已停用');
+    openFold(el, '工具');
+    const names = [...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent);
+    expect(names).toEqual(['Bash', 'Glob', 'WebFetch', 'Read', 'Notebook']);
+    expect(toggles(el).map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'false', 'true', 'false']);
+    expect(el.querySelector('.cz-ctx__tool.is-off .cz-ctx__item-name')?.textContent).toBe('WebFetch');
+    expect(el.querySelector('.cz-ctx__note')?.textContent).toContain('立即拦截');
+  });
+
+  it('点开关回调 onToolToggle(名字, 目标状态)；不传回调时开关禁用', () => {
+    const onToolToggle = vi.fn();
+    const el = mountTools({ onToolToggle });
+    openFold(el, '工具');
+    click(toggles(el)[1]);
+    expect(onToolToggle).toHaveBeenLastCalledWith('Glob', false);
+    click(toggles(el)[2]);
+    expect(onToolToggle).toHaveBeenLastCalledWith('WebFetch', true);
+    act(() => root!.render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={INIT} />));
+    for (const b of toggles(el)) expect(b.disabled).toBe(true);
+  });
+
+  it('没有工具信息且没有停用项时，折叠标题禁用', () => {
+    const el = render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />);
+    const fold = [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__fold')].find((b) => b.textContent?.startsWith('工具'))!;
+    expect(fold.disabled).toBe(true);
+  });
+
+  it('本会话没收到 init（tools 为空）时，用服务端随上下文下发的 usage.tools', () => {
+    const usage = { ...mockContextUsage, tools: ['Bash', 'Read'], disabledTools: ['WebFetch'] };
+    const el = render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={[]} />);
+    openFold(el, '工具');
+    const names = [...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent);
+    expect(names).toEqual(['Bash', 'Read', 'WebFetch']);
+    // 悬浮：中文用途；核心工具提示不建议停用；未收录的给兜底说明
+    vi.useFakeTimers();
+    try {
+      const hover = (name: string) => {
+        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === name)!;
+        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+        act(() => { vi.advanceTimersByTime(400); });
+        const text = document.querySelector('.cz-ctx__tip')?.textContent ?? '';
+        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); });
+        return text;
+      };
+      expect(hover('Bash')).toContain('shell 命令');
+      expect(hover('Bash')).toContain('不建议停用');
+      expect(hover('WebFetch')).toContain('已停用');
+    } finally {
+      vi.useRealTimers();
+    }
+    // 本会话的 init 优先
+    act(() => root!.render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={['Glob']} />));
+    expect([...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent)).toEqual(['Glob', 'WebFetch']);
   });
 });

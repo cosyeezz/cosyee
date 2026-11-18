@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasThinkingText, thinkingFirstLine, thinkingLabel } from './thinking';
+import { hasThinkingText, thinkingFirstLine, thinkingTokensLabel } from './thinking';
 
 describe('thinkingFirstLine', () => {
   it('取第一个非空行，跳过开头空行并压缩空白', () => {
@@ -19,17 +19,15 @@ describe('thinkingFirstLine', () => {
   });
 });
 
-describe('thinkingLabel', () => {
-  it('有文本：思考中… / 已思考', () => {
-    expect(thinkingLabel({ text: 'x', streaming: true, tokens: 30 })).toBe('思考中…');
-    expect(thinkingLabel({ text: 'x', tokens: 30 })).toBe('已思考');
+describe('thinkingTokensLabel', () => {
+  it('有文本：没有附注（不再有「思考中 / 已思考」措辞）', () => {
+    expect(thinkingTokensLabel({ text: 'x', tokens: 30 })).toBe('');
   });
-  it('无文本：带 token 数；未知时省略', () => {
-    expect(thinkingLabel({ text: '', tokens: 1234 })).toBe('已思考（1,234 tokens）');
-    expect(thinkingLabel({ text: '', streaming: true, tokens: 50 })).toBe('思考中（50 tokens）');
-    expect(thinkingLabel({ text: '' })).toBe('已思考');
-    expect(thinkingLabel({ text: '  ', streaming: true })).toBe('思考中…');
-    expect(thinkingLabel({ text: '', tokens: 0 })).toBe('已思考');
+  it('无文本：只有 token 数；未知 / 为 0 时为空串', () => {
+    expect(thinkingTokensLabel({ text: '', tokens: 1234 })).toBe('1,234 tokens');
+    expect(thinkingTokensLabel({ text: '  ', tokens: 50 })).toBe('50 tokens');
+    expect(thinkingTokensLabel({ text: '' })).toBe('');
+    expect(thinkingTokensLabel({ text: '', tokens: 0 })).toBe('');
   });
   it('hasThinkingText 忽略纯空白', () => {
     expect(hasThinkingText(' \n ')).toBe(false);

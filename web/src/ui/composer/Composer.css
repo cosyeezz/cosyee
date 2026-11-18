@@ -61,7 +61,68 @@
 }
 
 .cz-composer__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2) 0; }
-.cz-composer__queued { margin-right: auto; font-size: var(--fs-xs); color: var(--text-3); }
+
+/* 排队中的消息：输入框上方，一行一条（类型 + 单行截断文字 + 操作） */
+.cz-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 var(--sp-1);
+  padding: var(--sp-1);
+  list-style: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.cz-queue__item { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; padding: 0 var(--sp-2); font-size: var(--fs-sm); color: var(--text-2); }
+.cz-queue__tag {
+  flex: none;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 9px;
+  background: var(--bg-active);
+  color: var(--text-3);
+}
+.cz-queue__tag--next { color: var(--accent); }
+.cz-queue__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-queue__btn {
+  flex: none;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-queue__btn:hover { background: var(--bg-hover); color: var(--text); }
+
+/* 双击 Esc 的回退选择浮层：与 / 菜单同一套外观 */
+.cz-rewind {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 800;
+  padding: var(--sp-1);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+.cz-rewind__title,
+.cz-rewind__note { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
+.cz-rewind__list { max-height: 240px; overflow-y: auto; }
+.cz-rewind__item {
+  padding: 6px var(--sp-3);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cz-rewind__item.is-active { background: var(--bg-hover); }
 
 /* 编辑区里的标签（由 chipElement.tsx 命令式创建） */
 .cz-chip {
@@ -162,3 +223,26 @@
   cursor: pointer;
 }
 .cz-composer__quote-x:hover { background: var(--bg-hover); color: var(--text); }
+
+/* ---------- 输入框里的 Markdown 实时着色 ----------
+   只改字重 / 颜色 / 装饰，不改字号和行高（行高固定 24px，光标与换行才稳）；标记符号保留，只是变淡。 */
+.cz-md-mark { color: var(--text-3); font-weight: 400; font-style: normal; }
+.cz-md-h { font-weight: 600; }
+.cz-md-h1 { color: var(--text); }
+.cz-md-h2, .cz-md-h3, .cz-md-h4, .cz-md-h5, .cz-md-h6 { color: var(--text); }
+.cz-md-b { font-weight: 600; }
+.cz-md-i { font-style: italic; }
+.cz-md-del { text-decoration: line-through; color: var(--text-2); }
+.cz-md-icode, .cz-md-code, .cz-md-fence-info {
+  font-family: var(--font-mono);
+  font-size: .92em;
+}
+.cz-md-icode { background: var(--bg-hover); border-radius: var(--r-sm); }
+.cz-md-code { color: var(--text-2); }
+.cz-md-fence, .cz-md-fence-info { color: var(--text-3); }
+.cz-md-quote { color: var(--text-2); }
+.cz-md-link { color: var(--accent); }
+.cz-md-url { color: var(--text-3); }
+.cz-md-bullet { color: var(--text-2); font-weight: 600; }
+.cz-md-task { color: var(--text-2); font-family: var(--font-mono); font-size: .92em; }
+.cz-md-hr { color: var(--text-3); }

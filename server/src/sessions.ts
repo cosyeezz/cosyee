@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import type { PinKind, SessionSummary } from '@cosyee/shared';
+import type { PinKind, SessionConfig, SessionSummary } from '@cosyee/shared';
 import { encodeCwdCandidates, isSafeId, projectsDir } from './paths.js';
 import type { DotState } from './state.js';
 import {
@@ -63,6 +63,8 @@ export interface SessionFlags {
   pinKind(id: string): PinKind | null;
   /** 并行模式下会话所属账号的显示名（其它情况返回 null / 不提供） */
   accountOf?(id: string): string | null;
+  /** 会话最近一次使用的配置（发送 / 切换时记下）；没有记录返回 null */
+  configOf?(id: string): SessionConfig | null;
 }
 
 export class Sessions {
@@ -82,6 +84,13 @@ export class Sessions {
   private accountField(id: string): { account?: string } {
     const a = this.flags?.accountOf?.(id);
     return a ? { account: a } : {};
+  }
+
+  /** 会话配置字段：有记录带 config；没有记录时带从会话记录推断的 lastModel */
+  private configField(id: string, scan?: Scan): { config?: SessionConfig; lastModel?: string } {
+    const c = this.flags?.configOf?.(id);
+    if (c) return { config: { ...c } };
+    return scan?.model ? { lastModel: scan.model } : {};
   }
 
   /** cwd 对应的 projects 子目录；不存在返回 null。 */
@@ -176,6 +185,7 @@ export class Sessions {
       dot: this.dots.dot(id),
       pinned: this.flags?.pinKind(id) ?? null,
       ...this.accountField(id),
+      ...this.configField(id),
     };
   }
 
@@ -192,6 +202,7 @@ export class Sessions {
         dot: this.dots.dot(id),
         pinned: this.flags?.pinKind(id) ?? null,
         ...this.accountField(id),
+        ...this.configField(id, scan),
       };
     } catch {
       return null;

@@ -1,29 +1,52 @@
 // 一轮回复：状态行 + 展开区 + 子代理面板 + 模型文字。
-// 状态行措辞固定（正在处理 / 已完成 / 已中断 / 出错了），整行可点击展开；
-// 下方只显示模型说的话（新的一段替换上一段），工具行只在展开区出现。
-import { memo, useCallback, useEffect, useState } from 'react';
+// 状态行只由「模型有没有文本、最近一段文本是什么」决定（见 format.ts 的 getStatusLine）：
+//   没有文本 → 星轨 + 「正在理解问题」；有文本 → 神经脉冲 + 最近一段文本（单行省略号）；
+//   结束 → 完成 / 中断 / 出错图标 + 「已完成 · 14:32 · 共 N 步 · 用时 18 秒」。
+// 整行可点击展开；展开后状态行吸顶，点击吸顶的行收起并滚回原位。工具行只在展开区出现。
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SubagentRun, Turn } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { Markdown } from './Markdown';
 import { NeuralIcon } from './NeuralIcon';
+import { CompactingIcon, DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
 import { StepView } from './Steps';
 import { getLiveText, getStatusLine, isTurnActive, subagentProgress, type StatusLine } from './format';
 import './flow.css';
 import './status.css';
 
-const END_ICON: Record<Exclude<StatusLine['kind'], 'active'>, IconName> = {
-  done: 'done',
-  interrupted: 'stopped',
-  error: 'error',
-};
+const STATUS_SIZE = 20;
 
-// 主短语文字特效（status.css）：进行中流光；完成 / 出错上色；中断保持原色
-const STATUS_TEXT_CLASS: Record<StatusLine['kind'], string> = {
-  active: 'cz-st cz-st-tool',
-  done: 'cz-st cz-st-done',
-  interrupted: 'cz-st',
-  error: 'cz-st cz-st-error',
-};
+function statusIcon(status: StatusLine): ReactNode {
+  const className = 'cz-flow__status-icon';
+  switch (status.kind) {
+    case 'active':
+      return status.phase === 'text' ? (
+        <NeuralIcon size={STATUS_SIZE} className={className} />
+      ) : (
+        <OrbitIcon size={STATUS_SIZE} className={className} />
+      );
+    case 'done':
+      return <DoneIcon size={STATUS_SIZE} className={className} />;
+    case 'interrupted':
+      return <StoppedIcon size={STATUS_SIZE} className={className} />;
+    case 'error':
+      return <ErrorIcon size={STATUS_SIZE} className={className} />;
+  }
+}
+
+// 主短语文字特效（status.css）：理解中三色流光；有文本时青色流光；完成 / 出错上色；中断变淡
+function statusTextClass(status: StatusLine): string {
+  switch (status.kind) {
+    case 'active':
+      return status.phase === 'text' ? 'cz-st cz-st-tool' : 'cz-st cz-st-thinking';
+    case 'done':
+      return 'cz-st cz-st-done';
+    case 'interrupted':
+      return 'cz-st cz-st-stopped';
+    case 'error':
+      return 'cz-st cz-st-error';
+  }
+}
 
 /** 进行中每秒刷新一次的当前时间；结束后停表 */
 function useTicker(active: boolean): number {
@@ -43,37 +66,41 @@ const StatusRow = memo(function StatusRow({
   expandable,
   open,
   onToggle,
+  rowRef,
 }: {
   turn: Turn;
   expandable: boolean;
   open: boolean;
   onToggle: () => void;
+  rowRef: RefObject<HTMLElement>;
 }) {
   const active = isTurnActive(turn);
   const now = useTicker(active);
   const status = getStatusLine(turn, now);
   const content = (
     <>
-      {status.kind === 'active' ? (
-        <NeuralIcon size={20} className="cz-flow__status-icon" />
-      ) : (
-        <Icon name={END_ICON[status.kind]} size={20} className="cz-flow__status-icon" />
-      )}
+      {statusIcon(status)}
       <span className="cz-flow__status-text" title={status.title}>
-        <span className={STATUS_TEXT_CLASS[status.kind]}>{status.text}</span>
-        {status.meta && <span className="cz-st-meta"> · {status.meta}</span>}
+        <span className={`${statusTextClass(status)} cz-flow__status-main`}>{status.text}</span>
+        {status.meta && <span className="cz-st-meta">{` · ${status.meta}`}</span>}
       </span>
     </>
   );
   if (!expandable) {
     return (
-      <div className="cz-flow__status" data-static="">
+      <div ref={rowRef as RefObject<HTMLDivElement>} className="cz-flow__status" data-static="">
         {content}
       </div>
     );
   }
   return (
-    <button type="button" className="cz-flow__status" aria-expanded={open} onClick={onToggle}>
+    <button
+      ref={rowRef as RefObject<HTMLButtonElement>}
+      type="button"
+      className={`cz-flow__status${open ? ' is-open' : ''}`}
+      aria-expanded={open}
+      onClick={onToggle}
+    >
       {content}
     </button>
   );
@@ -102,11 +129,14 @@ const SubagentPanel = memo(function SubagentPanel({
   onOpenSubagent?: (turnId: string, toolUseId: string) => void;
 }) {
   const { total, finished, allDone } = subagentProgress(subagents);
+  // 头部：液滴图标 + 紫粉慢速流光；全部完成后动画停下（文字不变）
   return (
     <div className="cz-flow__agents">
       <div className="cz-flow__agents-head">
-        <Icon name={allDone ? 'done' : 'agent-running'} size={16} />
-        <span>{allDone ? `${total} 个子代理已完成` : `${total} 个子代理执行中 ${finished}/${total}`}</span>
+        <CompactingIcon size={16} className={allDone ? 'is-still' : undefined} />
+        <span className={allDone ? undefined : 'cz-st cz-st-compacting'}>
+          {allDone ? `${total} 个子代理已完成` : `${total} 个子代理执行中 ${finished}/${total}`}
+        </span>
       </div>
       <ul className="cz-flow__agents-list">
         {subagents.map((s) => (
@@ -138,16 +168,39 @@ export interface TurnViewProps {
 
 export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagentView }: TurnViewProps) {
   const [expanded, setExpanded] = useState(false);
-  const toggle = useCallback(() => setExpanded((v) => !v), []);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLElement>(null);
   const active = isTurnActive(turn);
   const expandable = turn.steps.length > 0;
   const open = expandable && expanded;
-  // 折叠：answer 或最后一段文字；展开：只给 answer（其余文字已在展开区里）
-  const live = getLiveText(turn, open);
+  const openRef = useRef(open);
+  openRef.current = open;
+  // 收起时首行若已被顶出视口（吸顶状态），收起后要把它滚回视口
+  const scrollBack = useRef(false);
+  const toggle = useCallback(() => {
+    if (openRef.current) {
+      const turnEl = rootRef.current;
+      const sc = turnEl?.closest('.cz-flow__scroll');
+      if (turnEl && sc && turnEl.getBoundingClientRect().top < sc.getBoundingClientRect().top - 1) {
+        scrollBack.current = true;
+      }
+    }
+    setExpanded((v) => !v);
+  }, []);
+  useLayoutEffect(() => {
+    if (open || !scrollBack.current) return;
+    scrollBack.current = false;
+    // 瞬时滚动：内容刚收缩，平滑滚动会与自动贴底互相抢滚动条
+    rowRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
+  }, [open]);
+
+  // 进行中：最近一段文字已在首行显示，下方只给正在写的 answer；
+  // 结束后折叠：answer 或最后一段文字；展开：只给 answer（其余文字已在展开区里）
+  const live = getLiveText(turn, open, active);
 
   return (
-    <div className={`cz-flow__turn is-${turn.status}`}>
-      <StatusRow turn={turn} expandable={expandable} open={open} onToggle={toggle} />
+    <div ref={rootRef} className={`cz-flow__turn is-${turn.status}`}>
+      <StatusRow turn={turn} expandable={expandable} open={open} onToggle={toggle} rowRef={rowRef} />
 
       {open && (
         <div className="cz-flow__steps">

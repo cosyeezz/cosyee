@@ -220,7 +220,7 @@ export class Accounts {
   displayName(id: string): string | null {
     if (!this.names || Date.now() - this.names.at > 5000) {
       const map = new Map<string, string>();
-      map.set(DEFAULT_ID, localInfo(null).name ?? '默认账号');
+      map.set(DEFAULT_ID, localInfo(null).name ?? 'Claude 账号');
       for (const a of this.s.list) map.set(a.id, a.label || localInfo(a.dir).name || '未登录账号');
       this.names = { at: Date.now(), map };
     }

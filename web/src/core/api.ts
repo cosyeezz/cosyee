@@ -59,10 +59,11 @@ export const api = {
   viewed: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/viewed`, { cwd }),
   git: (cwd: string) => req<{ branch: string | null }>('GET', `/api/git?${q({ cwd })}`),
   /** 额度：传会话 id 时取该会话所用账号的额度（并行模式下各会话账号可能不同） */
-  usage: (refresh = false, session?: string | null) => {
+  usage: (refresh = false, session?: string | null, account?: string | null) => {
     const p: Record<string, string> = {};
     if (refresh) p.refresh = '1';
     if (session) p.session = session;
+    if (account) p.account = account;
     const qs = q(p);
     return req<UsageInfo | null>('GET', `/api/usage${qs ? `?${qs}` : ''}`);
   },
@@ -102,6 +103,11 @@ export const api = {
     req<ContextUsage | null>('POST', `/api/context/${id}/refresh`, { ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),
   /** 设置 skill 状态（全局，立即下发给运行中的会话） */
   setSkillMode: (name: string, mode: SkillMode) => req<{ ok: true }>('POST', '/api/skills', { name, mode }),
+  removeSkill: (name: string, session: string | null, cwd: string | null) =>
+    req<{ ok: true; backup: string }>('POST', '/api/skills/remove', { name, session, cwd }),
+  setSkillModes: (modes: Record<string, SkillMode>) => req<{ ok: true }>('POST', '/api/skills', { modes }),
+  /** 启用 / 停用一个内置工具（全局保存）；返回当前的已停用名单 */
+  setTool: (name: string, enabled: boolean) => req<{ ok: true; disabledTools: string[] }>('POST', '/api/tools', { name, enabled }),
   /** 开关 MCP 服务器（按项目写进 ~/.claude.json）；返回切换后的上下文 */
   toggleMcp: (id: string, server: string, enabled: boolean, cwd?: string, draft = false) =>
     req<ContextUsage | null>('POST', `/api/context/${id}/mcp`, { server, enabled, ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),

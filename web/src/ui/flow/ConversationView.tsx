@@ -1,6 +1,7 @@
 // 会话流：滚动容器 + 每轮（用户气泡 + TurnView），新内容到底时自动贴底。
 import { memo, useCallback, useRef } from 'react';
 import type { Turn } from '@cosyee/shared';
+import { ScrollNav } from './ScrollNav';
 import { SelectionToolbar } from './SelectionToolbar';
 import { TurnView } from './TurnView';
 import { UserMessage } from './UserMessage';
@@ -39,7 +40,7 @@ const TurnItem = memo(function TurnItem({
 export function ConversationView({ turns, onOpenSubagent, isSubagentView, onReply, sessionKey }: ConversationViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  useStickToBottom(scrollRef, contentRef);
+  const { pinToBottom } = useStickToBottom(scrollRef, contentRef);
 
   // 回调稳定化，避免父组件每次传新函数导致所有轮重渲染
   const cbRef = useRef(onOpenSubagent);
@@ -51,13 +52,16 @@ export function ConversationView({ turns, onOpenSubagent, isSubagentView, onRepl
   const stableReply = useCallback((quote: string, reply: string) => replyRef.current?.(quote, reply), []);
 
   return (
-    <div className="cz-flow cz-flow__scroll" ref={scrollRef} tabIndex={-1}>
-      {onReply && <SelectionToolbar scrollRef={scrollRef} resetKey={sessionKey} onReply={stableReply} />}
-      <div className="cz-flow__column" ref={contentRef}>
-        {turns.map((t) => (
-          <TurnItem key={t.id} turn={t} onOpenSubagent={stableOpen} isSubagentView={isSubagentView} />
-        ))}
+    <div className="cz-flow__wrap">
+      <div className="cz-flow cz-flow__scroll" ref={scrollRef} tabIndex={-1}>
+        {onReply && <SelectionToolbar scrollRef={scrollRef} resetKey={sessionKey} onReply={stableReply} />}
+        <div className="cz-flow__column" ref={contentRef}>
+          {turns.map((t) => (
+            <TurnItem key={t.id} turn={t} onOpenSubagent={stableOpen} isSubagentView={isSubagentView} />
+          ))}
+        </div>
       </div>
+      <ScrollNav scrollRef={scrollRef} onJumpBottom={pinToBottom} />
     </div>
   );
 }

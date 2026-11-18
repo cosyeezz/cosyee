@@ -1,8 +1,9 @@
 // 一个会话一个 claude 进程（stream-json 双向）。负责：启动 / 读写 / 回合状态机 / control_request /
 // 中断 / 空闲回收。不关心 WebSocket 订阅者，通过 RunnerHooks 把结果交给 manager。
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import type { AppliedSettings, RunStatus, SessionConfig } from '@cosyee/shared';
+import type { AppliedSettings, CosyeeUserEvent, QueueItem, QueueMode, RunStatus, SessionConfig } from '@cosyee/shared';
 import { LineSplitter, parseLine } from '../transcript.js';
 import { claudeEnv, resolveClaude, spawnSpec } from './bin.js';
 import { ControlTracker } from './control.js';
@@ -16,11 +17,8 @@ export interface RunnerHooks {
   onSettings(applied: AppliedSettings): void;
   /** 一轮结束（回到 idle，或进程在回合中意外退出）；进程可能仍在，也可能已不在 */
   onTurnEnd(): void;
-  /**
-   * 运行中写给 CLI 的“插话”已有结果：被 CLI 回显（插入对话，此时 runner 已发出 cosyee_user 开新一轮），
-   * 或因本轮被收尾 / 进程退出而作废。ids 是 send() 时传入的 id（没传的不在内）。
-   */
-  onInsertDone?(ids: string[]): void;
+  /** 排队消息列表变了（完整快照）：新排入、开始执行、被撤回、进程退出 */
+  onQueue?(items: QueueItem[]): void;
   /** 进程已退出，runner 可丢弃 */
   onExit(): void;
 }
@@ -61,12 +59,6 @@ export interface RunnerInit {
   flagSettings?: () => Record<string, unknown>;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
-}
-
-interface PendingWrite {
-  text: string;
-  kind: 'start' | 'insert';
-  id?: string;
 }
 
 const EVENT_BUFFER_MAX = 100_000;
@@ -151,16 +143,16 @@ export class Runner {
   // 回合状态
   private turnSeq = 0;
   /**
-   * 已写（或即将写）给 CLI、但还没收到回显的用户消息，按写入顺序。
-   * start：空闲时发的、开启一轮的消息（cosyee_user 已在 send 时发出，回显只需消耗）；
-   * insert：运行中发的插话（CLI 排队，工具跑完后插入；回显到来时才发 cosyee_user 并开新一轮）。
+   * 运行中发给 CLI、还没开始执行的消息（lifecycle 仍处于 queued），按写入顺序。
+   * 由 command_lifecycle 驱动：started / completed / cancelled / discarded / refused 都会移出。
+   * 空闲时发的开轮消息不在内（cosyee_user 在 send 时就发了）。
    */
-  private pending: PendingWrite[] = [];
+  private queue: QueueItem[] = [];
   private interrupting = false;
-  /** result 已到但本轮还没真正结束（等待续轮 / 后台任务 / 未回显的插话） */
+  /** rewind_conversation 在途：它带来的中断 result 当作本轮结束（不等排队消息续轮） */
+  private rewinding = false;
+  /** result 已到但本轮还没真正结束（等待续轮 / 后台任务 / 未开始的排队消息） */
   private limbo = false;
-  /** 除当前这条以外还排着的消息数（onResult 里消耗） */
-  private queued = 0;
   /** result 之后是否还在等排队消息续轮 */
   private expectNext = false;
   private tasks = new Set<string>();
@@ -272,11 +264,12 @@ export class Runner {
 
   /**
    * 发一条用户消息。同步完成 spawn 与状态切换；config 的下发与写入在内部串行进行。
-   * 空闲时开新一轮（立即发 cosyee_user）；运行中则是“插话”：立刻写给 CLI（CLI 自己排队），
-   * 但不发 cosyee_user、不开新轮，等 CLI 回显（工具跑完、消息真正插入）时才开新一轮。
-   * id：调用方给这条插话的标识，回显或作废时经 hooks.onInsertDone 回报。
+   * 空闲时开新一轮（立即发 cosyee_user，mode:'start'）；运行中则排队：立刻写给 CLI（CLI 自己排队），
+   * 记入排队列表并通知（hooks.onQueue），不发 cosyee_user；等 CLI 真正开始执行它（lifecycle started / 回显）时再发。
+   * id：消息 uuid（写进 stdin 的 uuid，lifecycle / 回显 / transcript 的关联键），没传则生成一个。
+   * mode：运行中的排队方式，next=steering（并入当前轮），later=follow-up（本轮结束后另开一轮），缺省 next；空闲时忽略。
    */
-  send(text: string, config: SessionConfig, id?: string): void {
+  send(text: string, config: SessionConfig, id?: string, mode?: QueueMode): void {
     validateConfig(config);
     this.clearIdle();
     if (this.proc && !this.alive) throw new Error('claude 进程正在关闭，请稍后重试');
@@ -286,6 +279,7 @@ export class Runner {
       this.start();
     }
     this.probeMode = false;
+    const uuid = id || randomUUID();
 
     if (this._status === 'idle' && !fresh) {
       // 新一轮
@@ -294,23 +288,27 @@ export class Runner {
     } else if (fresh) {
       this.beginTurn();
     } else {
-      // 运行中的插话：记账，等回显
-      this.pending.push({ text, kind: 'insert', id });
-      this.queueWrite(text, config);
+      // 运行中：排队，等 lifecycle started / 回显
+      const m: QueueMode = mode === 'later' ? 'later' : 'next';
+      this.setQueue([...this.queue, { id: uuid, text, mode: m, at: Date.now() }]);
+      this.queueWrite(text, config, uuid, m);
       return;
     }
 
-    this.pending.push({ text, kind: 'start', id });
-    this.pushEvent({ type: 'cosyee_user', text, at: Date.now() });
-    this.queueWrite(text, config);
+    const ev: CosyeeUserEvent = { type: 'cosyee_user', text, at: Date.now(), id: uuid, mode: 'start' };
+    this.pushEvent(ev);
+    this.queueWrite(text, config, uuid);
   }
 
-  private queueWrite(text: string, config: SessionConfig): void {
+  /** priority 缺省表示开轮消息（CLI 视同 next）；排队的消息显式带上 */
+  private queueWrite(text: string, config: SessionConfig, uuid: string, priority?: QueueMode): void {
     this.chain = this.chain
       .then(async () => {
         if (!this.alive) return;
         await this.applyConfig(config);
-        this.writeLine({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
+        const frame: Json = { type: 'user', uuid, message: { role: 'user', content: [{ type: 'text', text }] } };
+        if (priority) frame.priority = priority;
+        this.writeLine(frame);
       })
       .catch((e) => console.warn(`[runner ${this.sessionId.slice(0, 8)}] 发送失败:`, e instanceof Error ? e.message : e));
   }
@@ -318,11 +316,79 @@ export class Runner {
   private beginTurn(): void {
     this.turnSeq++;
     this.buffer = [];
-    this.pending = [];
     this.interrupting = false;
     this.limbo = false;
     this.tasks.clear();
     this.clearLimbo();
+  }
+
+  // ───────────── 排队消息（由 command_lifecycle 驱动） ─────────────
+
+  /** 排队列表（拷贝）：订阅时补发快照用 */
+  queueItems(): QueueItem[] {
+    return this.queue.map((q) => ({ ...q }));
+  }
+
+  private setQueue(items: QueueItem[]): void {
+    if (items.length === 0 && this.queue.length === 0) return;
+    this.queue = items;
+    this.hooks.onQueue?.(this.queueItems());
+  }
+
+  /** 把一条消息移出排队列表（已开始 / 已完成 / 被取消 / 被拒绝）；返回被移出的记录 */
+  private takeQueued(id: string): QueueItem | undefined {
+    const i = this.queue.findIndex((q) => q.id === id);
+    if (i < 0) return undefined;
+    const item = this.queue[i]!;
+    this.setQueue(this.queue.filter((_, j) => j !== i));
+    return item;
+  }
+
+  /**
+   * 排队的消息开始被 CLI 执行：发 cosyee_user（前端据此开始 / 切换到这一条的显示）。
+   * 若此刻 runner 已空闲（CLI 另开了一轮）或本轮 result 已到（limbo 等续轮），先开新一轮（清缓冲）；
+   * 仍在同一轮里（steering 并入）则不动缓冲。lifecycle started 与回显谁先到谁触发，
+   * 另一个到时记录已不在，直接忽略（steering 是回显先于 started，later / send_now 是 started 先于回显）。
+   */
+  private startQueued(id: string): void {
+    const item = this.takeQueued(id);
+    if (!item) return;
+    if (this._status === 'idle' || this.limbo) {
+      this.beginTurn();
+      this.clearIdle();
+      this.setStatus('running');
+    }
+    const ev: CosyeeUserEvent = { type: 'cosyee_user', text: item.text, at: Date.now(), id: item.id, mode: item.mode };
+    this.pushEvent(ev);
+  }
+
+  /** 排队的消息没有开始就结束了（撤回 / 作废 / 拒绝）。若正等它续轮、已无别的可等，收尾本轮 */
+  private dropQueued(id: string): void {
+    if (!this.takeQueued(id)) return;
+    if (this.limbo && this.queue.length === 0 && this.tasks.size === 0) this.finishTurn();
+  }
+
+  /** command_lifecycle 帧：按 command_uuid 维护排队列表。帧本身不转发给前端 */
+  private onLifecycle(msg: Json): void {
+    const id = msg.command_uuid;
+    if (typeof id !== 'string') return;
+    switch (msg.state) {
+      case 'started':
+        this.startQueued(id);
+        break;
+      case 'completed':
+      case 'cancelled':
+      case 'discarded':
+      case 'refused':
+        this.dropQueued(id);
+        break;
+      // queued：send 时已记账
+    }
+  }
+
+  /** --replay-user-messages 的回显：是排队消息的“开始”信号之一；开轮消息（不在列表里）的回显直接丢弃 */
+  private onEcho(msg: Json): void {
+    if (typeof msg.uuid === 'string') this.startQueued(msg.uuid);
   }
 
   /** 修改配置：进程在则立即下发（下一轮生效），否则只记下，启动时用。 */
@@ -398,6 +464,60 @@ export class Runner {
     }, this.timings.interruptKillMs);
   }
 
+  /**
+   * 撤回一条还没开始的排队消息（cancel_async_message）。ok = CLI 回 cancelled===true；
+   * 此时 text 为我们记录的原文（前端填回输入框）。重复撤回 / 已开始执行 / 不存在都是 ok:false。
+   */
+  async cancelQueued(id: string): Promise<{ ok: boolean; text?: string }> {
+    const item = this.queue.find((q) => q.id === id);
+    await this.chain; // 保证消息已写进 stdin，撤回请求排在它后面
+    const r = await this.request('cancel_async_message', { message_uuid: id });
+    if (r.cancelled !== true) return { ok: false };
+    // CLI 在 control_response 之前已发 cancelled 帧，通常这里已移出；没有 lifecycle 能力的旧 CLI 靠这一步
+    this.dropQueued(id);
+    return { ok: true, text: item?.text };
+  }
+
+  /**
+   * 立即发送一条排队消息：中断当前这一轮并马上执行它（interrupt {send_now, message_uuid}）。
+   * 被中断那一轮的 result 是 error_during_execution + terminal_reason aborted_tools，属用户主动行为，
+   * 照常转发给前端（前端按 terminal_reason 显示“已中断”）。此时目标消息仍在排队列表里，
+   * onResult 会据此保持 running（limbo），随后 lifecycle started → init → 回显，下一轮紧接着开始。
+   * ok=false（state:'nothing_waiting'）表示它已经不在排队了（已开始或已被撤回）。
+   */
+  async sendNow(id: string): Promise<{ ok: boolean; state?: string }> {
+    await this.chain;
+    const r = await this.request('interrupt', { send_now: true, message_uuid: id });
+    const state = typeof r.send_now === 'string' ? r.send_now : undefined;
+    return { ok: state !== 'nothing_waiting', state };
+  }
+
+  /**
+   * 回退到某条用户消息（rewind_conversation）：它及之后的对话被移出上下文。返回 CLI 的内层响应
+   * （rewound / prefillText / error / reason）。执行中带 interrupt_if_running，CLI 先走一遍中断序列
+   * （result aborted_tools 等，约比响应早 30ms），这一轮按正常结束处理，不等排队消息续轮。
+   * 成功后清空排队列表（回退后排队的消息不再有意义）。
+   */
+  async rewind(targetId: string): Promise<Json> {
+    await this.chain; // 保证此前发的消息已写进 stdin，回退请求排在它们后面
+    const running = this._status === 'running' || this._status === 'starting';
+    if (running) this.rewinding = true;
+    try {
+      const r = await this.request('rewind_conversation', {
+        target_message_uuid: targetId,
+        ...(running ? { interrupt_if_running: true } : {}),
+      });
+      if (r.rewound === true) {
+        this.setQueue([]);
+        // 中断的 result 已经到过、却因为还有排队消息 / 任务在等续轮：回退后不会有续轮了
+        if (this.limbo) this.finishTurn();
+      }
+      return r;
+    } finally {
+      this.rewinding = false;
+    }
+  }
+
   /** 强制结束进程（意图性退出）。 */
   kill(): void {
     this.intentional = true;
@@ -462,7 +582,21 @@ export class Runner {
       }
     }
 
+    // 消息生命周期（排队 / 开始 / 完成 / 取消）：只维护排队列表，不转发
+    if (msg.type === 'command_lifecycle') {
+      this.onLifecycle(msg);
+      if (this.limbo) this.armLimbo();
+      return;
+    }
+
     if (this._status === 'starting') this.setStatus('running');
+
+    // 用户消息回显（--replay-user-messages）：不转发；排队消息借此（或 lifecycle started）发 cosyee_user
+    if (msg.type === 'user' && msg.isReplay === true) {
+      this.onEcho(msg);
+      if (this.limbo) this.armLimbo();
+      return;
+    }
 
     const isTurnStart =
       (msg.type === 'system' && msg.subtype === 'init') || msg.type === 'stream_event' || msg.type === 'assistant';
@@ -515,13 +649,13 @@ export class Runner {
   }
 
   private onResult(): void {
-    if (this.interrupting) {
+    if (this.interrupting || this.rewinding) {
       this.finishTurn();
       return;
     }
-    // queued 记录的是“除当前这条以外还排着的消息数”
-    const more = this.queued > 0;
-    if (more) this.queued--;
+    // 排队列表里还有没开始的消息：CLI 会自动为它开下一轮（send_now 中断后、later 都是这样）。
+    // steering 并入当前轮的消息在 result 之前就 started 了，不在列表里，不会误判。
+    const more = this.queue.length > 0;
     this.expectNext = more;
     // 还有排队的消息 / 后台任务：保持 running，等 CLI 自动续轮
     if (more || this.tasks.size > 0) {
@@ -552,7 +686,6 @@ export class Runner {
     if (this._status === 'idle') return;
     this.limbo = false;
     this.expectNext = false;
-    this.queued = 0;
     this.interrupting = false;
     this.tasks.clear();
     this.clearLimbo();
@@ -609,6 +742,7 @@ export class Runner {
     this.closed = true;
     for (const line of this.splitter.flush()) this.onLine(line);
     this.control.rejectAll('claude 进程已退出');
+    this.setQueue([]); // 进程没了，排队的消息也没了
     this.clearTimers();
     this.proc = null;
 

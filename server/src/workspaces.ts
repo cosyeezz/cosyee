@@ -18,6 +18,12 @@ export interface PersistedState {
   deleted: Record<string, { cwd: string; title: string; deletedAt: number }>;
   /** skill 状态（全局）：启动会话时经 --settings、运行中经 apply_flag_settings 下发；不写 ~/.claude 配置 */
   skillOverrides: Record<string, SkillMode>;
+  /** 每个会话最近一次使用的配置（模型 / 思考强度 / ultracode）：发送与切换配置时写入，刷新页面后据此还原 */
+  sessionConfigs: Record<string, SessionConfig>;
+  /** 被关闭的内置工具名（全局）：启动会话时经 --settings permissions.deny 下发，运行中经 apply_flag_settings */
+  disabledTools: string[];
+  /** 最近一次 system/init 报告的内置工具名：探测进程收不到 init，服务重启后也要能列出工具 */
+  knownTools: string[];
   /**
    * 额外账号（默认账号 = 基础配置目录，不在列表里）；active 为 null 表示默认账号。
    * mode：switch = 切换模式（默认），parallel = 并行模式。
@@ -42,8 +48,13 @@ export const ACCOUNT_ID_RE = /^[a-z0-9]{4,32}$/;
 /** skill 名（含插件前缀）：只允许常见字符，避免拼进命令行时出问题 */
 export const SKILL_NAME_RE = /^[A-Za-z0-9._:@+/-]{1,200}$/;
 
+/** 内置工具名（Bash / Read / WebFetch …）：字母数字下划线；mcp__ 工具不在此列 */
+export const TOOL_NAME_RE = /^(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
+
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, disabledTools: [], knownTools: [], accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -85,6 +96,24 @@ function sanitize(raw: unknown): PersistedState {
   if (o.skillOverrides && typeof o.skillOverrides === 'object' && !Array.isArray(o.skillOverrides)) {
     for (const [k, v] of Object.entries(o.skillOverrides as Record<string, unknown>)) {
       if (SKILL_NAME_RE.test(k) && SKILL_MODES.includes(v as SkillMode)) s.skillOverrides[k] = v as SkillMode;
+    }
+  }
+  if (o.sessionConfigs && typeof o.sessionConfigs === 'object' && !Array.isArray(o.sessionConfigs)) {
+    for (const [sid, v] of Object.entries(o.sessionConfigs as Record<string, unknown>)) {
+      const c = v as Record<string, unknown> | null;
+      if (!isSafeId(sid) || !c || typeof c !== 'object') continue;
+      if (typeof c.model !== 'string' || !MODEL_ID_RE.test(c.model) || !EFFORT_IDS.includes(c.effort as Effort)) continue;
+      s.sessionConfigs[sid] = { model: c.model, effort: c.effort as Effort, ...(c.ultracode === true ? { ultracode: true } : {}) };
+    }
+  }
+  if (Array.isArray(o.disabledTools)) {
+    for (const t of o.disabledTools) {
+      if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.disabledTools.includes(t)) s.disabledTools.push(t);
+    }
+  }
+  if (Array.isArray(o.knownTools)) {
+    for (const t of o.knownTools) {
+      if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.knownTools.includes(t)) s.knownTools.push(t);
     }
   }
   const acc = o.accounts as Record<string, unknown> | undefined;

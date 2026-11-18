@@ -20,7 +20,8 @@ function mount(step: ThinkingStep) {
     btn: () => q('button'),
     body: () => q('.cz-flow__thinking-body'),
     preview: () => q('.cz-flow__thinking-preview'),
-    label: () => q('.cz-flow__thinking-label')!.textContent,
+    label: () => q('.cz-flow__thinking-label')?.textContent ?? null,
+    text: () => host!.textContent ?? '',
     click: () => act(() => q('button')!.click()),
   };
 }
@@ -37,14 +38,14 @@ describe('ThinkingRow', () => {
     const v = mount({ kind: 'thinking', text: '先想', streaming: true });
     expect(v.btn()!.getAttribute('aria-expanded')).toBe('true');
     expect(v.body()!.textContent).toBe('先想');
-    expect(v.label()).toBe('思考中…');
+    expect(v.text()).not.toMatch(/思考中|已思考/);
     v.rerender({ kind: 'thinking', text: TEXT, streaming: true });
     expect(v.body()!.textContent).toBe(TEXT);
     v.rerender({ kind: 'thinking', text: TEXT });
     expect(v.btn()!.getAttribute('aria-expanded')).toBe('false');
     expect(v.body()).toBeNull();
     expect(v.preview()!.textContent).toBe('先想第一步');
-    expect(v.label()).toBe('已思考');
+    expect(v.text()).not.toMatch(/思考中|已思考/);
   });
 
   it('完成后点击展开看全文，再点收起', () => {
@@ -81,14 +82,26 @@ describe('ThinkingRow', () => {
     expect(v.body()!.textContent).toBe('有了');
   });
 
-  it('没有思考文本：只显示「已思考（N tokens）」，没有可展开区', () => {
+  it('没有思考文本：只显示 token 数（无措辞），没有可展开区', () => {
     const v = mount({ kind: 'thinking', text: '', streaming: true, tokens: 50 });
-    expect(v.label()).toBe('思考中（50 tokens）');
+    expect(v.label()).toBe('50 tokens');
     v.rerender({ kind: 'thinking', text: '', tokens: 962 });
-    expect(v.label()).toBe('已思考（962 tokens）');
+    expect(v.label()).toBe('962 tokens');
+    expect(v.text()).not.toMatch(/思考中|已思考/);
     expect(v.btn()).toBeNull();
     expect(v.body()).toBeNull();
     expect(host!.querySelector('.icon-chevron')).toBeNull();
+    v.rerender({ kind: 'thinking', text: '' });
+    expect(v.label()).toBeNull();
+  });
+
+  it('展开 / 收起按钮：折叠态有预览，无额外措辞；aria-expanded 随点击变化', () => {
+    const v = mount({ kind: 'thinking', text: TEXT });
+    expect(v.preview()!.textContent).toBe('先想第一步');
+    expect(v.text()).not.toMatch(/思考中|已思考/);
+    expect(v.btn()!.getAttribute('aria-expanded')).toBe('false');
+    v.click();
+    expect(v.btn()!.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('用新的 thinking 图标，进行中带 is-streaming（呼吸动效）', () => {
