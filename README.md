@@ -54,7 +54,19 @@ npm test            # 后端与前端单测
 COSYEE_HOST=tailscale npm start      # 源码运行（PowerShell：$env:COSYEE_HOST='tailscale'; npm start）
 ```
 
-或者用发布页的独立服务端包 `cosyee-server_*.zip`（不用拉源码）：解压后 Windows 双击 `start.cmd`，macOS / Linux 运行 `./start.sh`，默认就是 Tailscale 模式。需要 Node.js 24+ 和已登录的 Claude Code CLI。自己打包：`npm run pack:server`，输出到 `server/dist/cosyee-server/`。
+不想拉源码时，用 npm 直接从 GitHub 装（需要 Node.js 24+ 和已登录的 Claude Code CLI）：
+
+```bash
+npm i -g github:cosyeezz/cosyee#server-dist
+# 本机没装 git 时用 tarball 地址，效果一样：
+# npm i -g https://codeload.github.com/cosyeezz/cosyee/tar.gz/refs/heads/server-dist
+
+cosyee-server --tailscale            # 不加参数则只监听 127.0.0.1；--port 改端口；--help 看用法
+```
+
+更新：重新执行同一条 `npm i -g` 命令（`--prefer-online` 可跳过 npm 缓存）。`server-dist` 分支由 `.github/workflows/server-dist.yml` 在 main 每次改动服务端 / 前端后自动构建并覆盖推送，内容是打好的单文件 `server.mjs` + 前端静态文件，没有任何依赖和安装脚本。不直接装 main 是因为 npm 装 git 仓库时会先在本机装全部开发依赖（Electron、Vite、Tauri CLI…，几百 MB）再构建。
+
+也可以用发布页的 `cosyee-server_*.zip`：解压后 Windows 双击 `start.cmd`，macOS / Linux 运行 `./start.sh`，默认就是 Tailscale 模式。自己打包：`npm run pack:server`，输出到 `server/dist/cosyee-server/`。
 
 Tailscale 模式下后端监听所有网卡，但在 TCP 层只接受两种连接，其它直接断开：
 
@@ -81,7 +93,14 @@ Host / Origin 白名单额外放行 Tailscale IP、本机名（MagicDNS 短名�
 
 ### 3. 其它电脑也想用本机后端
 
-装客户端的同时，在那台电脑上跑独立服务端包（见上文），然后在客户端里添加 `127.0.0.1`。每台电脑的后端各用各的 `~/.claude` 会话和登录状态，互不影响。只给本机用、不想让 tailnet 访问时，用 `COSYEE_HOST=127.0.0.1` 启动。
+桌面客户端（Windows / macOS）的服务器列表下面有「本机服务」：检测 Node.js 和 Claude CLI → 一键用 npm 安装 / 更新（就是上面那条 `npm i -g`）→ 启动 / 停止。启动后自动在列表里加上「本机」（`http://127.0.0.1:7878`）。
+
+- 服务端作为独立后台进程运行，关掉客户端不会停；日志在 `~/.cosyee/server.log`。
+- 勾选「允许手机和其它电脑通过 Tailscale 连接」时以 Tailscale 模式启动，否则只监听 `127.0.0.1`。
+- 停止走 `POST /api/shutdown`：只接受本机回环连接，tailnet 里的设备关不掉。
+- macOS 上如果 Node 是官方 pkg 装的，`npm i -g` 需要管理员权限会失败；用 Homebrew / nvm 装的 Node 没这个问题。
+
+每台电脑的后端各用各的 `~/.claude` 会话和登录状态，互不影响。
 
 ### 4. 发布
 
