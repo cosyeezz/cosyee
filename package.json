@@ -1,0 +1,19 @@
+{
+  "name": "cosyee-server",
+  "version": "0.1.0-main.7",
+  "description": "Cosyee 服务端（Claude Code 的网页界面后端），单文件、无依赖",
+  "type": "module",
+  "bin": {
+    "cosyee-server": "cli.mjs"
+  },
+  "main": "server.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cosyeezz/cosyee.git"
+  },
+  "gitHead": "753262dffb3d13227fe2124b7635e89138df873e"
+}
