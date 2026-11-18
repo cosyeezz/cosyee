@@ -289,9 +289,7 @@
     var poll = setInterval(async function () {
       try {
         var lines = await invoke('local_log', { from: seen });
-        if (lines.length) { seen += lines.length; box.textContent += lines.join('
-') + '
-'; box.scrollTop = box.scrollHeight; }
+        if (lines.length) { seen += lines.length; box.textContent += lines.join('\n') + '\n'; box.scrollTop = box.scrollHeight; }
       } catch (e) { /* 忽略 */ }
     }, 400);
     try {
@@ -301,9 +299,7 @@
     } finally {
       clearInterval(poll);
       var rest = await invoke('local_log', { from: seen }).catch(function () { return []; });
-      if (rest.length) box.textContent += rest.join('
-') + '
-';
+      if (rest.length) box.textContent += rest.join('\n') + '\n';
       box.scrollTop = box.scrollHeight;
     }
   }
