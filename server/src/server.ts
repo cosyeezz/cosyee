@@ -47,6 +47,8 @@ export interface StartOptions {
   host?: string;
   /** 「在文件管理器中打开」用的 spawn（测试替换，默认 explorer.exe / open / xdg-open） */
   spawner?: Spawner;
+  /** 本机发来 POST /api/shutdown 时调用（见 http.ts）；不传则没有这个接口 */
+  onShutdown?: () => void;
 }
 
 export interface RunningServer {
@@ -184,6 +186,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     spawner: opts.spawner,
     authToken: opts.authToken,
     host: bindHost,
+    onShutdown: opts.onShutdown,
   });
 
   const server = http.createServer((req, res) => {

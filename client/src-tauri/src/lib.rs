@@ -6,6 +6,9 @@ use std::time::Duration;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(desktop)]
+mod local;
+
 /// 本地页面的 origin（Windows / Android 是 http://tauri.localhost，macOS / Linux 是 tauri://localhost）。
 #[cfg(any(windows, target_os = "android"))]
 const HOME: &str = "http://tauri.localhost/";
@@ -49,8 +52,20 @@ async fn probe(host: String, port: u16) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![probe])
+    let builder = tauri::Builder::default();
+    // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏
+    #[cfg(desktop)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        probe,
+        local::local_status,
+        local::local_log,
+        local::local_install,
+        local::local_start,
+        local::local_stop
+    ]);
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![probe]);
+    builder
         .setup(|app| {
             let script = shortcut_script();
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

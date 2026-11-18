@@ -9,7 +9,12 @@ declare const __COSYEE_VERSION__: string | undefined;
 
 async function main(): Promise<void> {
   const bundled = typeof __COSYEE_VERSION__ === 'string';
-  const srv = await startServer({ version: bundled ? __COSYEE_VERSION__ : undefined });
+  let requestShutdown: (sig: string) => void = () => {};
+  const srv = await startServer({
+    version: bundled ? __COSYEE_VERSION__ : undefined,
+    // 客户端「停止本地服务」（Windows 上后台进程收不到信号，只能走接口）
+    onShutdown: () => requestShutdown('POST /api/shutdown'),
+  });
   const bindHost = process.env.COSYEE_HOST ?? '127.0.0.1';
   // 源码运行时开发前端跑在 Vite（COSYEE_WEB_PORT）；生产 / 独立包由本服务托管
   if (!bundled) console.log(`Cosyee（开发，Vite）: http://127.0.0.1:${devPort()}/`);
@@ -37,6 +42,7 @@ async function main(): Promise<void> {
       () => process.exit(1),
     );
   };
+  requestShutdown = shutdown;
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGBREAK', () => shutdown('SIGBREAK'));

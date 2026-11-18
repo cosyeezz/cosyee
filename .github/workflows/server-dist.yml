@@ -1,0 +1,47 @@
+# main 有服务端 / 前端改动时，把打好的独立服务端包推到 server-dist 分支（孤立分支，每次强推覆盖）。
+# 这样就能直接从 git 用 npm 安装，不需要发 npm 包，也不会在安装时拉整个仓库的开发依赖去构建：
+#   npm i -g github:cosyeezz/cosyee#server-dist
+#   npm i -g https://codeload.github.com/cosyeezz/cosyee/tar.gz/refs/heads/server-dist   （不需要本机装 git）
+name: server-dist
+
+on:
+  push:
+    branches: [main]
+    paths: ['server/**', 'shared/**', 'web/**', 'package.json', 'package-lock.json', '.github/workflows/server-dist.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: server-dist
+  cancel-in-progress: true
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # 版本号要数提交数
+      - uses: actions/setup-node@v4
+        with: { node-version: '24', cache: npm }
+      - run: npm ci
+      - run: npm test -w server
+      - name: 打包
+        run: |
+          base=$(node -p "require('./server/package.json').version")
+          # 版本号带上 main 的提交序号，npm update / 客户端「更新」能看出是否有新版本
+          COSYEE_VERSION="${base}-main.$(git rev-list --count HEAD)" npm run pack:server
+          cat server/dist/cosyee-server/package.json
+      - name: 推送 server-dist 分支
+        working-directory: server/dist/cosyee-server
+        run: |
+          git init -q -b server-dist
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -q -m "server-dist: ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" server-dist

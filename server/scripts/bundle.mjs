@@ -89,5 +89,49 @@ fs.writeFileSync(
 `.replace(/\n/g, '\r\n'),
 );
 
+// 作为 npm 包安装（CI 把本目录推到 server-dist 分支）：npm i -g github:cosyeezz/cosyee#server-dist
+// 没有任何依赖和安装脚本，装完就是 cosyee-server 命令
+const cli = `#!/usr/bin/env node
+// cosyee-server [--tailscale] [--host <IPv4>] [--port <n>]；其余配置见 README.txt 的环境变量
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  const val = () => {
+    const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i];
+    if (!v) { console.error('缺少参数值: ' + a); process.exit(2); }
+    return v;
+  };
+  if (a === '--tailscale') process.env.COSYEE_HOST = 'tailscale';
+  else if (a === '--host' || a.startsWith('--host=')) process.env.COSYEE_HOST = val();
+  else if (a === '--port' || a.startsWith('--port=')) process.env.COSYEE_PORT = val();
+  else if (a === '-v' || a === '--version') { console.log(${JSON.stringify(version)}); process.exit(0); }
+  else if (a === '-h' || a === '--help') {
+    console.log('用法: cosyee-server [--tailscale] [--host <IPv4>] [--port <端口>]\\n  --tailscale  本机 + tailnet 内设备可访问（不需要令牌）\\n  默认只监听 127.0.0.1:7878');
+    process.exit(0);
+  } else { console.error('未知参数: ' + a + '（--help 查看用法）'); process.exit(2); }
+}
+await import('./server.mjs');
+`;
+fs.writeFileSync(path.join(out, 'cli.mjs'), cli, { mode: 0o755 });
+fs.writeFileSync(
+  path.join(out, 'package.json'),
+  JSON.stringify(
+    {
+      name: 'cosyee-server',
+      version,
+      description: 'Cosyee 服务端（Claude Code 的网页界面后端），单文件、无依赖',
+      type: 'module',
+      bin: { 'cosyee-server': 'cli.mjs' },
+      main: 'server.mjs',
+      engines: { node: '>=22' },
+      license: 'UNLICENSED',
+      repository: { type: 'git', url: 'https://github.com/cosyeezz/cosyee.git' },
+      ...(process.env.GITHUB_SHA ? { gitHead: process.env.GITHUB_SHA } : {}),
+    },
+    null,
+    2,
+  ) + '\n',
+);
+
 const size = fs.statSync(path.join(out, 'server.mjs')).size;
 console.log(`独立服务端包: ${out}（server.mjs ${(size / 1024).toFixed(0)} KB）`);

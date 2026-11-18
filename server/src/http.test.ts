@@ -347,3 +347,26 @@ describe('浏览器登录（cookie）与 0.0.0.0 监听', () => {
     await expect(startServer({ port: 0, host: 'evil.com', webDist: web, stateFile: path.join(tmp, 'state4.json') })).rejects.toThrow('IPv4');
   });
 });
+
+describe('POST /api/shutdown（客户端停止本地服务）', () => {
+  it('没传 onShutdown 时接口不存在', async () => {
+    expect((await fetch(`${base}/api/shutdown`, { method: 'POST' })).status).toBe(404);
+  });
+  it('本机请求触发 onShutdown；GET 不触发', async () => {
+    let called = 0;
+    const s5 = await startServer({ port: 0, webDist: web, stateFile: path.join(tmp, 'state5.json'), onShutdown: () => called++ });
+    try {
+      const b5 = `http://127.0.0.1:${s5.port}`;
+      expect((await fetch(`${b5}/api/shutdown`)).status).toBe(404);
+      // 浏览器里的其它网站不能跨站把服务关掉
+      expect((await fetch(`${b5}/api/shutdown`, { method: 'POST', headers: { origin: 'https://evil.com' } })).status).toBe(403);
+      expect(called).toBe(0);
+      const r = await fetch(`${b5}/api/shutdown`, { method: 'POST' });
+      expect(r.status).toBe(200);
+      await new Promise((res) => setImmediate(res));
+      expect(called).toBe(1);
+    } finally {
+      await s5.stop();
+    }
+  });
+});

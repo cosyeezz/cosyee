@@ -14,7 +14,7 @@ import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
 import type { Previews } from './preview.js';
 import { type Spawner, defaultSpawner, revealFolder } from './reveal.js';
-import { cookieName, hostAllowedFor, originAllowed, requestAuthorized, tokenOk } from './security.js';
+import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAuthorized, tokenOk } from './security.js';
 import type { Sessions } from './sessions.js';
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
@@ -46,6 +46,8 @@ export interface HttpDeps {
   authToken?: string;
   /** 监听地址（决定 Host / Origin 白名单），默认 127.0.0.1 */
   host?: string;
+  /** POST /api/shutdown（只接受本机回环连接）时调用；不传则该接口 404。客户端用它停止后台运行的本地服务。 */
+  onShutdown?: () => void;
 }
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -211,6 +213,14 @@ export function createHandler(deps: HttpDeps) {
 
     // 桌面版退出前询问：有几个会话正在执行
     if (method === 'GET' && p === '/api/running') return sendJson(res, 200, { count: deps.manager.runningCount() });
+
+    // 客户端「停止本地服务」：只认本机回环来的请求（Tailscale 模式下 tailnet 设备不能关掉服务）
+    if (method === 'POST' && p === '/api/shutdown' && deps.onShutdown) {
+      if (!isLoopbackAddr(req.socket.remoteAddress)) return sendJson(res, 403, { error: '只能从本机停止服务' });
+      sendJson(res, 200, { ok: true });
+      setImmediate(deps.onShutdown);
+      return;
+    }
 
     if (method === 'GET' && p === '/api/workspaces') return sendJson(res, 200, deps.workspaces.list());
 

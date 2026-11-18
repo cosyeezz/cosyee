@@ -55,6 +55,20 @@
   #status .msg { margin-bottom: 10px; }
   #status .msg small { display: block; color: var(--text-3); margin-top: 4px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  #local { margin-top: 28px; }
+  .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--r); padding: 14px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 13px; margin-bottom: 12px; }
+  .kv dt { color: var(--text-3); }
+  .kv dd { margin: 0; color: var(--text-2); }
+  .kv dd.ok { color: var(--ok); }
+  .kv dd.bad { color: var(--danger); }
+  button:disabled { opacity: .45; cursor: default; }
+  #local .check { margin-top: 12px; }
+  #local-msg { font-size: 12px; color: var(--text-3); margin-top: 10px; white-space: pre-wrap; }
+  #local-msg.error { color: var(--danger); }
+  #local-log { display: none; margin: 10px 0 0; max-height: 180px; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+               border-radius: 8px; padding: 8px 10px; font: 12px/1.5 "JetBrains Mono", Consolas, monospace; color: var(--text-3); white-space: pre-wrap; }
+  #local-log.show { display: block; }
 </style>
 </head>
 <body>
@@ -81,6 +95,28 @@
   </form>
 
   <label class="check"><input type="checkbox" id="auto"> 启动时自动连接上次使用的服务器</label>
+
+  <section id="local" hidden>
+    <p class="section-title">本机服务</p>
+    <div class="card">
+      <p class="sub" style="margin:0 0 12px">在这台电脑上运行服务端：用 npm 从 GitHub 安装，后台运行，关掉客户端也不会停。</p>
+      <dl class="kv">
+        <dt>Node.js</dt><dd id="l-node">…</dd>
+        <dt>Claude CLI</dt><dd id="l-claude">…</dd>
+        <dt>服务端</dt><dd id="l-ver">…</dd>
+        <dt>状态</dt><dd id="l-run">…</dd>
+      </dl>
+      <div class="actions">
+        <button type="button" id="l-install">安装</button>
+        <button type="button" id="l-start" class="primary">启动</button>
+        <button type="button" id="l-stop">停止</button>
+        <button type="button" id="l-open">打开</button>
+      </div>
+      <label class="check"><input type="checkbox" id="l-tailnet"> 允许手机和其它电脑通过 Tailscale 连接（启动时生效）</label>
+      <div id="local-msg"></div>
+      <pre id="local-log"></pre>
+    </div>
+  </section>
 
   <div class="hint">
     <p>回到这个页面：<code>Ctrl+Shift+L</code>（macOS <code>⌘⇧L</code>，或菜单「连接 → 服务器列表」）；安卓用返回键。</p>
@@ -198,6 +234,88 @@
   auto.onchange = function () { localStorage.setItem(AUTO, auto.checked ? '1' : '0'); };
 
   render();
+
+  // ---- 本机服务（只有桌面客户端有这组命令；手机上 local_status 调用失败，整栏保持隐藏） ----
+  var LTAIL = 'cosyee.local.tailnet', LOCAL_URL = 'http://127.0.0.1:7878';
+  var lst = null, lbusy = false;
+  var tailnet = $('l-tailnet');
+  tailnet.checked = localStorage.getItem(LTAIL) !== '0';
+  tailnet.onchange = function () {
+    localStorage.setItem(LTAIL, tailnet.checked ? '1' : '0');
+    if (lst && lst.running) lmsg('改动在重新启动服务后生效（先停止再启动）。');
+  };
+  function setText(id, text, cls) { var el = $(id); el.textContent = text; el.className = cls || ''; }
+  function lmsg(text, isError) { var m = $('local-msg'); m.textContent = text || ''; m.className = isError ? 'error' : ''; }
+  function lrender() {
+    var st = lst;
+    setText('l-node', st.node ? st.node : '未找到（需要 Node.js 24+）', st.node ? 'ok' : 'bad');
+    setText('l-claude', st.claude ? '已安装' : '未找到（先安装并登录 Claude Code）', st.claude ? 'ok' : 'bad');
+    setText('l-ver', st.installed ? st.installed : '未安装', st.installed ? '' : 'bad');
+    setText('l-run', st.running ? '运行中 · ' + LOCAL_URL : '未运行', st.running ? 'ok' : '');
+    var b = lbusy || st.busy;
+    $('l-install').textContent = st.installed ? '更新' : '安装';
+    $('l-install').disabled = b || !st.npm;
+    $('l-start').disabled = b || !st.installed || st.running;
+    $('l-stop').disabled = b || !st.running;
+    $('l-open').disabled = !st.running;
+  }
+  async function lrefresh() {
+    try { lst = await invoke('local_status'); } catch (e) { return; }
+    $('local').hidden = false;
+    lrender();
+  }
+  function errText(e) { return typeof e === 'string' ? e : (e && e.message) || String(e); }
+  async function lrun(label, fn) {
+    lbusy = true; if (lst) lrender();
+    lmsg(label + '…');
+    try { await fn(); lmsg(''); }
+    catch (e) { lmsg(label + '失败：' + errText(e), true); }
+    finally { lbusy = false; await lrefresh(); }
+  }
+  /** 把「本机」加进服务器列表（已有就不动） */
+  function ensureLocalEntry() {
+    var list = load(), hit = list.filter(function (x) { return x.url === LOCAL_URL; })[0];
+    if (hit) return hit;
+    hit = { id: 'local', name: '本机', url: LOCAL_URL };
+    list.unshift(hit);
+    save(list);
+    render();
+    return hit;
+  }
+  async function linstall() {
+    var wasRunning = lst && lst.running;
+    var box = $('local-log'), seen = 0;
+    box.textContent = ''; box.className = 'show';
+    var poll = setInterval(async function () {
+      try {
+        var lines = await invoke('local_log', { from: seen });
+        if (lines.length) { seen += lines.length; box.textContent += lines.join('
+') + '
+'; box.scrollTop = box.scrollHeight; }
+      } catch (e) { /* 忽略 */ }
+    }, 400);
+    try {
+      if (wasRunning) await invoke('local_stop'); // 先停掉旧版本，装完再用新版本启动
+      await invoke('local_install');
+      if (wasRunning) await invoke('local_start', { tailnet: tailnet.checked });
+    } finally {
+      clearInterval(poll);
+      var rest = await invoke('local_log', { from: seen }).catch(function () { return []; });
+      if (rest.length) box.textContent += rest.join('
+') + '
+';
+      box.scrollTop = box.scrollHeight;
+    }
+  }
+  if (invoke) {
+    $('l-install').onclick = function () { lrun(lst && lst.installed ? '更新' : '安装', linstall); };
+    $('l-start').onclick = function () {
+      lrun('启动', async function () { await invoke('local_start', { tailnet: tailnet.checked }); ensureLocalEntry(); });
+    };
+    $('l-stop').onclick = function () { lrun('停止', function () { return invoke('local_stop'); }); };
+    $('l-open').onclick = function () { connect(ensureLocalEntry()); };
+    lrefresh();
+  }
 
   // 启动时自动连接（从服务端页面按快捷键回来时带 ?list=1，不自动连接）
   if (!/[?&]list=1\b/.test(location.search) && auto.checked) {
