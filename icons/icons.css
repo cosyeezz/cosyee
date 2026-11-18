@@ -1,0 +1,136 @@
+/* Cosyee 会话流图标 —— 样式与动效
+ * 用法：页面引入本文件，用 icons.js 的 icon(name, {size}) 生成内联 SVG。
+ * 颜色：--tk-* 变量；线性图标（tool-*、open）跟随 currentColor。
+ * 动画开关：图标不跟随系统的"动画效果"设置 —— Windows 关掉动画效果后
+ *   （浏览器/WebView 表现为 prefers-reduced-motion: reduce）图标照常播放。
+ *   只有应用自己设置 <html data-motion="reduce"> 时才关闭：位移/描边动画停在终态，
+ *   "进行中"类图标（.ci-live）改为整体缓慢明暗。
+ * 状态行文字特效：<span class="ct-understanding">…</span>，见文件后半部分。
+ */
+:root{
+  --tk-a:#6a4dff; --tk-b:#00a6d6; --tk-c:#ee2f8c; --tk-d:#f2960a;
+  --tk-ok:#0f9d63; --tk-err:#dc2f3f; --tk-ink:#8a8fa6; --tk-on:#fff;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --tk-a:#8b7bff; --tk-b:#35d6ff; --tk-c:#ff6bb5; --tk-d:#ffc15e;
+  --tk-ok:#3ddc97; --tk-err:#ff5d5d; --tk-ink:#6f7490; --tk-on:#0c0d14 } }
+:root[data-theme="dark"]{
+  --tk-a:#8b7bff; --tk-b:#35d6ff; --tk-c:#ff6bb5; --tk-d:#ffc15e;
+  --tk-ok:#3ddc97; --tk-err:#ff5d5d; --tk-ink:#6f7490; --tk-on:#0c0d14 }
+
+.ci{display:block;flex:none;overflow:visible}
+
+/* ── 状态行：正在理解问题（星轨） ── */
+.ci-understanding .sys{transform-origin:32px 32px;animation:ci-spin 36s linear infinite}
+.ci-understanding .ring{fill:none;stroke:var(--tk-ink);stroke-opacity:.28;stroke-width:.6}
+.ci-understanding :is(.tail,.head){fill:none;animation:ci-run 3.6s linear infinite}
+.ci-understanding .head{stroke-width:3;stroke-linecap:round;stroke-dasharray:.1 99.9}
+.ci-understanding .o1{stroke:var(--tk-a)}
+.ci-understanding .o2{stroke:var(--tk-b)}
+.ci-understanding .o3{stroke:var(--tk-c)}
+.ci-understanding .o2 :is(.tail,.head){animation-duration:4.7s;animation-delay:-1.5s}
+.ci-understanding .o3 :is(.tail,.head){animation-duration:6s;animation-delay:-3.8s}
+.ci-understanding .glow{fill:var(--tk-d);animation:ci-glow 3.6s ease-in-out infinite}
+.ci-understanding .core{transform-origin:32px 32px;animation:ci-core 3.6s ease-in-out infinite}
+
+/* ── 状态行：模型输出文字（光柱） ── */
+.ci-streaming rect{transform-box:fill-box;transform-origin:center;animation:ci-beat 1.3s ease-in-out infinite}
+.ci-streaming rect:nth-child(2),.ci-streaming rect:nth-child(4){animation-delay:-1.12s}
+.ci-streaming rect:nth-child(1),.ci-streaming rect:nth-child(5){animation-delay:-.94s}
+
+/* ── 状态行 / 子代理行：已完成（一次性：徽章弹出 → 画勾 → 一圈火花） ── */
+.ci-done .b{transform-origin:32px 32px;animation:ci-badge .45s cubic-bezier(.34,1.56,.64,1) both}
+.ci-done .c{fill:none;stroke:var(--tk-on);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;animation:ci-draw .3s .25s ease-out both}
+.ci-done .k{fill:none;stroke:var(--tk-ok);stroke-width:3;stroke-linecap:round;opacity:0;transform-origin:32px 32px;animation:ci-spark .6s .3s ease-out both}
+
+/* ── 状态行：出错（一次性：徽章弹出 → 轻抖） ── */
+.ci-error .g{animation:ci-shake .5s .3s ease-in-out 1}
+.ci-error .b{transform-origin:32px 32px;animation:ci-badge .45s cubic-bezier(.34,1.56,.64,1) both}
+.ci-error .x{fill:none;stroke:var(--tk-on);stroke-width:6;stroke-linecap:round}
+.ci-error .d{fill:var(--tk-on)}
+
+/* ── 状态行：中断（一次性） ── */
+.ci-stopped .g{transform-origin:32px 32px;animation:ci-pop .3s ease-out both}
+.ci-stopped .r{fill:none;stroke:var(--tk-ink);stroke-width:3.5}
+.ci-stopped .q{fill:var(--tk-ink)}
+
+/* ── 子代理：执行中 ⟳（带渐隐尾巴的弧） ── */
+.ci-agent-running .t{fill:none;stroke:var(--tk-ink);stroke-opacity:.25;stroke-width:6}
+.ci-agent-running .a{fill:none;stroke:var(--tk-a);stroke-width:6;stroke-linecap:round}
+.ci-agent-running .s{transform-origin:32px 32px;animation:ci-spin 1s linear infinite}
+
+/* ── 子代理：打开浮层 ↗（悬停时箭头飞出再回来） ── */
+.ci-open .arw{fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+:is(button,a,[role="button"]):is(:hover,:focus-visible) .ci-open .arw,
+.ci-open:hover .arw{animation:ci-fly .45s ease-in-out 1}
+
+/* ── 状态行：展开 / 收起（.is-open 时转 90°） ── */
+.ci-chevron path{fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round;transform-origin:32px 32px;transition:transform .2s ease}
+.ci-chevron.is-open path{transform:rotate(90deg)}
+
+/* ── 展开区：Bash 工具（.is-running 时提示符变色、光标闪、边框跑光） ── */
+.ci-tool-bash :is(.f,.c,.u,.p){fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
+.ci-tool-bash .f{stroke-width:3}
+.ci-tool-bash :is(.c,.u){stroke-width:3.2}
+.ci-tool-bash .p{stroke:var(--tk-b);stroke-width:3;stroke-dasharray:18 82;opacity:0}
+.ci-tool-bash.is-running :is(.c,.u){stroke:var(--tk-b)}
+.ci-tool-bash.is-running .u{animation:ci-blink 1s steps(1) infinite}
+.ci-tool-bash.is-running .p{opacity:1;animation:ci-run 2.4s linear infinite}
+
+/* ── 细线图标（.ci-ln）：展开区的工具 / 思考 / 说明、浮层关闭 ──
+      .l 线条　.dot 实心点　.hi 运行时变色　.w 运行时反复描出　.p 运行时沿轮廓跑光 */
+.ci-ln :is(.l,.p){fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+.ci-ln .dot{fill:currentColor}
+.ci-ln .p{stroke:var(--tk-b);stroke-dasharray:18 82;opacity:0}
+.ci-ln.is-running .p{opacity:1;animation:ci-run 2.4s linear infinite}
+.ci-ln.is-running .hi{stroke:var(--tk-b)}
+.ci-ln.is-running .w{stroke-dasharray:1;animation:ci-write 1.6s ease-out infinite}
+.ci-ln.is-running .w2{animation-delay:.35s}
+.ci-tool-edit.is-running .pen{animation:ci-scribble .5s ease-in-out infinite}
+.ci-tool-search.is-running .lens{animation:ci-look 2s ease-in-out infinite}
+.ci-tool-web .mer{transform-origin:32px 32px}
+.ci-tool-web.is-running .mer{animation:ci-globe 1.8s ease-in-out infinite}
+.ci-tool-agent.is-running :is(.n1,.n2){animation:ci-pulse 1.2s ease-in-out infinite}
+.ci-tool-agent.is-running .n2{animation-delay:-.6s}
+.ci-tool-mcp.is-running .pl{animation:ci-plug 1.4s ease-in-out infinite}
+.ci-tool-mcp.is-running .pr{animation:ci-plug 1.4s ease-in-out infinite reverse}
+.ci-tool-generic .nut{transform-origin:32px 32px}
+.ci-tool-generic.is-running .nut{animation:ci-spin 4s linear infinite}
+.ci-tool-fail .l{stroke:var(--tk-err)}
+.ci-tool-fail .dot{fill:var(--tk-err)}
+.ci-tool-fail .g{transform-origin:32px 32px;animation:ci-pop .3s ease-out both}
+.ci-close .x{transform-origin:32px 32px;transition:transform .2s ease}
+:is(button,a,[role="button"]):is(:hover,:focus-visible) .ci-close .x,.ci-close:hover .x{transform:rotate(90deg)}
+
+@keyframes ci-write{0%{stroke-dashoffset:1}55%,100%{stroke-dashoffset:0}}
+@keyframes ci-scribble{50%{transform:translate(3px,-3px)}}
+@keyframes ci-look{25%{transform:translate(5px,-2px)}50%{transform:translate(3px,5px)}75%{transform:translate(-3px,3px)}}
+@keyframes ci-globe{50%{transform:scaleX(.12)}}
+@keyframes ci-pulse{50%{opacity:.25}}
+@keyframes ci-plug{0%,100%{transform:translateX(-2px)}50%{transform:translateX(2px)}}
+@keyframes ci-spin{to{transform:rotate(360deg)}}
+@keyframes ci-run{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
+@keyframes ci-core{0%,100%{transform:scale(.92)}50%{transform:scale(1.14)}}
+@keyframes ci-glow{0%,100%{opacity:.4}50%{opacity:.75}}
+@keyframes ci-beat{0%,100%{transform:scaleY(.24)}50%{transform:scaleY(1)}}
+@keyframes ci-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes ci-badge{from{transform:scale(.3);opacity:0}}
+@keyframes ci-spark{0%{transform:scale(.6);opacity:0}30%{opacity:1}100%{transform:scale(1.12);opacity:0}}
+@keyframes ci-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-2.5px)}80%{transform:translateX(1.5px)}}
+@keyframes ci-pop{from{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes ci-fly{45%{transform:translate(12px,-12px);opacity:0}46%{transform:translate(-12px,12px);opacity:0}100%{transform:none;opacity:1}}
+@keyframes ci-blink{50%{opacity:0}}
+@keyframes ci-fade{50%{opacity:.5}}
+
+/* ── 状态行文字特效：只有执行过程（understanding / streaming）有霓虹流光，
+      文字本身保持原色；结束、出错、中断不加任何类 ── */
+.ct-understanding,.ct-streaming{--n1:var(--tk-a);--n2:var(--tk-b);--n3:var(--tk-c);
+  background:linear-gradient(100deg,currentColor 0 36%,var(--n1) 45%,var(--n2) 50%,var(--n3) 55%,currentColor 64% 100%);
+  background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  animation:ct-sweep 3.2s linear infinite}
+.ct-streaming{--n1:var(--tk-c);--n2:var(--tk-a);--n3:var(--tk-b);animation-duration:2.4s}
+@keyframes ct-sweep{from{background-position:100% 0}to{background-position:0 0}}
+
+/* ── 应用内关闭动画（data-motion="reduce"）：停在终态；进行中的图标只做明暗 ── */
+:root[data-motion="reduce"] :is(.ci,.ci *,.ct-understanding,.ct-streaming){animation:none!important;transition:none!important}
+:root[data-motion="reduce"] .ci-live{animation:ci-fade 2.4s ease-in-out infinite!important}

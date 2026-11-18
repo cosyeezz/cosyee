@@ -1,0 +1,87 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 1，不用工具。"
+   }
+  }
+ },
+ {
+  "t": 1987,
+  "o": {
+   "type": "control_request",
+   "request_id": "r2",
+   "request": {
+    "subtype": "set_model",
+    "model": "sonnet"
+   }
+  }
+ },
+ {
+  "t": 3488,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 2，不用工具。"
+   }
+  }
+ },
+ {
+  "t": 5199,
+  "o": {
+   "type": "control_request",
+   "request_id": "r3",
+   "request": {
+    "subtype": "set_model",
+    "model": "haiku"
+   }
+  }
+ },
+ {
+  "t": 5199,
+  "o": {
+   "type": "control_request",
+   "request_id": "r4",
+   "request": {
+    "subtype": "set_max_thinking_tokens",
+    "max_thinking_tokens": 8000
+   }
+  }
+ },
+ {
+  "t": 5199,
+  "o": {
+   "type": "control_request",
+   "request_id": "r5",
+   "request": {
+    "subtype": "set_effort",
+    "effort": "high"
+   }
+  }
+ },
+ {
+  "t": 5199,
+  "o": {
+   "type": "control_request",
+   "request_id": "r6",
+   "request": {
+    "subtype": "set_effort_level",
+    "level": "high"
+   }
+  }
+ },
+ {
+  "t": 6707,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 3，不用工具。"
+   }
+  }
+ }
+]

@@ -1,0 +1,548 @@
+.cz-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--sp-3) var(--sp-2) var(--sp-2);
+  gap: var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+
+.cz-sidebar__icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-sidebar__icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+/* ───── 导航行（新建会话 / 搜索）：普通的侧栏行，没有边框和底色 ───── */
+.cz-sidebar__top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.cz-sidebar__nav {
+  width: 100%;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 34px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.cz-sidebar__nav:hover { background: var(--bg-hover); }
+.cz-sidebar__nav--new { flex: 1 1 0; min-width: 0; width: auto; }
+/* 新建会话和收起按钮是同一行：都不画背景块（否则悬停时看起来像两个分开的部分），只用文字/图标变亮作反馈 */
+.cz-sidebar__top .cz-sidebar__nav--new:hover,
+.cz-sidebar__top .cz-sidebar__icon-btn:hover { background: transparent; color: var(--text); }
+.cz-sidebar__top :is(.cz-sidebar__nav--new, .cz-sidebar__icon-btn):focus-visible {
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+/* 新建会话图标：默认跟文字同色（白），悬停整行时才变橙 */
+.cz-sidebar__new-icon { color: var(--text); transition: color var(--dur-fast) var(--ease); }
+.cz-sidebar__nav--new:hover .cz-sidebar__new-icon { color: var(--new-chat); }
+.cz-sidebar__nav--input,
+.cz-sidebar__nav--input:hover { background: var(--bg-hover); cursor: text; }
+.cz-sidebar__nav--input:focus-within { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.cz-sidebar__nav--input > .icon { color: var(--text-3); }
+.cz-sidebar__search-input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+.cz-sidebar__search-input::placeholder { color: var(--text-3); }
+
+/* ───── 分区标题 ───── */
+.cz-sidebar__section-title {
+  flex: none;
+  padding: 0 var(--sp-3);
+  height: 22px;
+  display: flex;
+  align-items: center;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+/* ───── 工作空间 ───── */
+.cz-sidebar__ws { position: relative; flex: none; }
+.cz-sidebar__ws-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.cz-sidebar__ws-btn:hover,
+.cz-sidebar__ws-btn.is-open { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__ws-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cz-sidebar__menu {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  padding: var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-menu);
+  box-shadow: var(--shadow);
+}
+.cz-sidebar__menu-list { max-height: 280px; overflow-y: auto; }
+.cz-sidebar__menu-sep { height: 1px; margin: var(--sp-1) 0; background: var(--border); }
+.cz-sidebar__menu-item {
+  position: relative;
+  display: flex;
+  border-radius: var(--r-sm);
+}
+.cz-sidebar__menu-item:hover { background: var(--bg-hover); }
+.cz-sidebar__menu-item.is-active { background: var(--bg-active); }
+.cz-sidebar__menu-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-2);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-sidebar__menu-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  color: var(--text-2);
+}
+.cz-sidebar__menu-text { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+.cz-sidebar__menu-name,
+.cz-sidebar__menu-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cz-sidebar__menu-name { font-size: var(--fs-sm); line-height: 1.4; }
+.cz-sidebar__menu-path { font-size: var(--fs-xs); line-height: 1.3; color: var(--text-3); }
+/* 悬停时给 4 个操作按钮留位置（4 × 24 + 间距） */
+.cz-sidebar__menu-item:hover .cz-sidebar__menu-main,
+.cz-sidebar__menu-item:focus-within .cz-sidebar__menu-main,
+.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__menu-main { padding-right: 108px; }
+
+/* ───── 置顶区 ───── */
+.cz-sidebar__pinned {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 38%;
+  display: flex;
+  flex-direction: column;
+}
+.cz-sidebar__pinned-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ───── 会话列表 ───── */
+.cz-sidebar__list {
+  flex: 1 1 0;
+  min-height: 60px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cz-sidebar__empty {
+  padding: var(--sp-5) var(--sp-3);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.cz-sidebar__row {
+  position: relative;
+  flex: none;
+  display: flex;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+}
+.cz-sidebar__row.has-sub { height: 44px; }
+.cz-sidebar__row:hover { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__row.is-active { background: var(--bg-active); color: var(--text); }
+.cz-sidebar__row-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 100%;
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cz-sidebar__row-main--static { cursor: default; padding-left: var(--sp-3); }
+.cz-sidebar__dot-slot {
+  flex: none;
+  width: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cz-sidebar__dot { width: 7px; height: 7px; border-radius: 50%; }
+.cz-sidebar__dot--running { background: var(--dot-running); }
+.cz-sidebar__dot--unread { background: var(--dot-unread); }
+.cz-sidebar__row-body {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.cz-sidebar__row-title,
+.cz-sidebar__row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cz-sidebar__row-title { font-size: var(--fs-md); line-height: 1.4; }
+.cz-sidebar__row-sub { font-size: var(--fs-xs); line-height: 1.3; color: var(--text-3); }
+.cz-sidebar__row-time {
+  flex: none;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+/* 悬停 / 键盘聚焦 / 确认气泡打开时：隐藏时间，给 2 个操作按钮留位置 */
+.cz-sidebar__row:hover .cz-sidebar__row-time,
+.cz-sidebar__row:focus-within .cz-sidebar__row-time,
+.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__row-time { display: none; }
+.cz-sidebar__row:hover .cz-sidebar__row-main,
+.cz-sidebar__row:focus-within .cz-sidebar__row-main,
+.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__row-main { padding-right: 58px; }
+
+/* ───── 行内操作按钮（会话行 / 工作空间行 / 已删除行共用） ───── */
+.cz-sidebar__actions {
+  /* 不能用 transform 居中：它会让里面 position: fixed 的确认气泡改成相对它定位 */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: var(--sp-1);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cz-sidebar__row:hover .cz-sidebar__actions,
+.cz-sidebar__row:focus-within .cz-sidebar__actions,
+.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__menu-item:hover .cz-sidebar__actions,
+.cz-sidebar__menu-item:focus-within .cz-sidebar__actions,
+.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.cz-sidebar__confirm-wrap { display: inline-flex; }
+.cz-sidebar__act {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-sidebar__act:hover { background: rgba(128, 128, 128, .22); color: var(--text); }
+.cz-sidebar__act.is-on { color: var(--accent); }
+.cz-sidebar__act--danger:hover:not(:disabled) { color: var(--danger); }
+.cz-sidebar__act:disabled { opacity: .35; cursor: not-allowed; background: transparent; color: var(--text-3); }
+
+/* 删除确认气泡：fixed 定位在按钮旁，不会被列表的滚动容器裁掉 */
+.cz-sidebar__confirm {
+  position: fixed;
+  z-index: 60;
+  width: 216px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-menu);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  text-align: left;
+  cursor: default;
+}
+.cz-sidebar__confirm-text { font-size: var(--fs-sm); line-height: 1.5; }
+.cz-sidebar__confirm-note { margin-top: 2px; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-3); }
+.cz-sidebar__confirm-btns { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-3); }
+.cz-sidebar__confirm-btn {
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.cz-sidebar__confirm-btn:hover { background: var(--bg-hover); }
+.cz-sidebar__confirm-btn--danger { border-color: transparent; background: var(--danger); color: #fff; }
+.cz-sidebar__confirm-btn--danger:hover { background: var(--danger); filter: brightness(1.1); }
+
+/* ───── 已删除 ───── */
+.cz-sidebar__deleted { flex: none; display: flex; flex-direction: column; gap: 2px; }
+.cz-sidebar__deleted-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 30px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-sidebar__deleted-head:hover { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__deleted-body { display: flex; flex-direction: column; gap: 2px; }
+.cz-sidebar__deleted-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cz-sidebar__deleted-list .cz-sidebar__empty { padding: var(--sp-3); }
+
+/* ───── 账户栏 ───── */
+.cz-sidebar__account {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+.cz-sidebar__account-main {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-sidebar__account-main:hover { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.cz-sidebar__avatar--empty { background: var(--bg-hover); color: var(--text-3); }
+.cz-sidebar__account-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.cz-sidebar__account-text--muted { color: var(--text-3); }
+
+/* ───── 账号模式：账号菜单顶部的分段切换（两段等宽，选中的一段像「被按下的标签」） ───── */
+.cz-sidebar__mode { padding: var(--sp-1) var(--sp-1) var(--sp-2); }
+.cz-sidebar__seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+}
+.cz-sidebar__seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: calc(var(--r-md) - 3px);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-sidebar__seg-btn:hover:not(.is-on):not(:disabled) { color: var(--text); }
+.cz-sidebar__seg-btn.is-on {
+  background: var(--bg-hover);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  cursor: default;
+}
+.cz-sidebar__seg-btn:disabled:not(.is-on) { opacity: .5; cursor: default; }
+.cz-sidebar__seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-sidebar__mode .cz-sidebar__acct-confirm { margin-top: var(--sp-2); font-size: var(--fs-xs); }
+.cz-sidebar__mode .cz-sidebar__acct-note { margin-top: var(--sp-1); }
+
+/* ───── 账号切换菜单（从账户栏向上弹出） ───── */
+.cz-sidebar__account-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+}
+.cz-sidebar__account-main.is-open { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__menu--up {
+  top: auto;
+  bottom: calc(100% + var(--sp-1));
+  /* 比账户栏（不含设置按钮）稍宽一些，名字不至于太挤 */
+  right: auto;
+  width: max(100%, 240px);
+}
+.cz-sidebar__menu--up .cz-sidebar__menu-main:disabled { cursor: default; opacity: .7; }
+/* 账号行最多一个操作按钮：只有可移除的行悬停时才留位置 */
+.cz-sidebar__menu--up .cz-sidebar__menu-item .cz-sidebar__menu-main { padding-right: var(--sp-2); }
+.cz-sidebar__menu--up .cz-sidebar__menu-item.has-actions:is(:hover, :focus-within) .cz-sidebar__menu-main,
+.cz-sidebar__menu--up .cz-sidebar__menu-item.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__menu-main { padding-right: 36px; }
+.cz-sidebar__avatar--sm { width: 24px; height: 24px; font-size: var(--fs-xs); }
+.cz-sidebar__acct-check { flex: none; display: inline-flex; color: var(--accent); }
+.cz-sidebar__acct-tag { flex: none; font-size: var(--fs-xs); color: var(--text-3); }
+.cz-sidebar__acct-note { padding: 6px var(--sp-2); font-size: var(--fs-xs); line-height: 1.5; color: var(--text-3); }
+.cz-sidebar__acct-note--error { color: var(--danger); }
+.cz-sidebar__acct-confirm {
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+.cz-sidebar__acct-confirm .cz-sidebar__confirm-btns { margin-top: var(--sp-2); }
+
+/* ───── 添加账号 / 重新登录对话框 ───── */
+.cz-acct-dlg__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+.cz-acct-dlg {
+  width: min(400px, calc(100vw - 2 * var(--sp-4)));
+  padding: var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-menu);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.cz-acct-dlg__title { font-size: var(--fs-lg); font-weight: 600; }
+.cz-acct-dlg__text { margin: 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--text-2); }
+.cz-acct-dlg__text--muted { color: var(--text-3); }
+.cz-acct-dlg__text--error { color: var(--danger); }
+.cz-acct-dlg__text a { color: var(--accent); }
+.cz-acct-dlg__field { display: flex; flex-direction: column; gap: var(--sp-1); font-size: var(--fs-xs); color: var(--text-3); }
+.cz-acct-dlg__row { display: flex; gap: var(--sp-2); }
+.cz-acct-dlg__input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.cz-acct-dlg__input:focus { border-color: var(--accent); }
+.cz-acct-dlg__btns { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+.cz-acct-dlg__btn {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.cz-acct-dlg__btn:hover:not(:disabled) { background: var(--bg-hover); }
+.cz-acct-dlg__btn:disabled { opacity: .5; cursor: not-allowed; }
+.cz-acct-dlg__btn--primary { border-color: transparent; background: var(--accent); color: var(--on-accent); }
+.cz-acct-dlg__btn--primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }

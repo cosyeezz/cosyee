@@ -1,0 +1,73 @@
+.cz-menu {
+  position: fixed;
+  z-index: 1000;
+  padding: var(--sp-1);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  user-select: none;
+}
+.cz-menu--sub { position: absolute; z-index: 1001; }
+.cz-menu__wrap { position: relative; }
+.cz-menu__sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--border); }
+.cz-menu__text {
+  padding: var(--sp-1) var(--sp-3);
+  max-width: 260px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.cz-menu__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.cz-menu__row.is-active { background: var(--bg-hover); }
+.cz-menu__row.is-disabled { opacity: .45; cursor: default; }
+.cz-menu__check { flex: none; display: inline-flex; margin-left: var(--sp-3); color: var(--accent); }
+.cz-menu__main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cz-menu__label { display: flex; align-items: center; gap: var(--sp-2); white-space: nowrap; }
+.cz-menu__badge {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 9px;
+  background: var(--bg-active);
+  color: var(--text-2);
+}
+.cz-menu__info { display: inline-flex; color: var(--text-3); }
+.cz-menu__note { font-size: var(--fs-xs); color: var(--text-3); line-height: 1.4; }
+.cz-menu__shortcut { margin-left: var(--sp-3); color: var(--text-3); font-size: var(--fs-xs); font-family: var(--font-mono); }
+.cz-menu__arrow { color: var(--text-3); }
+.cz-menu__switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border-strong);
+  transition: background var(--dur-fast) var(--ease);
+}
+.cz-menu__switch.is-on { background: var(--accent); }
+.cz-menu__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--on-accent);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.cz-menu__switch.is-on .cz-menu__knob { transform: translateX(12px); }
+
+/* 选中项：整行淡灰填充圆角底色 + 亮色文字；右侧对勾（强调蓝）替代快捷键数字 */
+.cz-menu__row.is-checked { background: color-mix(in srgb, var(--text) 11%, transparent); border-radius: 8px; }
+.cz-menu__row.is-checked .cz-menu__label { color: var(--text); }
+.cz-menu__row.is-checked.is-active { background: color-mix(in srgb, var(--text) 15%, transparent); }

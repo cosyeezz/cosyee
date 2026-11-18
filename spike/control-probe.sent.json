@@ -1,0 +1,128 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 ok，不用工具。"
+   }
+  }
+ },
+ {
+  "t": 1507,
+  "o": {
+   "type": "control_request",
+   "request_id": "c0",
+   "request": {
+    "subtype": "get_context_usage"
+   }
+  }
+ },
+ {
+  "t": 1914,
+  "o": {
+   "type": "control_request",
+   "request_id": "c1",
+   "request": {
+    "subtype": "get_settings"
+   }
+  }
+ },
+ {
+  "t": 2305,
+  "o": {
+   "type": "control_request",
+   "request_id": "c2",
+   "request": {
+    "subtype": "mcp_status"
+   }
+  }
+ },
+ {
+  "t": 2709,
+  "o": {
+   "type": "control_request",
+   "request_id": "c3",
+   "request": {
+    "subtype": "set_max_thinking_tokens",
+    "max_thinking_tokens": 4000
+   }
+  }
+ },
+ {
+  "t": 3116,
+  "o": {
+   "type": "control_request",
+   "request_id": "c4",
+   "request": {
+    "subtype": "set_effort",
+    "effort": "low"
+   }
+  }
+ },
+ {
+  "t": 3507,
+  "o": {
+   "type": "control_request",
+   "request_id": "c5",
+   "request": {
+    "subtype": "set_permission_mode",
+    "mode": "bypassPermissions"
+   }
+  }
+ },
+ {
+  "t": 3913,
+  "o": {
+   "type": "control_request",
+   "request_id": "c6",
+   "request": {
+    "subtype": "initialize"
+   }
+  }
+ },
+ {
+  "t": 4304,
+  "o": {
+   "type": "control_request",
+   "request_id": "c7",
+   "request": {
+    "subtype": "get_session_info"
+   }
+  }
+ },
+ {
+  "t": 4707,
+  "o": {
+   "type": "control_request",
+   "request_id": "c8",
+   "request": {
+    "subtype": "apply_flag_settings",
+    "settings": {}
+   }
+  }
+ },
+ {
+  "t": 5104,
+  "o": {
+   "type": "control_request",
+   "request_id": "c9",
+   "request": {
+    "subtype": "rewind_files",
+    "user_message_id": "x",
+    "dry_run": true
+   }
+  }
+ },
+ {
+  "t": 5508,
+  "o": {
+   "type": "control_request",
+   "request_id": "c10",
+   "request": {
+    "subtype": "bogus_subtype"
+   }
+  }
+ }
+]

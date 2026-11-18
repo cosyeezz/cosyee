@@ -1,0 +1,167 @@
+// 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
+import type {
+  Account, AccountList, AccountLogin, AccountMode, Bootstrap, ClientMsg, ContextUsage, DeletedSession, PickedItem, PreviewInfo, ServerMsg, SessionConfig, SessionSummary, SkillMode, UsageInfo, Workspace,
+} from '@cosyee/shared';
+
+async function req<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+  return data as T;
+}
+
+/** 带 HTTP 状态和响应体的错误（比如切换账号时的 409 { error, running }） */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly data: Record<string, unknown>) {
+    super(message);
+  }
+}
+
+async function reqDetailed<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new ApiError(typeof data.error === 'string' ? data.error : `HTTP ${res.status}`, res.status, data);
+  return data as T;
+}
+
+const q = (o: Record<string, string>) => new URLSearchParams(o).toString();
+
+export const api = {
+  bootstrap: () => req<Bootstrap>('GET', '/api/bootstrap'),
+  workspaces: () => req<{ current: string | null; list: Workspace[] }>('GET', '/api/workspaces'),
+  pickWorkspace: () => req<{ workspace: Workspace | null }>('POST', '/api/workspaces/pick'),
+  setCurrentWorkspace: (path: string) => req<{ ok: true }>('POST', '/api/workspaces/current', { path }),
+  /** 置于顶部 / 从列表移除 / 在文件管理器打开：都返回最新的工作空间列表（reveal 只返回 ok） */
+  moveWorkspaceTop: (path: string) => req<{ current: string | null; list: Workspace[] }>('POST', '/api/workspaces/top', { path }),
+  removeWorkspace: (path: string) => req<{ current: string | null; list: Workspace[] }>('POST', '/api/workspaces/remove', { path }),
+  revealWorkspace: (path: string) => req<{ ok: true }>('POST', '/api/workspaces/reveal', { path }),
+  /** 全局置顶（跨工作空间）与已删除 */
+  pins: () => req<SessionSummary[]>('GET', '/api/pins'),
+  deleted: () => req<DeletedSession[]>('GET', '/api/deleted'),
+  pinSession: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/pin`, { cwd }),
+  unpinSession: (id: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/unpin`, {}),
+  deleteSession: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/delete`, { cwd }),
+  restoreSession: (id: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/restore`, {}),
+  purgeSession: (id: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/purge`, {}),
+  sessions: (cwd: string) => req<SessionSummary[]>('GET', `/api/sessions?${q({ cwd })}`),
+  history: (id: string, cwd: string) => req<{ entries: unknown[] }>('GET', `/api/sessions/${id}/history?${q({ cwd })}`),
+  subagent: (id: string, toolUseId: string, cwd: string) =>
+    req<{ entries: unknown[] }>('GET', `/api/sessions/${id}/subagent/${toolUseId}?${q({ cwd })}`),
+  rename: (id: string, cwd: string, title: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/rename`, { cwd, title }),
+  viewed: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/viewed`, { cwd }),
+  git: (cwd: string) => req<{ branch: string | null }>('GET', `/api/git?${q({ cwd })}`),
+  /** 额度：传会话 id 时取该会话所用账号的额度（并行模式下各会话账号可能不同） */
+  usage: (refresh = false, session?: string | null) => {
+    const p: Record<string, string> = {};
+    if (refresh) p.refresh = '1';
+    if (session) p.session = session;
+    const qs = q(p);
+    return req<UsageInfo | null>('GET', `/api/usage${qs ? `?${qs}` : ''}`);
+  },
+  /** 记住模型与思考强度（全局） */
+  saveDefaults: (c: SessionConfig) => req<{ ok: true }>('POST', '/api/defaults', { model: c.model, effort: c.effort }),
+  account: () => req<Account | null>('GET', '/api/account'),
+  /** 多账号：列表、切换（有执行中的会话时抛 ApiError，status 409，data.running = 数量）、添加 / 重新登录、移除 */
+  accounts: () => req<AccountList>('GET', '/api/accounts'),
+  switchAccount: (id: string, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/switch', { id, force }),
+  startAccountLogin: (o: { label?: string; accountId?: string }) => req<AccountLogin>('POST', '/api/accounts/login', o),
+  accountLogin: (loginId: string) => req<AccountLogin>('GET', `/api/accounts/login/${encodeURIComponent(loginId)}`),
+  submitAccountCode: (loginId: string, code: string) =>
+    req<{ ok: true }>('POST', `/api/accounts/login/${encodeURIComponent(loginId)}/code`, { code }),
+  cancelAccountLogin: (loginId: string) => req<{ ok: true }>('POST', `/api/accounts/login/${encodeURIComponent(loginId)}/cancel`, {}),
+  /** 移除账号：该账号有执行中的会话时抛 ApiError 409 */
+  removeAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/accounts/remove', { id }),
+  /** 切换模式 / 并行模式；回到切换模式时其它账号有执行中的会话抛 ApiError 409（data.running），force 强制停止 */
+  setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
+  setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
+  pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
+  /** 粘贴的图片：原始字节上传，返回与「+」选出的文件同形的项（带预览令牌） */
+  paste: async (blob: Blob): Promise<PickedItem> => {
+    const res = await fetch('/api/pastes', { method: 'POST', headers: { 'content-type': blob.type || 'application/octet-stream' }, body: blob });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    return (data as { item: PickedItem }).item;
+  },
+  previewInfo: (t: string) => req<PreviewInfo>('GET', `/api/preview/${t}/info`),
+  /** 图片预览地址（<img src>） */
+  previewRawUrl: (t: string) => `/api/preview/${t}/raw`,
+  context: (id: string) => req<ContextUsage | null>('GET', `/api/context/${id}`),
+  /**
+   * cwd：会话所在目录（可选；后端没有进程时据此定位会话，省去按 id 全局查找）。
+   * draft：还没发过消息的新会话（磁盘上没有记录），后端用 --session-id 拉起探测进程；必须带 cwd。
+   */
+  refreshContext: (id: string, cwd?: string, draft = false) =>
+    req<ContextUsage | null>('POST', `/api/context/${id}/refresh`, { ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),
+  /** 设置 skill 状态（全局，立即下发给运行中的会话） */
+  setSkillMode: (name: string, mode: SkillMode) => req<{ ok: true }>('POST', '/api/skills', { name, mode }),
+  /** 开关 MCP 服务器（按项目写进 ~/.claude.json）；返回切换后的上下文 */
+  toggleMcp: (id: string, server: string, enabled: boolean, cwd?: string, draft = false) =>
+    req<ContextUsage | null>('POST', `/api/context/${id}/mcp`, { server, enabled, ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),
+};
+
+// ───────────── WebSocket ─────────────
+
+type Listener = (m: ServerMsg) => void;
+
+export class Socket {
+  private ws: WebSocket | null = null;
+  private queue: ClientMsg[] = [];
+  private listeners = new Set<Listener>();
+  private subs = new Set<string>();
+  private retry = 0;
+  private openListeners = new Set<() => void>();
+  private opened = false;
+
+  connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.retry = 0;
+      for (const s of this.subs) ws.send(JSON.stringify({ t: 'subscribe', sessionId: s } satisfies ClientMsg));
+      for (const m of this.queue.splice(0)) ws.send(JSON.stringify(m));
+      // 断线期间的广播（sessions.changed / sidebar.changed）都丢了：重连后通知上层重新拉取
+      if (this.opened) for (const l of this.openListeners) l();
+      this.opened = true;
+    };
+    ws.onmessage = (ev) => {
+      let m: ServerMsg;
+      try { m = JSON.parse(String(ev.data)); } catch { return; }
+      for (const l of this.listeners) l(m);
+    };
+    ws.onclose = () => {
+      this.ws = null;
+      const delay = Math.min(5000, 300 * 2 ** this.retry++);
+      setTimeout(() => this.connect(), delay);
+    };
+  }
+
+  send(m: ClientMsg) {
+    if (m.t === 'subscribe') this.subs.add(m.sessionId);
+    if (m.t === 'unsubscribe') this.subs.delete(m.sessionId);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+    // 订阅关系由 subs 在重连时统一补发，不进队列，避免重复订阅
+    else if (m.t !== 'subscribe' && m.t !== 'unsubscribe') this.queue.push(m);
+  }
+
+  on(l: Listener) {
+    this.listeners.add(l);
+    return () => { this.listeners.delete(l); };
+  }
+
+  /** 断线重连成功后调用（首次连接不调用） */
+  onReconnect(l: () => void) {
+    this.openListeners.add(l);
+    return () => { this.openListeners.delete(l); };
+  }
+}
+
+export const socket = new Socket();

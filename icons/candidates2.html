@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>已完成 / 出错 · 第二批候选（11–20）</title>
+<style>
+:root{--bg:#f4f5fa;--surface:#fff;--stage:#eceef6;--line:#dcdfeb;--fg:#161827;--muted:#646a83;color-scheme:light;
+  --tk-a:#6a4dff;--tk-b:#00a6d6;--tk-c:#ee2f8c;--tk-d:#f2960a;--tk-ok:#0f9d63;--tk-err:#dc2f3f;--tk-on:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark;
+  --tk-a:#8b7bff;--tk-b:#35d6ff;--tk-c:#ff6bb5;--tk-d:#ffc15e;--tk-ok:#3ddc97;--tk-err:#ff5d5d;--tk-on:#0c0d14}}
+:root[data-theme="dark"]{--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark;
+  --tk-a:#8b7bff;--tk-b:#35d6ff;--tk-c:#ff6bb5;--tk-d:#ffc15e;--tk-ok:#3ddc97;--tk-err:#ff5d5d;--tk-on:#0c0d14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.page{max-width:1000px;margin:0 auto;padding:32px 16px 64px;display:flex;flex-direction:column;gap:20px}
+h1{font-size:24px;font-weight:600;margin:0}
+.muted{color:var(--muted);font-size:13px;margin:0}
+.bar{display:flex;gap:10px;align-items:center;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:4px 12px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--tk-a);color:#fff}
+.btn{font:500 13px inherit;color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 12px;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card:hover{border-color:var(--tk-a)}
+.card:focus-visible,.seg button:focus-visible,.btn:focus-visible{outline:2px solid var(--tk-b);outline-offset:2px}
+.top{display:flex;justify-content:center;align-items:center;gap:44px;height:128px;background:var(--stage)}
+.meta{padding:10px 14px 14px;display:flex;flex-direction:column;gap:6px}
+.meta b{font-weight:600}
+.row{display:flex;align-items:center;gap:8px;font-size:14px;min-height:24px}
+.row.s{font-size:13px;color:var(--muted)}
+svg{display:block;flex:none;overflow:visible}
+
+.ok{--c:var(--tk-ok)} .er{--c:var(--tk-err)}
+.ln{fill:none;stroke:var(--c);stroke-linecap:round;stroke-linejoin:round}
+.on{fill:none;stroke:var(--tk-on);stroke-linecap:round;stroke-linejoin:round}
+/* 通用动效（--d 为延迟） */
+.dr{stroke-dasharray:1;animation:k-draw .35s var(--d,0s) ease-out both}
+.pop{transform-origin:32px 32px;animation:k-pop .4s var(--d,0s) cubic-bezier(.34,1.56,.64,1) both}
+.popc{transform-box:fill-box;transform-origin:center;animation:k-pop .4s var(--d,0s) cubic-bezier(.34,1.56,.64,1) both}
+.fade{animation:k-fade .4s var(--d,0s) ease-out both}
+.shake{animation:k-shake .45s .35s ease-in-out 1}
+.settle{transform-origin:32px 32px;animation:k-settle .6s cubic-bezier(.3,1.3,.6,1) both}
+.to{transform-origin:32px 32px;animation:k-to .5s var(--d,.15s) cubic-bezier(.3,1.4,.6,1) both}
+.from{animation:k-from .45s var(--d,0s) cubic-bezier(.3,1.3,.6,1) both}
+.twk{transform-box:fill-box;transform-origin:center;animation:k-twk .55s var(--d,0s) cubic-bezier(.34,1.56,.64,1) both}
+.px{transform-box:fill-box;transform-origin:center;animation:k-px .16s var(--d,0s) steps(2) both}
+.drop{animation:k-drop .6s cubic-bezier(.3,1.5,.6,1) both}
+.unfurl{transform-origin:18px 22px;animation:k-unfurl .5s .2s cubic-bezier(.3,1.4,.6,1) both,k-wave .9s .7s ease-in-out 2}
+.flash{animation:k-flash .5s .1s steps(1) both}
+.nod{transform-origin:32px 56px;animation:k-nod .5s .45s ease-in-out 1}
+@keyframes k-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes k-pop{from{transform:scale(.3);opacity:0}}
+@keyframes k-fade{from{opacity:0}}
+@keyframes k-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-2.5px)}80%{transform:translateX(1.5px)}}
+@keyframes k-settle{from{transform:scaleY(.37);opacity:.4}}
+@keyframes k-to{to{transform:var(--to)}}
+@keyframes k-from{from{transform:var(--from);opacity:0}}
+@keyframes k-twk{from{transform:scale(0) rotate(-90deg);opacity:0}}
+@keyframes k-px{from{transform:scale(0);opacity:0}}
+@keyframes k-drop{from{transform:translateY(-26px);opacity:0}}
+@keyframes k-unfurl{from{transform:scaleX(0)}}
+@keyframes k-wave{50%{transform:skewY(-7deg)}}
+@keyframes k-flash{0%{opacity:0}20%{opacity:1}40%{opacity:.25}60%{opacity:1}}
+@keyframes k-nod{40%{transform:rotate(-8deg)}75%{transform:rotate(5deg)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>已完成 / 出错 · 第二批（11–20）</h1>
+    <p class="muted" style="margin-top:6px">这一批不再是"圆圈 + 勾 / 叉"换皮，而是十种不同的造型和隐喻。每张卡片左边"已完成"、右边"出错"，下面是状态行（20px）和子代理行（14px）的实际大小。点卡片重播。可以分别挑，也可以说"要 12 的造型但别渐变"这种混搭。</p>
+  </header>
+  <div class="bar">
+    <span>主题</span>
+    <span class="seg" id="theme"><button data-v="">跟随系统</button><button data-v="light">浅色</button><button data-v="dark">深色</button></span>
+    <button class="btn" id="all" type="button">全部重播</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+let uid = 0;
+const lg = (id, c1, c2, x1 = 8, y1 = 8, x2 = 56, y2 = 56) =>
+  `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" style="stop-color:var(--tk-${c1})"/><stop offset="1" style="stop-color:var(--tk-${c2})"/></linearGradient>`;
+const star = (cx, cy, r, k = .16, m = .42) => {
+  const p = (x, y) => (cx + x * r).toFixed(1) + ' ' + (cy + y * r).toFixed(1);
+  return `M${p(0, -1)}C${p(k, -m)} ${p(m, -k)} ${p(1, 0)}C${p(m, k)} ${p(k, m)} ${p(0, 1)}C${p(-k, m)} ${p(-m, k)} ${p(-1, 0)}C${p(-m, -k)} ${p(-k, -m)} ${p(0, -1)}Z`;
+};
+const burst = (n, r1, r2) => Array.from({ length: n * 2 }, (_, i) => {
+  const a = i * Math.PI / n - Math.PI / 2, r = i % 2 ? r2 : r1;
+  return (32 + r * Math.cos(a)).toFixed(1) + ',' + (32 + r * Math.sin(a)).toFixed(1);
+}).join(' ');
+const pixels = (cells, dim) => cells.map(([c, r], i) =>
+  `<rect class="px" style="--d:${(i * .035).toFixed(3)}s;fill:var(--c)${dim && dim(c, r, i) ? ';fill-opacity:.5' : ''}" x="${4 + c * 8}" y="${4 + r * 8}" width="7.2" height="7.2" rx="1"/>`).join('');
+
+const STYLES = [
+  { name: '星轨归位 / 轨道断裂', note: '接着"正在理解问题"的星轨讲完故事：三条轨道收拢成一个环、核心变绿；出错则是环碎成三段飘开。',
+    ok: () => { const id = 'g' + (++uid); return `<defs><radialGradient id="${id}"><stop offset="0" stop-color="#fff"/><stop offset=".5" style="stop-color:var(--tk-ok)"/><stop offset="1" style="stop-color:var(--tk-b)"/></radialGradient></defs>` +
+      [0, 60, 120].map(a => `<g transform="rotate(${a} 32 32)"><circle class="settle" style="fill:none;stroke:var(--tk-ok);stroke-width:3" cx="32" cy="32" r="22"/></g>`).join('') +
+      `<circle class="fade" style="--d:.45s;fill:var(--tk-ok);opacity:.22" cx="32" cy="32" r="14"/><circle class="pop" style="--d:.35s" fill="url(#${id})" cx="32" cy="32" r="9"/>` +
+      [[32, 10], [51, 43], [13, 43]].map(([x, y]) => `<circle class="pop" style="--d:.55s;fill:var(--tk-b)" cx="${x}" cy="${y}" r="3.6"/>`).join(''); },
+    er: () => `<g class="shake">` + [[-20, 4, 3], [100, 8, 6], [220, 3, 2]].map(([a, x, y]) =>
+      `<g transform="rotate(${a} 32 32)"><circle class="to" style="--to:translate(${x}px,${y}px);fill:none;stroke:var(--c);stroke-width:3.5;stroke-linecap:round;stroke-dasharray:70 290" pathLength="360" cx="32" cy="32" r="22"/></g>`).join('') +
+      `<circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="7.5"/><circle class="fade" style="--d:.5s;fill:var(--tk-d)" cx="52" cy="10" r="2.6"/><circle class="fade" style="--d:.6s;fill:var(--tk-d)" cx="8" cy="50" r="2.2"/></g>` },
+
+  { name: '四芒星 / 闪电', note: '完成是一颗亮起来的星（AI 产品常见的"生成好了"）；出错是一道闪电。实心、有渐变，没有勾和叉。',
+    ok: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'ok', 'b', 6, 58, 58, 6)}</defs><g fill="url(#${id})"><path class="twk" d="${star(27, 37, 25)}"/><path class="twk" style="--d:.25s" d="${star(51, 13, 10)}"/><path class="twk" style="--d:.4s" d="${star(54, 52, 5)}"/></g>`; },
+    er: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'd', 'err', 32, 4, 32, 60)}</defs><g class="shake"><path class="flash" fill="url(#${id})" stroke="url(#${id})" stroke-width="3" stroke-linejoin="round" d="M37 5L14 36H28L25 59L50 26H35Z"/></g>`; } },
+
+  { name: '像素', note: '8-bit 像素块一格一格点亮，复古终端的味道，和 CLI 工具的气质搭。',
+    ok: () => pixels([[0, 2], [1, 3], [2, 4], [3, 3], [4, 2], [5, 1], [6, 0], [0, 3], [1, 4], [2, 5], [3, 4], [4, 3], [5, 2], [6, 1]], (c, r, i) => i >= 7),
+    er: () => `<g class="shake">${pixels([[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5], [6, 6], [6, 0], [5, 1], [4, 2], [2, 4], [1, 5], [0, 6]], (c, r, i) => i >= 7)}</g>` },
+
+  { name: '表情', note: '一张笑脸 / 一张晕掉的脸。最有人情味，也最不"系统提示"。',
+    ok: () => `<g class="nod"><circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="26"/><path class="on fade" style="stroke-width:4.5;--d:.2s" d="M19 28Q23.5 22 28 28M36 28Q40.5 22 45 28"/><path class="on dr" pathLength="1" style="stroke-width:4.5;--d:.3s" d="M20 38Q32 51 44 38"/></g>`,
+    er: () => `<g class="shake"><circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="26"/><path class="on fade" style="stroke-width:4;--d:.2s" d="M19 22L27 30M27 22L19 30M37 22L45 30M45 22L37 30"/><path class="on dr" pathLength="1" style="stroke-width:4.5;--d:.3s" d="M20 45Q26 38 32 43T44 41"/></g>` },
+
+  { name: '旗帜 / 断线', note: '到达终点插上旗子；出错是一条断开的连线。用隐喻代替符号。',
+    ok: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'ok', 'b', 18, 22, 52, 22)}</defs><path class="ln dr" pathLength="1" style="stroke-width:4.5" d="M16 58V8"/><path class="unfurl" fill="url(#${id})" d="M18 10C27 4 37 17 51 10V34C37 41 27 28 18 34Z"/>`; },
+    er: () => `<g class="from" style="--from:translateX(8px)"><circle style="fill:var(--c)" cx="9" cy="32" r="6.5"/><path class="ln" style="stroke-width:5" d="M15 32H23"/></g><g class="from" style="--from:translateX(-8px)"><circle style="fill:var(--c)" cx="55" cy="32" r="6.5"/><path class="ln" style="stroke-width:5" d="M41 32H49"/></g><path class="dr" pathLength="1" style="--d:.4s;fill:none;stroke:var(--tk-d);stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round" d="M36 14L28 30H36L28 50"/>` },
+
+  { name: '环闭合 / 环断裂', note: '接着子代理的转圈讲：弧线一路走满、合成整环，中心落一个点；出错是环崩掉一块。',
+    ok: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'a', 'ok', 10, 54, 54, 10)}</defs><circle class="dr" pathLength="1" style="animation-duration:.6s;fill:none;stroke-width:7;stroke-linecap:round" stroke="url(#${id})" cx="32" cy="32" r="22" transform="rotate(-90 32 32)"/><circle class="pop" style="--d:.5s;fill:var(--tk-ok)" cx="32" cy="32" r="8"/>`; },
+    er: () => `<g class="shake"><circle style="fill:none;stroke:var(--c);stroke-width:7;stroke-linecap:round;stroke-dasharray:74 26" pathLength="100" cx="32" cy="32" r="22"/><circle class="to" style="--to:translate(9px,-7px) rotate(16deg);fill:none;stroke:var(--tk-d);stroke-width:7;stroke-linecap:round;stroke-dasharray:0 81 13 6" pathLength="100" cx="32" cy="32" r="22"/></g>` },
+
+  { name: '立体糖果球', note: '拟物：带高光和投影的小球从上面落下来弹一下。最"鼓"、最有分量。',
+    ok: () => ball('ok', `<path d="M21 31L29 39L44 23"/>`),
+    er: () => `<g class="shake">${ball('err', `<path d="M23 21L41 39M41 21L23 39"/>`)}</g>` },
+
+  { name: '对话气泡', note: '这是个聊天界面：回答好了 = 一个带勾的气泡；出错 = 空心气泡里一个感叹号。',
+    ok: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'ok', 'b')}</defs><g class="pop" style="transform-origin:17px 58px"><path fill="url(#${id})" d="${BUBBLE}"/></g><path class="on dr" pathLength="1" style="stroke-width:5.5;--d:.25s" d="M21 27L29 35L44 19"/>`; },
+    er: () => `<g class="shake"><g class="pop" style="transform-origin:17px 58px"><path style="fill:var(--c);fill-opacity:.14;stroke:var(--c);stroke-width:4;stroke-linejoin:round" d="${BUBBLE}"/></g><path class="ln dr" pathLength="1" style="stroke-width:5;--d:.25s" d="M32 16V28"/><circle class="fade" style="--d:.45s;fill:var(--c)" cx="32" cy="37" r="3.2"/></g>` },
+
+  { name: '拼合 / 错位', note: '两块拼图滑到一起严丝合缝；出错是两块对不上。纯几何、双色。',
+    ok: () => `<polygon class="from" style="--from:translate(-12px,12px);fill:var(--tk-ok);stroke:var(--tk-ok);stroke-width:5;stroke-linejoin:round" points="12,12 50,12 12,50"/><polygon class="from" style="--from:translate(12px,-12px);--d:.1s;fill:var(--tk-b);stroke:var(--tk-b);stroke-width:5;stroke-linejoin:round" points="52,52 52,14 14,52"/>`,
+    er: () => `<g class="shake"><polygon class="to" style="--to:translate(-7px,3px);fill:var(--tk-err);stroke:var(--tk-err);stroke-width:5;stroke-linejoin:round" points="12,12 50,12 12,50"/><polygon class="to" style="--to:translate(7px,-3px) rotate(9deg);fill:var(--tk-d);stroke:var(--tk-d);stroke-width:5;stroke-linejoin:round" points="52,52 52,14 14,52"/></g>` },
+
+  { name: '彩带庆祝 / 爆炸框', note: '完成时撒一把四色彩带（唯一用到全部品牌色的方案）；出错是漫画里的爆炸框。',
+    ok: () => `<path class="ln dr" pathLength="1" style="stroke-width:7;--d:.1s" d="M19 34L28 43L45 23"/>` +
+      [['a', `<rect x="6" y="11" width="8" height="4" rx="1.5" transform="rotate(35 10 13)"/>`], ['c', `<circle cx="53" cy="11" r="3"/>`],
+       ['d', `<rect x="51" y="43" width="8" height="4" rx="1.5" transform="rotate(-40 55 45)"/>`], ['b', `<circle cx="8" cy="47" r="2.8"/>`],
+       ['b', `<rect x="28" y="2" width="4" height="8" rx="1.5" transform="rotate(15 30 6)"/>`], ['c', `<rect x="20" y="54" width="7" height="4" rx="1.5" transform="rotate(20 23 56)"/>`],
+       ['a', `<circle cx="41" cy="58" r="2.4"/>`], ['d', `<circle cx="4" cy="28" r="2.2"/>`]]
+        .map(([c, s], i) => `<g class="pop" style="--d:${(.3 + i * .03).toFixed(2)}s;fill:var(--tk-${c})">${s}</g>`).join(''),
+    er: () => { const id = 'g' + (++uid); return `<defs>${lg(id, 'd', 'err', 32, 2, 32, 50)}</defs><g class="shake"><polygon class="pop" fill="url(#${id})" stroke="url(#${id})" stroke-width="3" stroke-linejoin="round" points="${burst(11, 29, 20)}"/><path class="on dr" pathLength="1" style="stroke-width:5.5;--d:.25s" d="M32 19V34"/><circle class="fade" style="--d:.45s;fill:var(--tk-on)" cx="32" cy="43" r="3.4"/></g>`; } },
+];
+
+const BUBBLE = 'M18 8H46A12 12 0 0 1 58 20V34A12 12 0 0 1 46 46H29L17 58V46A12 12 0 0 1 6 34V20A12 12 0 0 1 18 8Z';
+function ball(c, sym) {
+  const id = 'g' + (++uid), v = `var(--tk-${c})`;
+  return `<defs><radialGradient id="${id}" cx=".36" cy=".28" r=".8"><stop offset="0" style="stop-color:color-mix(in srgb,${v},#fff 55%)"/><stop offset=".5" style="stop-color:${v}"/><stop offset="1" style="stop-color:color-mix(in srgb,${v},#000 38%)"/></radialGradient></defs>` +
+    `<ellipse class="fade" style="--d:.25s" cx="32" cy="59" rx="16" ry="3" fill="#000" fill-opacity=".2"/>` +
+    `<g class="drop"><circle cx="32" cy="30" r="25" fill="url(#${id})"/><ellipse cx="24" cy="15" rx="11" ry="6" fill="#fff" fill-opacity=".45" transform="rotate(-24 24 15)"/>` +
+    `<g fill="none" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><g stroke="#000" stroke-opacity=".22" transform="translate(0 2)">${sym}</g><g stroke="#fff">${sym}</g></g></g>`;
+}
+
+const svg = (kind, s, size) => `<svg class="${kind}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${s[kind]()}</svg>`;
+const cards = STYLES.map((s, i) => {
+  const card = document.createElement('button'); card.className = 'card'; card.type = 'button';
+  const render = () => { card.innerHTML =
+    `<div class="top">${svg('ok', s, 64)}${svg('er', s, 64)}</div><div class="meta">
+      <div><b>${i + 11} · ${s.name}</b></div>
+      <div class="row">${svg('ok', s, 20)}<span>已完成 · 20:31 · 用时 17s</span></div>
+      <div class="row">${svg('er', s, 20)}<span>出错了：连接中断</span></div>
+      <div class="row s">${svg('ok', s, 14)}<span>子代理 1</span>&emsp;${svg('er', s, 14)}<span>子代理 2</span></div>
+      <p class="muted">${s.note}</p></div>`; };
+  card.addEventListener('click', render); render();
+  document.getElementById('grid').append(card);
+  return render;
+});
+document.getElementById('all').addEventListener('click', () => cards.forEach(r => r()));
+
+const btns = [...document.getElementById('theme').children];
+const setTheme = v => { v ? document.documentElement.dataset.theme = v : delete document.documentElement.dataset.theme;
+  btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); };
+btns.forEach(b => b.addEventListener('click', () => setTheme(b.dataset.v))); setTheme('');
+</script>
+</body>
+</html>

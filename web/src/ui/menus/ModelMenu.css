@@ -1,0 +1,18 @@
+.cz-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.cz-menu__trigger:hover,
+.cz-menu__trigger.is-open { background: var(--bg-hover); color: var(--text-2); }
+.cz-menu__trigger:disabled { opacity: .5; cursor: default; }
+
+.cz-menu__trigger-model { color: var(--text); }
+.cz-menu__trigger-sub { color: var(--text-3); }

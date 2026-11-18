@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>已完成 / 出错 · 10 种风格候选</title>
+<style>
+:root{--bg:#f4f5fa;--surface:#fff;--stage:#eceef6;--line:#dcdfeb;--fg:#161827;--muted:#646a83;color-scheme:light;
+  --tk-a:#6a4dff;--tk-b:#00a6d6;--tk-c:#ee2f8c;--tk-d:#f2960a;--tk-ok:#0f9d63;--tk-err:#dc2f3f;--tk-on:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark;
+  --tk-a:#8b7bff;--tk-b:#35d6ff;--tk-c:#ff6bb5;--tk-d:#ffc15e;--tk-ok:#3ddc97;--tk-err:#ff5d5d;--tk-on:#0c0d14}}
+:root[data-theme="dark"]{--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark;
+  --tk-a:#8b7bff;--tk-b:#35d6ff;--tk-c:#ff6bb5;--tk-d:#ffc15e;--tk-ok:#3ddc97;--tk-err:#ff5d5d;--tk-on:#0c0d14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.page{max-width:1000px;margin:0 auto;padding:32px 16px 64px;display:flex;flex-direction:column;gap:20px}
+h1{font-size:24px;font-weight:600;margin:0}
+.muted{color:var(--muted);font-size:13px;margin:0}
+.bar{display:flex;gap:10px;align-items:center;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:4px 12px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--tk-a);color:#fff}
+.btn{font:500 13px inherit;color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 12px;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card:hover{border-color:var(--tk-a)}
+.card:focus-visible,.seg button:focus-visible,.btn:focus-visible{outline:2px solid var(--tk-b);outline-offset:2px}
+.top{display:flex;justify-content:center;align-items:center;gap:44px;height:112px;background:var(--stage)}
+.meta{padding:10px 14px 14px;display:flex;flex-direction:column;gap:6px}
+.meta b{font-weight:600}
+.row{display:flex;align-items:center;gap:8px;font-size:14px;min-height:24px}
+.row.s{font-size:13px;color:var(--muted)}
+svg{display:block;flex:none;overflow:visible}
+
+/* 通用动效：描线、弹出、淡入（--d 为延迟） */
+.dr{stroke-dasharray:1;animation:k-draw .35s var(--d,0s) ease-out both}
+.pop{transform-origin:32px 32px;animation:k-pop .4s var(--d,0s) cubic-bezier(.34,1.56,.64,1) both}
+.fade{animation:k-fade .4s var(--d,0s) ease-out both}
+.shake{animation:k-shake .45s .3s ease-in-out 1}
+.halo{transform-origin:32px 32px;animation:k-halo .9s .1s ease-out both}
+@keyframes k-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes k-pop{from{transform:scale(.3);opacity:0}}
+@keyframes k-fade{from{opacity:0}}
+@keyframes k-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-2.5px)}80%{transform:translateX(1.5px)}}
+@keyframes k-halo{from{transform:scale(.55);opacity:.9}to{transform:scale(1);opacity:.28}}
+.ok{--c:var(--tk-ok)} .er{--c:var(--tk-err)}
+.ln{fill:none;stroke:var(--c);stroke-linecap:round;stroke-linejoin:round}
+.on{fill:none;stroke:var(--tk-on);stroke-linecap:round;stroke-linejoin:round}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>已完成 / 出错 · 10 种风格</h1>
+    <p class="muted" style="margin-top:6px">每张卡片左边是"已完成"，右边是"出错"；下面是放进状态行（20px）和子代理行（14px）的实际大小。点卡片重播出现动画。两个图标可以分别从不同风格里挑，告诉我编号就行。</p>
+  </header>
+  <div class="bar">
+    <span>主题</span>
+    <span class="seg" id="theme"><button data-v="">跟随系统</button><button data-v="light">浅色</button><button data-v="dark">深色</button></span>
+    <button class="btn" id="all" type="button">全部重播</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+let uid = 0;
+const CHECK = 'M20 33L28.5 41.5L44.5 24.5';
+const X1 = 'M23 23L41 41', X2 = 'M41 23L23 41';
+const poly = (n, r1, r2, rot = 0) => Array.from({ length: n * (r2 ? 2 : 1) }, (_, i) => {
+  const m = r2 ? n * 2 : n, a = rot + i * 2 * Math.PI / m, r = r2 && i % 2 ? r2 : r1;
+  return (32 + r * Math.cos(a)).toFixed(1) + ',' + (32 + r * Math.sin(a)).toFixed(1);
+}).join(' ');
+const bang = (w, cls = 'on') => `<path class="${cls} dr" pathLength="1" style="stroke-width:${w};--d:.2s" d="M32 19V35"/><circle class="fade" style="--d:.4s;fill:${cls === 'on' ? 'var(--tk-on)' : 'var(--c)'}" cx="32" cy="44.5" r="${(w * .62).toFixed(1)}"/>`;
+const cross = (w, cls, d = .2) => `<path class="${cls} dr" pathLength="1" style="stroke-width:${w};--d:${d}s" d="${X1}"/><path class="${cls} dr" pathLength="1" style="stroke-width:${w};--d:${d + .15}s" d="${X2}"/>`;
+const check = (w, cls, d = .2, path = CHECK) => `<path class="${cls} dr" pathLength="1" style="stroke-width:${w};--d:${d}s" d="${path}"/>`;
+
+const STYLES = [
+  { name: '极细线环', note: '细圆环 + 细符号，依次描出。最轻、最安静。',
+    ok: () => `<circle class="ln dr" pathLength="1" style="stroke-width:2.5;animation-duration:.5s" cx="32" cy="32" r="24" transform="rotate(-90 32 32)"/>${check(3, 'ln', .35)}`,
+    er: () => `<circle class="ln dr" pathLength="1" style="stroke-width:2.5;animation-duration:.5s" cx="32" cy="32" r="24" transform="rotate(-90 32 32)"/>${cross(3, 'ln', .35)}` },
+
+  { name: '纯符号（无外框）', note: '只有一个渐变色的勾 / 叉，没有圆环或底色。',
+    ok: () => { const id = 'g' + (++uid); return `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="14" y1="40" x2="52" y2="16"><stop offset="0" style="stop-color:var(--tk-ok)"/><stop offset="1" style="stop-color:var(--tk-b)"/></linearGradient></defs><path class="dr" pathLength="1" fill="none" stroke="url(#${id})" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" d="M13 34L26 47L51 18"/>`; },
+    er: () => { const id = 'g' + (++uid); return `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="16" y1="16" x2="48" y2="48"><stop offset="0" style="stop-color:var(--tk-err)"/><stop offset="1" style="stop-color:var(--tk-c)"/></linearGradient></defs><g class="shake"><path class="dr" pathLength="1" fill="none" stroke="url(#${id})" stroke-width="7" stroke-linecap="round" d="M17 17L47 47"/><path class="dr" pathLength="1" style="--d:.15s" fill="none" stroke="url(#${id})" stroke-width="7" stroke-linecap="round" d="M47 17L17 47"/></g>`; } },
+
+  { name: '柔和底色', note: '淡色圆底 + 同色符号，像常见的状态标签。',
+    ok: () => `<circle class="pop" style="fill:var(--c);fill-opacity:.16" cx="32" cy="32" r="27"/>${check(5, 'ln')}`,
+    er: () => `<circle class="pop" style="fill:var(--c);fill-opacity:.16" cx="32" cy="32" r="27"/>${bang(5, 'ln')}` },
+
+  { name: '实心圆（纯色）', note: '纯色实心圆 + 反白符号，不带渐变和火花。',
+    ok: () => `<circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="25"/>${check(5.5, 'on')}`,
+    er: () => `<g class="shake"><circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="25"/>${cross(5.5, 'on')}</g>` },
+
+  { name: '圆角方块', note: '实心圆角方块 + 反白符号，和工具图标的方框呼应。',
+    ok: () => `<rect class="pop" style="fill:var(--c)" x="8" y="8" width="48" height="48" rx="15"/>${check(5.5, 'on')}`,
+    er: () => `<g class="shake"><rect class="pop" style="fill:var(--c)" x="8" y="8" width="48" height="48" rx="15"/>${cross(5.5, 'on')}</g>` },
+
+  { name: '缺口环 / 警示三角', note: '勾从圆环的缺口里穿出去；出错用圆角三角 + 感叹号。',
+    ok: () => `<circle class="ln fade" style="stroke-width:4;stroke-dasharray:76 21 3 0" pathLength="100" cx="32" cy="32" r="23"/>${check(5, 'ln', .2, 'M21 31L31 41L55 13')}`,
+    er: () => `<g class="shake"><path class="ln dr" pathLength="1" style="stroke-width:4;animation-duration:.5s" d="M32 10L57 53H7Z"/><path class="ln dr" pathLength="1" style="stroke-width:4.5;--d:.35s" d="M32 27V38"/><circle class="fade" style="--d:.5s;fill:var(--c)" cx="32" cy="45.5" r="2.8"/></g>` },
+
+  { name: '霓虹发光线', note: '细线 + 同色光晕，和执行中文字的霓虹流光是一套语言。',
+    ok: () => `<g style="filter:drop-shadow(0 0 4px var(--c))"><circle class="ln dr" pathLength="1" style="stroke-width:3;animation-duration:.5s" cx="32" cy="32" r="23" transform="rotate(-90 32 32)"/>${check(3.5, 'ln', .35)}</g>`,
+    er: () => `<g class="shake"><g style="filter:drop-shadow(0 0 4px var(--c))"><circle class="ln dr" pathLength="1" style="stroke-width:3;animation-duration:.5s" cx="32" cy="32" r="23" transform="rotate(-90 32 32)"/>${cross(3.5, 'ln', .35)}</g></g>` },
+
+  { name: '状态圆点', note: '只有一个小圆点加一圈淡晕，不画符号，靠颜色区分。',
+    ok: () => `<circle class="halo" style="fill:none;stroke:var(--c);stroke-width:2.5;opacity:.28" cx="32" cy="32" r="22"/><circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="11"/>`,
+    er: () => `<circle class="halo" style="fill:none;stroke:var(--c);stroke-width:2.5;opacity:.28" cx="32" cy="32" r="22"/><circle class="pop" style="fill:var(--c)" cx="32" cy="32" r="11"/>` },
+
+  { name: '手写笔触', note: '带弧度的一笔勾 / 两笔叉，像用笔划出来的。',
+    ok: () => `<path class="ln dr" pathLength="1" style="stroke-width:6;animation-duration:.45s" d="M13 33C19 36 24 42 27 49C33 36 42 24 53 14"/>`,
+    er: () => `<path class="ln dr" pathLength="1" style="stroke-width:6" d="M17 16C26 24 37 37 47 49"/><path class="ln dr" pathLength="1" style="stroke-width:6;--d:.2s" d="M48 15C38 25 26 37 16 48"/>` },
+
+  { name: '印章 / 八角牌', note: '花边印章 + 反白勾（"已认证"的感觉）；出错用八角停止牌。',
+    ok: () => `<polygon class="pop" style="fill:var(--c);stroke:var(--c);stroke-width:4;stroke-linejoin:round" points="${poly(10, 26, 21.5)}"/>${check(5, 'on')}`,
+    er: () => `<g class="shake"><polygon class="pop" style="fill:var(--c);stroke:var(--c);stroke-width:4;stroke-linejoin:round" points="${poly(8, 25, 0, Math.PI / 8)}"/>${bang(5)}</g>` },
+];
+
+const svg = (kind, s, size) => `<svg class="${kind}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${s[kind]()}</svg>`;
+const cards = STYLES.map((s, i) => {
+  const card = document.createElement('button'); card.className = 'card'; card.type = 'button';
+  const render = () => { card.innerHTML =
+    `<div class="top">${svg('ok', s, 56)}${svg('er', s, 56)}</div><div class="meta">
+      <div><b>${i + 1} · ${s.name}</b></div>
+      <div class="row">${svg('ok', s, 20)}<span>已完成 · 20:31 · 用时 17s</span></div>
+      <div class="row">${svg('er', s, 20)}<span>出错了：连接中断</span></div>
+      <div class="row s">${svg('ok', s, 14)}<span>子代理 1</span>&emsp;${svg('er', s, 14)}<span>子代理 2</span></div>
+      <p class="muted">${s.note}</p></div>`; };
+  card.addEventListener('click', render); render();
+  document.getElementById('grid').append(card);
+  return render;
+});
+document.getElementById('all').addEventListener('click', () => cards.forEach(r => r()));
+
+const btns = [...document.getElementById('theme').children];
+const setTheme = v => { v ? document.documentElement.dataset.theme = v : delete document.documentElement.dataset.theme;
+  btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); };
+btns.forEach(b => b.addEventListener('click', () => setTheme(b.dataset.v))); setTheme('');
+</script>
+</body>
+</html>

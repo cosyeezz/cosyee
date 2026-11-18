@@ -1,0 +1,37 @@
+# electron-builder 配置：Windows 免安装单文件 exe（portable，双击即用）+ NSIS 安装包（均未签名）；macOS dmg 配置先留着，未实测。
+appId: app.cosyee.desktop
+productName: Cosyee
+directories:
+  output: release
+# 主进程 / preload 已被 esbuild 打成单文件，运行时不需要 node_modules
+files:
+  - dist/main.cjs
+  - dist/preload.cjs
+  - dist/settings-preload.cjs
+  - dist/settings.html
+  - package.json
+# 后端 bundle、win.ps1、前端静态文件放在 asar 之外（powershell 读不了 asar，utilityProcess 加载 ESM 也更稳）
+extraResources:
+  - from: dist/server
+    to: server
+  - from: ../web/dist
+    to: web
+asar: true
+npmRebuild: false
+win:
+  target:
+    - target: portable
+      arch: [x64]
+    - target: nsis
+      arch: [x64]
+# 免安装版：单个 exe，每次启动先解压到临时目录（首次启动会慢几秒）；配置仍写在 %APPDATA%/Cosyee
+portable:
+  artifactName: Cosyee-${version}-portable.exe
+nsis:
+  artifactName: Cosyee-${version}-setup.exe
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target: dmg
+  category: public.app-category.developer-tools

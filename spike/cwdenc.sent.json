@@ -1,0 +1,12 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 1，不要用工具。"
+   }
+  }
+ }
+]

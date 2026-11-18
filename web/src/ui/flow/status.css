@@ -1,0 +1,64 @@
+/* 状态行的文字特效与「进行中」神经脉冲图标（参考《会话生命周期动效》的「调用工具」）。
+ * 颜色复用 icons.css 已按主题定义的 --tk-*（深色 / 浅色两套），这里不重新定义。 */
+
+/* 主短语 */
+.cz-st { font-weight: 500; }
+/* 进行中：流光扫过文字（调用工具配色） */
+.cz-st-tool {
+  --s1: var(--tk-b); --s2: var(--tk-b); --s3: var(--tk-a);
+  background: linear-gradient(100deg, currentColor 0 36%, var(--s1) 45%, var(--s2) 50%, var(--s3) 55%, currentColor 64% 100%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: cz-st-sweep 2.4s linear infinite;
+}
+@keyframes cz-st-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.cz-st-done { color: var(--tk-ok); animation: cz-st-in .5s ease-out both; }
+.cz-st-error { color: var(--tk-err); animation: cz-st-in .5s ease-out both; }
+@keyframes cz-st-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 暗色附加信息（用时 / 子代理进度 / 原因）：不加流光 */
+.cz-st-meta {
+  color: var(--text-3);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 神经脉冲图标 */
+.cz-ss { display: block; flex: none; overflow: visible; }
+.cz-ss-tool .cz-ss-e { fill: none; stroke: var(--tk-ink); stroke-opacity: .4; stroke-width: 1; }
+.cz-ss-tool .cz-ss-n {
+  fill: var(--tk-ink);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cz-ss-node 2.4s ease-in-out infinite;
+}
+.cz-ss-tool .cz-ss-p {
+  fill: none;
+  stroke: var(--tk-b);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-dasharray: 16 200;
+  animation: cz-ss-pulse 2.4s linear infinite;
+}
+.cz-ss-tool .cz-ss-p2 { stroke: var(--tk-a); }
+@keyframes cz-ss-node {
+  0%, 45%, 100% { transform: scale(1); fill: var(--tk-ink); }
+  18% { transform: scale(1.5); fill: var(--tk-b); }
+}
+@keyframes cz-ss-pulse {
+  0% { stroke-dashoffset: 16; opacity: 0; }
+  8% { opacity: 1; }
+  34% { opacity: 1; }
+  42%, 100% { stroke-dashoffset: -100; opacity: 0; }
+}
+
+/* 动效不跟随系统「减少动效」设置，始终播放。
+ * 仅应用内显式 data-motion="reduce" 时降级：文字停在原色，图标不位移，只整体缓慢明暗表示仍在进行 */
+:root[data-motion="reduce"] :is(.cz-st-tool, .cz-st-done, .cz-st-error) { animation: none; }
+:root[data-motion="reduce"] .cz-st-tool { background: none; -webkit-text-fill-color: currentColor; }
+:root[data-motion="reduce"] .cz-ss-tool .cz-ss-n { animation: none; }
+:root[data-motion="reduce"] .cz-ss-tool .cz-ss-p { animation: none; opacity: 0; }
+:root[data-motion="reduce"] .cz-ss-tool { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+@keyframes cz-ss-fade { 50% { opacity: .5; } }

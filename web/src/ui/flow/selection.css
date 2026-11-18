@@ -1,0 +1,65 @@
+/* 选中回复浮条（SelectionToolbar.tsx）。位置由组件用 fixed 坐标写入。 */
+.cz-sel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  padding: var(--sp-1);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  user-select: none;
+  animation: cz-sel-in var(--dur-fast) var(--ease);
+}
+@keyframes cz-sel-in { from { opacity: 0; } }
+
+.cz-sel__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px var(--sp-3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cz-sel__btn:hover { background: var(--bg-hover); }
+.cz-sel__btn .icon { color: var(--text-2); }
+.cz-sel__sep { width: 1px; height: 16px; margin: 0 2px; background: var(--border-strong); }
+.cz-sel__done { display: inline-flex; align-items: center; gap: 6px; padding: 4px var(--sp-3); color: var(--text-2); white-space: nowrap; }
+
+/* 回复输入：引用一行 + 输入框 */
+.cz-sel--reply { display: block; width: min(320px, calc(100vw - 16px)); padding: var(--sp-2) var(--sp-3); }
+.cz-sel__reply { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.cz-sel__quote {
+  min-width: 0;
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.cz-sel__quote-text { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cz-sel__input {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  padding: 2px 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  user-select: text;
+}
+.cz-sel__input::placeholder { color: var(--text-3); }

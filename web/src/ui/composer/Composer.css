@@ -1,0 +1,164 @@
+.cz-composer { width: 100%; }
+.cz-composer__boxwrap { position: relative; }
+
+.cz-composer__box {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.cz-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+.cz-composer__box:focus-within { border-color: var(--border-strong); }
+.cz-composer__box.is-disabled { opacity: .6; }
+
+.cz-composer__btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cz-composer__btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.cz-composer__btn:disabled { opacity: .35; cursor: default; }
+.cz-composer__btn--send:not(:disabled),
+.cz-composer__btn--stop { color: var(--text); }
+
+.cz-composer__editor-wrap { position: relative; flex: 1; min-width: 0; }
+.cz-composer__editor {
+  min-height: 32px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px var(--sp-1);
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 24px;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+.cz-composer__editor[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  left: var(--sp-1);
+  top: 4px;
+  line-height: 24px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.cz-composer__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2) 0; }
+.cz-composer__queued { margin-right: auto; font-size: var(--fs-xs); color: var(--text-3); }
+
+/* 编辑区里的标签（由 chipElement.tsx 命令式创建） */
+.cz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 8px 0 6px;
+  height: 22px;
+  vertical-align: middle;
+  border-radius: var(--r-sm);
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.cz-chip:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.cz-chip__icon { display: inline-flex; color: var(--text-2); }
+
+/* / 菜单 */
+.cz-slash {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 800;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--sp-1);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+}
+.cz-slash__group { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
+.cz-slash__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.cz-slash__item.is-active { background: var(--bg-hover); }
+.cz-slash__name { font-family: var(--font-mono); font-size: var(--fs-sm); }
+.cz-slash__tag {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 9px;
+  background: var(--bg-active);
+  color: var(--text-3);
+}
+
+.cz-composer__hint { padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm, 12px); color: var(--text-2); }
+
+/* 选中回复的引用卡片：位于输入框盒子内部顶部 */
+.cz-composer__quote {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  padding: 4px var(--sp-1) 4px var(--sp-3);
+  background: var(--bg-active);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 20px;
+}
+.cz-composer__quote-icon { color: var(--text-3); }
+.cz-composer__quote-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cz-composer__quote-tag {
+  flex: none;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 18px;
+}
+.cz-composer__quote-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.cz-composer__quote-x:hover { background: var(--bg-hover); color: var(--text); }

@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+desktop/release/
+*.tsbuildinfo
+
+# 本地临时文件（浏览器 profile、cookie、调试输出）
+.tmp/
+
+# 含真实账号信息（邮箱、账号/组织 uuid），不入库
+spike/sanitize.mjs
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+.env
+.env.*

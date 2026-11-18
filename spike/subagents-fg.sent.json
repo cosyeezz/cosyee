@@ -1,0 +1,12 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "请调用一次 Agent 工具（subagent_type=general-purpose，必须设置 run_in_background=false 让它在前台同步运行），让子代理用 Bash 运行 `echo CCC`，把输出告诉我。"
+   }
+  }
+ }
+]

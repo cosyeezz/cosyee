@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>地址和端口</title>
+<!-- 设置窗口是桌面版自带的独立页面，不依赖 web/；只通过 settings-preload 暴露的 cosyeeSettings 与主进程通信 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<style>
+  body { font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; padding: 20px 24px; color: #222; background: #fafafa; }
+  h1 { font-size: 16px; margin: 0 0 14px; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  select, input { font: inherit; padding: 5px 8px; box-sizing: border-box; border: 1px solid #bbb; border-radius: 4px; background: #fff; }
+  select { width: 100%; }
+  input { width: 100%; }
+  .hint { color: #666; font-size: 12px; margin-top: 3px; }
+  .warn { display: none; margin-top: 14px; padding: 10px 12px; border: 1px solid #d9822b; background: #fff4e5; color: #7a3e00; border-radius: 4px; }
+  .err { display: none; margin-top: 12px; color: #b00020; }
+  .row { display: flex; gap: 8px; margin-top: 18px; align-items: center; }
+  .row .grow { flex: 1; }
+  button { font: inherit; padding: 6px 16px; border: 1px solid #aaa; border-radius: 4px; background: #fff; cursor: pointer; }
+  button.primary { background: #c8651b; border-color: #c8651b; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  #custom { display: none; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>地址和端口</h1>
+
+<label for="mode">监听地址</label>
+<select id="mode">
+  <option value="127.0.0.1">仅本机（127.0.0.1）</option>
+  <option value="0.0.0.0">局域网（0.0.0.0，所有网卡）</option>
+  <option value="custom">自定义 IP…</option>
+</select>
+<input id="custom" placeholder="例如 192.168.1.23" spellcheck="false" />
+
+<label for="port">端口</label>
+<input id="port" type="number" min="0" max="65535" step="1" />
+<div class="hint">0 表示每次启动自动选择；固定端口方便记住访问地址。默认 7878。</div>
+
+<div class="warn" id="warn">
+  <b>安全警告：</b>监听非 127.0.0.1 后，同一网络里任何拿到访问链接（含令牌）的人，都可以在这台电脑上执行任意命令（会话以 --dangerously-skip-permissions 运行）。
+  请只在可信网络使用，不要把链接发给不信任的人。链接泄露后用下方「重新生成令牌」让旧链接作废。
+</div>
+<div class="err" id="err"></div>
+
+<div class="row">
+  <button id="regen" title="旧的浏览器链接立即失效，需要重启后端">重新生成令牌</button>
+  <span class="grow"></span>
+  <button id="cancel">取消</button>
+  <button id="save" class="primary">保存并重启后端</button>
+</div>
+<div class="hint" id="note"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const api = window.cosyeeSettings;
+  let initial = { host: '127.0.0.1', port: 7878 };
+
+  function currentHost() {
+    return $('mode').value === 'custom' ? $('custom').value.trim() : $('mode').value;
+  }
+  function refresh() {
+    $('custom').style.display = $('mode').value === 'custom' ? 'block' : 'none';
+    const h = currentHost();
+    $('warn').style.display = h !== '127.0.0.1' ? 'block' : 'none';
+  }
+  function showError(msg) {
+    $('err').textContent = msg || '';
+    $('err').style.display = msg ? 'block' : 'none';
+  }
+  function setBusy(b) {
+    for (const id of ['save', 'cancel', 'regen']) $(id).disabled = b;
+  }
+
+  async function load() {
+    const s = await api.get();
+    initial = s;
+    if (s.host === '127.0.0.1' || s.host === '0.0.0.0') {
+      $('mode').value = s.host;
+    } else {
+      $('mode').value = 'custom';
+      $('custom').value = s.host;
+    }
+    $('port').value = String(s.port);
+    $('note').textContent = s.running > 0 ? `当前有 ${s.running} 个会话正在执行，保存后重启后端会中断它们（会先让你确认）。` : '';
+    refresh();
+  }
+
+  $('mode').addEventListener('change', refresh);
+  $('custom').addEventListener('input', refresh);
+  $('cancel').addEventListener('click', () => api.close());
+  $('save').addEventListener('click', async () => {
+    showError('');
+    const raw = $('port').value.trim();
+    const port = raw === '' ? NaN : Number(raw);
+    const host = currentHost();
+    // 前端先做一遍同样的校验，主进程会再校验一次
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.split('.').some((n) => Number(n) > 255)) return showError('监听地址必须是 IPv4 地址，例如 127.0.0.1 或 0.0.0.0');
+    if (!Number.isInteger(port) || port < 0 || port > 65535) return showError('端口必须是 0-65535 的整数（0 表示自动选择）');
+    setBusy(true);
+    try {
+      const r = await api.save(host, port);
+      if (!r.ok) showError(r.error);
+      else await api.close();
+    } finally {
+      setBusy(false);
+    }
+  });
+  $('regen').addEventListener('click', async () => {
+    showError('');
+    setBusy(true);
+    try {
+      const r = await api.regenToken();
+      if (!r.ok) showError(r.error);
+      else $('note').textContent = '令牌已重新生成，旧链接已失效。请用托盘菜单「复制访问链接」获取新链接。';
+    } finally {
+      setBusy(false);
+    }
+  });
+  load();
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "用 Bash 运行命令 `ping -n 31 127.0.0.1`（约30秒，不要改写命令，不要后台运行），然后说完成。"
+   }
+  }
+ },
+ {
+  "t": 6257,
+  "o": {
+   "type": "control_request",
+   "request_id": "r1",
+   "request": {
+    "subtype": "interrupt"
+   }
+  }
+ },
+ {
+  "t": 7316,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 alive，不用工具。"
+   }
+  }
+ }
+]

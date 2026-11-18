@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cosyee 会话流图标 · 预览</title>
+<style>
+/*@ICONS_CSS*/
+</style>
+<style>
+:root{--bg:#f4f5fa;--surface:#fff;--stage:#eceef6;--line:#dcdfeb;--fg:#161827;--muted:#646a83;color-scheme:light;
+  --body:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,Consolas,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark}
+*{box-sizing:border-box}
+[hidden],.shut{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 var(--body)}
+.page{max-width:940px;margin:0 auto;padding:36px 16px 64px;display:flex;flex-direction:column;gap:32px}
+h1{font-size:26px;font-weight:600;margin:0;line-height:1.2}
+h2{font-size:16px;font-weight:600;margin:0}
+p{margin:0}
+.muted{color:var(--muted);font-size:13px}
+section{display:flex;flex-direction:column;gap:12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:4px 12px;font-size:13px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--tk-a);color:#fff}
+.seg button:focus-visible,.btn:focus-visible,.card:focus-visible{outline:2px solid var(--tk-b);outline-offset:2px}
+.btn{font:500 13px var(--body);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 12px;cursor:pointer}
+.btn:hover{border-color:var(--tk-a)}
+
+/* 模拟会话流 */
+.chat{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:12px}
+.user{align-self:flex-end;background:var(--stage);border-radius:14px 14px 4px 14px;padding:8px 14px;max-width:80%}
+.status{cursor:pointer;display:flex;align-items:center;gap:8px;height:28px;min-width:0}
+.status .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.expand{margin-left:9px;border-left:1px solid var(--line);padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--muted)}
+.toolrow{display:flex;align-items:center;gap:8px;font:12px var(--mono)}
+.agents{margin-left:28px;font-size:13px;display:flex;flex-direction:column;gap:4px}
+.agents .hd,.agents .ag{display:flex;align-items:center;gap:8px}
+.agents .ag{padding-left:12px;border-left:1px solid var(--line);margin-left:7px}
+.agents button{all:unset;cursor:pointer;color:var(--muted);padding:2px;border-radius:4px}
+.agents button:hover{color:var(--fg);background:var(--stage)}
+.answer{min-height:3.2em;max-width:44em}
+.body{min-height:150px;display:flex;flex-direction:column;gap:10px}
+
+/* 卡片 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.card{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card:hover{border-color:var(--tk-a)}
+.card .top{display:grid;place-items:center;height:116px;background:var(--stage)}
+.card .meta{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px}
+.card b{font-weight:600}
+.card code{font:11px var(--mono);color:var(--muted)}
+.card .sizes{display:flex;align-items:center;gap:12px;min-height:28px}
+
+table{border-collapse:collapse;width:100%;font-size:13px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:6px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500}
+tr:last-child td{border-bottom:0}
+td code{font:12px var(--mono)}
+.ok{color:var(--tk-ok)} .todo{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Cosyee 会话流图标</h1>
+    <p class="muted" style="margin-top:8px">21 个图标已全部画出（已完成 / 出错的风格还在挑，见 candidates2.html）。点状态行可以展开、收起执行过程。点卡片可以重播一次性动画；图标不跟随 Windows 的"动画效果"设置，系统关掉动画也照常播放；"应用内关闭"是留给以后设置页的开关。</p>
+  </header>
+
+  <div class="bar">
+    <span>主题</span>
+    <span class="seg" id="theme"><button data-v="">跟随系统</button><button data-v="light">浅色</button><button data-v="dark">深色</button></span>
+    <span>动画</span>
+    <span class="seg" id="motion"><button data-v="">开启</button><button data-v="reduce">应用内关闭</button></span>
+    <span class="muted" id="sys"></span>
+  </div>
+
+  <section>
+    <h2>放进会话流里的样子</h2>
+    <div class="chat">
+      <div class="user">流式输出偶尔会卡住两三秒，帮我排查一下原因</div>
+      <div class="status" id="status"><span id="ico"></span><span class="txt" id="txt"></span><span id="chev" style="color:var(--muted)"></span></div>
+      <div class="body">
+        <div class="expand" id="expand" hidden>
+          <div class="toolrow"><span id="thico"></span><span>思考：先确认卡顿发生在哪一层</span></div>
+          <div class="toolrow"><span id="toolico"></span><span>Bash: npm test -- stream</span></div>
+          <div class="toolrow"><span id="rdico"></span><span>Read: src/stream/buffer.ts</span></div>
+          <div class="toolrow"><span id="ntico"></span><span>测试能复现，接下来分两路查</span></div>
+        </div>
+        <div class="agents" id="agents" hidden>
+          <div class="hd"><span id="aghd"></span><span id="agtitle"></span></div>
+          <div class="ag"><span id="ag1"></span><span>检查 buffer.ts 的刷新条件</span><button type="button" aria-label="打开子代理 1" id="op1"></button></div>
+          <div class="ag"><span id="ag2"></span><span>对比下游写入的时间戳</span><button type="button" aria-label="打开子代理 2" id="op2"></button></div>
+        </div>
+        <p class="answer" id="answer" hidden>卡顿来自缓冲区的刷新策略：buffer.ts 攒够 4KB 才向下游写一次。把刷新条件改成"攒够 4KB 或距上次写入超过 80ms"就能解决。</p>
+      </div>
+      <div class="bar">
+        <button class="btn" id="play" type="button">重新播放</button>
+        <button class="btn" data-end="error" type="button">看"出错"结尾</button>
+        <button class="btn" data-end="stopped" type="button">看"中断"结尾</button>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>全部图标（点卡片重播）</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section>
+    <h2>全部图标清单</h2>
+    <table id="inv"><tr><th>位置</th><th>图标</th><th>名称</th><th>动效</th><th>状态</th></tr></table>
+  </section>
+</div>
+
+<script>
+/*@ICONS_JS*/
+
+const $ = id => document.getElementById(id);
+const put = (el, name, opts) => {   // 图标没变就不重新插入，避免一次性动画重播
+  const k = name + JSON.stringify(opts);
+  if (el.dataset.k !== k){ el.dataset.k = k; el.innerHTML = icon(name, opts); }
+};
+
+/* 主题 / 动画开关 */
+function seg(id, attr){
+  const btns = [...$(id).children];
+  const set = v => { v ? document.documentElement.dataset[attr] = v : delete document.documentElement.dataset[attr];
+    btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); };
+  btns.forEach(b => b.addEventListener('click', () => set(b.dataset.v)));
+  set('');
+}
+seg('theme', 'theme'); seg('motion', 'motion');
+const mq = matchMedia('(prefers-reduced-motion: reduce)');
+const sys = () => { $('sys').textContent = mq.matches ? '系统动画效果已关闭，图标不受影响、照常播放' : ''; };
+mq.addEventListener('change', sys); sys();
+
+/* 模拟一轮回复 */
+let open = true;
+put($('chev'), 'chevron', { size: 16, open });
+$('status').addEventListener('click', () => {
+  open = !open;
+  $('chev').firstChild.classList.toggle('is-open', open);
+  $('expand').classList.toggle('shut', !open);
+});
+put($('op1'), 'open', { size: 14 }); put($('op2'), 'open', { size: 14 });
+put($('thico'), 'thought', { size: 16 }); put($('rdico'), 'tool-read', { size: 16 }); put($('ntico'), 'note', { size: 16 });
+let cur = null, timers = [];
+function status(name, text, end){
+  if (name && name !== cur){ put($('ico'), name, { size: 20 }); cur = name; }   // 思考、工具调用时保持上一次的图标
+  if (text != null){ $('txt').textContent = text; $('txt').className = 'txt' + (end ? '' : ' ct-' + cur); }
+}
+function agents(done){
+  const n = 2, x = done.filter(Boolean).length;
+  put($('aghd'), x === n ? 'done' : 'agent-running', { size: 16 });
+  $('agtitle').textContent = x === n ? `${n} 个子代理已完成 ${x}/${n}` : `${n} 个子代理执行中 ${x}/${n}`;
+  done.forEach((d, i) => put($('ag' + (i + 1)), d ? 'done' : 'agent-running', { size: 14 }));
+}
+function play(ending){
+  timers.forEach(clearTimeout); timers = []; cur = null;
+  ['ico', 'toolico', 'aghd', 'ag1', 'ag2'].forEach(id => delete $(id).dataset.k);
+  $('expand').hidden = $('agents').hidden = $('answer').hidden = true;
+  const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+  status('understanding', '正在理解问题');
+  at(3200, () => status('streaming', '我先跑一下流相关的测试，看看卡在哪一步'));
+  at(6000, () => { $('expand').hidden = false; put($('toolico'), 'tool-bash', { size: 16, running: true }); });
+  at(9000, () => { put($('toolico'), 'tool-bash', { size: 16 }); $('agents').hidden = false; agents([false, false]); });
+  at(11500, () => agents([true, false]));
+  if (ending === 'stopped') return at(13000, () => status('stopped', '已中断 · 用户取消', true));
+  if (ending === 'error') return at(13000, () => status('error', '出错了：连接中断', true));
+  at(13500, () => agents([true, true]));
+  at(14500, () => { status('streaming', '卡顿来自缓冲区的刷新策略'); $('answer').hidden = false; });
+  at(17500, () => status('done', '已完成 · 20:31 · 用时 17s', true));
+}
+$('play').addEventListener('click', () => play());
+document.querySelectorAll('[data-end]').forEach(b => b.addEventListener('click', () => play(b.dataset.end)));
+play();
+
+/* 卡片 */
+const CARDS = Object.entries(ICONS).flatMap(([n, d]) => [[n], ...(d.openable ? [[n, { open: true }]] : []), ...(d.runnable ? [[n, { running: true }]] : [])]);
+CARDS.forEach(([name, opts = {}]) => {
+  const d = ICONS[name];
+  const card = document.createElement('button'); card.className = 'card'; card.type = 'button';
+  const render = () => {
+    card.innerHTML = `<div class="top">${icon(name, { ...opts, size: 64 })}</div><div class="meta">
+      <div><b>${d.label}${opts.running ? ' · 运行中' : ''}${opts.open ? ' · 已展开' : ''}</b> <code>${name}</code></div>
+      <div class="sizes">${[14, 16, 20, 28].map(s => icon(name, { ...opts, size: s })).join('')}</div>
+      <p class="muted">${d.where}</p></div>`;
+  };
+  card.addEventListener('click', render); render(); $('grid').append(card);
+});
+
+/* 清单 */
+const INV = [
+  ['状态行', 'understanding', '正在理解问题', '循环：三色彗星绕核心'],
+  ['状态行', 'streaming', '模型输出文字', '循环：光柱起伏'],
+  ['状态行', 'done', '已完成', '一次：徽章弹出 → 画勾 → 一圈火花'],
+  ['状态行', 'error', '出错', '一次：徽章弹出 → 轻抖'],
+  ['状态行', 'stopped', '中断', '一次：轻微缩放出现'],
+  ['状态行', 'chevron', '展开 / 收起', '状态切换：旋转 90°'],
+  ['展开区', 'thought', '思考', '静态'],
+  ['展开区', 'note', '中间说明文字', '静态'],
+  ['展开区', 'tool-bash', 'Bash', '运行中：光标闪 + 边框跑光'],
+  ['展开区', 'tool-read', 'Read', '运行中：轮廓跑光 + 文字行反复描出'],
+  ['展开区', 'tool-edit', 'Edit / Write', '运行中：铅笔抖动 + 下划线描出'],
+  ['展开区', 'tool-search', 'Grep / Glob', '运行中：放大镜游走 + 镜圈跑光'],
+  ['展开区', 'tool-web', 'WebFetch / WebSearch', '运行中：经线翻转（地球自转）+ 跑光'],
+  ['展开区', 'tool-agent', 'Agent（启动子代理）', '运行中：两个子节点交替明暗'],
+  ['展开区', 'tool-mcp', 'MCP 工具', '运行中：插头两半来回对接'],
+  ['展开区', 'tool-todo', '任务清单', '运行中：勾反复描出'],
+  ['展开区', 'tool-generic', '其他工具（兜底）', '运行中：螺母慢转'],
+  ['展开区', 'tool-fail', '工具失败（替换工具图标）', '一次：轻微缩放出现'],
+  ['子代理面板', 'agent-running', '执行中 ⟳', '循环：带尾巴的弧旋转'],
+  ['子代理面板', 'done', '已完成 ✓（复用）', '一次'],
+  ['子代理面板', 'error', '失败（复用）', '一次'],
+  ['子代理面板', 'open', '打开浮层 ↗', '悬停：箭头飞出再回来'],
+  ['子代理浮层', 'close', '关闭浮层 ×', '悬停：轻微旋转'],
+];
+INV.forEach(([where, name, label, fx]) => {
+  const has = !!ICONS[name], tr = document.createElement('tr');
+  tr.innerHTML = `<td>${where}</td><td>${has ? icon(name, { size: 18 }) : ''}</td><td>${label} <code>${name}</code></td><td>${fx}</td><td class="${has ? 'ok' : 'todo'}">${has ? '本批' : '待做'}</td>`;
+  $('inv').append(tr);
+});
+</script>
+</body>
+</html>

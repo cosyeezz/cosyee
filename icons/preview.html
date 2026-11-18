@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cosyee 会话流图标 · 预览</title>
+<style>
+/* Cosyee 会话流图标 —— 样式与动效
+ * 用法：页面引入本文件，用 icons.js 的 icon(name, {size}) 生成内联 SVG。
+ * 颜色：--tk-* 变量；线性图标（tool-*、open）跟随 currentColor。
+ * 动画开关：图标不跟随系统的"动画效果"设置 —— Windows 关掉动画效果后
+ *   （浏览器/WebView 表现为 prefers-reduced-motion: reduce）图标照常播放。
+ *   只有应用自己设置 <html data-motion="reduce"> 时才关闭：位移/描边动画停在终态，
+ *   "进行中"类图标（.ci-live）改为整体缓慢明暗。
+ * 状态行文字特效：<span class="ct-understanding">…</span>，见文件后半部分。
+ */
+:root{
+  --tk-a:#6a4dff; --tk-b:#00a6d6; --tk-c:#ee2f8c; --tk-d:#f2960a;
+  --tk-ok:#0f9d63; --tk-err:#dc2f3f; --tk-ink:#8a8fa6; --tk-on:#fff;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --tk-a:#8b7bff; --tk-b:#35d6ff; --tk-c:#ff6bb5; --tk-d:#ffc15e;
+  --tk-ok:#3ddc97; --tk-err:#ff5d5d; --tk-ink:#6f7490; --tk-on:#0c0d14 } }
+:root[data-theme="dark"]{
+  --tk-a:#8b7bff; --tk-b:#35d6ff; --tk-c:#ff6bb5; --tk-d:#ffc15e;
+  --tk-ok:#3ddc97; --tk-err:#ff5d5d; --tk-ink:#6f7490; --tk-on:#0c0d14 }
+
+.ci{display:block;flex:none;overflow:visible}
+
+/* ── 状态行：正在理解问题（星轨） ── */
+.ci-understanding .sys{transform-origin:32px 32px;animation:ci-spin 36s linear infinite}
+.ci-understanding .ring{fill:none;stroke:var(--tk-ink);stroke-opacity:.28;stroke-width:.6}
+.ci-understanding :is(.tail,.head){fill:none;animation:ci-run 3.6s linear infinite}
+.ci-understanding .head{stroke-width:3;stroke-linecap:round;stroke-dasharray:.1 99.9}
+.ci-understanding .o1{stroke:var(--tk-a)}
+.ci-understanding .o2{stroke:var(--tk-b)}
+.ci-understanding .o3{stroke:var(--tk-c)}
+.ci-understanding .o2 :is(.tail,.head){animation-duration:4.7s;animation-delay:-1.5s}
+.ci-understanding .o3 :is(.tail,.head){animation-duration:6s;animation-delay:-3.8s}
+.ci-understanding .glow{fill:var(--tk-d);animation:ci-glow 3.6s ease-in-out infinite}
+.ci-understanding .core{transform-origin:32px 32px;animation:ci-core 3.6s ease-in-out infinite}
+
+/* ── 状态行：模型输出文字（光柱） ── */
+.ci-streaming rect{transform-box:fill-box;transform-origin:center;animation:ci-beat 1.3s ease-in-out infinite}
+.ci-streaming rect:nth-child(2),.ci-streaming rect:nth-child(4){animation-delay:-1.12s}
+.ci-streaming rect:nth-child(1),.ci-streaming rect:nth-child(5){animation-delay:-.94s}
+
+/* ── 状态行 / 子代理行：已完成（一次性：徽章弹出 → 画勾 → 一圈火花） ── */
+.ci-done .b{transform-origin:32px 32px;animation:ci-badge .45s cubic-bezier(.34,1.56,.64,1) both}
+.ci-done .c{fill:none;stroke:var(--tk-on);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;animation:ci-draw .3s .25s ease-out both}
+.ci-done .k{fill:none;stroke:var(--tk-ok);stroke-width:3;stroke-linecap:round;opacity:0;transform-origin:32px 32px;animation:ci-spark .6s .3s ease-out both}
+
+/* ── 状态行：出错（一次性：徽章弹出 → 轻抖） ── */
+.ci-error .g{animation:ci-shake .5s .3s ease-in-out 1}
+.ci-error .b{transform-origin:32px 32px;animation:ci-badge .45s cubic-bezier(.34,1.56,.64,1) both}
+.ci-error .x{fill:none;stroke:var(--tk-on);stroke-width:6;stroke-linecap:round}
+.ci-error .d{fill:var(--tk-on)}
+
+/* ── 状态行：中断（一次性） ── */
+.ci-stopped .g{transform-origin:32px 32px;animation:ci-pop .3s ease-out both}
+.ci-stopped .r{fill:none;stroke:var(--tk-ink);stroke-width:3.5}
+.ci-stopped .q{fill:var(--tk-ink)}
+
+/* ── 子代理：执行中 ⟳（带渐隐尾巴的弧） ── */
+.ci-agent-running .t{fill:none;stroke:var(--tk-ink);stroke-opacity:.25;stroke-width:6}
+.ci-agent-running .a{fill:none;stroke:var(--tk-a);stroke-width:6;stroke-linecap:round}
+.ci-agent-running .s{transform-origin:32px 32px;animation:ci-spin 1s linear infinite}
+
+/* ── 子代理：打开浮层 ↗（悬停时箭头飞出再回来） ── */
+.ci-open .arw{fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+:is(button,a,[role="button"]):is(:hover,:focus-visible) .ci-open .arw,
+.ci-open:hover .arw{animation:ci-fly .45s ease-in-out 1}
+
+/* ── 状态行：展开 / 收起（.is-open 时转 90°） ── */
+.ci-chevron path{fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round;transform-origin:32px 32px;transition:transform .2s ease}
+.ci-chevron.is-open path{transform:rotate(90deg)}
+
+/* ── 展开区：Bash 工具（.is-running 时提示符变色、光标闪、边框跑光） ── */
+.ci-tool-bash :is(.f,.c,.u,.p){fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
+.ci-tool-bash .f{stroke-width:3;stroke-opacity:.7}
+.ci-tool-bash :is(.c,.u){stroke-width:3.2}
+.ci-tool-bash .p{stroke:var(--tk-b);stroke-width:3;stroke-dasharray:18 82;opacity:0}
+.ci-tool-bash.is-running :is(.c,.u){stroke:var(--tk-b)}
+.ci-tool-bash.is-running .u{animation:ci-blink 1s steps(1) infinite}
+.ci-tool-bash.is-running .p{opacity:1;animation:ci-run 2.4s linear infinite}
+
+/* ── 细线图标（.ci-ln）：展开区的工具 / 思考 / 说明、浮层关闭 ──
+      .l 线条　.dot 实心点　.hi 运行时变色　.w 运行时反复描出　.p 运行时沿轮廓跑光 */
+.ci-ln :is(.l,.p){fill:none;stroke:currentColor;stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round}
+.ci-ln .dot{fill:currentColor}
+.ci-ln .p{stroke:var(--tk-b);stroke-dasharray:18 82;opacity:0}
+.ci-ln.is-running .p{opacity:1;animation:ci-run 2.4s linear infinite}
+.ci-ln.is-running .hi{stroke:var(--tk-b)}
+.ci-ln.is-running .w{stroke-dasharray:1;animation:ci-write 1.6s ease-out infinite}
+.ci-ln.is-running .w2{animation-delay:.35s}
+.ci-tool-edit.is-running .pen{animation:ci-scribble .5s ease-in-out infinite}
+.ci-tool-search.is-running .lens{animation:ci-look 2s ease-in-out infinite}
+.ci-tool-web .mer{transform-origin:32px 32px}
+.ci-tool-web.is-running .mer{animation:ci-globe 1.8s ease-in-out infinite}
+.ci-tool-agent.is-running :is(.n1,.n2){animation:ci-pulse 1.2s ease-in-out infinite}
+.ci-tool-agent.is-running .n2{animation-delay:-.6s}
+.ci-tool-mcp.is-running .pl{animation:ci-plug 1.4s ease-in-out infinite}
+.ci-tool-mcp.is-running .pr{animation:ci-plug 1.4s ease-in-out infinite reverse}
+.ci-tool-generic .nut{transform-origin:32px 32px}
+.ci-tool-generic.is-running .nut{animation:ci-spin 4s linear infinite}
+.ci-tool-fail .l{stroke:var(--tk-err)}
+.ci-tool-fail .dot{fill:var(--tk-err)}
+.ci-tool-fail .g{transform-origin:32px 32px;animation:ci-pop .3s ease-out both}
+.ci-close .x{transform-origin:32px 32px;transition:transform .2s ease}
+:is(button,a,[role="button"]):is(:hover,:focus-visible) .ci-close .x,.ci-close:hover .x{transform:rotate(90deg)}
+
+@keyframes ci-write{0%{stroke-dashoffset:1}55%,100%{stroke-dashoffset:0}}
+@keyframes ci-scribble{50%{transform:translate(3px,-3px)}}
+@keyframes ci-look{25%{transform:translate(5px,-2px)}50%{transform:translate(3px,5px)}75%{transform:translate(-3px,3px)}}
+@keyframes ci-globe{50%{transform:scaleX(.12)}}
+@keyframes ci-pulse{50%{opacity:.25}}
+@keyframes ci-plug{0%,100%{transform:translateX(-2px)}50%{transform:translateX(2px)}}
+@keyframes ci-spin{to{transform:rotate(360deg)}}
+@keyframes ci-run{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
+@keyframes ci-core{0%,100%{transform:scale(.92)}50%{transform:scale(1.14)}}
+@keyframes ci-glow{0%,100%{opacity:.4}50%{opacity:.75}}
+@keyframes ci-beat{0%,100%{transform:scaleY(.24)}50%{transform:scaleY(1)}}
+@keyframes ci-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes ci-badge{from{transform:scale(.3);opacity:0}}
+@keyframes ci-spark{0%{transform:scale(.6);opacity:0}30%{opacity:1}100%{transform:scale(1.12);opacity:0}}
+@keyframes ci-shake{20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-2.5px)}80%{transform:translateX(1.5px)}}
+@keyframes ci-pop{from{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes ci-fly{45%{transform:translate(12px,-12px);opacity:0}46%{transform:translate(-12px,12px);opacity:0}100%{transform:none;opacity:1}}
+@keyframes ci-blink{50%{opacity:0}}
+@keyframes ci-fade{50%{opacity:.5}}
+
+/* ── 状态行文字特效：只有执行过程（understanding / streaming）有霓虹流光，
+      文字本身保持原色；结束、出错、中断不加任何类 ── */
+.ct-understanding,.ct-streaming{--n1:var(--tk-a);--n2:var(--tk-b);--n3:var(--tk-c);
+  background:linear-gradient(100deg,currentColor 0 36%,var(--n1) 45%,var(--n2) 50%,var(--n3) 55%,currentColor 64% 100%);
+  background-size:300% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  animation:ct-sweep 3.2s linear infinite}
+.ct-streaming{--n1:var(--tk-c);--n2:var(--tk-a);--n3:var(--tk-b);animation-duration:2.4s}
+@keyframes ct-sweep{from{background-position:100% 0}to{background-position:0 0}}
+
+/* ── 应用内关闭动画（data-motion="reduce"）：停在终态；进行中的图标只做明暗 ── */
+:root[data-motion="reduce"] :is(.ci,.ci *,.ct-understanding,.ct-streaming){animation:none!important;transition:none!important}
+:root[data-motion="reduce"] .ci-live{animation:ci-fade 2.4s ease-in-out infinite!important}
+
+</style>
+<style>
+:root{--bg:#f4f5fa;--surface:#fff;--stage:#eceef6;--line:#dcdfeb;--fg:#161827;--muted:#646a83;color-scheme:light;
+  --body:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,Consolas,monospace}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0c0d14;--surface:#151722;--stage:#0f1019;--line:#272b3c;--fg:#e9eaf3;--muted:#8f94ab;color-scheme:dark}
+*{box-sizing:border-box}
+[hidden],.shut{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 var(--body)}
+.page{max-width:940px;margin:0 auto;padding:36px 16px 64px;display:flex;flex-direction:column;gap:32px}
+h1{font-size:26px;font-weight:600;margin:0;line-height:1.2}
+h2{font-size:16px;font-weight:600;margin:0}
+p{margin:0}
+.muted{color:var(--muted);font-size:13px}
+section{display:flex;flex-direction:column;gap:12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:4px 12px;font-size:13px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--tk-a);color:#fff}
+.seg button:focus-visible,.btn:focus-visible,.card:focus-visible{outline:2px solid var(--tk-b);outline-offset:2px}
+.btn{font:500 13px var(--body);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 12px;cursor:pointer}
+.btn:hover{border-color:var(--tk-a)}
+
+/* 模拟会话流 */
+.chat{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:12px}
+.user{align-self:flex-end;background:var(--stage);border-radius:14px 14px 4px 14px;padding:8px 14px;max-width:80%}
+.status{cursor:pointer;display:flex;align-items:center;gap:8px;height:28px;min-width:0}
+.status .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.expand{margin-left:9px;border-left:1px solid var(--line);padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--muted)}
+.toolrow{display:flex;align-items:center;gap:8px;font:12px var(--mono)}
+.agents{margin-left:28px;font-size:13px;display:flex;flex-direction:column;gap:4px}
+.agents .hd,.agents .ag{display:flex;align-items:center;gap:8px}
+.agents .ag{padding-left:12px;border-left:1px solid var(--line);margin-left:7px}
+.agents button{all:unset;cursor:pointer;color:var(--muted);padding:2px;border-radius:4px}
+.agents button:hover{color:var(--fg);background:var(--stage)}
+.answer{min-height:3.2em;max-width:44em}
+.body{min-height:150px;display:flex;flex-direction:column;gap:10px}
+
+/* 卡片 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.card{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.card:hover{border-color:var(--tk-a)}
+.card .top{display:grid;place-items:center;height:116px;background:var(--stage)}
+.card .meta{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px}
+.card b{font-weight:600}
+.card code{font:11px var(--mono);color:var(--muted)}
+.card .sizes{display:flex;align-items:center;gap:12px;min-height:28px}
+
+table{border-collapse:collapse;width:100%;font-size:13px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:6px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500}
+tr:last-child td{border-bottom:0}
+td code{font:12px var(--mono)}
+.ok{color:var(--tk-ok)} .todo{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Cosyee 会话流图标</h1>
+    <p class="muted" style="margin-top:8px">21 个图标已全部画出（已完成 / 出错的风格还在挑，见 candidates2.html）。点状态行可以展开、收起执行过程。点卡片可以重播一次性动画；图标不跟随 Windows 的"动画效果"设置，系统关掉动画也照常播放；"应用内关闭"是留给以后设置页的开关。</p>
+  </header>
+
+  <div class="bar">
+    <span>主题</span>
+    <span class="seg" id="theme"><button data-v="">跟随系统</button><button data-v="light">浅色</button><button data-v="dark">深色</button></span>
+    <span>动画</span>
+    <span class="seg" id="motion"><button data-v="">开启</button><button data-v="reduce">应用内关闭</button></span>
+    <span class="muted" id="sys"></span>
+  </div>
+
+  <section>
+    <h2>放进会话流里的样子</h2>
+    <div class="chat">
+      <div class="user">流式输出偶尔会卡住两三秒，帮我排查一下原因</div>
+      <div class="status" id="status"><span id="ico"></span><span class="txt" id="txt"></span><span id="chev" style="color:var(--muted)"></span></div>
+      <div class="body">
+        <div class="expand" id="expand" hidden>
+          <div class="toolrow"><span id="thico"></span><span>思考：先确认卡顿发生在哪一层</span></div>
+          <div class="toolrow"><span id="toolico"></span><span>Bash: npm test -- stream</span></div>
+          <div class="toolrow"><span id="rdico"></span><span>Read: src/stream/buffer.ts</span></div>
+          <div class="toolrow"><span id="ntico"></span><span>测试能复现，接下来分两路查</span></div>
+        </div>
+        <div class="agents" id="agents" hidden>
+          <div class="hd"><span id="aghd"></span><span id="agtitle"></span></div>
+          <div class="ag"><span id="ag1"></span><span>检查 buffer.ts 的刷新条件</span><button type="button" aria-label="打开子代理 1" id="op1"></button></div>
+          <div class="ag"><span id="ag2"></span><span>对比下游写入的时间戳</span><button type="button" aria-label="打开子代理 2" id="op2"></button></div>
+        </div>
+        <p class="answer" id="answer" hidden>卡顿来自缓冲区的刷新策略：buffer.ts 攒够 4KB 才向下游写一次。把刷新条件改成"攒够 4KB 或距上次写入超过 80ms"就能解决。</p>
+      </div>
+      <div class="bar">
+        <button class="btn" id="play" type="button">重新播放</button>
+        <button class="btn" data-end="error" type="button">看"出错"结尾</button>
+        <button class="btn" data-end="stopped" type="button">看"中断"结尾</button>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>全部图标（点卡片重播）</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section>
+    <h2>全部图标清单</h2>
+    <table id="inv"><tr><th>位置</th><th>图标</th><th>名称</th><th>动效</th><th>状态</th></tr></table>
+  </section>
+</div>
+
+<script>
+// Cosyee 会话流图标 —— 生成内联 SVG 字符串，配合 icons.css 使用。
+//   import { icon } from './icons/icons.js'
+//   el.innerHTML = icon('understanding', { size: 20 })
+//   el.innerHTML = icon('tool-bash', { size: 16, running: true })
+// 所有图标 viewBox 都是 64×64；一次性动画（done / error / stopped）在元素插入时播放一次。
+
+let uid = 0;
+
+const wrap = (name, size, body, extra = '') =>
+  `<svg class="ci ci-${name}${extra}" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">${body}</svg>`;
+
+// 星轨的彗尾：n 层很淡的线段叠成，尺寸越小层数越少
+const E = 'cx="32" cy="32" rx="27" ry="10" pathLength="100"';
+function tail(n) {
+  const alpha = (1 - Math.pow(0.09, 1 / n)).toFixed(3);
+  return Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1);
+    const len = (1.5 + 34.5 * Math.pow(1 - t, 1.5)).toFixed(2);
+    const w = (0.3 + 2.6 * Math.pow(t, 1.25)).toFixed(2);
+    return `<ellipse class="tail" ${E} style="stroke-opacity:${alpha};stroke-width:${w};stroke-dasharray:0 ${(100 - len).toFixed(2)} ${len} 0"/>`;
+  }).join('');
+}
+
+// 子代理转圈的弧：三层叠出渐隐的尾巴，头部在 12 点方向
+const ARC = [[62, .22], [40, .45], [18, 1]]
+  .map(([len, op]) => `<circle class="a" cx="32" cy="32" r="21" pathLength="100" transform="rotate(-90 32 32)" style="stroke-opacity:${op};stroke-dasharray:0 ${100 - len} ${len} 0"/>`)
+  .join('');
+
+const ICONS = {
+  understanding: {
+    label: '正在理解问题', where: '状态行 · 已发送，还没有实质输出', live: true,
+    render({ size }) {
+      const id = 'ci' + (++uid), T = tail(size >= 60 ? 28 : size >= 40 ? 14 : 8);
+      const O = (i, a) => `<g class="o${i}" transform="rotate(${a} 32 32)"><ellipse class="ring" ${E}/>${T}<ellipse class="head" ${E}/></g>`;
+      return `<defs><radialGradient id="${id}-k"><stop offset="0" stop-color="#fff"/><stop offset=".45" style="stop-color:var(--tk-d)"/><stop offset="1" style="stop-color:var(--tk-c)"/></radialGradient>` +
+        `<filter id="${id}-b" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3"/></filter></defs>` +
+        `<g class="sys">${O(1, 0)}${O(2, 60)}${O(3, 120)}</g>` +
+        `<circle class="glow" cx="32" cy="32" r="6" filter="url(#${id}-b)"/><circle class="core" cx="32" cy="32" r="4" fill="url(#${id}-k)"/>`;
+    },
+  },
+  streaming: {
+    label: '模型输出文字', where: '状态行 · 文字流出时', live: true,
+    render() {
+      const id = 'ci' + (++uid);
+      return `<defs><linearGradient id="${id}-w" gradientUnits="userSpaceOnUse" x1="8" y1="0" x2="56" y2="0"><stop offset="0" style="stop-color:var(--tk-c)"/><stop offset="1" style="stop-color:var(--tk-a)"/></linearGradient></defs>` +
+        `<g fill="url(#${id}-w)"><rect x="8" y="16" width="7" height="32" rx="3.5"/><rect x="18.25" y="13" width="7" height="38" rx="3.5"/><rect x="28.5" y="10" width="7" height="44" rx="3.5"/><rect x="38.75" y="13" width="7" height="38" rx="3.5"/><rect x="49" y="16" width="7" height="32" rx="3.5"/></g>`;
+    },
+  },
+  done: {
+    label: '已完成', where: '状态行 · 结束；子代理行 · ✓',
+    render() {
+      const id = 'ci' + (++uid);
+      return `<defs><linearGradient id="${id}-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--tk-ok)"/><stop offset="1" style="stop-color:var(--tk-b)"/></linearGradient></defs>` +
+        `<path class="k" d="M57.9 42.7L62.5 44.6M42.7 57.9L44.6 62.5M21.3 57.9L19.4 62.5M6.1 42.7L1.5 44.6M6.1 21.3L1.5 19.4M21.3 6.1L19.4 1.5M42.7 6.1L44.6 1.5M57.9 21.3L62.5 19.4"/><circle class="b" cx="32" cy="32" r="24" fill="url(#${id}-g)"/><path class="c" pathLength="1" d="M21 33L29 41L44 25"/>`;
+    },
+  },
+  error: {
+    label: '出错', where: '状态行 · 出错',
+    render() {
+      const id = 'ci' + (++uid);
+      return `<defs><linearGradient id="${id}-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color:var(--tk-d)"/><stop offset=".45" style="stop-color:var(--tk-err)"/><stop offset="1" style="stop-color:var(--tk-c)"/></linearGradient></defs>` +
+        `<g class="g"><circle class="b" cx="32" cy="32" r="24" fill="url(#${id}-g)"/><path class="x" d="M32 19V35"/><circle class="d" cx="32" cy="44.5" r="3.6"/></g>`;
+    },
+  },
+  stopped: {
+    label: '中断', where: '状态行 · 中断',
+    render: () => `<g class="g"><circle class="r" cx="32" cy="32" r="22"/><rect class="q" x="24.5" y="24.5" width="15" height="15" rx="3.5"/></g>`,
+  },
+  chevron: {
+    label: '展开 / 收起', where: '状态行 · 点击展开执行过程（open 时转 90°）', openable: true,
+    render: () => `<path d="M25 18L39 32L25 46"/>`,
+  },
+  'agent-running': {
+    label: '子代理执行中', where: '子代理面板 · ⟳（标题行和每一行）', live: true,
+    render: () => `<circle class="t" cx="32" cy="32" r="21"/><g class="s">${ARC}</g>`,
+  },
+  open: {
+    label: '打开浮层', where: '子代理面板 · ↗',
+    render: () => `<g class="arw"><path d="M21 43L43 21"/><path d="M25 21H43V39"/></g>`,
+  },
+  'tool-bash': {
+    label: 'Bash 工具', where: '展开区 · 工具调用摘要行（running 时带动效）', runnable: true,
+    render: () => `<rect class="f" x="8" y="12" width="48" height="40" rx="9"/><rect class="p" x="8" y="12" width="48" height="40" rx="9" pathLength="100"/><path class="c" d="M19 25L27 32L19 39"/><path class="u" d="M33 40H45"/>`,
+  },
+
+  // ── 以下为细线图标（line: true → .ci-ln）：.l 线条，.hi 运行时变色，.w 运行时反复描出，.p 运行时沿轮廓跑光 ──
+  'tool-read': {
+    label: 'Read 工具', where: '展开区 · 读文件', runnable: true, line: true,
+    render: () => { const d = 'M18 8H38L50 20V52A4 4 0 0 1 46 56H18A4 4 0 0 1 14 52V12A4 4 0 0 1 18 8Z';
+      return `<path class="l" d="${d}"/><path class="p" pathLength="100" d="${d}"/><path class="l" d="M38 8V20H50"/><path class="l hi w" pathLength="1" d="M22 33H42"/><path class="l hi w w2" pathLength="1" d="M22 44H35"/>`; },
+  },
+  'tool-edit': {
+    label: 'Edit / Write 工具', where: '展开区 · 改文件、写文件', runnable: true, line: true,
+    render: () => `<g class="pen"><path class="l" d="M40 10L52 22L24 50L10 54L14 40Z"/><path class="l" d="M33 17L45 29"/></g><path class="l hi w" pathLength="1" d="M32 55H55"/>`,
+  },
+  'tool-search': {
+    label: 'Grep / Glob 工具', where: '展开区 · 搜索内容、查找文件', runnable: true, line: true,
+    render: () => `<g class="lens"><circle class="l" cx="28" cy="28" r="17"/><circle class="p" cx="28" cy="28" r="17" pathLength="100"/><path class="l" d="M41 41L55 55"/></g>`,
+  },
+  'tool-web': {
+    label: 'WebFetch / WebSearch 工具', where: '展开区 · 抓网页、联网搜索', runnable: true, line: true,
+    render: () => `<circle class="l" cx="32" cy="32" r="23"/><circle class="p" cx="32" cy="32" r="23" pathLength="100"/><path class="l" d="M9 32H55"/><ellipse class="l hi mer" cx="32" cy="32" rx="10" ry="23"/>`,
+  },
+  'tool-agent': {
+    label: 'Agent 工具', where: '展开区 · 启动子代理', runnable: true, line: true,
+    render: () => `<circle class="l" cx="32" cy="13" r="6.5"/><path class="l" d="M32 20V31M15 42V36A5 5 0 0 1 20 31H44A5 5 0 0 1 49 36V42"/><circle class="l hi n1" cx="15" cy="49" r="6.5"/><circle class="l hi n2" cx="49" cy="49" r="6.5"/>`,
+  },
+  'tool-mcp': {
+    label: 'MCP 工具', where: '展开区 · 外部连接器的工具', runnable: true, line: true,
+    render: () => `<g class="pl"><path class="l" d="M5 32H14M14 19H22A5 5 0 0 1 27 24V40A5 5 0 0 1 22 45H14Z"/><path class="l hi" d="M27 26H34M27 38H34"/></g><g class="pr"><path class="l" d="M59 32H50M50 19H47A9 9 0 0 0 38 28V36A9 9 0 0 0 47 45H50Z"/></g>`,
+  },
+  'tool-todo': {
+    label: '任务清单', where: '展开区 · TodoWrite', runnable: true, line: true,
+    render: () => `<path class="l hi w" pathLength="1" d="M9 17L15 23L25 11"/><path class="l" d="M34 17H55"/><rect class="l" x="10" y="38" width="13" height="13" rx="3.5"/><path class="l" d="M34 45H55"/>`,
+  },
+  'tool-generic': {
+    label: '其他工具', where: '展开区 · 兜底图标', runnable: true, line: true,
+    render: () => `<g class="nut"><polygon class="l hi" points="55,32 43.5,51.9 20.5,51.9 9,32 20.5,12.1 43.5,12.1"/><circle class="l" cx="32" cy="32" r="8.5"/></g>`,
+  },
+  'tool-fail': {
+    label: '工具失败', where: '展开区 · 工具调用失败时替换工具图标', line: true,
+    render: () => `<g class="g"><path class="l" d="M32 10L56 52H8Z"/><path class="l" d="M32 26V38"/><circle class="dot" cx="32" cy="45" r="2.4"/></g>`,
+  },
+  thought: {
+    label: '思考', where: '展开区 · 思考内容', line: true,
+    render: () => `<path class="l" d="M22 41A12.5 12.5 0 0 1 19 17A14 14 0 0 1 45 15A13 13 0 0 1 45 41Z"/><circle class="dot" cx="17" cy="51" r="3.4"/><circle class="dot" cx="9" cy="58" r="2.2"/>`,
+  },
+  note: {
+    label: '中间说明文字', where: '展开区 · 模型在步骤之间说的话', line: true,
+    render: () => `<path class="l" d="M11 18H53M11 32H53M11 46H36"/>`,
+  },
+  close: {
+    label: '关闭浮层', where: '子代理浮层 · ×（悬停时转 90°）', line: true,
+    render: () => `<g class="x"><path class="l" d="M19 19L45 45M45 19L19 45"/></g>`,
+  },
+};
+
+/** 生成图标 SVG 字符串。opts: size（像素，默认 20）、running（仅 tool-* 有效）、open（仅 chevron 有效） */
+function icon(name, opts = {}) {
+  const def = ICONS[name];
+  if (!def) throw new Error(`unknown icon: ${name}`);
+  const size = opts.size ?? 20;
+  const running = def.runnable && opts.running;
+  const extra = (def.line ? ' ci-ln' : '') + (def.live || running ? ' ci-live' : '') + (running ? ' is-running' : '') + (def.openable && opts.open ? ' is-open' : '');
+  return wrap(name, size, def.render({ size }), extra);
+}
+
+
+const $ = id => document.getElementById(id);
+const put = (el, name, opts) => {   // 图标没变就不重新插入，避免一次性动画重播
+  const k = name + JSON.stringify(opts);
+  if (el.dataset.k !== k){ el.dataset.k = k; el.innerHTML = icon(name, opts); }
+};
+
+/* 主题 / 动画开关 */
+function seg(id, attr){
+  const btns = [...$(id).children];
+  const set = v => { v ? document.documentElement.dataset[attr] = v : delete document.documentElement.dataset[attr];
+    btns.forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); };
+  btns.forEach(b => b.addEventListener('click', () => set(b.dataset.v)));
+  set('');
+}
+seg('theme', 'theme'); seg('motion', 'motion');
+const mq = matchMedia('(prefers-reduced-motion: reduce)');
+const sys = () => { $('sys').textContent = mq.matches ? '系统动画效果已关闭，图标不受影响、照常播放' : ''; };
+mq.addEventListener('change', sys); sys();
+
+/* 模拟一轮回复 */
+let open = true;
+put($('chev'), 'chevron', { size: 16, open });
+$('status').addEventListener('click', () => {
+  open = !open;
+  $('chev').firstChild.classList.toggle('is-open', open);
+  $('expand').classList.toggle('shut', !open);
+});
+put($('op1'), 'open', { size: 14 }); put($('op2'), 'open', { size: 14 });
+put($('thico'), 'thought', { size: 16 }); put($('rdico'), 'tool-read', { size: 16 }); put($('ntico'), 'note', { size: 16 });
+let cur = null, timers = [];
+function status(name, text, end){
+  if (name && name !== cur){ put($('ico'), name, { size: 20 }); cur = name; }   // 思考、工具调用时保持上一次的图标
+  if (text != null){ $('txt').textContent = text; $('txt').className = 'txt' + (end ? '' : ' ct-' + cur); }
+}
+function agents(done){
+  const n = 2, x = done.filter(Boolean).length;
+  put($('aghd'), x === n ? 'done' : 'agent-running', { size: 16 });
+  $('agtitle').textContent = x === n ? `${n} 个子代理已完成 ${x}/${n}` : `${n} 个子代理执行中 ${x}/${n}`;
+  done.forEach((d, i) => put($('ag' + (i + 1)), d ? 'done' : 'agent-running', { size: 14 }));
+}
+function play(ending){
+  timers.forEach(clearTimeout); timers = []; cur = null;
+  ['ico', 'toolico', 'aghd', 'ag1', 'ag2'].forEach(id => delete $(id).dataset.k);
+  $('expand').hidden = $('agents').hidden = $('answer').hidden = true;
+  const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+  status('understanding', '正在理解问题');
+  at(3200, () => status('streaming', '我先跑一下流相关的测试，看看卡在哪一步'));
+  at(6000, () => { $('expand').hidden = false; put($('toolico'), 'tool-bash', { size: 16, running: true }); });
+  at(9000, () => { put($('toolico'), 'tool-bash', { size: 16 }); $('agents').hidden = false; agents([false, false]); });
+  at(11500, () => agents([true, false]));
+  if (ending === 'stopped') return at(13000, () => status('stopped', '已中断 · 用户取消', true));
+  if (ending === 'error') return at(13000, () => status('error', '出错了：连接中断', true));
+  at(13500, () => agents([true, true]));
+  at(14500, () => { status('streaming', '卡顿来自缓冲区的刷新策略'); $('answer').hidden = false; });
+  at(17500, () => status('done', '已完成 · 20:31 · 用时 17s', true));
+}
+$('play').addEventListener('click', () => play());
+document.querySelectorAll('[data-end]').forEach(b => b.addEventListener('click', () => play(b.dataset.end)));
+play();
+
+/* 卡片 */
+const CARDS = Object.entries(ICONS).flatMap(([n, d]) => [[n], ...(d.openable ? [[n, { open: true }]] : []), ...(d.runnable ? [[n, { running: true }]] : [])]);
+CARDS.forEach(([name, opts = {}]) => {
+  const d = ICONS[name];
+  const card = document.createElement('button'); card.className = 'card'; card.type = 'button';
+  const render = () => {
+    card.innerHTML = `<div class="top">${icon(name, { ...opts, size: 64 })}</div><div class="meta">
+      <div><b>${d.label}${opts.running ? ' · 运行中' : ''}${opts.open ? ' · 已展开' : ''}</b> <code>${name}</code></div>
+      <div class="sizes">${[14, 16, 20, 28].map(s => icon(name, { ...opts, size: s })).join('')}</div>
+      <p class="muted">${d.where}</p></div>`;
+  };
+  card.addEventListener('click', render); render(); $('grid').append(card);
+});
+
+/* 清单 */
+const INV = [
+  ['状态行', 'understanding', '正在理解问题', '循环：三色彗星绕核心'],
+  ['状态行', 'streaming', '模型输出文字', '循环：光柱起伏'],
+  ['状态行', 'done', '已完成', '一次：徽章弹出 → 画勾 → 一圈火花'],
+  ['状态行', 'error', '出错', '一次：徽章弹出 → 轻抖'],
+  ['状态行', 'stopped', '中断', '一次：轻微缩放出现'],
+  ['状态行', 'chevron', '展开 / 收起', '状态切换：旋转 90°'],
+  ['展开区', 'thought', '思考', '静态'],
+  ['展开区', 'note', '中间说明文字', '静态'],
+  ['展开区', 'tool-bash', 'Bash', '运行中：光标闪 + 边框跑光'],
+  ['展开区', 'tool-read', 'Read', '运行中：轮廓跑光 + 文字行反复描出'],
+  ['展开区', 'tool-edit', 'Edit / Write', '运行中：铅笔抖动 + 下划线描出'],
+  ['展开区', 'tool-search', 'Grep / Glob', '运行中：放大镜游走 + 镜圈跑光'],
+  ['展开区', 'tool-web', 'WebFetch / WebSearch', '运行中：经线翻转（地球自转）+ 跑光'],
+  ['展开区', 'tool-agent', 'Agent（启动子代理）', '运行中：两个子节点交替明暗'],
+  ['展开区', 'tool-mcp', 'MCP 工具', '运行中：插头两半来回对接'],
+  ['展开区', 'tool-todo', '任务清单', '运行中：勾反复描出'],
+  ['展开区', 'tool-generic', '其他工具（兜底）', '运行中：螺母慢转'],
+  ['展开区', 'tool-fail', '工具失败（替换工具图标）', '一次：轻微缩放出现'],
+  ['子代理面板', 'agent-running', '执行中 ⟳', '循环：带尾巴的弧旋转'],
+  ['子代理面板', 'done', '已完成 ✓（复用）', '一次'],
+  ['子代理面板', 'error', '失败（复用）', '一次'],
+  ['子代理面板', 'open', '打开浮层 ↗', '悬停：箭头飞出再回来'],
+  ['子代理浮层', 'close', '关闭浮层 ×', '悬停：轻微旋转'],
+];
+INV.forEach(([where, name, label, fx]) => {
+  const has = !!ICONS[name], tr = document.createElement('tr');
+  tr.innerHTML = `<td>${where}</td><td>${has ? icon(name, { size: 18 }) : ''}</td><td>${label} <code>${name}</code></td><td>${fx}</td><td class="${has ? 'ok' : 'todo'}">${has ? '本批' : '待做'}</td>`;
+  $('inv').append(tr);
+});
+</script>
+</body>
+</html>

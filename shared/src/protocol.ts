@@ -1,0 +1,313 @@
+// 前后端约定。后端 server/ 与前端 web/ 都只通过这里的类型对接。
+// 后端只监听 127.0.0.1:7878；前端开发时通过 Vite 代理访问 /api 与 /ws。
+// 鉴权：每个请求带 token（REST 用请求头 `x-cosyee-token`，WS 用 `/ws?token=`），并校验 Origin。
+
+// ───────────── 基础数据 ─────────────
+
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface Workspace {
+  /** 绝对路径，作为唯一 ID */
+  path: string;
+  /** 显示名（文件夹名） */
+  name: string;
+}
+
+/** 会话列表的状态点：running=绿色（执行中），unread=蓝色（已完成未查看），null=不显示 */
+export type SessionDot = 'running' | 'unread' | null;
+
+/** 置顶来源：manual=用户手动置顶（一直保留到取消）；auto=执行中自动置顶（停止后空闲满 30 分钟自动回到工作空间列表） */
+export type PinKind = 'manual' | 'auto';
+
+export interface SessionSummary {
+  id: string;
+  cwd: string;
+  title: string;
+  /** 上次活动时间，毫秒时间戳 */
+  lastActiveAt: number;
+  dot: SessionDot;
+  /** 置顶状态；null=未置顶 */
+  pinned: PinKind | null;
+  /** 并行模式下这个会话使用的账号 id（绑定的账号，没绑定时为当前账号）；切换模式下为 null / 不存在 */
+  account?: string | null;
+}
+
+/** 「已删除」列表里的一项（软删除：只是从列表隐藏，会话记录文件原样保留） */
+export interface DeletedSession {
+  id: string;
+  cwd: string;
+  /** 删除时的标题快照 */
+  title: string;
+  /** 删除时间，毫秒时间戳 */
+  deletedAt: number;
+}
+
+export interface Account {
+  name: string;
+  /** 例如 'Pro' / 'Max'；未知为 null */
+  plan: string | null;
+}
+
+/** 账号切换列表里的一项。不含邮箱、uuid 等身份信息。 */
+export interface AccountEntry {
+  /** 'default' = 默认账号（基础配置目录） */
+  id: string;
+  /** 用户起的备注名；默认账号为空 */
+  label: string;
+  /** 显示名（来自登录信息）；未登录 / 读不到为 null */
+  name: string | null;
+  plan: string | null;
+  /** 本地有登录凭据（不保证凭据仍有效） */
+  loggedIn: boolean;
+  active: boolean;
+  isDefault: boolean;
+}
+
+/** 多账号模式：switch = 同一时间只有一个账号生效（切换时停止所有会话）；parallel = 每个会话绑定自己的账号，多个账号同时生效 */
+export type AccountMode = 'switch' | 'parallel';
+
+export interface AccountList {
+  mode: AccountMode;
+  list: AccountEntry[];
+  /** 当前正在进行的登录（添加 / 重新登录账号），没有为 null */
+  login: AccountLogin | null;
+}
+
+/** 添加 / 重新登录账号的进度 */
+export interface AccountLogin {
+  loginId: string;
+  status: 'starting' | 'waiting' | 'done' | 'failed';
+  /** 浏览器没自动打开时手动打开的登录页 */
+  url: string | null;
+  /** 完成后对应的账号 id */
+  accountId: string | null;
+  error: string | null;
+}
+
+export interface PickedItem {
+  path: string;
+  kind: 'file' | 'folder';
+  /** 预览令牌：只有经选择窗口选出的路径才能被预览 */
+  previewToken: string;
+  /** 根据扩展名判断是否为图片 */
+  isImage: boolean;
+}
+
+export interface PreviewInfo {
+  path: string;
+  kind: 'file' | 'folder';
+  size: number | null;
+  /** 毫秒时间戳 */
+  mtime: number | null;
+  isImage: boolean;
+  /** 文件夹的直接子项数量；文件为 null */
+  childCount?: number | null;
+}
+
+/**
+ * 上下文面板数据。后端由 control_request get_context_usage 的响应换算（见 spike/FINDINGS2.md B1 §4）：
+ * usedTokens=totalTokens，totalTokens=maxTokens（有效窗口），percent=percentage，
+ * categories=kind 为 used/buffer/free 的类别，deferred=kind 为 deferred 的类别，
+ * untilAutocompact=autoCompactThreshold-totalTokens（未开启自动压缩为 null）。
+ */
+export interface ContextUsage {
+  usedTokens: number;
+  totalTokens: number;
+  /** 0–100 */
+  percent: number;
+  /** name 保持 CLI 的英文原名（System tools、Messages、MCP tools、System prompt、Skills、MCP server instructions、Custom agents、Autocompact buffer、Free space），前端按名字配色；percent 为 0–100 */
+  categories: { name: string; tokens: number; percent: number | null; color?: string }[];
+  deferred: { name: string; tokens: number }[];
+  mcpTools: { name: string; server: string; tokens: number }[];
+  agents: { name: string; tokens: number }[];
+  /** 全部 skill（含已关闭 / 仅手动的），顺序同 CLI；数据来自 init.skills、get_context_usage 与 get_settings */
+  skills: ContextSkill[];
+  /** MCP 服务器（来自 mcp_status），工具 token 来自 get_context_usage.mcpTools */
+  mcpServers: ContextMcpServer[];
+  /** 距自动压缩还剩多少 token */
+  untilAutocompact: number | null;
+  /** 采集时间 */
+  at: number;
+}
+
+/**
+ * skill 的三种状态，取值与 CLI 设置 skillOverrides 相同：
+ * on=模型能看到并自动调用；user-invocable-only=模型看不到，只能手动 /名字 调用；off=模型和 / 菜单都看不到。
+ * （CLI 还有 name-only，Cosyee 不提供，读到时按 on 显示）
+ */
+export type SkillMode = 'on' | 'user-invocable-only' | 'off';
+export const SKILL_MODES: readonly SkillMode[] = ['on', 'user-invocable-only', 'off'];
+
+export interface ContextSkill {
+  /** CLI 里的名字（插件 skill 带前缀，如 anthropic-skills:pdf），也是设置状态时用的键 */
+  name: string;
+  mode: SkillMode;
+  /** 名字与描述占用的 token；模型看不到（仅手动 / 已关闭）时为 null */
+  tokens: number | null;
+  /** 来源：userSettings / projectSettings / plugin 等；未知为 null */
+  source: string | null;
+}
+
+/** MCP 服务器：status 取 mcp_status 的 connected / pending / failed / needs-auth / disabled；读不到 mcp_status 时为 unknown */
+export interface ContextMcpServer {
+  /** mcp_status 里的原名（mcp_toggle 用它） */
+  name: string;
+  status: string;
+  /** 各工具 token 合计 */
+  tokens: number;
+  tools: { name: string; tokens: number | null }[];
+}
+
+/** 每个会话可调的启动参数，改动后下一轮生效 */
+export interface SessionConfig {
+  model: string;
+  effort: Effort;
+  ultracode?: boolean;
+}
+
+export type UsageSeverity = 'normal' | 'warning' | 'critical';
+
+/** 订阅额度的一项限制（来自 CLI control_request get_usage 的 rate_limits.limits） */
+export interface UsageLimit {
+  /** session=当前 5 小时会话窗口；weekly=每周总额；scoped=某个模型单独的每周额度 */
+  kind: 'session' | 'weekly' | 'scoped';
+  /** 0–100 */
+  percent: number;
+  severity: UsageSeverity;
+  /** 重置时间，毫秒时间戳 */
+  resetsAt: number | null;
+  /** scoped：模型显示名，如 Fable */
+  model?: string;
+  /** scoped：最多可使用每周限额的百分比 */
+  allowance?: number | null;
+  /** weekly：其中各模型专属额度用掉的部分（占每周限额的百分比） */
+  shares?: { model: string; percent: number }[];
+}
+
+export interface UsageInfo {
+  limits: UsageLimit[];
+  /** 采集时间 */
+  at: number;
+}
+
+// ───────────── REST ─────────────
+// 所有接口 JSON 进出；出错时返回 { error: string } 与非 2xx 状态码。
+//
+// GET  /api/bootstrap                       → Bootstrap
+// GET  /api/workspaces                      → { current: string | null; list: Workspace[] }
+// POST /api/workspaces/pick                 → { workspace: Workspace | null }   调起系统的文件夹选择窗口并加入列表
+// POST /api/workspaces/current  {path}      → { ok: true }
+// POST /api/workspaces/top      {path}      → { current: string | null; list: Workspace[] }   移到列表最前
+// POST /api/workspaces/remove   {path}      → { current: string | null; list: Workspace[] }   仅从最近列表移除，不动磁盘；移除当前工作空间时 current 切到下一个（或 null）
+// POST /api/workspaces/reveal   {path}      → { ok: true }   在系统文件管理器里打开；path 必须在工作空间列表里
+// GET  /api/sessions?cwd=                   → SessionSummary[]   按 lastActiveAt 倒序
+// GET  /api/sessions/:id/history?cwd=       → { entries: unknown[] }   主会话 jsonl 原始条目
+// GET  /api/sessions/:id/subagent/:toolUseId?cwd= → { entries: unknown[] }  子代理 jsonl 原始条目
+// POST /api/sessions/:id/rename {cwd,title} → { ok: true }
+// POST /api/sessions/:id/viewed {cwd}       → { ok: true }   清除蓝点
+// GET  /api/pins                            → SessionSummary[]   所有工作空间的置顶会话（手动置顶在前，按置顶时间倒序；其后是自动置顶）
+// POST /api/sessions/:id/pin    {cwd}       → { ok: true }   手动置顶
+// POST /api/sessions/:id/unpin  {cwd}       → { ok: true }   取消置顶（自动置顶的会话取消后隐藏，直到下次开始执行）
+// GET  /api/deleted                         → DeletedSession[]   已删除（软删除）的会话，按删除时间倒序
+// POST /api/sessions/:id/delete {cwd}       → { ok: true }   软删除：移入已删除列表，不碰会话记录文件；执行中的会话返回 409
+// POST /api/sessions/:id/restore                → { ok: true }   从已删除列表恢复
+// POST /api/sessions/:id/purge                  → { ok: true }   永久删除：删除记录文件 <id>.jsonl 与同名目录；只允许已在已删除列表里的会话
+// GET  /api/git?cwd=                        → { branch: string | null }
+// GET  /api/account                         → Account | null   当前账号（并行模式下 = 新会话使用的账号）
+// GET  /api/accounts                        → AccountList   账号列表（默认账号 + 添加的账号）与进行中的登录
+// POST /api/accounts/switch {id, force?}    → { ok: true }   切换账号；有执行中的会话且没带 force 时返回 409 { error, running }。
+//                                             切换模式：成功后停止所有会话进程并广播 account.changed {reload: true}；
+//                                             并行模式：只改「新会话使用的账号」，不停止任何会话，广播 account.changed {reload: false}
+// POST /api/accounts/mode {mode, force?}    → { ok: true }   切换多账号模式。并行 → 切换时，其它账号还有执行中的会话且没带 force 返回 409 { error, running }；
+//                                             成功后停掉其它账号的进程并广播 account.changed {reload: true}
+// POST /api/accounts/login {label?, accountId?} → AccountLogin   添加账号（或给已有账号重新登录）：后台运行 claude auth login，
+//                                             自动打开浏览器；同一时间只允许一个
+// GET  /api/accounts/login/:loginId         → AccountLogin
+// POST /api/accounts/login/:loginId/code {code} → { ok: true }   浏览器回调失败时，把页面上的授权码交给 CLI
+// POST /api/accounts/login/:loginId/cancel  → { ok: true }
+// POST /api/accounts/remove {id}            → { ok: true }   移除添加的账号（删除其配置目录里的私有内容，共享内容只解除链接）；
+//                                             默认账号与当前账号不能移除；并行模式下还有执行中会话的账号不能移除
+// POST /api/accounts/label {id, label}      → { ok: true }   修改备注名
+// POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }
+// GET  /api/preview/:token/info             → PreviewInfo
+// GET  /api/preview/:token/raw              → 文件原始内容（仅图片）
+// POST /api/defaults {model,effort}         → { ok: true }   记住模型与思考强度（全局，下次启动沿用）
+// GET  /api/usage?refresh=1&session=       → UsageInfo | null   订阅额度（refresh=1 跳过缓存）；带 session 时取该会话所用账号的额度（并行模式），
+//                                             否则取当前账号的
+// POST /api/skills {name, mode}             → { ok: true }   设置一个 skill 的状态（全局，存 ~/.cosyee/state.json，不改 ~/.claude 配置）；
+//                                             立即下发给所有运行中的会话，订阅者随后收到新的 context
+// POST /api/context/:id/mcp {cwd?, server, enabled} → ContextUsage | null   开关 MCP 服务器（CLI 的 mcp_toggle，
+//                                             与终端 /mcp 里的启用 / 禁用相同：按项目写进 ~/.claude.json）
+// GET  /api/context/:id                     → ContextUsage | null   最近一次采集的上下文数据
+// POST /api/context/:id/refresh             → ContextUsage | null   立即重新采集
+
+export interface Bootstrap {
+  version: string;
+  platform: 'win32' | 'darwin' | string;
+  homeDir: string;
+  supportsMixedPick: boolean;
+  defaults: SessionConfig;
+}
+
+// ───────────── WebSocket ─────────────
+
+export type ClientMsg =
+  /** 订阅会话事件（打开会话时发送；可同时订阅多个） */
+  | { t: 'subscribe'; sessionId: string }
+  | { t: 'unsubscribe'; sessionId: string }
+  /**
+   * 发送一条用户消息。
+   * isNew=true：前端生成 UUID 作为 sessionId，后端用 --session-id 启动；
+   * 否则后端若没有该会话的进程，用 --resume 启动。
+   * text 中的标签已被替换为 @"<绝对路径>"。
+   */
+  | { t: 'send'; sessionId: string; cwd: string; isNew: boolean; text: string; config: SessionConfig }
+  | { t: 'interrupt'; sessionId: string }
+  /** 修改模型、强度等，下一轮生效 */
+  | { t: 'config'; sessionId: string; config: SessionConfig };
+
+/**
+ * idle：进程在，等待输入；running：一轮进行中（含 result 之后仍有后台子代理在跑、CLI 自动续轮的阶段）；
+ * exited：进程已退出（正常或异常，异常时带 error）。
+ */
+export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
+
+export interface AppliedSettings {
+  model?: string;
+  effort?: Effort;
+  ultracode?: boolean;
+  ultracodeAvailable?: boolean;
+}
+
+/**
+ * 后端合成的事件，和 CLI 事件一起通过 { t:'event' } 下发（CLI 不回显用户消息）：
+ * - cosyee_user：后端把一条用户消息写进 stdin 时发出，前端据此开始新的一轮。
+ */
+export interface CosyeeUserEvent {
+  type: 'cosyee_user';
+  /** 发给 CLI 的原文（标签已是 @"路径"） */
+  text: string;
+  /** 毫秒时间戳 */
+  at: number;
+}
+
+export type ServerMsg =
+  /** CLI stdout 的一行 JSON，原样转发（包括 stream_event、system、assistant、user、result 等） */
+  | { t: 'event'; sessionId: string; e: unknown }
+  /**
+   * 订阅时补发：如果该会话当前这一轮还没结束，后端把这一轮从 cosyee_user 开始缓存的全部事件一次性发来。
+   * 前端加载历史时，若 replay 非空，就丢掉历史里最后一条真实用户消息及其之后的条目，再按顺序应用 replay，避免重复。
+   */
+  | { t: 'replay'; sessionId: string; events: unknown[]; status: RunStatus }
+  | { t: 'status'; sessionId: string; status: RunStatus; error?: string }
+  /** 会话列表需要刷新（新会话、状态点变化、改名） */
+  | { t: 'sessions.changed'; cwd: string }
+  /** 置顶 / 已删除集合变化（手动置顶、删除、恢复、自动置顶到期）：前端重取置顶、已删除与当前工作空间的会话列表 */
+  | { t: 'sidebar.changed' }
+  /** 当前账号变了：前端整页重新加载，避免残留上一个账号的任何数据 */
+  /** 账号变了。reload = true：前端整页刷新（切换模式下切换账号）；false：只重取账号列表 / 会话列表 / 额度（并行模式） */
+  | { t: 'account.changed'; reload: boolean }
+  | { t: 'context'; sessionId: string; usage: ContextUsage }
+  /** 会话实际生效的设置（来自 control_request get_settings 的 applied）。ultracodeAvailable 为 true 时前端才显示 Ultracode 开关 */
+  | { t: 'settings'; sessionId: string; applied: AppliedSettings }
+  | { t: 'error'; message: string };

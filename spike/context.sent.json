@@ -1,0 +1,42 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 ok，不用工具。"
+   }
+  }
+ },
+ {
+  "t": 2095,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "/context"
+   }
+  }
+ },
+ {
+  "t": 3499,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "/compact"
+   }
+  }
+ },
+ {
+  "t": 7441,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "刚才压缩之后，请回复 done。"
+   }
+  }
+ }
+]

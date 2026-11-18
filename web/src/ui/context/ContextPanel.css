@@ -1,0 +1,267 @@
+.cz-ctx {
+  /* 分类颜色：复用 tokens 里的 --ctx-*，不足的用混色派生（仅限本面板） */
+  --cz-ctx-sys-prompt: var(--ctx-1);
+  --cz-ctx-sys-tools: var(--ctx-2);
+  --cz-ctx-messages: var(--ctx-3);
+  --cz-ctx-mcp-tools: color-mix(in srgb, var(--ctx-2) 55%, var(--text));
+  --cz-ctx-skills: color-mix(in srgb, var(--ctx-3) 55%, var(--text));
+  --cz-ctx-mcp-instr: color-mix(in srgb, var(--ctx-1) 55%, var(--text));
+  --cz-ctx-agents: color-mix(in srgb, var(--ctx-2) 50%, var(--ctx-1));
+  --cz-ctx-buffer: var(--ctx-buffer);
+  --cz-ctx-free: var(--ctx-free);
+  --cz-ctx-other: var(--ctx-other);
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.cz-ctx__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  min-height: 56px;
+}
+.cz-ctx__title { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
+.cz-ctx__head-actions { display: flex; align-items: center; gap: var(--sp-1); }
+.cz-ctx__icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-right: -6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-ctx__icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+.cz-ctx__link {
+  padding: 2px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-ctx__link:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.cz-ctx__link:disabled { color: var(--text-3); cursor: default; }
+
+.cz-ctx__body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.cz-ctx.is-loading .cz-ctx__body { opacity: .6; transition: opacity var(--dur) var(--ease); }
+
+/* 概览 */
+.cz-ctx__overview { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
+.cz-ctx__percent { font-size: 32px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.cz-ctx__used { color: var(--text-2); font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
+
+/* 分段条 */
+.cz-ctx__bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--cz-ctx-free);
+  gap: 1px;
+}
+.cz-ctx__seg { flex: none; height: 100%; min-width: 2px; }
+
+/* 列表 */
+.cz-ctx__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.cz-ctx__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 24px;
+  color: var(--text-2);
+}
+.cz-ctx__item.is-free { color: var(--text-3); }
+.cz-ctx__swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.cz-ctx__item-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+.cz-ctx__item-tokens,
+.cz-ctx__item-pct { flex: none; font-variant-numeric: tabular-nums; text-align: right; }
+.cz-ctx__item-tokens { min-width: 44px; }
+.cz-ctx__item-pct { min-width: 46px; color: var(--text-3); }
+.cz-ctx__list--plain .cz-ctx__item { padding-left: var(--sp-1); }
+
+/* 小节 */
+.cz-ctx__section { display: flex; flex-direction: column; gap: var(--sp-1); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+.cz-ctx__sub { margin: 0 0 var(--sp-1); color: var(--text-3); font-size: var(--fs-xs); font-weight: 500; }
+.cz-ctx__fold {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-ctx__fold:hover:not(:disabled) { color: var(--text); }
+.cz-ctx__fold:disabled { cursor: default; color: var(--text-3); }
+.cz-ctx__fold-title { flex: 1 1 auto; }
+.cz-ctx__fold-count { color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.cz-ctx__fold-extra { color: var(--text-3); font-size: var(--fs-xs); margin-right: var(--sp-2); }
+
+/* 关闭 / 手动 / 停用的行整体变淡 */
+.cz-ctx__item.is-off { color: var(--text-3); }
+
+/* Skills：开 / 手动 / 关 三段按钮 */
+.cz-ctx__seg3 {
+  flex: none;
+  display: inline-flex;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.cz-ctx__seg3-btn {
+  min-width: 28px;
+  height: 20px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  border-radius: calc(var(--r-sm) - 1px);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 20px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-ctx__seg3-btn:hover:not(:disabled):not(.is-on) { background: var(--bg-hover); color: var(--text); }
+.cz-ctx__seg3-btn.is-on { background: var(--bg-elev); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong); cursor: default; }
+.cz-ctx__seg3-btn:disabled { cursor: default; }
+.cz-ctx__seg3-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* MCP：每台服务器一行，名字可展开工具 */
+.cz-ctx__mcp { display: flex; flex-direction: column; }
+.cz-ctx__mcp-name {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-ctx__mcp-name:hover:not(:disabled) { color: var(--text); }
+.cz-ctx__mcp-name:disabled { cursor: default; }
+.cz-ctx__mcp-name:disabled > svg { visibility: hidden; }
+.cz-ctx__mcp-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-ctx__mcp-tools { padding-left: calc(12px + var(--sp-2)); }
+
+.cz-ctx__badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 16px;
+}
+.cz-ctx__badge.is-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.cz-ctx__badge.is-pending,
+.cz-ctx__badge.is-needs-auth { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+
+/* 开关：与菜单里的 switch 一致 */
+.cz-ctx__switch {
+  flex: none;
+  position: relative;
+  width: 30px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.cz-ctx__switch.is-on { background: var(--accent); }
+.cz-ctx__switch:disabled { opacity: .5; cursor: default; }
+.cz-ctx__switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-ctx__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--on-accent, #fff);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.cz-ctx__switch.is-on .cz-ctx__knob { transform: translateX(12px); }
+
+/* 底部 */
+.cz-ctx__foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.cz-ctx__autocompact { color: var(--text-2); font-size: var(--fs-xs); }
+
+.cz-ctx__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.cz-ctx__btn:hover:not(:disabled) { background: var(--bg-hover); }
+.cz-ctx__btn:disabled { color: var(--text-3); cursor: default; }
+.cz-ctx__btn--block { width: 100%; }
+
+/* 空态 */
+.cz-ctx__empty {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+}
+.cz-ctx__empty-text { color: var(--text-3); }

@@ -1,0 +1,12 @@
+[
+ {
+  "t": 0,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "请在同一条消息里并行调用两次 Agent 工具（subagent_type 用 general-purpose），子代理一让它用 Bash 运行 `echo AAA`，子代理二让它用 Bash 运行 `echo BBB`。子代理完成后，你用一句话汇总两个输出。"
+   }
+  }
+ }
+]

@@ -1,0 +1,88 @@
+[
+ {
+  "t": 1,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 1，不用工具。"
+   }
+  }
+ },
+ {
+  "t": 1205,
+  "o": {
+   "type": "control_request",
+   "request_id": "e0",
+   "request": {
+    "subtype": "get_settings"
+   }
+  }
+ },
+ {
+  "t": 2023,
+  "o": {
+   "type": "control_request",
+   "request_id": "e1",
+   "request": {
+    "subtype": "apply_flag_settings",
+    "settings": {
+     "effortLevel": "high"
+    }
+   }
+  }
+ },
+ {
+  "t": 2532,
+  "o": {
+   "type": "control_request",
+   "request_id": "e2",
+   "request": {
+    "subtype": "get_settings"
+   }
+  }
+ },
+ {
+  "t": 3035,
+  "o": {
+   "type": "control_request",
+   "request_id": "e3",
+   "request": {
+    "subtype": "apply_flag_settings",
+    "settings": {
+     "ultracode": true
+    }
+   }
+  }
+ },
+ {
+  "t": 3537,
+  "o": {
+   "type": "control_request",
+   "request_id": "e4",
+   "request": {
+    "subtype": "get_settings"
+   }
+  }
+ },
+ {
+  "t": 4033,
+  "o": {
+   "type": "control_request",
+   "request_id": "e5",
+   "request": {
+    "subtype": "initialize"
+   }
+  }
+ },
+ {
+  "t": 4532,
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "只回复 2，不用工具。"
+   }
+  }
+ }
+]
