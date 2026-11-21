@@ -88,7 +88,7 @@ Host / Origin 白名单额外放行 Tailscale IP、本机名（MagicDNS 短名�
 | Android | `*_android_arm64.apk` | 允许安装未知来源应用 |
 
 - 添加服务器：填 Tailscale IP 或机器名，端口不写默认 7878，例如 `100.106.9.14`、`my-pc`、`https://my-pc.xxx.ts.net`。
-- 回到服务器列表：`Ctrl+Shift+L`（macOS `⌘⇧L` 或菜单「连接 → 服务器列表」）；Android 用返回键。
+- 回到服务器列表：`Ctrl+Shift+L`（macOS `⌘⇧L`），或点标题栏左上角菜单 → 服务器列表、标题栏上的当前服务器名；Android 用返回键。
 - 本地开发：`npm run dev:client`；本地打包：`npm run build:client`（需要 Rust 工具链）。改图标：改 `client/scripts/make-icon.mjs` 后 `npm run icon -w client`。
 
 ### 3. 其它电脑也想用本机后端
