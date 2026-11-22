@@ -17,9 +17,16 @@ import './userMessage.css';
 
 const KIND_ICON: Record<Attachment['kind'], IconName> = { file: 'file', img: 'image', folder: 'folder' };
 
+/** 粘贴的图片（存在 <cosyee 目录>/pastes/ 下、名字由服务端生成）→ 文件名；其它路径返回 null */
+export function pasteName(path: string): string | null {
+  const m = /[\\/]pastes[\\/](paste-\d{1,16}-[0-9a-f]{12}\.(?:png|jpg|gif|webp))$/.exec(path);
+  return m ? m[1]! : null;
+}
+
 /**
  * 附件标签：点击弹出和输入框里标签一样的预览浮窗（路径 / 大小 / 修改时间 / 图片缩略图）。
- * 历史消息没有预览令牌，信息改走「会话工作目录内的文件预览」接口；没有会话上下文或在工作目录之外时只显示路径。
+ * 历史消息没有预览令牌：粘贴的图片按文件名走粘贴图片接口；其它走「会话工作目录内的文件预览」接口，
+ * 没有会话上下文或在工作目录之外时只显示路径。
  */
 export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attachment: Attachment }) {
   const files = useFiles();
@@ -28,6 +35,8 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const info = useCallback(
     async (path: string): Promise<PreviewInfo> => {
+      const paste = pasteName(path);
+      if (paste) return api.pasteInfo(paste);
       if (!session) throw new Error('no session');
       const p = await api.filePreview({ session, cwd, path });
       const dir = p.kind === 'directory';
@@ -42,7 +51,11 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
     },
     [session, cwd],
   );
-  const rawUrl = useCallback((path: string) => (session ? api.fileRawUrl({ session, cwd, path }) : ''), [session, cwd]);
+  const rawUrl = useCallback((path: string) => {
+    const paste = pasteName(path);
+    if (paste) return api.pasteRawUrl(paste);
+    return session ? api.fileRawUrl({ session, cwd, path }) : '';
+  }, [session, cwd]);
   const close = useCallback(() => setAnchor(null), []);
   return (
     <>

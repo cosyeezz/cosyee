@@ -5,6 +5,7 @@
 //   并行模式：每个会话绑定一个账号（发送时用的账号），进程按会话的账号启动，多个账号同时运行；
 //            「当前账号」只决定新会话用哪个账号，切换它不停任何进程。
 // 列表只下发显示名 / 套餐 / 是否已登录，绝不下发邮箱、uuid、令牌。
+// 账号有两种来源：claude.ai 登录（claude auth login），或 API 账号（API Key + 可选的自定义 Base URL，见 api-config.ts）。
 import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -14,6 +15,7 @@ import { nameFromOauth, planLabel, readClaudeJson } from '../account.js';
 import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
+import { type ApiConfig, apiHost, apiInfo, normalizeApiKey, normalizeBaseUrl, readApiConfig, writeApiConfig } from './api-config.js';
 import { ensureLinks, unlinkShared } from './links.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
 
@@ -67,8 +69,10 @@ function readJson(file: string): Record<string, unknown> | null {
   }
 }
 
-/** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程 */
+/** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程。API 账号有密钥就算已登录，名字是主机名 */
 export function localInfo(dir: string | null): LocalInfo {
+  const api = readApiConfig(dir);
+  if (api) return { name: apiHost(api.baseUrl), plan: 'API', loggedIn: true, uuid: null };
   const j = readClaudeJson(dir);
   const oauth = j?.oauthAccount as Record<string, unknown> | undefined;
   const credsFile = path.join(dir ?? baseClaudeHome(), '.credentials.json');
@@ -268,7 +272,11 @@ export class Accounts {
     ];
     for (const a of this.s.list) {
       const i = localInfo(a.dir);
-      out.push({ id: a.id, label: a.label, name: i.name, plan: i.plan, loggedIn: i.loggedIn, active: active === a.id, isDefault: false });
+      const e: AccountEntry = { id: a.id, label: a.label, name: i.name, plan: i.plan, loggedIn: i.loggedIn, active: active === a.id, isDefault: false };
+      const api = readApiConfig(a.dir);
+      // API 账号没有登录名：标题用备注名，没有备注名用主机名
+      if (api) Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
+      out.push(e);
     }
     return { mode: this.s.mode, list: out, login: this.login ? { ...this.login.state } : null };
   }
@@ -343,6 +351,67 @@ export class Accounts {
     this.names = null;
   }
 
+  /** 是否 API 账号（没有订阅额度，也不需要 claude.ai 登录） */
+  isApi(id: string): boolean {
+    return !!readApiConfig(this.dirFor(id));
+  }
+
+  /**
+   * 添加（不传 id）或修改 API 账号。baseUrl 空 = 官方地址；修改时 apiKey 留空 = 沿用原来的。
+   * 修改时该账号有执行中的会话就拒绝；空闲的进程先停掉（它们的环境变量还是旧配置），下次启动用新配置。
+   */
+  saveApi(opts: { id?: unknown; label?: unknown; baseUrl?: unknown; apiKey?: unknown; authType?: unknown }): Promise<string> {
+    return this.serial(async () => {
+      const baseUrl = normalizeBaseUrl(opts.baseUrl);
+      if (baseUrl === null) throw new HttpError(400, 'Base URL 不合法：需要以 http:// 或 https:// 开头，不能带查询参数');
+      const authType = opts.authType === 'authToken' ? 'authToken' : 'apiKey';
+      const keyGiven = typeof opts.apiKey === 'string' && opts.apiKey.trim() !== '';
+      const apiKey = keyGiven ? normalizeApiKey(opts.apiKey) : null;
+      if (keyGiven && !apiKey) throw new HttpError(400, 'API Key 不合法（不能含空格或非 ASCII 字符）');
+
+      if (opts.id !== undefined && opts.id !== null) {
+        if (typeof opts.id !== 'string') throw new HttpError(400, 'id 不合法');
+        if (opts.id === DEFAULT_ID) throw new HttpError(400, '默认账号不能改成 API 账号');
+        const a = this.find(opts.id);
+        if (!a) throw new HttpError(404, '账号不存在');
+        const old = readApiConfig(a.dir);
+        if (!old) throw new HttpError(400, '该账号不是 API 账号');
+        const running = this.deps.running(a.id);
+        if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再修改`);
+        if ((this.deps.processes?.(a.id) ?? 0) > 0) await this.deps.stop((x) => x === a.id);
+        writeApiConfig(a.dir, { baseUrl, authType, apiKey: apiKey ?? old.apiKey });
+        if (opts.label !== undefined) a.label = cleanLabel(opts.label);
+        this.deps.store.save();
+        this.names = null;
+        this.deps.onChanged({ reset: a.id, notify: 'refresh' });
+        return a.id;
+      }
+
+      if (!apiKey) throw new HttpError(400, '请填写 API Key');
+      const dup = this.s.list.some((a) => {
+        const c = readApiConfig(a.dir);
+        return !!c && c.apiKey === apiKey && c.baseUrl === baseUrl;
+      });
+      if (dup) throw new HttpError(409, '这个 Base URL 和 API Key 已经添加过了');
+      let id = newId();
+      while (this.find(id) || fs.existsSync(path.join(accountsRoot(), id))) id = newId();
+      const dir = path.join(accountsRoot(), id);
+      const cfg: ApiConfig = { baseUrl, apiKey, authType };
+      try {
+        if (ensureLinks(baseClaudeHome(), dir).includes('projects')) throw new Error('无法在账号目录里创建共享链接');
+        writeApiConfig(dir, cfg);
+      } catch (e) {
+        this.discardDir(dir);
+        throw new HttpError(500, e instanceof Error ? e.message : String(e));
+      }
+      this.sync(dir);
+      this.s.list.push({ id, label: cleanLabel(opts.label), dir, createdAt: Date.now() });
+      this.deps.store.save();
+      this.names = null;
+      return id;
+    });
+  }
+
   /**
    * 移除添加的账号：先解除共享链接，再删配置目录（只删 accountsRoot 下的目录）。
    * 并行模式下该账号有执行中的会话时不能移除，空闲的进程先停掉；绑定它的会话之后改用当前账号。
@@ -400,6 +469,7 @@ export class Accounts {
       if (typeof opts.accountId !== 'string') throw new HttpError(400, 'accountId 不合法');
       target = opts.accountId;
       const d = this.dirOf(target);
+      if (readApiConfig(d)) throw new HttpError(400, 'API 账号不需要登录，请直接修改它的 API Key');
       dir = d ?? baseClaudeHome();
     } else {
       let id = newId();

@@ -1,7 +1,8 @@
 // 侧栏行内的操作按钮：普通图标按钮、带「确认气泡」的危险操作按钮。
 // 所有行内按钮用同一个尺寸（方形 24px）和同一个图标大小，视觉等高。
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { Icon, type IconName } from '../icons/Icon';
+import { leavingProps, usePresence } from '../motion/usePresence';
 import { useDismiss } from './useDismiss';
 
 /** 行内图标统一大小 */
@@ -84,8 +85,14 @@ export function ConfirmActionButton({
   const wrapRef = useRef<HTMLSpanElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
   const timer = useRef<number | undefined>(undefined);
   const open = pos !== null;
+  // 关掉后气泡还要留着播完退场：记住最后一次的位置
+  const lastPos = useRef<PopPos | null>(null);
+  if (pos) lastPos.current = pos;
+  const shown = pos ?? lastPos.current;
+  const { mounted, leaving } = usePresence(open, popRef);
 
   const close = useCallback(() => setPos(null), []);
   useDismiss(open, wrapRef, close);
@@ -152,12 +159,21 @@ export function ConfirmActionButton({
       >
         <Icon name={icon} size={ACTION_ICON_SIZE} />
       </button>
-      {open && (
+      {mounted && shown && (
         <div
-          className="cz-sidebar__confirm"
+          ref={popRef}
+          className={`cz-sidebar__confirm cz-pop${leaving ? ' is-leaving' : ''}`}
           role="dialog"
           aria-label={confirmText}
-          style={{ right: pos.right, top: pos.top, bottom: pos.bottom }}
+          {...leavingProps(leaving)}
+          // 从按钮那一角长出：气泡在按钮下方时从右上角往下，在上方时从右下角往上
+          style={{
+            right: shown.right,
+            top: shown.top,
+            bottom: shown.bottom,
+            '--pop-origin': shown.top !== undefined ? 'top right' : 'bottom right',
+            '--pop-dy': shown.top !== undefined ? '-4px' : '4px',
+          } as CSSProperties}
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
         >

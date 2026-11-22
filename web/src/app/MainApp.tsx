@@ -1,7 +1,9 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  Account, Attachment, Bootstrap, DeletedSession, PromptReply, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, ToolStats, Workspace,
+import {
+  BUILTIN_PRICES,
+  type Account, type AccountList, type Attachment, type Bootstrap, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { resolveSessionConfig } from '../core/sessionConfig';
@@ -14,6 +16,8 @@ import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
+import type { Billing } from '../ui/context/CostSection';
+import { scrollBehavior } from '../ui/flow/motion';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
 import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
@@ -37,6 +41,7 @@ function startSocket() {
 }
 
 const FALLBACK_CONFIG: SessionConfig = { model: 'sonnet', effort: 'medium' };
+const NO_PROMPTS: PendingPrompt[] = [];
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -509,6 +514,49 @@ export function MainApp() {
     if (!running) loadToolStats();
   }, [selKey, running, loadToolStats]);
 
+  // 花费：价格表（服务端定期从官方页面更新，取不到用内置表）只取一次
+  const [pricing, setPricing] = useState<PriceTable>(BUILTIN_PRICES);
+  useEffect(() => {
+    api.getPricing().then(setPricing).catch(() => {});
+  }, []);
+  // 子代理的花费由服务端读子代理记录算好：换会话、一轮结束时重取（记下是哪个会话的，切走后不串到别的会话上）
+  const [subCosts, setSubCosts] = useState<{ id: string; items: SubagentCost[] } | null>(null);
+  const subCostSeq = useRef(0);
+  const subCostCwd = sel && !isDraft(sel) ? sel.cwd : null;
+  useEffect(() => {
+    if (!selKey || !subCostCwd || running) return;
+    const seq = ++subCostSeq.current;
+    api.subagentCosts(selKey, subCostCwd)
+      .then((r) => { if (seq === subCostSeq.current) setSubCosts({ id: selKey, items: r.items }); })
+      .catch(() => { if (seq === subCostSeq.current) setSubCosts({ id: selKey, items: [] }); });
+  }, [selKey, subCostCwd, running]);
+  // 计费方式：会话用的账号是 API 账号（官方 / 第三方地址）还是订阅账号
+  const [accounts, setAccounts] = useState<AccountList | null>(null);
+  useEffect(() => {
+    api.accounts().then(setAccounts).catch(() => setAccounts(null));
+  }, [accountVersion]);
+  const billing = useMemo<Billing>(() => {
+    const list = accounts?.list ?? [];
+    const acc = (current?.account ? list.find((a) => a.id === current.account) : undefined) ?? list.find((a) => a.active);
+    if (!acc?.api) return 'subscription';
+    const base = acc.api.baseUrl.trim();
+    return !base || /^https?:\/\/api\.anthropic\.com(\/|$)/i.test(base) ? 'api' : 'thirdParty';
+  }, [accounts, current?.account]);
+  // 点花费图的柱子：滚到会话流里的这一轮，并短暂高亮
+  const jumpToTurn = useCallback((index: number) => {
+    const t = view?.conv.turns[index];
+    if (!t) return;
+    const id = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(t.id) : t.id;
+    const el = document.querySelector<HTMLElement>(`.cz-flow__item[data-turn-id="${id}"]`);
+    if (!el) return;
+    if (narrow) setDrawer(null);
+    el.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    el.classList.remove('is-flash');
+    void el.offsetWidth;
+    el.classList.add('is-flash');
+    window.setTimeout(() => el.classList.remove('is-flash'), 1400);
+  }, [view, narrow]);
+
   // 打开已有会话时后端若没有缓存（例如刚重启），自动采集一次，不用再点「刷新」；
   // 新会话草稿也自动采集（后端用 --session-id 拉起探测进程），这样发第一条消息前就能调整 skill / MCP。
   // 每次打开只自动试一次（切走再切回会重试），失败 / 无数据时停在空态，由用户手动刷新。
@@ -621,6 +669,18 @@ export function MainApp() {
       .catch((e) => flash(`${enabled ? '启用' : '停用'} MCP 失败：${errText(e)}`))
       .finally(() => setMcpBusy(null));
   }, [sel, current, mcpBusy, patch, flash]);
+
+  // 自动压缩窗口（全局）：乐观更新显示值；运行中的会话由服务端重新采集后推送新的触发点
+  const setCompactWindow = useCallback((w: number | null) => {
+    const id = sel?.id;
+    if (id) patch((v) => { if (v.id === id && v.context) v.context = { ...v.context, compactWindow: w }; });
+    api.setCompactWindow(w)
+      .then(() => { if (w === null) flash('已恢复默认压缩窗口；运行中的会话可能要重启后才完全回到默认'); })
+      .catch((e) => {
+        flash(`设置压缩窗口失败：${errText(e)}`);
+        refreshContext();
+      });
+  }, [sel, patch, flash, refreshContext]);
 
   const compact = useCallback(() => {
     if (!sel || running || isDraft(sel)) return;
@@ -839,7 +899,8 @@ export function MainApp() {
       </div>
       {notice && <div className="cz-app__notice" role="status">{notice}</div>}
       <div className="cz-app__composer" ref={composerWrapRef}>
-        {view?.prompts && view.prompts.length > 0 && <PromptPanel items={view.prompts} onReply={onPromptReply} />}
+        {/* 一直挂着：空了以后自己先播完退场再消失 */}
+        <PromptPanel items={view?.prompts ?? NO_PROMPTS} onReply={onPromptReply} />
         <Composer
           ref={composerRef}
           quotes={quotes}
@@ -926,6 +987,7 @@ export function MainApp() {
             loading={ctxLoading}
             onRefresh={refreshContext}
             onCompact={compact}
+            onCompactWindow={setCompactWindow}
             compactDisabled={!sel || isDraft(sel) || running}
             onCollapse={narrow ? closeDrawer : () => setCtxCollapsed(true)}
             onSkillMode={setSkillMode}
@@ -937,6 +999,13 @@ export function MainApp() {
             onAgentToggle={toggleAgent}
             onMcpToggle={toggleMcp}
             mcpBusy={mcpBusy}
+            compactions={sel && view?.id === sel.id ? view.conv.meta.compactions : undefined}
+            cliCost={sel && view?.id === sel.id ? view.conv.meta.cliCost : undefined}
+            model={sel && view?.id === sel.id ? view.conv.meta.model : undefined}
+            subCosts={sel && subCosts?.id === sel.id ? subCosts.items : null}
+            pricing={pricing}
+            billing={billing}
+            onJumpTurn={jumpToTurn}
           />
         }
       />

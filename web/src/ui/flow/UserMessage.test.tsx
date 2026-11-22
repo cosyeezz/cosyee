@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Attachment } from '@cosyee/shared';
-import { UserMessage } from './UserMessage';
+import { UserMessage, pasteName } from './UserMessage';
 import { api } from '../../core/api';
 import { FilesContext } from '../files/FileContext';
 import { prepareUserMarkdown } from './userMarkdown';
@@ -164,6 +164,31 @@ describe('UserMessage 附件标签预览（与输入框标签同一个浮窗）'
     expect(spy).toHaveBeenCalledWith({ session: 's1', cwd: '/w', path: '/w/c.png' });
     expect(document.querySelector('.cz-preview__meta')?.textContent).toContain('2.0 KB');
     expect(document.querySelector('.cz-preview__thumb img')?.getAttribute('src')).toContain('/api/files/raw?session=s1');
+  });
+
+  it('粘贴的图片（工作目录之外）按文件名走粘贴图片接口，没有会话上下文也有缩略图', async () => {
+    const files = vi.spyOn(api, 'filePreview');
+    const p = 'C:\\Users\\u\\.cosyee\\pastes\\paste-1795354327668-3fb7c25096ed.png';
+    const spy = vi.spyOn(api, 'pasteInfo').mockResolvedValue({
+      path: p, kind: 'file', size: 4096, mtime: 0, isImage: true, childCount: null,
+    });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<UserMessage text="img1" attachments={[att('img', 'img1', p)]} />));
+    click(host.querySelector('.cz-flow__tag')!);
+    await flush();
+    expect(spy).toHaveBeenCalledWith('paste-1795354327668-3fb7c25096ed.png');
+    expect(files).not.toHaveBeenCalled();
+    expect(document.querySelector('.cz-preview__meta')?.textContent).toContain('4.0 KB');
+    expect(document.querySelector('.cz-preview__thumb img')?.getAttribute('src')).toBe('/api/pastes/paste-1795354327668-3fb7c25096ed.png/raw');
+  });
+
+  it('pasteName 只认 pastes 目录下服务端生成的文件名', () => {
+    expect(pasteName('/home/u/.cosyee/pastes/paste-1-0123456789ab.webp')).toBe('paste-1-0123456789ab.webp');
+    expect(pasteName('/w/paste-1-0123456789ab.png')).toBeNull();
+    expect(pasteName('/home/u/.cosyee/pastes/shot.png')).toBeNull();
+    expect(pasteName('/home/u/.cosyee/pastes/paste-1-0123456789ab.svg')).toBeNull();
   });
 
   it('信息取不到（工作目录之外）时仍显示路径', async () => {

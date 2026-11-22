@@ -104,6 +104,17 @@ describe('REST', () => {
     const r = await fetch(`${base}/api/sessions?cwd=${encodeURIComponent(path.join(tmp, 'ws1'))}`, { headers: auth });
     expect(await r.json()).toEqual([]);
   });
+  it('GET /api/pricing 返回价格表（测试里不联网，是内置表）', async () => {
+    const t = await (await fetch(`${base}/api/pricing`, { headers: auth })).json();
+    expect(t.source).toBe('builtin');
+    expect(t.models.some((m: { id: string }) => m.id === 'claude-opus-5-5')).toBe(true);
+  });
+  it('子代理花费：缺 cwd 400；会话不存在 404', async () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    expect((await fetch(`${base}/api/sessions/${id}/subagent-costs`, { headers: auth })).status).toBe(400);
+    const cwd = encodeURIComponent(path.join(tmp, 'ws1'));
+    expect((await fetch(`${base}/api/sessions/${id}/subagent-costs?cwd=${cwd}`, { headers: auth })).status).toBe(404);
+  });
   it('context 缓存没有时为 null', async () => {
     const r = await fetch(`${base}/api/context/11111111-2222-4333-8444-555555555555`, { headers: auth });
     expect(await r.json()).toBeNull();
@@ -151,6 +162,21 @@ describe('粘贴图片 /api/pastes', () => {
     const raw = await fetch(`${base}/api/preview/${item.previewToken}/raw`);
     expect(raw.status).toBe(200);
     expect(raw.headers.get('content-type')).toBe('image/png');
+  });
+  it('按文件名读回粘贴的图片（信息 + 内容）；名字不合格式 / 不存在 / 内容不是图片 404', async () => {
+    const { item } = (await (await post(PNG)).json()) as any;
+    const name = path.basename(item.path);
+    const info = (await (await fetch(`${base}/api/pastes/${name}/info`)).json()) as any;
+    expect(info).toMatchObject({ path: item.path, kind: 'file', size: PNG.length, isImage: true });
+    const raw = await fetch(`${base}/api/pastes/${name}/raw`);
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await raw.arrayBuffer()).equals(PNG)).toBe(true);
+    expect((await fetch(`${base}/api/pastes/${encodeURIComponent('../state.json')}/raw`)).status).toBe(404);
+    expect((await fetch(`${base}/api/pastes/paste-1-000000000000.png/raw`)).status).toBe(404);
+    const fake = 'paste-2-000000000000.png';
+    fs.writeFileSync(path.join(tmp, 'home', 'pastes', fake), 'not an image');
+    expect((await fetch(`${base}/api/pastes/${fake}/info`)).status).toBe(404);
   });
   it('不是图片 / 类型与内容不符 415', async () => {
     expect((await post(Buffer.from('hello world, not an image'), 'text/plain')).status).toBe(415);

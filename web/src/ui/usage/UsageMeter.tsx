@@ -1,6 +1,7 @@
 // 输入框右下角的订阅额度：一个小圆环（颜色随最紧张的那条限制变化），点开看当前会话 / 本周 / 模型专属额度。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UsageInfo, UsageLimit } from '@cosyee/shared';
+import { leavingProps, usePresence } from '../motion/usePresence';
 import { useDismiss } from '../sidebar/useDismiss';
 import { limitTitle, resetText, worstLimit } from './format';
 import './UsageMeter.css';
@@ -40,6 +41,7 @@ export function UsageMeter({ load, running }: UsageMeterProps) {
   const [info, setInfo] = useState<UsageInfo | null>(null);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
 
@@ -67,6 +69,7 @@ export function UsageMeter({ load, running }: UsageMeterProps) {
 
   const close = useCallback(() => setOpen(false), []);
   useDismiss(open, boxRef, close);
+  const { mounted, leaving } = usePresence(open, panelRef);
 
   const worst = info ? worstLimit(info.limits) : null;
   const pct = worst?.percent ?? 0;
@@ -100,8 +103,8 @@ export function UsageMeter({ load, running }: UsageMeterProps) {
           />
         </svg>
       </button>
-      {open && (
-        <div className="cz-usage__panel" role="dialog" aria-label="订阅额度">
+      {mounted && (
+        <div ref={panelRef} className={`cz-usage__panel cz-pop${leaving ? ' is-leaving' : ''}`} role="dialog" aria-label="订阅额度" {...leavingProps(leaving)}>
           {info ? info.limits.map((l, i) => <Bar key={`${l.kind}:${l.model ?? ''}:${i}`} l={l} />) : <div className="cz-usage__sub">正在读取…</div>}
         </div>
       )}

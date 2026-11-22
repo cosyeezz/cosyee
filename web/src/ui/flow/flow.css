@@ -49,6 +49,53 @@
   flex-direction: column;
   gap: var(--sp-3);
   min-width: 0;
+  scroll-margin-top: var(--sp-4);
+}
+
+/* ---------- 字号缩放（Ctrl + 滚轮，flowZoom.ts） ---------- */
+/* --cz-flow-zoom 由 .cz-flow__wrap 的内联样式给出。只放大阅读内容：在正文与用户气泡内按比例重定义字号档位
+   （基数与 tokens.css 一致，写死避免变量自引用），列宽、间距、工具行、徽标和图标保持原尺寸，整体版式不变。 */
+.cz-flow__md,
+.cz-flow__bubble {
+  --fs-xs: calc(12px * var(--cz-flow-zoom, 1));
+  --fs-sm: calc(13px * var(--cz-flow-zoom, 1));
+  --fs-md: calc(14px * var(--cz-flow-zoom, 1));
+  --fs-lg: calc(16px * var(--cz-flow-zoom, 1));
+  --fs-xl: calc(20px * var(--cz-flow-zoom, 1));
+}
+/* 缩放提示：右上角小胶囊，调整时淡入、稍后淡出；点击恢复 100% */
+.cz-flow__zoom {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-4);
+  z-index: 5;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur) var(--ease), visibility 0s linear var(--dur);
+}
+.cz-flow__zoom.is-shown { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: 0s; }
+.cz-flow__zoom:hover { background: var(--bg-hover); color: var(--text); }
+:root[data-motion="reduce"] .cz-flow__zoom { transition: none; }
+/* 从上下文面板（花费图）跳过来：这一轮的用户消息短暂描一圈强调色 */
+.cz-flow__item.is-flash .cz-flow__bubble { animation: cz-flow-flash 1400ms var(--ease-out); }
+@keyframes cz-flow-flash {
+  0%, 40% { box-shadow: 0 0 0 2px var(--accent); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cz-flow__item.is-flash .cz-flow__bubble { animation: none; outline: 2px solid var(--accent); }
 }
 
 /* ---------- 用户消息 ---------- */
@@ -92,7 +139,7 @@
   gap: 4px;
   margin: 0 2px;
   padding: 0 8px 0 6px;
-  height: 22px;
+  height: calc(22px * var(--cz-flow-zoom, 1)); /* 跟随气泡字号缩放 */
   vertical-align: baseline;
   background: var(--bg-hover);
   border: 1px solid var(--border);
@@ -213,8 +260,6 @@
 .cz-flow__thinking-label { flex: none; font-variant-numeric: tabular-nums; }
 /* 折叠态：第一行，单行省略号 */
 .cz-flow__thinking-preview { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-style: italic; }
-/* 展开态按钮里没有文字，让箭头靠右 */
-.cz-flow__thinking.is-open > .cz-flow__row-btn { justify-content: space-between; }
 .cz-flow__thinking-body {
   /* 文字与标签左对齐（让出图标宽度） */
   margin: 2px 0 0 calc(var(--sp-2) + 7px);
@@ -257,11 +302,12 @@
   text-overflow: ellipsis;
   font-family: var(--font-mono);
 }
-/* 读写文件类工具行：「图标 Name:」按钮 + 路径按钮 + 「失败 / 箭头」按钮 并排（兄弟节点，不嵌套按钮） */
-.cz-flow__row-split { display: flex; align-items: center; min-width: 0; }
+/* 读写文件类工具行：「图标 Name:」按钮 + 路径按钮 + 尾部按钮 并排（兄弟节点，不嵌套按钮）
+   尾部按钮占满路径右边的剩余空间（点空白处展开 / 收起），失败徽标靠右 */
+.cz-flow__row-split { display: flex; align-items: stretch; min-width: 0; }
 .cz-flow__row-split > .cz-flow__row-btn { width: auto; flex: none; }
 .cz-flow__row-btn--lead { padding-right: var(--sp-1); }
-.cz-flow__row-btn--tail { margin-left: auto; padding-left: var(--sp-2); }
+.cz-flow__row-split > .cz-flow__row-btn--tail { flex: 1 0 var(--sp-4); justify-content: flex-end; padding-left: var(--sp-2); }
 .cz-flow__tool-name { font-family: var(--font-mono); }
 .cz-flow__tool-path {
   flex: 0 1 auto;

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { applyApiEnv, readApiConfig } from '../accounts/api-config.js';
 import { activeConfigDir } from '../paths.js';
 
 const isWin = process.platform === 'win32';
@@ -17,12 +18,17 @@ export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
   return env;
 }
 
-/** 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。 */
+/**
+ * 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。
+ * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）。
+ */
 export function claudeEnv(dir: string | null = activeConfigDir()): NodeJS.ProcessEnv {
   const env = cleanEnv();
   if (dir) {
     for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k];
     env.CLAUDE_CONFIG_DIR = dir;
+    const api = readApiConfig(dir);
+    if (api) applyApiEnv(env, api);
   }
   return env;
 }

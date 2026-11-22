@@ -2,7 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import type { PinKind, SessionConfig, SessionSummary } from '@cosyee/shared';
+import {
+  type CostParts, type PinKind, type PriceTable, type RequestUsage, type SessionConfig, type SessionSummary, type SubagentCost,
+  ZERO_COST, addCost, requestCost, uncachedCost,
+} from '@cosyee/shared';
 import { encodeCwdCandidates, isSafeId, projectsDir } from './paths.js';
 import type { DotState } from './state.js';
 import {
@@ -308,6 +311,85 @@ export class Sessions {
     const file = path.join(subDir, `agent-${agentId}.jsonl`);
     if (!(await exists(file))) throw new HttpError(404, '找不到该子代理的记录');
     return this.filterFile(file);
+  }
+
+  /** 每个子代理的花费：逐个读 agent-<id>.jsonl 里的 assistant 请求用量，按价格表计价 */
+  async subagentCosts(id: string, cwd: string, table: PriceTable): Promise<SubagentCost[]> {
+    const loc = await this.locate(id, cwd);
+    if (!loc) throw new HttpError(404, '会话不存在');
+    const subDir = path.join(loc.dir, id, 'subagents');
+    let names: string[] = [];
+    try {
+      names = await fs.promises.readdir(subDir);
+    } catch { /* 没有子代理目录 */ }
+    const agentIds = names
+      .map((n) => /^agent-(.+)\.jsonl$/.exec(n)?.[1])
+      .filter((a): a is string => !!a && isSafeId(a))
+      .sort();
+    return mapLimit(agentIds, CONCURRENCY, async (agentId) => {
+      let meta: Json = {};
+      try {
+        meta = JSON.parse(await fs.promises.readFile(path.join(subDir, `agent-${agentId}.meta.json`), 'utf8')) as Json;
+      } catch { /* 没有 meta（老会话）或坏文件 */ }
+      return this.costOfAgent(path.join(subDir, `agent-${agentId}.jsonl`), agentId, meta, table);
+    });
+  }
+
+  private async costOfAgent(file: string, agentId: string, meta: Json, table: PriceTable): Promise<SubagentCost> {
+    // 同一个 message.id 会被流式写多次（先是中途用量，最后是完整的），只认最后一次
+    const byMsg = new Map<string, Json>();
+    let anon = 0;
+    const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        if (!line.includes('"usage"')) continue;
+        const e = parseLine(line);
+        if (!e || e.type !== 'assistant') continue;
+        const msg = e.message;
+        if (!msg || typeof msg !== 'object' || !msg.usage || typeof msg.usage !== 'object') continue;
+        if (msg.model === '<synthetic>') continue;
+        byMsg.set(typeof msg.id === 'string' ? msg.id : `#${anon++}`, msg);
+      }
+    } finally {
+      rl.close();
+    }
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    let cost: CostParts = ZERO_COST;
+    let uncached = 0;
+    let unpriced = 0;
+    const models = new Set<string>();
+    for (const msg of byMsg.values()) {
+      const u = msg.usage as Json;
+      const model = typeof msg.model === 'string' ? msg.model : undefined;
+      if (model) models.add(model);
+      const req: RequestUsage = {
+        model,
+        input: num(u.input_tokens),
+        create: num(u.cache_creation_input_tokens),
+        create1h: num(u.cache_creation?.ephemeral_1h_input_tokens),
+        read: num(u.cache_read_input_tokens),
+        output: num(u.output_tokens),
+        fast: u.speed === 'fast',
+        usGeo: u.inference_geo === 'us',
+      };
+      const c = requestCost(table, req);
+      if (!c) {
+        unpriced++;
+        continue;
+      }
+      cost = addCost(cost, c);
+      uncached += uncachedCost(table, req) ?? 0;
+    }
+    return {
+      agentId,
+      toolUseId: typeof meta.toolUseId === 'string' ? meta.toolUseId : null,
+      agentType: typeof meta.agentType === 'string' ? meta.agentType : undefined,
+      requests: byMsg.size,
+      cost,
+      uncached,
+      unpriced,
+      models: [...models].sort(),
+    };
   }
 
   private async findAgentIdInMain(file: string, toolUseId: string): Promise<string | null> {

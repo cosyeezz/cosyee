@@ -2,8 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CachePoint, ContextUsage, Turn } from '@cosyee/shared';
-import { ContextPanel } from './ContextPanel';
+import { BUILTIN_PRICES, type CachePoint, type ContextUsage, type Turn } from '@cosyee/shared';
+import { ContextPanel, parseCompactWindow } from './ContextPanel';
 import { mockContextUsage } from '../../mock/shell';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -230,6 +230,66 @@ describe('ContextPanel 收起与压缩', () => {
   });
 });
 
+describe('ContextPanel 自动压缩窗口', () => {
+  const typeIn = (input: HTMLInputElement, value: string) => {
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const key = (el: Element, k: string) => act(() => { el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); });
+  const mountCw = (usage: ContextUsage, onCompactWindow?: (w: number | null) => void) =>
+    render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} onCompactWindow={onCompactWindow} />);
+
+  it('parseCompactWindow：k / m 单位、空 = 默认、越界或乱写不合法', () => {
+    expect(parseCompactWindow('150')).toBe(150_000);
+    expect(parseCompactWindow(' 150k ')).toBe(150_000);
+    expect(parseCompactWindow('1m')).toBe(1_000_000);
+    expect(parseCompactWindow('')).toBeNull();
+    expect(parseCompactWindow('49')).toBeUndefined();
+    expect(parseCompactWindow('1001')).toBeUndefined();
+    expect(parseCompactWindow('abc')).toBeUndefined();
+  });
+
+  it('显示当前窗口；点开输入新值回车保存', () => {
+    const on = vi.fn();
+    const el = mountCw({ ...mockContextUsage, compactWindow: 150_000 }, on);
+    const chip = el.querySelector('.cz-ctx__cw-chip') as HTMLButtonElement;
+    expect(chip.textContent).toBe('窗口 150k');
+    click(chip);
+    const input = el.querySelector('.cz-ctx__cw-input') as HTMLInputElement;
+    expect(input.value).toBe('150');
+    typeIn(input, '200');
+    key(input, 'Enter');
+    expect(on).toHaveBeenCalledWith(200_000);
+    expect(el.querySelector('.cz-ctx__cw-input')).toBeNull();
+  });
+
+  it('不合法时提示且不回调；「默认」回调 null；Esc 取消', () => {
+    const on = vi.fn();
+    const el = mountCw({ ...mockContextUsage, compactWindow: 150_000 }, on);
+    click(el.querySelector('.cz-ctx__cw-chip'));
+    const input = el.querySelector('.cz-ctx__cw-input') as HTMLInputElement;
+    typeIn(input, '10');
+    key(input, 'Enter');
+    expect(on).not.toHaveBeenCalled();
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    key(input, 'Escape');
+    expect(el.querySelector('.cz-ctx__cw-input')).toBeNull();
+    click(el.querySelector('.cz-ctx__cw-chip'));
+    const def = [...el.querySelectorAll('.cz-ctx__cw-line button')].find((b) => b.textContent?.trim() === '默认');
+    click(def);
+    expect(on).toHaveBeenCalledWith(null);
+  });
+
+  it('未覆盖时显示「默认」；不传回调时不可点', () => {
+    const el = mountCw({ ...mockContextUsage, compactWindow: null });
+    const chip = el.querySelector('.cz-ctx__cw-chip') as HTMLButtonElement;
+    expect(chip.textContent).toBe('窗口 默认');
+    expect(chip.disabled).toBe(true);
+  });
+});
+
 describe('ContextPanel 缓存命中率走势', () => {
   const pt = (i: number, read: number, create: number, input: number): CachePoint => ({
     id: 'm' + i, turn: Math.floor(i / 2), read, create, input, rate: (read / (read + create + input)) * 100,
@@ -361,6 +421,126 @@ describe('ContextPanel 上下文走势', () => {
     const el = mountCtx(undefined);
     expect(el.querySelector('svg.cz-ctx__ctx-svg')).toBeNull();
     expect(el.textContent).toContain('这里显示每次请求的上下文大小');
+  });
+});
+
+describe('ContextPanel 花费', () => {
+  const S45 = 'claude-sonnet-4-5';
+  const pt = (id: string, turn: number, over: Partial<CachePoint> = {}): CachePoint => ({
+    id, turn, input: 0, create: 0, read: 0, rate: 0, output: 0, model: S45, ...over,
+  });
+  const turn = (id: string, userText: string): Turn => ({
+    id, userText, attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0, steps: [],
+  });
+  const turns = [turn('t0', '第一个问题'), turn('t1', '第二个问题')];
+  // 第 1 轮 $0.318，第 2 轮 $0.0375
+  const series = [pt('a', 0, { input: 1000, read: 1_000_000, output: 1000 }), pt('b', 1, { create: 10_000 })];
+  const panel = (extra: Partial<Parameters<typeof ContextPanel>[0]> = {}) => (
+    <ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} cache={series} turns={turns} {...extra} />
+  );
+  const section = (el: HTMLElement) => el.querySelector('.cz-ctx__cost') as HTMLElement;
+  const svgOf = (el: HTMLElement) => {
+    const svg = el.querySelector('svg.cz-ctx__cost-svg') as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 280, height: 76, right: 280, bottom: 76, x: 0, y: 0, toJSON: () => ({}) });
+    return svg;
+  };
+
+  it('排在缓存命中率之后；显示合计、本轮、每次请求均与缓存已省', () => {
+    const el = render(panel());
+    const subs = [...el.querySelectorAll('.cz-ctx__sub')].map((n) => n.textContent);
+    expect(subs.indexOf('花费')).toBeGreaterThan(subs.indexOf('缓存命中率'));
+    expect(el.querySelector('[data-testid="cost-total"]')?.textContent).toBe('$0.36');
+    const stats = section(el).querySelector('.cz-ctx__cost-stats')!.textContent!;
+    expect(stats).toContain('本轮 $0.04');
+    expect(stats).toContain('每次请求均 $0.18');
+    expect(stats).toContain('缓存已省 $2.69');
+    expect(section(el).querySelectorAll('.cz-ctx__cost-col')).toHaveLength(2);
+    expect(section(el).textContent).toContain('价格来自内置价格表');
+  });
+
+  it('订阅账号标题标「等价 API 价格」；第三方地址加提示', () => {
+    const el = render(panel({ billing: 'subscription' }));
+    expect(section(el).querySelector('.cz-ctx__sub')?.textContent).toBe('花费（等价 API 价格）');
+    expect(section(el).textContent).toContain('订阅账号按额度计费');
+    act(() => root!.render(panel({ billing: 'thirdParty' })));
+    expect(section(el).textContent).toContain('第三方接口地址');
+  });
+
+  it('官方价格表显示更新时间', () => {
+    const at = new Date(2026, 10, 3, 9, 5).getTime();
+    const el = render(panel({ pricing: { source: 'official', fetchedAt: at, models: BUILTIN_PRICES.models } }));
+    expect(section(el).textContent).toContain('价格来自 Anthropic 官方价格页，11月3日 09:05 更新');
+  });
+
+  it('不认识的模型提示没有计入；CLI 花费对不上时提示价格表可能过期', () => {
+    const el = render(panel({ cache: [...series, pt('c', 1, { input: 10, model: 'glm-4.6' })] }));
+    const warn = [...section(el).querySelectorAll('.cz-ctx__note.is-warn')].map((n) => n.textContent);
+    expect(warn).toEqual(['1 次请求的模型不在价格表里（glm-4.6），没有计入']);
+    act(() =>
+      root!.render(panel({ cliCost: [{ model: S45, input: 1_000_000, output: 0, read: 0, create5m: 0, create1h: 0, costUSD: 6 }] })),
+    );
+    expect(section(el).querySelector('.cz-ctx__note.is-warn')?.textContent).toContain('价格表可能过期：claude-sonnet-4-5 按价格表算 $3.00，CLI 报告 $6.00');
+    act(() =>
+      root!.render(panel({ cliCost: [{ model: S45, input: 1_000_000, output: 0, read: 0, create5m: 0, create1h: 0, costUSD: 3 }] })),
+    );
+    expect(section(el).querySelector('.cz-ctx__note.is-warn')).toBeNull();
+  });
+
+  it('下一次请求预估', () => {
+    const el = render(panel());
+    // 最后一次请求 create 10k → 下一次输入 10k：热 $0.003，冷 $0.0375（显示 $0.04）
+    const next = el.querySelector('[data-testid="cost-next"]')!.textContent!;
+    expect(next).toContain('下一次请求约 $0.003');
+    expect(next).toContain('缓存过期则约 $0.04');
+  });
+
+  it('悬停显示这一轮的用户消息与明细；点击 / 回车跳到这一轮', () => {
+    const onJumpTurn = vi.fn();
+    const el = render(panel({ onJumpTurn }));
+    const svg = svgOf(el);
+    // 2 个槽位：x=50 在第 1 轮
+    act(() => { svg.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 50 })); });
+    const tip = el.querySelector('[data-testid="cost-tip"]')!.textContent!;
+    expect(tip).toContain('第 1 轮 · $0.32');
+    expect(tip).toContain('「第一个问题」');
+    expect(tip).toContain('主线程 $0.32（1 次请求）');
+    expect(tip).toContain('读缓存 $0.30');
+    act(() => { svg.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 250 })); });
+    expect(onJumpTurn).toHaveBeenLastCalledWith(1);
+    act(() => { svg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); });
+    act(() => { svg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onJumpTurn).toHaveBeenLastCalledWith(0);
+  });
+
+  it('压缩过的轮画虚线标记，悬停提示压缩', () => {
+    const el = render(panel({ compactions: [{ id: 'c', turn: 1, trigger: 'manual', pre: 1e6, post: 2000, durationMs: 1, after: 'a', at: 0 }] }));
+    expect(el.querySelectorAll('[data-testid="cost-compact"]')).toHaveLength(1);
+    const svg = svgOf(el);
+    act(() => { svg.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 250 })); });
+    expect(el.querySelector('[data-testid="cost-tip"]')?.textContent).toContain('本轮压缩了会话（手动）');
+  });
+
+  it('子代理花费按轮叠加；还没取到时提示', () => {
+    const withSub = [turns[0]!, { ...turns[1]!, subagents: [{ toolUseId: 'tu1', title: '查资料', status: 'done' as const, turn: turn('s', '') }] }];
+    const el = render(panel({ turns: withSub }));
+    expect(section(el).textContent).toContain('子代理的花费还在读取');
+    act(() =>
+      root!.render(
+        panel({
+          turns: withSub,
+          subCosts: [{ agentId: 'ag', toolUseId: 'tu1', requests: 2, cost: { input: 0, write: 0, read: 0, output: 1 }, uncached: 1, unpriced: 0, models: [S45] }],
+        }),
+      ),
+    );
+    expect(section(el).textContent).not.toContain('子代理的花费还在读取');
+    expect(section(el).textContent).toContain('含子代理 $1.00');
+    expect(section(el).querySelector('rect.cz-ctx__cost-bar.is-sub')).not.toBeNull();
+  });
+
+  it('没有请求时显示空态', () => {
+    const el = render(panel({ cache: undefined }));
+    expect(section(el).textContent).toContain('发送消息后，这里显示这个会话花了多少钱');
+    expect(el.querySelector('svg.cz-ctx__cost-svg')).toBeNull();
   });
 });
 

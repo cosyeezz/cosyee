@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cosyeeHome } from './paths.js';
+import { HttpError } from './workspaces.js';
 
 /** 单张粘贴图片的大小上限 */
 export const PASTE_LIMIT = 20 * 1024 * 1024;
@@ -33,6 +34,37 @@ export function sniffImage(b: Buffer): PasteKind | null {
   else if (b.length >= 6 && /^GIF8[79]a$/.test(b.subarray(0, 6).toString('latin1'))) mime = 'image/gif';
   else if (b.length >= 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP') mime = 'image/webp';
   return KINDS.find((k) => k.mime === mime) ?? null;
+}
+
+/** savePaste 生成的文件名；按名读取时只认这个格式，名字里不可能带路径分隔符 */
+export const PASTE_NAME_RE = /^paste-\d{1,16}-[0-9a-f]{12}\.(?:png|jpg|gif|webp)$/;
+
+/**
+ * 按文件名找回粘贴的图片（会话流里的历史图片标签没有预览令牌，靠它显示缩略图）。
+ * 只服务 pastes 目录下、名字符合格式的普通文件（不跟随符号链接）；类型以文件头为准。
+ */
+export async function pasteTarget(name: string): Promise<{ file: string; type: string; size: number; mtime: number }> {
+  if (!PASTE_NAME_RE.test(name)) throw new HttpError(404, '图片不存在');
+  const file = path.join(pastesDir(), name);
+  let st: fs.Stats;
+  try {
+    st = await fs.promises.lstat(file);
+  } catch {
+    throw new HttpError(404, '图片不存在');
+  }
+  if (!st.isFile() || st.size > PASTE_LIMIT) throw new HttpError(404, '图片不存在');
+  const fh = await fs.promises.open(file, 'r');
+  let head: Buffer;
+  try {
+    const buf = Buffer.alloc(16);
+    const { bytesRead } = await fh.read(buf, 0, 16, 0);
+    head = buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+  const kind = sniffImage(head);
+  if (!kind) throw new HttpError(404, '图片不存在');
+  return { file, type: kind.mime, size: st.size, mtime: Math.round(st.mtimeMs) };
 }
 
 /** 类型不被接受（http.ts 转成 415） */

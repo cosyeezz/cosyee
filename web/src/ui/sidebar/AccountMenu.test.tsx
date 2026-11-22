@@ -153,6 +153,76 @@ describe('AccountMenu', () => {
     expect(dlg.textContent).toContain('重新登录：工作');
     expect(dlg.querySelector('a')?.getAttribute('href')).toBe('https://claude.ai/oauth/authorize?x=1');
   });
+
+  const type = (el: HTMLInputElement, v: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const dlgBtn = (text: string) =>
+    [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === text) as HTMLButtonElement;
+  const apiEntry = entry({
+    id: 'a2', label: '代理', name: '代理', plan: 'API', active: false, isDefault: false,
+    api: { baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', keyHint: '3456' },
+  });
+
+  it('API 账号：副标题显示主机名，不取额度；添加时可切到 API Key 方式并提交 Base URL / 密钥', async () => {
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({}), apiEntry]) }),
+      'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
+      'POST /api/accounts/api': () => ({ body: { ok: true, id: 'a3' } }),
+    };
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await flush();
+    expect(entrySubtitle(apiEntry)).toBe('API · proxy.example.com');
+    expect(calls.filter((c) => c.url.startsWith('/api/usage')).map((c) => c.url)).toEqual(['/api/usage?account=default']);
+    // 当前账号不能删，但 API 账号（非当前）有修改和移除
+    expect(document.querySelector('[aria-label="修改 API 账号"]')).not.toBeNull();
+
+    click(button('添加账号')!);
+    await flush();
+    click([...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'API Key')!);
+    await flush();
+    const dlg = document.querySelector('[role="dialog"]')!;
+    const inputs = dlg.querySelectorAll('input');
+    expect(inputs.length).toBe(3);
+    expect(dlgBtn('添加').disabled).toBe(true); // 没填密钥
+    type(inputs[1], 'https://gw.example.com/');
+    type(inputs[2], 'sk-test-123456789');
+    click([...dlg.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Bearer')!);
+    click(dlgBtn('添加'));
+    await flush();
+    expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
+      label: '', baseUrl: 'https://gw.example.com/', apiKey: 'sk-test-123456789', authType: 'authToken',
+    });
+    expect(document.body.textContent).toContain('已添加');
+    expect(button('切换到该账号')).toBeDefined();
+  });
+
+  it('修改 API 账号：预填 Base URL，密钥留空不提交', async () => {
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({}), apiEntry]) }),
+      'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
+      'POST /api/accounts/api': () => ({ body: { ok: true, id: 'a2' } }),
+    };
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await flush();
+    click(document.querySelector('[aria-label="修改 API 账号"]')!);
+    await flush();
+    const dlg = document.querySelector('[role="dialog"]')!;
+    expect(dlg.textContent).toContain('修改 API 账号：代理');
+    expect(dlg.querySelector('[role="radiogroup"][aria-label="添加方式"]')).toBeNull();
+    const inputs = dlg.querySelectorAll('input');
+    expect(inputs[1].value).toBe('https://proxy.example.com/v1');
+    expect(inputs[2].placeholder).toContain('…3456');
+    click(dlgBtn('保存'));
+    await flush();
+    expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
+      id: 'a2', label: '代理', baseUrl: 'https://proxy.example.com/v1', authType: 'authToken',
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
 });
 
 describe('并行模式', () => {

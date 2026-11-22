@@ -1,7 +1,7 @@
 // 实时事件：CLI stdout 的一行 JSON（原样转发）+ 后端合成的 cosyee_user。
 // 所有函数都是纯函数：不认识的事件原样返回 s，不抛错。
 
-import type { SessionMeta } from '@cosyee/shared';
+import type { CliModelCost, SessionMeta } from '@cosyee/shared';
 import {
   addUserSkill,
   appendToolJson,
@@ -227,7 +227,24 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
   return commit(s, d);
 }
 
-function applyResult(s: ConvState, e: Record<string, unknown>, now: number): ConvState {
+/** result.modelUsage → CLI 自己算的各模型累计花费（核对价格表用）；没有时返回 null */
+export function cliCostOf(modelUsage: unknown): CliModelCost[] | null {
+  if (!isObj(modelUsage)) return null;
+  const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const out: CliModelCost[] = [];
+  for (const [model, u] of Object.entries(modelUsage)) {
+    if (!isObj(u) || typeof u.costUSD !== 'number') continue;
+    const create = n(u.cacheCreationInputTokens);
+    const h1 = n(u.cacheCreationEphemeral1hInputTokens);
+    const m5 = 'cacheCreationEphemeral5mInputTokens' in u ? n(u.cacheCreationEphemeral5mInputTokens) : Math.max(0, create - h1);
+    out.push({ model, input: n(u.inputTokens), output: n(u.outputTokens), read: n(u.cacheReadInputTokens), create5m: m5, create1h: h1, costUSD: n(u.costUSD) });
+  }
+  return out.length ? out : null;
+}
+
+function applyResult(s0: ConvState, e: Record<string, unknown>, now: number): ConvState {
+  const cli = cliCostOf(e.modelUsage);
+  const s = cli ? { ...s0, meta: { ...s0.meta, cliCost: cli } } : s0;
   const d = openDraft(s, now);
   if (!d) return s;
   d.book.inRound = false;

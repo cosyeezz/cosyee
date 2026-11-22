@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type UsageInfo } from '@cosyee/shared';
+import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo } from '@cosyee/shared';
 import { type Accounts, RunningError } from './accounts/index.js';
 import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
@@ -14,7 +14,7 @@ import { openRaw, previewFile, resolveForAction } from './files.js';
 import { gitBranch } from './git.js';
 import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 import { readSkillContent } from './skillsDisk.js';
-import { PASTE_LIMIT, PasteTypeError, savePaste } from './pastes.js';
+import { PASTE_LIMIT, PasteTypeError, pasteTarget, savePaste } from './pastes.js';
 import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
 import type { Previews } from './preview.js';
@@ -45,6 +45,8 @@ export interface HttpDeps {
   previews: Previews;
   pins: Pins;
   trash: Trash;
+  /** 价格表（GET /api/pricing、子代理花费用） */
+  pricing: { table(): PriceTable };
   /** 在文件管理器里打开文件夹用的 spawn（测试可替换，默认 explorer.exe / open / xdg-open） */
   spawner?: Spawner;
   /** 桌面版访问令牌（见 security.ts）；不设置则不校验 */
@@ -232,6 +234,11 @@ export function createHandler(deps: HttpDeps) {
       accounts.setLabel(body.id, body.label);
       return sendJson(res, 200, { ok: true });
     }
+    if (method === 'POST' && p === '/api/accounts/api') {
+      const body = await readJson(req);
+      const id = await accounts.saveApi({ id: body.id, label: body.label, baseUrl: body.baseUrl, apiKey: body.apiKey, authType: body.authType });
+      return sendJson(res, 200, { ok: true, id });
+    }
     throw new HttpError(404, '未找到');
   }
 
@@ -377,6 +384,13 @@ export function createHandler(deps: HttpDeps) {
       const entries = await deps.sessions.subagent(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!), needCwd(q.get('cwd')));
       return sendJsonMaybeGzip(req, res, 200, { entries });
     }
+
+    if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/subagent-costs$/.exec(p))) {
+      const items = await deps.sessions.subagentCosts(decodeURIComponent(m[1]!), needCwd(q.get('cwd')), deps.pricing.table());
+      return sendJsonMaybeGzip(req, res, 200, { items });
+    }
+
+    if (method === 'GET' && p === '/api/pricing') return sendJson(res, 200, deps.pricing.table());
 
     if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/rename$/.exec(p))) {
       const body = await readJson(req);
@@ -527,6 +541,25 @@ export function createHandler(deps: HttpDeps) {
       }
       const [item] = deps.previews.register([{ path: file, kind: 'file' }]);
       return sendJson(res, 200, { item });
+    }
+
+    // 按文件名读粘贴的图片（会话流里历史消息的图片标签没有预览令牌）：只认 savePaste 生成的文件名
+    if (method === 'GET' && (m = /^\/api\/pastes\/([^/]+)\/(info|raw)$/.exec(p))) {
+      const t = await pasteTarget(decodeURIComponent(m[1]!));
+      if (m[2] === 'info') {
+        const info: PreviewInfo = { path: t.file, kind: 'file', size: t.size, mtime: t.mtime, isImage: true, childCount: null };
+        return sendJson(res, 200, info);
+      }
+      res.writeHead(200, {
+        'content-type': t.type,
+        'content-length': t.size,
+        'cache-control': 'private, max-age=3600',
+        'x-content-type-options': 'nosniff',
+      });
+      const stream = fs.createReadStream(t.file);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
     }
 
     if (method === 'GET' && (m = /^\/api\/preview\/([^/]+)\/info$/.exec(p))) {

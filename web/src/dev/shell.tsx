@@ -233,7 +233,17 @@ export default function ShellDev() {
           </div>
         </div>
       }
-      context={<ContextPanel usage={usage} loading={loading} onRefresh={refresh} onCompact={compact} cache={devCache} turns={devTurns} />}
+      context={
+        <ContextPanel
+          usage={usage}
+          loading={loading}
+          onRefresh={refresh}
+          onCompact={compact}
+          onCompactWindow={(w) => setUsage((u) => (u ? { ...u, compactWindow: w } : u))}
+          cache={devCache}
+          turns={devTurns}
+        />
+      }
     />
     </FilesContext.Provider>
   );

@@ -1,0 +1,739 @@
+[
+ {
+  "dir": "->",
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": "First use the AskUserQuestion tool to ask me ONE question: which greeting to put in hello.txt (options \"Hi\" and \"Hello\"). Then write a plan to create hello.txt with that greeting and call ExitPlanMode. After approval, create the file."
+   }
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "0.7s",
+  "o": {
+   "type": "system",
+   "subtype": "hook_started",
+   "hook_id": "00effc03-9e76-457d-add6-3310cd967dad",
+   "hook_name": "SessionStart:startup",
+   "hook_event": "SessionStart",
+   "uuid": "77413ad8-f49a-4720-aa51-e9857490966a",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "0.8s",
+  "o": {
+   "type": "system",
+   "subtype": "hook_response",
+   "hook_id": "00effc03-9e76-457d-add6-3310cd967dad",
+   "hook_name": "SessionStart:startup",
+   "hook_event": "SessionStart",
+   "output": "impeccable: no engine binary for windows-x64 found (looked in /tmp/permprobe-XpnwAG/bin/windows-x64/impeccable.exe, /c/Users/dane/.impeccable/bin//impeccable.exe, PATH).\nDownload impeccable-windows-x64 from https://github.com/pbakaus/impeccable/releases (tag engine-v) into /c/Users/dane/.impeccable/bin//impeccable.exe (then chmod +x), or set IMPECCABLE_BIN to a preinstalled engine binary. Docs: https://impeccable.style\n",
+   "stdout": "",
+   "stderr": "impeccable: no engine binary for windows-x64 found (looked in /tmp/permprobe-XpnwAG/bin/windows-x64/impeccable.exe, /c/Users/dane/.impeccable/bin//impeccable.exe, PATH).\nDownload impeccable-windows-x64 from https://github.com/pbakaus/impeccable/releases (tag engine-v) into /c/Users/dane/.impeccable/bin//impeccable.exe (then chmod +x), or set IMPECCABLE_BIN to a preinstalled engine binary. Docs: https://impeccable.style\n",
+   "exit_code": 127,
+   "outcome": "error",
+   "uuid": "3fa61990-0741-46bc-9e2d-1d8028a05f52",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "1.0s",
+  "o": {
+   "type": "system",
+   "subtype": "init",
+   "cwd": "C:\\Users\\dane\\AppData\\Local\\Temp\\permprobe-XpnwAG",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "tools": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "ListAgents",
+    "Monitor",
+    "NotebookEdit",
+    "PowerShell",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebSearch",
+    "Write"
+   ],
+   "mcp_servers": [],
+   "model": "claude-haiku-5-5",
+   "permissionMode": "plan",
+   "slash_commands": [
+    "impeccable",
+    "skill-creator:skill-creator",
+    "design",
+    "design-sync",
+    "dataviz",
+    "update-config",
+    "verify",
+    "debug",
+    "code-review",
+    "simplify",
+    "batch",
+    "fewer-permission-prompts",
+    "doctor",
+    "loop",
+    "schedule",
+    "claude-api",
+    "run",
+    "run-skill-generator",
+    "plugin-authoring",
+    "advisor",
+    "agents",
+    "auto-mode-setup",
+    "autocompact",
+    "clear",
+    "color",
+    "compact",
+    "config",
+    "output-style",
+    "context",
+    "effort",
+    "fast",
+    "focus",
+    "heapdump",
+    "init",
+    "mcp",
+    "import",
+    "model",
+    "__remote-workflow",
+    "workflow-launch-exec",
+    "reload-plugins",
+    "reload-skills",
+    "rename",
+    "ultrareview",
+    "security-review",
+    "usage-credits",
+    "extra-usage",
+    "usage",
+    "insights",
+    "recap",
+    "skill-doctor",
+    "goal",
+    "design-consent",
+    "design-revoke",
+    "list-agents",
+    "team-onboarding",
+    "anthropic-skills:built-in-browser",
+    "anthropic-skills:chrome-browser",
+    "anthropic-skills:computer-use",
+    "anthropic-skills:docs",
+    "anthropic-skills:docx",
+    "anthropic-skills:pdf",
+    "anthropic-skills:pptx",
+    "anthropic-skills:xlsx"
+   ],
+   "terminal_slash_commands": [
+    "doctor",
+    "color",
+    "focus",
+    "reload-plugins"
+   ],
+   "apiKeySource": "none",
+   "claude_code_version": "2.1.326",
+   "output_style": "default",
+   "agents": [
+    "claude",
+    "Explore",
+    "general-purpose",
+    "impeccable-asset-producer",
+    "impeccable-documenter",
+    "impeccable-finish-reviewer",
+    "impeccable-manual-edit-applier",
+    "impeccable-motion-reviewer",
+    "Plan",
+    "statusline-setup",
+    "web-fetch"
+   ],
+   "skills": [
+    "impeccable",
+    "skill-creator:skill-creator",
+    "design",
+    "design-sync",
+    "dataviz",
+    "update-config",
+    "verify",
+    "debug",
+    "code-review",
+    "simplify",
+    "batch",
+    "fewer-permission-prompts",
+    "doctor",
+    "loop",
+    "schedule",
+    "claude-api",
+    "run",
+    "run-skill-generator",
+    "plugin-authoring",
+    "anthropic-skills:built-in-browser",
+    "anthropic-skills:chrome-browser",
+    "anthropic-skills:computer-use",
+    "anthropic-skills:docs",
+    "anthropic-skills:docx",
+    "anthropic-skills:pdf",
+    "anthropic-skills:pptx",
+    "anthropic-skills:xlsx"
+   ],
+   "plugins": [
+    {
+     "name": "skill-creator",
+     "path": "C:\\Users\\dane\\.claude\\plugins\\cache\\claude-plugins-official\\skill-creator\\73c8cf3ea7e2",
+     "source": "skill-creator@claude-plugins-official"
+    },
+    {
+     "name": "cc-plugin-agents-md",
+     "path": "builtin",
+     "source": "cc-plugin-agents-md@builtin"
+    },
+    {
+     "name": "cc-plugin-telemetry",
+     "path": "builtin",
+     "source": "cc-plugin-telemetry@builtin"
+    },
+    {
+     "name": "cc-plugin-privacy",
+     "path": "builtin",
+     "source": "cc-plugin-privacy@builtin"
+    },
+    {
+     "name": "cc-plugin-plugin-authoring",
+     "path": "builtin",
+     "source": "cc-plugin-plugin-authoring@builtin"
+    }
+   ],
+   "capabilities": [
+    "interrupt_receipt_v1",
+    "interrupt_cancel_queued_v1",
+    "interrupt_send_now_v1",
+    "interrupt_requeue_taken_v1",
+    "msg_lifecycle_v1",
+    "request_marker_lists_v1",
+    "ask_user_question_unanswered_v1",
+    "lifecycle_wakeup_source_v1",
+    "sdk_mcp_tools_list_changed",
+    "sdk_mcp_manifests",
+    "mcp_read_resource_v1",
+    "mcp_tool_ui_meta_v1",
+    "ui_surface_v1",
+    "mcp_call_result_not_for_model_v1",
+    "mcp_call_check_permissions_v1",
+    "voice_call_talk_line_v1",
+    "withdrawn_files_note_v2",
+    "ui_pane_widget_v1",
+    "reload_plugins_refuse_if_busy_v1",
+    "silent_resend_files_v1"
+   ],
+   "analytics_disabled": false,
+   "product_feedback_disabled": false,
+   "uuid": "4919c59a-a7c7-4bd7-93a6-806546a947f7",
+   "memory_paths": {
+    "auto": "C:\\Users\\dane\\.claude-accounts\\dda92cdcab\\projects\\C--Users-dane\\memory\\"
+   },
+   "original_cwd": "C:\\Users\\dane\\AppData\\Local\\Temp\\permprobe-XpnwAG",
+   "additional_directories": [],
+   "messaging_socket_path": "\\\\.\\pipe\\LOCAL\\cc-msg-bd260f655c096b83b2af764fd5d9cd5b",
+   "fast_mode_state": "off",
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "per_turn_effort_active": true,
+   "ultrathink_available": false,
+   "ultrathink_typed_raises": false,
+   "view_mode": "default",
+   "powershell_path": "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe\\pwsh.exe"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "2.5s",
+  "o": {
+   "type": "system",
+   "subtype": "thinking_tokens",
+   "estimated_tokens": 50,
+   "estimated_tokens_delta": 50,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "f33554ec-5d0f-40c9-aeea-96456d47214f"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "2.9s",
+  "o": {
+   "type": "system",
+   "subtype": "thinking_tokens",
+   "estimated_tokens": 207,
+   "estimated_tokens_delta": 157,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "b0d34340-dbf1-4012-954e-874104cc0ece"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "2.9s",
+  "o": {
+   "type": "assistant",
+   "message": {
+    "model": "claude-sonnet-5-5",
+    "id": "msg_011ChJ17DCH5jVPNMogwbyJX",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "CAQSsAYKEAgUGAI4AUIIdGhpbmtpbmcSDBX2Mqx2nWLSvEgK3xoMPrMKxYQMfRGWOLgYIjCyjrLrB2mFsSOJonG7L0svEn++69I9cogLS8eobAdmxWTSxONKxk9zlO1ULyQUTw4qzQU9S2hMqtsH/BsJhwJt2rQcqMDKjKb0o4flF5Reb8mA9YWL168wiHKokdFswUcWZstBlOBOUuFgGNWZVhqQcmW6HYmkWZ3V9/Kc5aXEwO8JuxbpppMNNORDFSnRx9c8F0uGJG3Bzw8FLi9f7tbcYJfq/MqJBVY1VLcPwKrk501JnfCmk7+lRQis/GXo6I0H9yfoFZuQdTwzeVY3dS8+fKN/PM5rEwgAVU9b7rpAGmFLQqP+e9gTpL24jlKz8RBngwPAbp8jkFTsXqBM4XRbHS+1+nrL5XbHcgiJx4VD4kYs2G7n5VnbsxE/0gP4eiNRsO7PasdM/l6GES/4U+BOiuC/2NDKDZMdTMt+tM5XL0t7h290tZye5q2roWRFqIe9kK+wui5oOKmHPldu+0LT5Kq5znKrfzePFwotK+9hQlDLuaRzNQ9XRdxZSNE0CbHiex+h+afG4jgrkBoHwXFFsUZciHpQ5+6mWbEswFgS0AxuisC2xZ8PnzXOYYoY5LScs1/ZBG1pqnzoB3f+s1KXaoGzC02JUJPt3gne55dpXtZHSsRpBdHuBd/gGuOK0v6xe/WfajkNO98oc5xLnO1kL5M1aZZKdsBGn9KQfJeP6TDXZ7P6WM+naxIybQ/whK/8jLkDvLrZc/FIziijnnpggoxpc5a27URoyuz9Cs9NcpBEpUijhqepJx2Ao7Y+jNAYPNq0vKK+VsUIVAG9Nh91yGoh5VtTvSlZM6uu6X/3LH9PDsYHJds9WUxHvyu7UtY2TtJziCSzn78oQcd+V8fs5pFmp6TBy5aap/xngy+JGI9FHlgZ90b1wYtRJs0zpcNZTvmww9MPMvO7UCbfj57JuKaf8mbhj4sTIGV02crtszGOXxNNL1yzdYhjEuPLxqANJeg+VAf9AM+Kt/QmaCinqBYP2e1LF46g4O9kae7AAkdPp7rRAYwZVv7vkfdeR5IYAQ=="
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 23377,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 23377
+     },
+     "output_tokens": 9,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "54dc29d7-65b2-4baa-bfdd-309daf2aed82",
+   "timestamp": "2026-11-22T12:55:51.269Z",
+   "request_id": "req_011ChJ17Crvru5rN1uVs4jkS",
+   "thinking_duration_ms": 711,
+   "thinking_display": "updates"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "3.0s",
+  "o": {
+   "type": "assistant",
+   "message": {
+    "model": "claude-sonnet-5-5",
+    "id": "msg_011ChJ17DCH5jVPNMogwbyJX",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_01MRNeYazEL762d8qLf66Dfn",
+      "name": "ToolSearch",
+      "input": {
+       "query": "select:AskUserQuestion,ExitPlanMode",
+       "max_results": 5
+      },
+      "caller": {
+       "type": "direct"
+      }
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 23377,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 23377
+     },
+     "output_tokens": 9,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "b971b79b-25a9-42a6-9adf-f4e7a0b4a721",
+   "timestamp": "2026-11-22T12:55:51.339Z",
+   "request_id": "req_011ChJ17Crvru5rN1uVs4jkS",
+   "wire_tool_inputs": {
+    "toolu_01MRNeYazEL762d8qLf66Dfn": {
+     "query": "select:AskUserQuestion,ExitPlanMode",
+     "max_results": 5
+    }
+   }
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "3.0s",
+  "o": {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "tool_use_id": "toolu_01MRNeYazEL762d8qLf66Dfn",
+      "content": "No matching deferred tools found"
+     }
+    ]
+   },
+   "parent_tool_use_id": null,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "430eb35e-fee8-46f8-b918-4446ae8d82c2",
+   "timestamp": "2026-11-22T12:55:51.353Z",
+   "tool_use_result": {
+    "matches": [],
+    "query": "select:AskUserQuestion,ExitPlanMode",
+    "total_deferred_tools": 18
+   },
+   "tool_result_meta": [
+    {
+     "id": "toolu_01MRNeYazEL762d8qLf66Dfn",
+     "permission_decision": {
+      "decision": "accept",
+      "source": "config"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "3.0s",
+  "o": {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed",
+    "resetsAt": 1795363200,
+    "rateLimitType": "five_hour",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 0.5,
+      "resetsAt": 1795363200,
+      "status": "allowed"
+     },
+     "seven_day": {
+      "utilization": 0.25,
+      "resetsAt": 1795618800,
+      "status": "allowed"
+     }
+    }
+   },
+   "uuid": "3cf3e094-abb4-43f8-a025-9c426c72edb9",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "4.2s",
+  "o": {
+   "type": "system",
+   "subtype": "thinking_tokens",
+   "estimated_tokens": 50,
+   "estimated_tokens_delta": 50,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "b8a2fb1b-33f8-4a83-98cd-11882fa7042b"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.1s",
+  "o": {
+   "type": "system",
+   "subtype": "thinking_tokens",
+   "estimated_tokens": 246,
+   "estimated_tokens_delta": 196,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "6dffe1d5-3b02-43ca-a72b-3fc8342dcf0e"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.1s",
+  "o": {
+   "type": "assistant",
+   "message": {
+    "model": "claude-sonnet-5-5",
+    "id": "msg_011ChJ17M5npcGuTDqhjaW4o",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "CAQSzwcKEAgUGAI4AUIIdGhpbmtpbmcSDFYkpzZi9SYex7X/pRoMXDrZWVztrGn+ZqEBIjB3sKIgvID9RNuEk2v4tcAfV5SI3eu/AZIlR2899cXshvcYHN0hs4TRNz1iJKnn9SAq7AaSBYSJ6jntoNKquyCpwHZSOhuv7/nBcxNN/wMpOC+PD+TWW8WqEUBXrFCA3+xZuEx3G4onPXki+3fVzn/m3CWfGxXvJ2L5Ot9+GBYeJa+xQDanZL/u/alB74TgQTQ6kSSk4y7feuJkYmPfge8SAjOa8Gxr5kCFGEiOPPrgYLjMwko9jiRUJElUAP5XvXySoFqfSc1V6yzBrSBOktKWWJgd4zUa+DUfKY1mETDyx5+WzbHc28KcpIeFSpaS1CvGuKAtjOBCfPUnm1VA26favtn3T86mLwctPEcqA+r7gKRDz+LMuTBp3OdNb56i+DVJjqc9igT139pYdM5rHAZ25iZ0UPaWJKkDSu5bNjj72uR02RqamxK/l3K7uTrU6q9Lsa/1nZv7NylHv4angqkY1hn4CUrfoA+GjKJ5UuRKud3OJvyqWghRYSp/KhWK5E3jLMuygSE2ZvyR2LlEUgaLF3t+qccVnOYep8xUY1bctvDeUnSbRkal9p8armcgSUYIiX506bIyjbql9BqErhr/1R2P8Wc8JKtzCX5KJYodLdN+F7tmSIi28CxQu6+khgbSMAJx0kilYq95Kt9QdGZKCvDvypX1sDw0UMx67ysb/0TLLjCXooa8T4SiGghiiAp6xNY6rJSp9tt/zfgieuB7mVv6sBqNrIvLzntuLNwdcKfdsrBopapbtbl8IOHkvnIVaildvV+Oso0whpKaqGVQmx/hT5qEFXxcaQouvR43CZNXTQJs55qgFhjWa6AHSH05Jk3jcN6i7L//mEWnvvPhYMYoVvNUZfmD7Iuy76OZifAQ//kcoBd48hYj6/02N/ZPGmjk0SITb9fmY/TXL+T9CUB6tjEV2BBrrA1vLKGbllB+SI8ryorNVk5fObQzf3mzrWWwOInQe0J/QoEJRvlarP06KdXKf9b3/AxdGx9T5ACxs81QdgMOzVxuwF+yBHsNhBQFPFouSHFvtEaYSaIsc0RmjNHJzdEwdFDJw/MgHug14qjvcLN93axpS/nG7S4QP/izIp1Qjj4yfHXkURyye3io3iN+mRb/tF9YfibCd+/4IXjnDP6QlB93OmKDZ1wds2THH76ZWrZ71Pxsv9L3RHBlKlyhS4s72QNnxMnlqJApm119i6U4Q+1AohVIWcw570rPG+y1WLncb4aYWk4YAQ=="
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 2012,
+     "cache_read_input_tokens": 23377,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 2012
+     },
+     "output_tokens": 8,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "f6838157-729c-413b-854f-3baab517cf7e",
+   "timestamp": "2026-11-22T12:55:54.404Z",
+   "request_id": "req_011ChJ17LkwTrf5BQTx9jm6u",
+   "thinking_duration_ms": 2177,
+   "thinking_display": "updates"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.1s",
+  "o": {
+   "type": "assistant",
+   "message": {
+    "model": "claude-sonnet-5-5",
+    "id": "msg_011ChJ17M5npcGuTDqhjaW4o",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "I can't run this workflow as written. `AskUserQuestion` and `ExitPlanMode` aren't available in this session, and a tool search for them found nothing. I haven't created `hello.txt` or a plan file, because plan mode forbids edits and I don't have your greeting yet.\n\nWhich greeting do you want in `hello.txt`: **Hi** or **Hello**?\n\nOnce you answer, I'll write the plan to the plan file. I can't request formal approval without `ExitPlanMode`, so I'll ask for your go-ahead in chat before creating the file."
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 2012,
+     "cache_read_input_tokens": 23377,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 2012
+     },
+     "output_tokens": 8,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "32e7587a-e09d-46cb-b0b9-96842b0d5f24",
+   "timestamp": "2026-11-22T12:55:54.407Z",
+   "request_id": "req_011ChJ17LkwTrf5BQTx9jm6u"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.1s",
+  "o": {
+   "type": "rate_limit_event",
+   "rate_limit_info": {
+    "status": "allowed",
+    "resetsAt": 1795363200,
+    "rateLimitType": "five_hour",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+     "five_hour": {
+      "utilization": 0.51,
+      "resetsAt": 1795363200,
+      "status": "allowed"
+     },
+     "seven_day": {
+      "utilization": 0.25,
+      "resetsAt": 1795618800,
+      "status": "allowed"
+     }
+    }
+   },
+   "uuid": "7e74bcd6-daf6-4161-81ab-58c25c1495ca",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.2s",
+  "o": {
+   "type": "system",
+   "subtype": "notification",
+   "key": "stop-hook-error",
+   "text": "stop hook reported a problem · ctrl+o to see",
+   "priority": "immediate",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "uuid": "81a158af-b3ca-4a83-b23a-3abb1b148157"
+  }
+ },
+ {
+  "dir": "<-",
+  "t": "6.2s",
+  "o": {
+   "duration_api_ms": 4776,
+   "stop_reason": "end_turn",
+   "session_id": "642eb867-1c39-494c-92f0-2fd26c62a46b",
+   "total_cost_usd": 0.1085717,
+   "usage": {
+    "input_tokens": 4,
+    "cache_creation_input_tokens": 25389,
+    "cache_read_input_tokens": 23377,
+    "output_tokens": 467,
+    "output_tokens_details": {
+     "thinking_tokens": 189
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 25389,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+     {
+      "input_tokens": 2,
+      "output_tokens": 312,
+      "cache_read_input_tokens": 23377,
+      "cache_creation_input_tokens": 2012,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 2012
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+   },
+   "modelUsage": {
+    "claude-sonnet-5-5": {
+     "inputTokens": 4,
+     "outputTokens": 467,
+     "cacheReadInputTokens": 23377,
+     "cacheCreationInputTokens": 25389,
+     "webSearchRequests": 0,
+     "costUSD": 0.1085717,
+     "contextWindow": 1000000,
+     "maxOutputTokens": 128000,
+     "thinkingTokens": 189,
+     "cacheCreationEphemeral5mInputTokens": 0,
+     "cacheCreationEphemeral1hInputTokens": 25389,
+     "canonicalModel": "claude-sonnet-5-5",
+     "provider": "firstParty",
+     "costBasis": "list"
+    }
+   },
+   "permission_denials": [],
+   "terminal_reason": "completed",
+   "fast_mode_state": "off",
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+     "background": 0,
+     "foreground": 0,
+     "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+     "parent": 0,
+     "user": 0,
+     "system": 0
+    },
+    "refused": {
+     "depth_limit": 0,
+     "concurrency_limit": 0,
+     "budget": 0
+    },
+    "by_type": {}
+   },
+   "safety_stops": 0,
+   "is_error": false,
+   "num_turns": 2,
+   "subtype": "success",
+   "api_error_status": null,
+   "result": "I can't run this workflow as written. `AskUserQuestion` and `ExitPlanMode` aren't available in this session, and a tool search for them found nothing. I haven't created `hello.txt` or a plan file, because plan mode forbids edits and I don't have your greeting yet.\n\nWhich greeting do you want in `hello.txt`: **Hi** or **Hello**?\n\nOnce you answer, I'll write the plan to the plan file. I can't request formal approval without `ExitPlanMode`, so I'll ask for your go-ahead in chat before creating the file.",
+   "ttft_ms": 2058,
+   "type": "result",
+   "duration_ms": 5299,
+   "uuid": "2c15439d-4e1c-45bf-9a9a-268c0e80b8da",
+   "ttft_stream_ms": 1347,
+   "time_to_request_ms": 340,
+   "first_content_frame_ms": 1347,
+   "queued_turn_count": 0,
+   "result_index": 0,
+   "model_usage_since_last_result": {
+    "claude-sonnet-5-5": {
+     "inputTokens": 4,
+     "outputTokens": 467,
+     "cacheReadInputTokens": 23377,
+     "cacheCreationInputTokens": 25389,
+     "webSearchRequests": 0,
+     "costUSD": 0.1085717,
+     "contextWindow": 1000000,
+     "maxOutputTokens": 128000,
+     "thinkingTokens": 189,
+     "cacheCreationEphemeral5mInputTokens": 0,
+     "cacheCreationEphemeral1hInputTokens": 25389,
+     "canonicalModel": "claude-sonnet-5-5",
+     "provider": "firstParty",
+     "costBasis": "list"
+    }
+   },
+   "credential_expires_at": "2026-12-18T04:35:15.286Z"
+  }
+ }
+]

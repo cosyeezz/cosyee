@@ -50,7 +50,8 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
       pinUntil.current = 0;
     };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) release();
+      // Ctrl + 滚轮是调字号（flowZoom.ts），不是上滚
+      if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) release();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') release();

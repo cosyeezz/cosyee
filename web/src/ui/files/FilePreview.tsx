@@ -103,7 +103,7 @@ function CodeView({ text, language, line, wrap }: LinesProps) {
 
 // ───────────── HTML 阅读：沙箱 iframe（无脚本、无同源、不加载外部资源） ─────────────
 
-const HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">`;
+const HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>*{scrollbar-width:none}::-webkit-scrollbar{display:none}</style>`;
 
 function HtmlFrame({ text, title }: { text: string; title: string }) {
   return <iframe className="cz-fp__frame" title={title} sandbox="" srcDoc={HTML_CSP + text} />;

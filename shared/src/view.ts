@@ -1,5 +1,6 @@
 // 会话流视图模型。web/src/core/reducer.ts 把 CLI 事件（实时）或 jsonl 条目（历史）归约成这里的结构，
 // web/src/ui/flow 只负责渲染。规则见 SPEC.md §4。
+import type { CliModelCost } from './pricing.ts';
 
 export interface ToolStep {
   kind: 'tool';
@@ -147,6 +148,16 @@ export interface CachePoint {
   rate: number;
   /** 这次请求的回复里调用的工具（tool_use id，按出现顺序）；没有调用工具时为空 */
   tools?: string[];
+  /** 输出 token（流式期间可能先是部分值，同 id 后到的更大值覆盖）；旧数据没有 */
+  output?: number;
+  /** 这次请求的模型（message.model，原样）；旧数据没有 */
+  model?: string;
+  /** create 里写入 1 小时缓存的部分（usage.cache_creation.ephemeral_1h_input_tokens）；没有明细时不设 */
+  create1h?: number;
+  /** usage.speed === 'fast' */
+  fast?: true;
+  /** usage.inference_geo === 'us'（价格 ×1.1） */
+  usGeo?: true;
 }
 
 /** 一次会话压缩（compact_boundary）：只含主线程 */
@@ -180,6 +191,8 @@ export interface SessionMeta {
   cache?: CachePoint[];
   /** 会话压缩记录（主线程，按发生顺序） */
   compactions?: CompactMark[];
+  /** 最近一次 result 事件的 modelUsage（CLI 自己算的本进程累计花费，用来核对价格表）；只有实时会话有 */
+  cliCost?: CliModelCost[];
 }
 
 export interface Conversation {

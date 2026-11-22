@@ -5,6 +5,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { AccountLogin } from '@cosyee/shared';
 import { api } from '../../core/api';
+import { useMorph } from '../motion/morph';
+import { AddKindSeg } from './ApiAccountDialog';
 
 export interface AccountDialogProps {
   /** 重新登录的账号；不传 = 添加新账号 */
@@ -16,13 +18,22 @@ export interface AccountDialogProps {
   onDone: (accountId: string | null) => void;
   /** 成功后点「切换到该账号」 */
   onSwitch: (accountId: string) => void;
+  /** 添加时改用 API Key（还没开始登录时显示切换） */
+  onUseApi?: () => void;
+  /** false = 不播入场（从 API Key 方式切换过来时） */
+  enter?: boolean;
 }
 
 const POLL_MS = 1000;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const pending = (l: AccountLogin | null) => !!l && (l.status === 'starting' || l.status === 'waiting');
 
-export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: AccountDialogProps) {
+export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch, onUseApi, enter }: AccountDialogProps) {
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // 从触发它的按钮原位长出，关闭时缩回去；fn 在收回动画播完后执行
+  const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true, enter });
+  const close = (fn: () => void = onClose) => requestClose(fn);
   const [label, setLabel] = useState('');
   const [login, setLogin] = useState<AccountLogin | null>(resume ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +86,7 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: Ac
 
   const cancel = () => {
     if (login && pending(login)) void api.cancelAccountLogin(login.loginId).catch(() => {});
-    onClose();
+    close();
   };
 
   const sendCode = async () => {
@@ -102,6 +113,7 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: Ac
       <p className="cz-acct-dlg__text">{busy ? '正在启动登录…' : '登录没有启动。'}</p>
     ) : (
       <>
+        {onUseApi && <AddKindSeg kind="login" onChange={onUseApi} />}
         <p className="cz-acct-dlg__text">
           点「登录」后会打开浏览器，用另一个账号登录即可。skill、MCP、设置、CLAUDE.md 和会话历史所有账号通用。
         </p>
@@ -172,11 +184,11 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: Ac
     body = <p className="cz-acct-dlg__text">登录成功。</p>;
     const id = login.accountId;
     buttons = relogin?.active || !id ? (
-      <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={onClose}>完成</button>
+      <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={() => close()}>完成</button>
     ) : (
       <>
-        <button type="button" className="cz-acct-dlg__btn" onClick={onClose}>完成</button>
-        <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={() => onSwitch(id)}>
+        <button type="button" className="cz-acct-dlg__btn" onClick={() => close()}>完成</button>
+        <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={() => close(() => onSwitch(id))}>
           切换到该账号
         </button>
       </>
@@ -185,7 +197,7 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: Ac
     body = <p className="cz-acct-dlg__text cz-acct-dlg__text--error">登录失败：{login.error ?? '未知原因'}</p>;
     buttons = (
       <>
-        <button type="button" className="cz-acct-dlg__btn" onClick={onClose}>关闭</button>
+        <button type="button" className="cz-acct-dlg__btn" onClick={() => close()}>关闭</button>
         <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" disabled={busy} onClick={() => void start()}>
           重试
         </button>
@@ -194,8 +206,8 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch }: Ac
   }
 
   return createPortal(
-    <div className="cz-acct-dlg__scrim">
-      <div className="cz-acct-dlg" role="dialog" aria-modal="true" aria-label={title}>
+    <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim">
+      <div ref={panelRef} className="cz-acct-dlg cz-modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="cz-acct-dlg__title">{title}</div>
         {body}
         {error && <p className="cz-acct-dlg__text cz-acct-dlg__text--error">{error}</p>}

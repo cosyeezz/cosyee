@@ -39,6 +39,9 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   box-shadow: var(--mat-hi), var(--shadow);
+  /* 从右下角的额度按钮往上长出 */
+  --pop-origin: bottom right;
+  --pop-dy: 4px;
 }
 .cz-usage__row {
   display: grid;

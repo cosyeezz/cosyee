@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import type { BrowseDir } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { Icon } from '../icons/Icon';
+import { useMorph } from '../motion/morph';
 import './PickerDialog.css';
 
 export type PickerMode = 'mixed' | 'folder';
@@ -36,6 +37,10 @@ export function PickerDialog({ mode, title, onDone, browse = api.browse }: Picke
   const [picked, setPicked] = useState<Map<string, boolean>>(() => new Map());
   const seq = useRef(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // 从触发它的按钮原位长出；取消 / 确认都先缩回去再交出结果
+  const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true });
 
   const go = useCallback((path?: string) => {
     const n = ++seq.current;
@@ -59,7 +64,7 @@ export function PickerDialog({ mode, title, onDone, browse = api.browse }: Picke
 
   useEffect(() => { go(); }, [go]);
 
-  const cancel = useCallback(() => onDone([]), [onDone]);
+  const cancel = useCallback(() => requestClose(() => onDone([])), [requestClose, onDone]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -82,13 +87,19 @@ export function PickerDialog({ mode, title, onDone, browse = api.browse }: Picke
   const entries = (dir?.entries ?? []).filter((e) => mode === 'mixed' || e.isDir);
   const confirm = () => {
     if (mode === 'folder') {
-      if (dir) onDone([dir.path]);
-    } else if (picked.size) onDone([...picked.keys()]);
+      if (dir) {
+        const path = dir.path;
+        requestClose(() => onDone([path]));
+      }
+    } else if (picked.size) {
+      const paths = [...picked.keys()];
+      requestClose(() => onDone(paths));
+    }
   };
 
   return createPortal(
-    <div className="cz-pick__scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) cancel(); }}>
-      <div className="cz-pick" role="dialog" aria-modal="true" aria-label={title}>
+    <div ref={scrimRef} className="cz-pick__scrim cz-modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) cancel(); }}>
+      <div ref={panelRef} className="cz-pick cz-modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="cz-pick__head">
           <span className="cz-pick__title">{title}</span>
           <button type="button" className="cz-pick__icon" aria-label="关闭" title="关闭" onClick={cancel}>

@@ -163,5 +163,6 @@ button { font: inherit; color: inherit; }
 ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--text); }
 input, textarea, [contenteditable] { caret-color: var(--accent); }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+/* 全局隐藏滚动条（仍可滚动） */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; width: 0; height: 0; }

@@ -20,7 +20,7 @@ export type IconName =
   // 会话流滚动导航（回到上一个 / 下一个交付点）
   | 'arrow-up' | 'arrow-down'
   // 侧栏
-  | 'search' | 'pin' | 'trash' | 'restore' | 'folder-reveal'
+  | 'search' | 'pin' | 'trash' | 'restore' | 'folder-reveal' | 'pencil'
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
   | 'thinking'
   // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
@@ -160,6 +160,8 @@ const SIMPLE: Record<string, JSX.Element> = {
       <path d="M4 4.2l.6 8.4A1.4 1.4 0 006 14h4a1.4 1.4 0 001.4-1.4l.6-8.4M6.7 7v4M9.3 7v4" />
     </>
   ),
+  // 编辑：斜放的铅笔（竖向 y 2.5–13.5，与置顶 / 删除视觉等高）
+  pencil: <path d="M10.6 2.9l2.5 2.5-7.4 7.4-3.2.7.7-3.2zM9.3 4.2l2.5 2.5" />,
   // 恢复：逆时针回转的箭头
   restore: <path d="M3 3v3.2h3.2M3.4 6.2A5 5 0 118 13" />,
   check: <path d="M3.5 8.5l3 3 6-7" />,

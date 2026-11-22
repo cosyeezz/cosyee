@@ -5,7 +5,7 @@ import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ClientMsg, ServerMsg } from '@cosyee/shared';
+import type { ClientMsg, PriceTable, ServerMsg } from '@cosyee/shared';
 import { WebSocket, WebSocketServer } from 'ws';
 import { AccountProvider } from './account.js';
 import { Accounts, DEFAULT_ID } from './accounts/index.js';
@@ -13,9 +13,10 @@ import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { createHandler, hostAllowed } from './http.js';
 import { Pins } from './pins.js';
+import { PricingService } from './pricing.js';
 import { Previews } from './preview.js';
 import type { Spawner } from './reveal.js';
-import { isSafeId } from './paths.js';
+import { cosyeeHome, isSafeId } from './paths.js';
 import { TAILSCALE_MODE, connectionAllowed, listenAddress, originAllowed, requestAuthorized } from './security.js';
 import { Sessions } from './sessions.js';
 import { Trash } from './trash.js';
@@ -54,6 +55,8 @@ export interface StartOptions {
   spawner?: Spawner;
   /** 本机发来 POST /api/shutdown 时调用（见 http.ts）；不传则没有这个接口 */
   onShutdown?: () => void;
+  /** 价格表来源（测试替换）；默认定期从官方页面更新，缓存放在 state.json 同目录的 pricing.json */
+  pricing?: { table(): PriceTable; start?(): void; stop?(): void };
 }
 
 export interface RunningServer {
@@ -199,6 +202,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const account = {
     get: () => {
       const a = activeAccount();
+      // API 账号没有 claude.ai 登录信息：名字用备注名 / 主机名，套餐显示为 API
+      if (accounts?.isApi(a.id)) return Promise.resolve({ name: accounts.displayName(a.id) ?? 'API', plan: 'API' });
       return providerFor(accountInfos, (d) => new AccountProvider(d), a.id, a.dir).get();
     },
   };
@@ -208,9 +213,12 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       if (accountId) {
         const dir = accounts?.dirFor(accountId) ?? (accountId === DEFAULT_ID ? null : undefined);
         if (dir === undefined) throw new HttpError(404, '账号不存在');
+        // API 账号按量计费，没有订阅额度
+        if (accounts?.isApi(accountId)) return Promise.resolve(null);
         return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), accountId, dir).get(refresh);
       }
       const a = session && isSafeId(session) && accounts ? accounts.resolve(session) : activeAccount();
+      if (accounts?.isApi(a.id)) return Promise.resolve(null);
       return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), a.id, a.dir).get(refresh);
     },
   };
@@ -232,6 +240,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   });
   accounts.init();
   const previews = new Previews();
+  const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
+  pricing.start?.();
 
   let actualPort = wantPort;
   const handler = createHandler({
@@ -248,6 +258,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     previews,
     pins,
     trash,
+    pricing,
     toolStats,
     compactStats,
     spawner: opts.spawner,
@@ -337,6 +348,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       clearInterval(heartbeat);
       pins.dispose();
       accounts?.dispose();
+      pricing.stop?.();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       server.closeAllConnections?.();

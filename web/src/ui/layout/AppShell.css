@@ -78,7 +78,6 @@
   align-items: flex-start;
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4) var(--sp-2);
-  border-bottom: 1px solid var(--mat-edge);
   isolation: isolate;
 }
 .cz-shell__top::before {
@@ -86,12 +85,10 @@
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: var(--mat-grain), var(--mat-bar);
-  background-blend-mode: soft-light, normal;
-  background-size: 160px 160px, auto;
-  -webkit-backdrop-filter: var(--mat-blur);
-  backdrop-filter: var(--mat-blur);
-  box-shadow: var(--mat-hi);
+  /* 与会话区同底色：不加颗粒、不加高光，只用主背景色盖住滚上来的内容并模糊 */
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
   pointer-events: none;
 }
 .cz-shell__header {

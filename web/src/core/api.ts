@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  Account, AccountList, AccountLogin, AccountMode, Bootstrap, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, ToolStats, UsageInfo, Workspace,
+  Account, AccountList, AccountLogin, AccountMode, ApiAuthType, Bootstrap, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -80,6 +80,8 @@ export const api = {
     req<{ version?: string; entries?: unknown[]; unchanged?: true }>('GET', `/api/sessions/${id}/history?${q(since ? { cwd, since } : { cwd })}`),
   subagent: (id: string, toolUseId: string, cwd: string) =>
     req<{ entries: unknown[] }>('GET', `/api/sessions/${id}/subagent/${toolUseId}?${q({ cwd })}`),
+  /** 会话里各子代理的花费（服务端读子代理记录、按价格表算） */
+  subagentCosts: (id: string, cwd: string) => req<{ items: SubagentCost[] }>('GET', `/api/sessions/${id}/subagent-costs?${q({ cwd })}`),
   rename: (id: string, cwd: string, title: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/rename`, { cwd, title }),
   viewed: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/viewed`, { cwd }),
   git: (cwd: string) => req<{ branch: string | null }>('GET', `/api/git?${q({ cwd })}`),
@@ -108,6 +110,9 @@ export const api = {
   /** 切换模式 / 并行模式；回到切换模式时其它账号有执行中的会话抛 ApiError 409（data.running），force 强制停止 */
   setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
   setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
+  /** 添加（不带 id）或修改 API 账号；baseUrl 空 = 官方地址，修改时 apiKey 留空 = 不变 */
+  saveApiAccount: (o: { id?: string; label?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType }) =>
+    req<{ ok: true; id: string }>('POST', '/api/accounts/api', o),
   pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
   /** 远程连接的网页版选择窗口：列出服务端目录（path 为空 = 当前工作空间）/ 登记选好的路径 */
   browse: (path?: string) => req<BrowseDir>('GET', `/api/browse${path ? `?${q({ path })}` : ''}`),
@@ -119,6 +124,9 @@ export const api = {
     if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
     return (data as { item: PickedItem }).item;
   },
+  /** 按文件名读粘贴的图片（会话流里历史图片标签用，没有预览令牌）；名字见 pasteName */
+  pasteInfo: (name: string) => req<PreviewInfo>('GET', `/api/pastes/${encodeURIComponent(name)}/info`),
+  pasteRawUrl: (name: string) => `/api/pastes/${encodeURIComponent(name)}/raw`,
   previewInfo: (t: string) => req<PreviewInfo>('GET', `/api/preview/${t}/info`),
   /** 图片预览地址（<img src>） */
   previewRawUrl: (t: string) => `/api/preview/${t}/raw`,
@@ -145,9 +153,13 @@ export const api = {
   setSkillModes: (modes: Record<string, SkillMode>) => req<{ ok: true }>('POST', '/api/skills', { modes }),
   /** 启用 / 停用一个内置工具（全局保存）；返回当前的已停用名单 */
   setTool: (name: string, enabled: boolean) => req<{ ok: true; disabledTools: string[] }>('POST', '/api/tools', { name, enabled }),
+  /** 自动压缩窗口（全局，token 数；null = 不覆盖）；运行中的会话立即生效，服务端随后推送新的上下文 */
+  setCompactWindow: (window: number | null) => req<{ ok: true; window: number | null }>('POST', '/api/compact-window', { window }),
   setAgent: (name: string, enabled: boolean) => req<{ ok: true; disabledAgents: string[] }>('POST', '/api/agents', { name, enabled }),
   /** 所有会话的工具累计调用次数（服务端增量扫描会话记录）；老服务端没有这个接口时抛错 */
   getToolStats: () => req<ToolStats>('GET', '/api/tools/stats'),
+  /** 模型价格表（服务端定期抓官方页面，失败时是内置表） */
+  getPricing: () => req<PriceTable>('GET', '/api/pricing'),
   /** 开关 MCP 服务器（按项目写进 ~/.claude.json）；返回切换后的上下文 */
   toggleMcp: (id: string, server: string, enabled: boolean, cwd?: string, draft = false) =>
     req<ContextUsage | null>('POST', `/api/context/${id}/mcp`, { server, enabled, ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),

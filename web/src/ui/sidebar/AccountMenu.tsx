@@ -4,11 +4,12 @@
 // 没有登录凭据的账号点击后重新登录；添加的账号（非默认、非当前）悬停可移除。
 // 只显示名字、套餐和备注名，不显示邮箱。
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Account, AccountEntry, AccountList, AccountLogin } from '@cosyee/shared';
+import type { Account, AccountApiInfo, AccountEntry, AccountList, AccountLogin } from '@cosyee/shared';
 import { api, ApiError } from '../../core/api';
 import { Icon } from '../icons/Icon';
-import { ConfirmActionButton } from './ActionButtons';
+import { ActionButton, ConfirmActionButton } from './ActionButtons';
 import { AccountDialog } from './AccountDialog';
+import { ApiAccountDialog } from './ApiAccountDialog';
 import { AccountModeSwitch } from './AccountModeSwitch';
 import { AccountQuota, type QuotaState } from './AccountQuota';
 import { ThemeSwitch } from './ThemeSwitch';
@@ -22,8 +23,24 @@ export interface AccountMenuProps {
 }
 
 interface DialogState {
+  /** login = claude.ai 登录（添加 / 重新登录）；api = 添加 / 修改 API 账号 */
+  kind: 'login' | 'api';
   relogin?: { id: string; title: string; active: boolean };
   resume: AccountLogin | null;
+  /** 修改的 API 账号 */
+  editApi?: { id: string; label: string; title: string; api: AccountApiInfo };
+  /** 在添加对话框里切换了方式：换一个组件挂载，但不要再播一遍入场 */
+  switched?: boolean;
+}
+
+/** API 账号显示的主机名（Base URL 为空 = 官方） */
+export function apiHost(baseUrl: string): string {
+  if (!baseUrl) return 'api.anthropic.com';
+  try {
+    return new URL(baseUrl).host || baseUrl;
+  } catch {
+    return baseUrl;
+  }
 }
 
 /** 整页刷新（单独放一个对象里，测试可以替换） */
@@ -36,11 +53,15 @@ export function entryTitle(a: AccountEntry): string {
   return a.name ?? (a.label || (a.loggedIn ? 'Claude 账号' : '未登录账号'));
 }
 
-/** 行副标题：备注名 · 套餐 · 需要登录 */
+/** 行副标题：备注名 · 套餐 · 需要登录；API 账号：API · 主机名 */
 export function entrySubtitle(a: AccountEntry): string {
   const parts: string[] = [];
   if (a.label && a.label !== entryTitle(a)) parts.push(a.label);
   if (a.plan) parts.push(a.plan);
+  if (a.api) {
+    const host = apiHost(a.api.baseUrl);
+    if (host !== entryTitle(a)) parts.push(host);
+  }
   if (!a.loggedIn) parts.push('需要登录');
   return parts.join(' · ');
 }
@@ -72,7 +93,8 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
 
   /** 每个已登录账号的额度：菜单打开时并行读取（服务端各账号各自缓存），读不到只显示一行淡提示，不影响切换 */
   const [quotas, setQuotas] = useState<Record<string, QuotaState>>({});
-  const quotaIds = (data?.list ?? []).filter((a) => a.loggedIn).map((a) => a.id).join(',');
+  // API 账号按量计费，没有订阅额度
+  const quotaIds = (data?.list ?? []).filter((a) => a.loggedIn && !a.api).map((a) => a.id).join(',');
   useEffect(() => {
     if (!open || !quotaIds) return;
     let alive = true;
@@ -108,7 +130,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   const pick = (a: AccountEntry) => {
     if (switching) return;
     if (!a.loggedIn) {
-      openDialog({ relogin: { id: a.id, title: entryTitle(a), active: a.active }, resume: null });
+      openDialog({ kind: 'login', relogin: { id: a.id, title: entryTitle(a), active: a.active }, resume: null });
       return;
     }
     if (a.active) {
@@ -120,8 +142,16 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
 
   const add = () => {
     const l = data?.login ?? null;
-    openDialog({ resume: l && (l.status === 'starting' || l.status === 'waiting') ? l : null });
+    openDialog({ kind: 'login', resume: l && (l.status === 'starting' || l.status === 'waiting') ? l : null });
   };
+
+  const editApi = (a: AccountEntry) => {
+    if (!a.api) return;
+    openDialog({ kind: 'api', resume: null, editApi: { id: a.id, label: a.label, title: entryTitle(a), api: a.api } });
+  };
+
+  /** 添加账号对话框里切换方式（还没开始登录时） */
+  const switchAddKind = (kind: 'login' | 'api') => setDialog({ kind, resume: null, switched: true });
 
   const remove = (id: string) => {
     setError(null);
@@ -145,6 +175,12 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     setDialog(null);
     if (reload) accountPage.reload();
     else load();
+  };
+
+  const dialogSwitch = (id: string) => {
+    setDialog(null);
+    setOpen(true);
+    void doSwitch(id);
   };
 
   const list = data?.list ?? [];
@@ -190,8 +226,12 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
               const title = entryTitle(a);
               const sub = entrySubtitle(a);
               const removable = !a.isDefault && !a.active;
+              const editable = !!a.api;
               return (
-                <div key={a.id} className={`cz-sidebar__menu-item${a.active ? ' is-active' : ''}${removable ? ' has-actions' : ''}`}>
+                <div
+                  key={a.id}
+                  className={`cz-sidebar__menu-item${a.active ? ' is-active' : ''}${removable || editable ? ' has-actions' : ''}`}
+                >
                   <button
                     type="button"
                     className="cz-sidebar__menu-main"
@@ -208,7 +248,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                     <span className="cz-sidebar__menu-text">
                       <span className="cz-sidebar__menu-name">{title}</span>
                       {sub && <span className="cz-sidebar__menu-path">{sub}</span>}
-                      {a.loggedIn && <AccountQuota state={quotas[a.id] ?? { status: 'loading' }} />}
+                      {a.loggedIn && !a.api && <AccountQuota state={quotas[a.id] ?? { status: 'loading' }} />}
                     </span>
                     {switching === a.id ? (
                       <span className="cz-sidebar__acct-tag">切换中…</span>
@@ -216,16 +256,23 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                       <span className="cz-sidebar__acct-check"><Icon name="check" size={14} /></span>
                     ) : null}
                   </button>
-                  {removable && (
+                  {(removable || editable) && (
                     <div className="cz-sidebar__actions">
-                      <ConfirmActionButton
-                        icon="trash"
-                        label="移除账号"
-                        confirmText={`移除账号「${title}」？`}
-                        note="只删除该账号的登录信息；skill、设置和会话历史是共享的，不受影响"
-                        confirmLabel="移除"
-                        onConfirm={() => remove(a.id)}
-                      />
+                      {editable && <ActionButton icon="pencil" label="修改 API 账号" onClick={() => editApi(a)} />}
+                      {removable && (
+                        <ConfirmActionButton
+                          icon="trash"
+                          label="移除账号"
+                          confirmText={`移除账号「${title}」？`}
+                          note={
+                            a.api
+                              ? '会删除该账号保存的 API Key；skill、设置和会话历史是共享的，不受影响'
+                              : '只删除该账号的登录信息；skill、设置和会话历史是共享的，不受影响'
+                          }
+                          confirmLabel="移除"
+                          onConfirm={() => remove(a.id)}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
@@ -268,17 +315,25 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
         </div>
       )}
 
-      {dialog && (
+      {dialog?.kind === 'login' && (
         <AccountDialog
           relogin={dialog.relogin}
           resume={dialog.resume}
           onClose={closeDialog}
           onDone={onDialogDone}
-          onSwitch={(id) => {
-            setDialog(null);
-            setOpen(true);
-            void doSwitch(id);
-          }}
+          onSwitch={dialogSwitch}
+          onUseApi={dialog.relogin || dialog.resume ? undefined : () => switchAddKind('api')}
+          enter={!dialog.switched}
+        />
+      )}
+      {dialog?.kind === 'api' && (
+        <ApiAccountDialog
+          edit={dialog.editApi}
+          onClose={closeDialog}
+          onDone={load}
+          onSwitch={dialogSwitch}
+          onUseLogin={dialog.editApi ? undefined : () => switchAddKind('login')}
+          enter={!dialog.switched}
         />
       )}
     </div>

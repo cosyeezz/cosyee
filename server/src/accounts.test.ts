@@ -340,6 +340,63 @@ describe('Accounts', () => {
     await expect(accounts.switchTo('nope', false)).rejects.toThrow(/不存在/);
   });
 
+  it('API 账号：添加后列表不含密钥、切换后子进程带 API Key / Base URL，修改时留空密钥沿用原来的', async () => {
+    loginFiles(base, 'u-default', 'Main');
+    const saved = { key: process.env.ANTHROPIC_API_KEY, url: process.env.ANTHROPIC_BASE_URL };
+    process.env.ANTHROPIC_API_KEY = 'outer-key';
+    process.env.ANTHROPIC_BASE_URL = 'https://outer.test';
+    try {
+      const { accounts, events } = makeAccounts();
+      await expect(accounts.saveApi({ baseUrl: 'ftp://x', apiKey: 'k' })).rejects.toThrow(/Base URL/);
+      await expect(accounts.saveApi({ baseUrl: '' })).rejects.toThrow(/API Key/);
+      const id = await accounts.saveApi({ label: '代理', baseUrl: ' https://proxy.test/api/ ', apiKey: 'sk-secret-123456', authType: 'authToken' });
+      await expect(accounts.saveApi({ baseUrl: 'https://proxy.test/api', apiKey: 'sk-secret-123456' })).rejects.toThrow(/已经添加过/);
+
+      const list = accounts.list();
+      expect(JSON.stringify(list)).not.toContain('sk-secret');
+      const e = list.list.find((a) => a.id === id)!;
+      expect(e).toMatchObject({ name: '代理', plan: 'API', loggedIn: true, api: { baseUrl: 'https://proxy.test/api', authType: 'authToken', keyHint: '3456' } });
+      expect(accounts.displayName(id)).toBe('代理');
+      expect(() => accounts.startLogin({ accountId: id })).toThrow(/不需要登录/);
+
+      await accounts.switchTo(id, false);
+      let env = claudeEnv();
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-secret-123456');
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // 外部环境的同名变量被去掉
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://proxy.test/api');
+
+      // 修改：密钥留空沿用，Base URL 留空 = 官方地址
+      events.length = 0;
+      await accounts.saveApi({ id, baseUrl: '', apiKey: '', authType: 'apiKey' });
+      expect(events).toEqual([`reset:${id}`, 'refresh']);
+      env = claudeEnv();
+      expect(env.ANTHROPIC_API_KEY).toBe('sk-secret-123456');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(accounts.list().list.find((a) => a.id === id)!.name).toBe('代理');
+
+      // 默认账号 / OAuth 账号不受影响，也不能改成 API 账号
+      await accounts.switchTo(DEFAULT_ID, false);
+      expect(claudeEnv().ANTHROPIC_API_KEY).toBe('outer-key');
+      await expect(accounts.saveApi({ id: DEFAULT_ID, apiKey: 'x' })).rejects.toThrow(/默认账号/);
+      await accounts.remove(id);
+      expect(accounts.list().list).toHaveLength(1);
+    } finally {
+      if (saved.key === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved.key;
+      if (saved.url === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = saved.url;
+    }
+  });
+
+  it('API 账号：有执行中的会话时不能修改', async () => {
+    const running: Record<string, number> = {};
+    const { accounts } = makeAccounts({ running });
+    const id = await accounts.saveApi({ apiKey: 'sk-1' });
+    running[id] = 1;
+    await expect(accounts.saveApi({ id, apiKey: 'sk-2' })).rejects.toThrow(/正在执行/);
+  });
+
   it('stripAnsi / findLoginUrl', () => {
     expect(stripAnsi('\x1b[1mA\x1b[0m')).toBe('A');
     expect(findLoginUrl('go http://evil/oauth/authorize?x')).toBeNull();

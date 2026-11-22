@@ -185,9 +185,21 @@ describe('历史过滤', () => {
   });
 
   it('assistant 的 usage 只留 token 计数', () => {
-    const usage = { input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000, server_tool_use: { web_search_requests: 0 }, service_tier: 'standard', cache_creation: { ephemeral_1h_input_tokens: 100 } };
+    const usage = { input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000, server_tool_use: { web_search_requests: 0 }, service_tier: 'standard' };
     const [e] = filterHistory([JSON.stringify({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [], usage } })]);
     expect(e!.message.usage).toEqual({ input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000 });
+  });
+
+  it('assistant 的 usage 保留缓存写入明细、speed、inference_geo（算花费用）', () => {
+    const usage = {
+      input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000,
+      cache_creation: { ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 }, speed: 'fast', inference_geo: 'us', service_tier: 'standard',
+    };
+    const [e] = filterHistory([JSON.stringify({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [], usage } })]);
+    expect(e!.message.usage).toEqual({
+      input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000,
+      cache_creation: { ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 }, speed: 'fast', inference_geo: 'us',
+    });
   });
 
   it('剥离 wireToolInputs', () => {

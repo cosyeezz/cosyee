@@ -1,8 +1,9 @@
 // 动效演示页：http://127.0.0.1:5173/?dev=motion
 // 把十种交互动效放在一页里看：其中停靠栏、拖动网格、3D 轮播在主界面里没有对应位置，只在这里演示；
 // 其余几种（胶囊、聚光、流光、原位展开、数据唤醒、骨架、粘性融合）主界面已经在用，这里是同一份实现。
+// 「弹窗卡片」一节：模态卡片（原位展开）、锚定气泡、提问 / 计划面板的出现与消失，用的都是主界面的组件和样式。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as RPointerEvent } from 'react';
-import type { Turn } from '@cosyee/shared';
+import type { PendingPrompt, Turn } from '@cosyee/shared';
 import '../styles/tokens.css';
 import { doneTurn, interruptedTurn } from '../mock/flow';
 import { ConversationView } from '../ui/flow/ConversationView';
@@ -12,6 +13,9 @@ import { CountUp } from '../ui/motion/CountUp';
 import { GooeyIndicator } from '../ui/motion/GooeyIndicator';
 import { LiquidCapsule } from '../ui/motion/LiquidCapsule';
 import { useMorph } from '../ui/motion/morph';
+import { PromptPanel } from '../ui/prompt/PromptPanel';
+import { ConfirmActionButton } from '../ui/sidebar/ActionButtons';
+import '../ui/sidebar/Sidebar.css';
 import { motionOK } from '../ui/motion/reduced';
 import './motion.css';
 
@@ -133,6 +137,84 @@ function SpotCards() {
         <input type="checkbox" checked={running} onChange={(e) => setRunning(e.target.checked)} /> 第三张卡片「执行中」（边缘流光）
       </label>
       {card && <Detail card={card} onClose={() => setOpen(null)} />}
+    </>
+  );
+}
+
+/* ───────── 弹窗卡片 ───────── */
+
+/** 模态卡片：和「添加账号」对话框同一套样式与原位展开 */
+function DemoDialog({ onClose }: { onClose: () => void }) {
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true });
+  const close = useCallback(() => requestClose(onClose), [requestClose, onClose]);
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    panelRef.current?.querySelector<HTMLElement>('input')?.focus({ preventScroll: true });
+    return () => document.removeEventListener('keydown', onKey);
+  }, [close]);
+  return (
+    <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim" onPointerDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div ref={panelRef} className="cz-acct-dlg cz-modal" role="dialog" aria-modal="true" aria-label="添加账号">
+        <div className="cz-acct-dlg__title">添加账号</div>
+        <p className="cz-acct-dlg__text">点「登录」后会打开浏览器，用另一个账号登录即可。skill、MCP、设置和会话历史所有账号通用。</p>
+        <label className="cz-acct-dlg__field">
+          <span>备注名（可选）</span>
+          <input className="cz-acct-dlg__input" placeholder="例如：工作 / 个人" />
+        </label>
+        <div className="cz-acct-dlg__btns">
+          <button type="button" className="cz-acct-dlg__btn" onClick={close}>取消</button>
+          <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={close}>登录</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+let promptSeq = 0;
+function fakePrompt(kind: 'question' | 'plan'): PendingPrompt {
+  const id = `p${++promptSeq}`;
+  if (kind === 'plan') {
+    return { kind: 'plan', id, at: Date.now(), plan: ['## 计划', '1. 给弹窗加入场 / 退场动效', '2. 在演示页里逐个检查', '3. 跑测试'].join('\n'), planFilePath: 'C:/Users/me/.claude/plans/demo.md' };
+  }
+  return {
+    kind: 'question',
+    id,
+    at: Date.now(),
+    questions: [{
+      question: `第 ${promptSeq} 个问题：先改哪一块？`,
+      header: '范围',
+      options: [
+        { label: '模态对话框', description: '账号登录、文件选择' },
+        { label: '小气泡', description: '删除确认、额度面板' },
+        { label: '提问面板', description: '就是这一块' },
+      ],
+    }],
+  };
+}
+
+function PopupCards() {
+  const [dlg, setDlg] = useState(false);
+  const [prompts, setPrompts] = useState<PendingPrompt[]>([]);
+  const add = (kind: 'question' | 'plan') => setPrompts((ps) => [...ps, fakePrompt(kind)]);
+  return (
+    <>
+      <div className="mx-row">
+        <button type="button" className="mx-btn" onClick={() => setDlg(true)}>打开对话框</button>
+        <span className="mx-row mx-muted">
+          删除确认气泡
+          <ConfirmActionButton icon="close" label="删除会话" confirmText="删除这个会话？" note="删除后可以在回收站里恢复" onConfirm={() => {}} />
+        </span>
+        <button type="button" className="mx-btn" onClick={() => add('question')}>来一个提问</button>
+        <button type="button" className="mx-btn" onClick={() => add('plan')}>来一个计划</button>
+      </div>
+      <div className="mx-prompt">
+        <PromptPanel items={prompts} onReply={(id) => setPrompts((ps) => ps.filter((p) => p.id !== id))} />
+        <div className="mx-prompt__composer mx-muted">（输入框位置）</div>
+      </div>
+      {dlg && <DemoDialog onClose={() => setDlg(false)} />}
     </>
   );
 }
@@ -455,6 +537,7 @@ const DOCK: { id: string; label: string; icon: IconName }[] = [
   { id: 'sec-feed', label: '信息流加载', icon: 'file' },
   { id: 'sec-flow', label: '3D 轮播', icon: 'image' },
   { id: 'sec-goo', label: '粘性融合', icon: 'wand' },
+  { id: 'sec-popup', label: '弹窗卡片', icon: 'new-chat' },
 ];
 const DOCK_BASE = 44;
 const DOCK_GAP = 6;
@@ -577,6 +660,10 @@ export default function MotionDev() {
 
       <Section id="sec-goo" n="10" title="粘性融合" note="指示器从旧位置拉出，中间有一道液桥，约 0.6 秒收拢成圆角胶囊，文字始终清晰。主界面：账号菜单里的模式切换；本页顶部两组切换也是它。">
         <Seg label="时间范围" value={tab} onChange={setTab} options={[{ value: 'day', label: '今天' }, { value: 'week', label: '本周' }, { value: 'month', label: '本月' }]} />
+      </Section>
+
+      <Section id="sec-popup" n="04+" title="弹窗卡片" note="对话框从按钮原位长出、关闭缩回，遮罩模糊同步淡入淡出；气泡从按钮那一角长出；提问面板从输入框上沿浮起，换项交叉淡入，回答完下沉淡出。快速连点时从当前状态接续。">
+        <PopupCards />
       </Section>
 
       <Dock />

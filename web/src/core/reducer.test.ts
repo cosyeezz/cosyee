@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Turn } from '@cosyee/shared';
+import type { CachePoint, Turn } from '@cosyee/shared';
 import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { MAX_CACHE_POINTS, cachePointOf, pushCachePoint } from './reducer/cacheHit';
+import { cliCostOf } from './reducer/live';
 
 const FIX = path.resolve(__dirname, '../../../shared/fixtures');
 
@@ -579,10 +581,11 @@ describe('缓存命中率走势', () => {
     expect(rewindTo(live, 'ub').meta.cache?.map((p) => p.id)).toEqual(['m1']);
   });
   it('点数有上限', () => {
-    const many = Array.from({ length: 450 }, (_, i) => asst(`m${i}`, usage(1, 0, 1)));
+    const n = MAX_CACHE_POINTS + 50;
+    const many = Array.from({ length: n }, (_, i) => asst(`m${i}`, usage(1, 0, 1)));
     const s = fromHistory(hist(...many));
-    expect(s.meta.cache).toHaveLength(400);
-    expect(s.meta.cache![399]!.id).toBe('m449');
+    expect(s.meta.cache).toHaveLength(MAX_CACHE_POINTS);
+    expect(s.meta.cache![MAX_CACHE_POINTS - 1]!.id).toBe(`m${n - 1}`);
   });
   it('记下每次请求调用的工具 id；同一条消息分多行时合并', () => {
     const tu = (id: string, mid: string) => ({
@@ -591,6 +594,54 @@ describe('缓存命中率走势', () => {
     });
     const s = fromHistory(hist(asst('m1', usage(1, 0, 9)), tu('t1', 'm1'), tu('t2', 'm1'), asst('m2', usage(1, 0, 9))));
     expect(s.meta.cache?.map((p) => [p.id, p.tools])).toEqual([['m1', ['t1', 't2']], ['m2', undefined]]);
+  });
+  it('算花费用的字段：输出、模型、1 小时缓存写入、fast、美国境内', () => {
+    const p = cachePointOf(
+      {
+        id: 'm1', model: 'claude-opus-5-5',
+        usage: { input_tokens: 1, cache_creation_input_tokens: 100, cache_read_input_tokens: 9, output_tokens: 42, cache_creation: { ephemeral_1h_input_tokens: 300 }, speed: 'fast', inference_geo: 'us' },
+      },
+      3,
+    );
+    expect(p).toMatchObject({ id: 'm1', turn: 3, output: 42, model: 'claude-opus-5-5', create1h: 100, fast: true, usGeo: true });
+    const q = cachePointOf({ id: 'm2', model: '<synthetic>', usage: { input_tokens: 1, inference_geo: 'global' } }, 0)!;
+    expect(q.model).toBeUndefined();
+    expect(q.create1h).toBeUndefined();
+    expect(q.fast).toBeUndefined();
+    expect(q.usGeo).toBeUndefined();
+  });
+  it('同一条消息分段到达：输出 token 取较大值，模型保留', () => {
+    const list: CachePoint[] = [];
+    pushCachePoint(list, cachePointOf({ id: 'm1', model: 'claude-sonnet-4-5', usage: { input_tokens: 1, output_tokens: 50 } }, 0)!);
+    expect(pushCachePoint(list, cachePointOf({ id: 'm1', usage: { input_tokens: 1, output_tokens: 3 } }, 0)!)).toBe(false);
+    pushCachePoint(list, cachePointOf({ id: 'm1', usage: { input_tokens: 1, output_tokens: 80 } }, 0)!);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ output: 80, model: 'claude-sonnet-4-5' });
+  });
+});
+
+describe('cliCostOf（result.modelUsage）', () => {
+  it('取出每个模型的用量与 costUSD；没有 5 分钟明细时 = 写入合计 − 1 小时', () => {
+    expect(
+      cliCostOf({
+        'claude-opus-5-5': { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 30, cacheCreationInputTokens: 40, cacheCreationEphemeral1hInputTokens: 15, costUSD: 0.5 },
+        'claude-haiku-4-5': { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 9, cacheCreationEphemeral5mInputTokens: 4, costUSD: 0.01 },
+        bad: { inputTokens: 1 },
+      }),
+    ).toEqual([
+      { model: 'claude-opus-5-5', input: 10, output: 20, read: 30, create5m: 25, create1h: 15, costUSD: 0.5 },
+      { model: 'claude-haiku-4-5', input: 1, output: 2, read: 0, create5m: 4, create1h: 0, costUSD: 0.01 },
+    ]);
+  });
+  it('不是对象或没有可用条目返回 null', () => {
+    expect(cliCostOf(undefined)).toBeNull();
+    expect(cliCostOf({})).toBeNull();
+    expect(cliCostOf({ x: { costUSD: '1' } })).toBeNull();
+  });
+  it('result 事件把它记进 meta.cliCost', () => {
+    let s = applyEvent(initState(), user('问'), 1);
+    s = applyEvent(s, { type: 'result', subtype: 'success', modelUsage: { 'claude-sonnet-4-5': { inputTokens: 1, outputTokens: 1, costUSD: 0.002 } } }, 2);
+    expect(s.meta.cliCost?.[0]).toMatchObject({ model: 'claude-sonnet-4-5', costUSD: 0.002 });
   });
 });
 

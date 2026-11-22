@@ -357,6 +357,31 @@
 }
 .cz-ctx__autocompact { color: var(--text-2); font-size: var(--fs-xs); }
 
+/* 自动压缩窗口：一行显示，点开就地编辑 */
+.cz-ctx__cw-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); min-height: 22px; }
+.cz-ctx__cw-chip { flex: none; font-variant-numeric: tabular-nums; }
+.cz-ctx__cw-chip:not(:disabled) { color: var(--text-2); text-decoration: underline dotted; text-underline-offset: 3px; }
+.cz-ctx__cw-edit { display: flex; flex-direction: column; gap: 2px; }
+.cz-ctx__cw-edit .cz-ctx__note { margin: 0; }
+.cz-ctx__cw-edit .cz-ctx__note.is-error { color: var(--danger); }
+.cz-ctx__cw-line { display: flex; align-items: center; gap: var(--sp-1); }
+.cz-ctx__cw-label { flex: none; color: var(--text-2); font-size: var(--fs-xs); margin-right: var(--sp-1); }
+.cz-ctx__cw-input {
+  width: 64px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.cz-ctx__cw-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.cz-ctx__cw-input.is-invalid { border-color: var(--danger); }
+.cz-ctx__cw-unit { color: var(--text-3); font-size: var(--fs-xs); margin-right: auto; }
+
 .cz-ctx__btn {
   display: inline-flex;
   align-items: center;
@@ -395,9 +420,11 @@
 .cz-ctx__cache-sub { color: var(--text-3); font-size: var(--fs-xs); }
 .cz-ctx__cache-plot { position: relative; }
 .cz-ctx__cache-svg,
-.cz-ctx__ctx-svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; border-radius: var(--r-sm); }
+.cz-ctx__ctx-svg,
+.cz-ctx__cost-svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; border-radius: var(--r-sm); }
 .cz-ctx__cache-svg:focus-visible,
-.cz-ctx__ctx-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-ctx__ctx-svg:focus-visible,
+.cz-ctx__cost-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cz-ctx__cache-base { stroke: var(--border); stroke-width: 1; }
 .cz-ctx__cache-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .cz-ctx__cache-cross { stroke: var(--border-strong); stroke-width: 1; }
@@ -450,6 +477,24 @@
 .cz-ctx__grow-delta.is-jump { color: var(--warn); }
 .cz-ctx__grow-note { color: var(--text-3); font-size: var(--fs-xs); line-height: 1.5; overflow-wrap: anywhere; }
 
+/* 花费：合计 + 构成条 + 每轮柱状图（与上下文走势共用 cz-ctx__cache-* 框架） */
+.cz-ctx__cost-stats { color: var(--text-2); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.cz-ctx__cost-mix { background: transparent; }
+.cz-ctx__cost-svg { cursor: pointer; }
+.cz-ctx__cost-svg.is-static { cursor: default; }
+.cz-ctx__cost-bar { fill: color-mix(in srgb, var(--accent) 45%, transparent); transition: fill var(--dur-fast) var(--ease); }
+.cz-ctx__cost-bar.is-sub { fill: color-mix(in srgb, var(--accent) 22%, transparent); }
+.cz-ctx__cost-col.is-hover .cz-ctx__cost-bar { fill: var(--accent); }
+.cz-ctx__cost-col.is-hover .cz-ctx__cost-bar.is-sub { fill: color-mix(in srgb, var(--accent) 55%, transparent); }
+.cz-ctx__cost-compact { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 2 2; }
+.cz-ctx__cache-tip-row.is-quote { color: var(--text); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.cz-ctx__cache-tip-row.is-part { color: var(--text-3); }
+.cz-ctx__cost-next { color: var(--text-2); font-size: var(--fs-xs); line-height: 1.6; font-variant-numeric: tabular-nums; }
+.cz-ctx__cost-next b { color: var(--text); font-weight: 600; }
+.cz-ctx__cost-dim { color: var(--text-3); }
+.cz-ctx__cost .cz-ctx__note { margin: 0; }
+.cz-ctx__note.is-warn { color: var(--warn); }
+
 /* 工具：行内只有名字 + 开关；说明文字放在列表上方 */
 .cz-ctx__note { margin: 2px 0 var(--sp-1); color: var(--text-3); font-size: var(--fs-xs); line-height: 1.5; }
 .cz-ctx__tool { min-height: 28px; }
@@ -469,7 +514,8 @@
 .cz-ctx.is-waking .cz-ctx__cache-line { stroke-dasharray: 1; animation: cz-wake-draw 900ms var(--ease-out) 380ms backwards; }
 .cz-ctx.is-waking .cz-ctx__cache-dot { transform-box: fill-box; transform-origin: center; animation: cz-wake-pop 320ms var(--ease-out) 1080ms backwards; }
 /* 上下文柱子自下而上、从左到右依次长出（--k = 第几根 / 总数） */
-.cz-ctx.is-waking .cz-ctx__ctx-bar {
+.cz-ctx.is-waking .cz-ctx__ctx-bar,
+.cz-ctx.is-waking .cz-ctx__cost-col {
   transform-box: fill-box;
   transform-origin: 50% 100%;
   animation: cz-wake-grow 560ms var(--ease-out) backwards;

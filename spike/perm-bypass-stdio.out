@@ -1,0 +1,11 @@
+(node:81276) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+0.7s system hook_started  
+0.8s system hook_response  
+0.9s system init bypassPermissions 
+2.4s assistant tool_use AskUserQuestion {"questions":[{"question":"What is your favorite color?","header":"Favorite","multiSelect":false,"options":[{"label":"Red","description":"Choose red as your favorite color"},{"label":"Blue","description":"Choose blue as your favorite color"}]}]}
+2.4s CONTROL_REQUEST {"type":"control_request","request_id":"a3c7e7d3-9df4-4e14-8c84-45d5618c381a","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","display_name":"AskUserQuestion","input":{"questions":[{"question":"What is your favorite color?","header":"Favorite","options":[{"label":"Red","description":"Choose red as your favorite color"},{"label":"Blue","description":"Choose blue as your favorite color"}],"multiSelect":false}]},"tool_use_id":"toolu_01QqT3vxmw9fHzeAuRXLdkvW","requires_user_interaction":true}}
+2.4s tool_result "Your questions have been answered: \"What is your favorite color?\"=\"Blue\". You can now continue with these answers in mind."
+3.1s assistant text You chose **Blue** as your favorite color.
+3.2s system notification  
+exit 143 files: []

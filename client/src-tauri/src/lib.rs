@@ -49,6 +49,20 @@ async fn probe(host: String, port: u16) -> bool {
     .unwrap_or(false)
 }
 
+/// 服务器列表（JSON 数组字符串）。真正的列表存在本地页面的 localStorage 里，服务端网页读不到，
+/// 所以列表页每次变动都同步一份到这里，再由 `watch_server` 在服务端页面加载完后注入给标题栏的切换下拉用。
+#[derive(Default)]
+struct Servers(std::sync::Mutex<String>);
+
+#[tauri::command]
+fn set_servers(state: tauri::State<'_, Servers>, json: String) {
+    // 只接受 JSON 数组，其它内容一律丢弃
+    let ok = serde_json::from_str::<serde_json::Value>(&json).map(|v| v.is_array()).unwrap_or(false);
+    if let Ok(mut g) = state.0.lock() {
+        *g = if ok { json } else { "[]".into() };
+    }
+}
+
 fn go_list<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, extra: &str) {
     if let Ok(u) = format!("{HOME}index.html?list=1{extra}").parse() {
         let _ = w.navigate(u);
@@ -59,11 +73,19 @@ fn go_list<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, extra: &str) {
 /// 不停在 WebView 的错误页上——错误页里没有标题栏，用户会找不到返回和关闭窗口的地方。
 fn watch_server<R: tauri::Runtime>(w: tauri::WebviewWindow<R>, p: tauri::webview::PageLoadPayload<'_>) {
     use tauri::webview::PageLoadEvent;
-    if p.event() != PageLoadEvent::Started {
-        return;
-    }
+    use tauri::Manager;
     let url = p.url().clone();
     if !matches!(url.scheme(), "http" | "https") || url.as_str().starts_with(HOME) {
+        return;
+    }
+    // 页面加载完：把服务器列表交给标题栏（二次编码成 JS 字符串，脚本里 JSON.parse）
+    if p.event() == PageLoadEvent::Finished {
+        let json = w.state::<Servers>().0.lock().map(|g| g.clone()).unwrap_or_default();
+        let lit = serde_json::to_string(if json.is_empty() { "[]" } else { &json }).unwrap_or_else(|_| "\"[]\"".into());
+        let _ = w.eval(format!("window.__cosyeeServers={lit};window.dispatchEvent(new Event('cosyee:servers'))"));
+        return;
+    }
+    if p.event() != PageLoadEvent::Started {
         return;
     }
     let (Some(host), Some(port)) = (url.host_str().map(|h| h.trim_matches(['[', ']']).to_string()), url.port_or_known_default())
@@ -84,11 +106,12 @@ fn watch_server<R: tauri::Runtime>(w: tauri::WebviewWindow<R>, p: tauri::webview
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().manage(Servers::default());
     // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏
     #[cfg(desktop)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         probe,
+        set_servers,
         local::local_status,
         local::local_log,
         local::local_install,
@@ -96,7 +119,7 @@ pub fn run() {
         local::local_stop
     ]);
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![probe]);
+    let builder = builder.invoke_handler(tauri::generate_handler![probe, set_servers]);
     builder
         .setup(|app| {
             let script = shell_script();

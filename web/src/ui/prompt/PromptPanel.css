@@ -1,7 +1,19 @@
 /* 待回应请求面板：位于输入框上方，宽度跟随输入区 */
+/* 入场 / 退场用 transition + @starting-style（退场途中又来新请求时从当前状态接回去）；PromptPanel.tsx 负责延迟卸载 */
 .cz-prompt {
   margin: 0 0 var(--sp-1);
-  animation: cz-prompt-in .18s ease-out;
+  transform-origin: 50% 100%;
+  transition: opacity 240ms var(--ease-out), transform 240ms var(--ease-out);
+}
+@starting-style {
+  .cz-prompt { opacity: 0; transform: translateY(8px) scale(.985); }
+}
+.cz-prompt.is-leaving {
+  opacity: 0;
+  transform: translateY(6px);
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+  pointer-events: none;
 }
 .cz-prompt__card {
   display: flex;
@@ -132,6 +144,12 @@
 .cz-prompt__btn:disabled { opacity: .45; cursor: default; }
 .cz-prompt__more { margin-top: var(--sp-1); text-align: center; font-size: var(--fs-xs); color: var(--text-3); }
 
-@keyframes cz-prompt-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-:root[data-motion="reduce"] .cz-prompt { animation: none; }
-@media (prefers-reduced-motion: reduce) { .cz-prompt { animation: none; } }
+/* 换到下一项：卡片轻轻浮起淡入；选项（每次出现时）依次浮现，间隔 30ms，最多错开 8 项 */
+.cz-prompt__card.is-swap { animation: cz-prompt-swap 200ms var(--ease-out); }
+.cz-prompt__opt { animation: cz-prompt-opt 260ms var(--ease-out) backwards; animation-delay: calc(min(var(--i, 0), 8) * 30ms + 60ms); }
+@keyframes cz-prompt-swap { from { opacity: .35; transform: translateY(4px); } } /* 不从 0 开始：旧卡片是直接换掉的，从 0 起会闪一帧空白 */
+@keyframes cz-prompt-opt { from { opacity: 0; transform: translateY(6px); } }
+:root[data-motion="reduce"] :is(.cz-prompt, .cz-prompt__card, .cz-prompt__opt) { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.cz-prompt, .cz-prompt__card, .cz-prompt__opt) { transition: none; animation: none; }
+}

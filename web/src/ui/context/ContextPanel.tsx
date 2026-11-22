@@ -2,7 +2,11 @@
 // 约定：ContextUsage.percent 与 categories[].percent 均按 0–100 解释（22.6 表示 22.6%）。
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { CachePoint, ContextMcpServer, ContextSkill, ContextUsage, SkillMode, ToolStats as ToolStatsData, Turn } from '@cosyee/shared';
+import {
+  BUILTIN_PRICES,
+  type CachePoint, type CliModelCost, type CompactMark, type ContextMcpServer, type ContextSkill, type ContextUsage, type PriceTable,
+  type SkillMode, type SubagentCost, type ToolStats as ToolStatsData, type Turn,
+} from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { Menu, type MenuEntry } from '../menus/Menu';
 import { CountUp } from '../motion/CountUp';
@@ -10,6 +14,7 @@ import { useWake } from '../motion/useWake';
 import { useHeld } from '../motion/useHeld';
 import { CacheChart } from './CacheChart';
 import { ContextChart } from './ContextChart';
+import { CostSection, type Billing } from './CostSection';
 import { toolInfo } from './toolCatalog';
 import {
   agentRows, callsOf, skillCallCounts, skillCallsOf, toolCallCounts, toolRows, totalCallsOf, totalSkillCallsOf,
@@ -50,8 +55,24 @@ export interface ContextPanelProps {
   toolStats?: ToolStatsData | null;
   /** 「压缩会话」不可用（例如还没发过消息的新会话、回合进行中） */
   compactDisabled?: boolean;
+  /** 设置自动压缩窗口（全局，token 数；null = 恢复默认）；不传则只显示不可改 */
+  onCompactWindow?: (window: number | null) => void;
   /** 收起面板；不传则不显示收起按钮 */
   onCollapse?: () => void;
+  /** 压缩记录（SessionMeta.compactions）：花费图上画成虚线，并用于预估下一次请求 */
+  compactions?: CompactMark[];
+  /** 价格表（GET /api/pricing）；不传用内置表 */
+  pricing?: PriceTable;
+  /** 子代理花费；还没取到为 null */
+  subCosts?: SubagentCost[] | null;
+  /** CLI result 报告的按模型花费（SessionMeta.cliCost），用来核对价格表 */
+  cliCost?: CliModelCost[];
+  /** 会话的模型（请求里没带模型时按它定价） */
+  model?: string;
+  /** 计费方式，决定花费一节的标题与说明 */
+  billing?: Billing;
+  /** 点花费图的柱子跳到会话流里的这一轮 */
+  onJumpTurn?: (turn: number) => void;
 }
 
 const SKILL_MODES: { mode: SkillMode; label: string; hint: string; icon: IconName }[] = [
@@ -90,16 +111,23 @@ function categoryColor(name: string): string {
 const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
-  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCollapse,
+  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
+  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn,
 }: ContextPanelProps) {
   // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
   const live = useMemo(
-    () => (liveUsage ? { usage: liveUsage, cache: liveCache, turns: liveTurns, tools: liveTools, agents: liveAgents } : null),
-    [liveUsage, liveCache, liveTurns, liveTools, liveAgents],
+    () =>
+      liveUsage
+        ? {
+            usage: liveUsage, cache: liveCache, turns: liveTurns, tools: liveTools, agents: liveAgents,
+            compactions: liveCompactions, subCosts: liveSubCosts, cliCost: liveCliCost, model: liveModel,
+          }
+        : null,
+    [liveUsage, liveCache, liveTurns, liveTools, liveAgents, liveCompactions, liveSubCosts, liveCliCost, liveModel],
   );
   const held = useHeld(live);
   const usage = held.value?.usage ?? null;
-  const { cache, turns, tools, agents } = held.value ?? {};
+  const { cache, turns, tools, agents, compactions, subCosts, cliCost, model } = held.value ?? {};
   const stale = held.stale;
   const [skillsOpen, setSkillsOpen] = useState(false);
   // 一键推荐配置之前的状态，用于撤销；手动改任何一个 skill 后失效
@@ -238,6 +266,21 @@ export function ContextPanel({
           <CacheChart points={cache} intro={waking} />
         </section>
 
+        {/* 花费：按价格表算的会话金额 */}
+        <CostSection
+          points={cache}
+          turns={turns}
+          compactions={compactions}
+          subs={subCosts}
+          table={pricing}
+          fallbackModel={model}
+          historyTokens={usage.categories.find((c) => c.name.trim().toLowerCase().includes('message'))?.tokens ?? null}
+          cliCost={cliCost}
+          billing={billing}
+          intro={waking}
+          onJumpTurn={onJumpTurn}
+        />
+
         {/* 可展开：Skills（开 / 手动 / 关 三态） */}
         <Collapsible
           title="Skills"
@@ -349,14 +392,132 @@ export function ContextPanel({
 
       {/* 底部：自动压缩 */}
       <div className="cz-ctx__foot">
-        {usage.untilAutocompact !== null && (
-          <div className="cz-ctx__autocompact">距自动压缩还剩 {formatTokens(usage.untilAutocompact)}</div>
-        )}
+        <CompactWindowRow
+          until={usage.untilAutocompact}
+          value={usage.compactWindow ?? null}
+          threshold={usage.autoCompactThreshold}
+          onChange={onCompactWindow}
+        />
         <button type="button" className="cz-ctx__btn cz-ctx__btn--block" onClick={onCompact} disabled={compactDisabled}>
           <Icon name="compact" size={14} />
           <span>压缩会话</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+/** 与服务端 COMPACT_WINDOW_MIN / MAX 一致（单位 k token） */
+const WINDOW_MIN_K = 50;
+const WINDOW_MAX_K = 1000;
+
+/** 输入框内容 → token 数：空 = 恢复默认（null）；接受「150」「150k」「1m」；不合法返回 undefined */
+export function parseCompactWindow(text: string): number | null | undefined {
+  const t = text.trim().toLowerCase().replace(/,/g, '');
+  if (!t) return null;
+  const m = /^(\d+(?:\.\d+)?)\s*(k|m)?$/.exec(t);
+  if (!m) return undefined;
+  const k = Number(m[1]) * (m[2] === 'm' ? 1000 : 1);
+  if (!Number.isFinite(k) || k < WINDOW_MIN_K || k > WINDOW_MAX_K) return undefined;
+  return Math.round(k * 1000);
+}
+
+/** 底部一行：距自动压缩还剩多少 + 自动压缩窗口（点开就地编辑，单位 k token） */
+function CompactWindowRow({
+  until, value, threshold, onChange,
+}: {
+  until: number | null;
+  /** Cosyee 设置的窗口；null = 不覆盖 */
+  value: number | null;
+  /** CLI 报告的触发点 */
+  threshold?: number;
+  onChange?: (window: number | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
+  const [invalid, setInvalid] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const finish = (w: number | null) => {
+    setEditing(false);
+    if (w !== value) onChange?.(w);
+  };
+  const commit = () => {
+    const w = parseCompactWindow(text);
+    if (w === undefined) setInvalid(true);
+    else finish(w);
+  };
+
+  if (editing) {
+    return (
+      <div className="cz-ctx__cw-edit">
+        <div className="cz-ctx__cw-line">
+          <label className="cz-ctx__cw-label" htmlFor="cz-ctx-cw">压缩窗口</label>
+          <input
+            id="cz-ctx-cw"
+            ref={inputRef}
+            className={`cz-ctx__cw-input${invalid ? ' is-invalid' : ''}`}
+            inputMode="numeric"
+            placeholder="默认"
+            value={text}
+            aria-invalid={invalid || undefined}
+            onChange={(e) => {
+              setText(e.target.value);
+              setInvalid(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setEditing(false);
+              }
+            }}
+          />
+          <span className="cz-ctx__cw-unit">k</span>
+          <button type="button" className="cz-ctx__link" onClick={commit}>保存</button>
+          <button type="button" className="cz-ctx__link" onClick={() => finish(null)} disabled={value === null} title="不覆盖，沿用 ~/.claude/settings.json 或 CLI 默认">
+            默认
+          </button>
+          <button type="button" className="cz-ctx__link" onClick={() => setEditing(false)}>取消</button>
+        </div>
+        <p className={`cz-ctx__note${invalid ? ' is-error' : ''}`}>
+          {invalid
+            ? `需在 ${WINDOW_MIN_K}–${WINDOW_MAX_K}k 之间（留空 = 默认）`
+            : '上下文达到「窗口 − 约 33k」时自动压缩。对所有会话生效，运行中的会话立即生效。'}
+        </p>
+      </div>
+    );
+  }
+
+  const tip = [
+    '自动压缩窗口：上下文达到「窗口 − 约 33k」时自动压缩',
+    threshold !== undefined && `当前触发点 ${formatTokens(threshold)}`,
+    value === null && '未覆盖，沿用 ~/.claude/settings.json 或 CLI 默认',
+    onChange && '点击修改（对所有会话生效）',
+  ].filter(Boolean).join('\n');
+  return (
+    <div className="cz-ctx__cw-row">
+      <span className="cz-ctx__autocompact">
+        {until !== null ? `距自动压缩还剩 ${formatTokens(until)}` : '自动压缩未开启'}
+      </span>
+      <button
+        type="button"
+        className="cz-ctx__link cz-ctx__cw-chip"
+        title={tip}
+        disabled={!onChange}
+        onClick={() => {
+          setText(value ? String(Math.round(value / 1000)) : '');
+          setInvalid(false);
+          setEditing(true);
+        }}
+      >
+        窗口 {value ? formatTokens(value) : '默认'}
+      </button>
     </div>
   );
 }

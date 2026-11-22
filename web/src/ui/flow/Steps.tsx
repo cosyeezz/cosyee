@@ -81,7 +81,6 @@ export const ThinkingRow = memo(function ThinkingRow({ step }: { step: ThinkingS
             {preview}
           </span>
         )}
-        <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
       </button>
       {open && (
         <div ref={bodyRef} className="cz-flow__thinking-body" onScroll={onScroll}>
@@ -201,7 +200,6 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
           </button>
           <button type="button" className="cz-flow__row-btn cz-flow__row-btn--tail" aria-expanded={open} aria-label={open ? '收起工具详情' : '展开工具详情'} onClick={toggle}>
             {isError && <span className="cz-flow__badge">失败</span>}
-            <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
           </button>
         </div>
       ) : (
@@ -211,7 +209,6 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
             {line}
           </span>
           {isError && <span className="cz-flow__badge">失败</span>}
-          <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
         </button>
       )}
       {open && interactive && (step.name === 'AskUserQuestion' ? <AskBody step={step} output={output} turnActive={turnActive} /> : <PlanBody step={step} output={output} turnActive={turnActive} />)}

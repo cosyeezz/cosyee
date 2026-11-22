@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { BUILTIN_PRICES, requestCost, uncachedCost, addCost, ZERO_COST } from '@cosyee/shared';
 import { encodeCwd, encodeCwdCandidates, isSafeId } from './paths.js';
 import { Sessions } from './sessions.js';
 import { DotState } from './state.js';
@@ -161,5 +162,54 @@ describe('account 辅助', () => {
     expect(nameFromOauth({ displayName: 'a@b.com', fullName: 'Full Name' })).toBe('Full Name');
     expect(nameFromOauth({ displayName: 'a@b.com' })).toBeNull();
     expect(nameFromOauth(null)).toBeNull();
+  });
+});
+
+describe('subagentCosts', () => {
+  const SID2 = 'bbbbbbbb-0000-4000-8000-000000000002';
+  const NL = String.fromCharCode(10);
+  const asst = (id: string, model: string, usage: object) =>
+    JSON.stringify({ type: 'assistant', message: { id, role: 'assistant', model, content: [], usage } });
+  const u1 = { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const u1Final = { input_tokens: 1000, output_tokens: 500, cache_creation_input_tokens: 2000, cache_read_input_tokens: 30000, cache_creation: { ephemeral_1h_input_tokens: 1500, ephemeral_5m_input_tokens: 500 } };
+  const u2 = { input_tokens: 200, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 5000, speed: 'fast', inference_geo: 'us' };
+
+  beforeAll(() => {
+    const dir = path.join(tmp, 'projects', encodeCwd(CWD));
+    const sub = path.join(dir, SID2, 'subagents');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${SID2}.jsonl`), JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }) + NL);
+    // agent a1：同一个 message.id 写了两次（中途 + 最终），外加一条 <synthetic>
+    fs.writeFileSync(path.join(sub, 'agent-a1.jsonl'), [
+      asst('m1', 'claude-sonnet-4-5-20250929', u1),
+      asst('m1', 'claude-sonnet-4-5-20250929', u1Final),
+      asst('m2', '<synthetic>', u1),
+      '坏行',
+    ].join(NL) + NL);
+    fs.writeFileSync(path.join(sub, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'Explore', toolUseId: 'toolu_x1' }));
+    // agent a2：一个 opus 5.5（fast + 美国境内）、一个不认识的模型；没有 meta
+    fs.writeFileSync(path.join(sub, 'agent-a2.jsonl'), [asst('m3', 'claude-opus-5-5', u2), asst('m4', 'gpt-x', u1)].join(NL) + NL);
+  });
+
+  it('按 message.id 去重（取最后一次）、跳过 synthetic、未知模型计入 unpriced', async () => {
+    const items = await sessions.subagentCosts(SID2, CWD, BUILTIN_PRICES);
+    expect(items.map((i) => i.agentId)).toEqual(['a1', 'a2']);
+    const [a1, a2] = items as [typeof items[0], typeof items[0]];
+
+    const r1 = { model: 'claude-sonnet-4-5-20250929', input: 1000, create: 2000, create1h: 1500, read: 30000, output: 500 };
+    expect(a1).toMatchObject({ toolUseId: 'toolu_x1', agentType: 'Explore', requests: 1, unpriced: 0, models: ['claude-sonnet-4-5-20250929'] });
+    expect(a1.cost).toEqual(requestCost(BUILTIN_PRICES, r1));
+    expect(a1.uncached).toBeCloseTo(uncachedCost(BUILTIN_PRICES, r1)!, 12);
+
+    const r2 = { model: 'claude-opus-5-5', input: 200, create: 0, create1h: 0, read: 5000, output: 100, fast: true, usGeo: true };
+    expect(a2).toMatchObject({ toolUseId: null, requests: 2, unpriced: 1, models: ['claude-opus-5-5', 'gpt-x'] });
+    expect(a2.agentType).toBeUndefined();
+    expect(a2.cost).toEqual(addCost(ZERO_COST, requestCost(BUILTIN_PRICES, r2)!));
+    expect(a2.uncached).toBeCloseTo(uncachedCost(BUILTIN_PRICES, r2)!, 12);
+  });
+
+  it('没有 subagents 目录返回空；会话不存在报 404', async () => {
+    expect(await sessions.subagentCosts('99999999-0000-4000-8000-000000000000', CWD, BUILTIN_PRICES)).toEqual([]);
+    await expect(sessions.subagentCosts('cccccccc-0000-4000-8000-000000000003', CWD, BUILTIN_PRICES)).rejects.toMatchObject({ status: 404 });
   });
 });

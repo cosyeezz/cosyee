@@ -1,0 +1,23 @@
+(node:63292) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+0.7s system hook_started  
+0.8s system hook_response  
+0.9s system init bypassPermissions 
+2.2s system thinking_tokens  
+2.4s system thinking_tokens  
+2.4s assistant thinking 
+2.5s assistant tool_use ToolSearch {"query":"select:AskUserQuestion","max_results":1}
+2.5s tool_result "No matching deferred tools found"
+3.5s system thinking_tokens  
+3.8s system thinking_tokens  
+3.8s assistant thinking 
+4.2s assistant text I couldn't use AskUserQuestion. It isn't among the tools available in this session, and a search for it returned nothing. So I'll ask in plain text:
+
+**What is your favorite color?**
+- Red
+- Blue
+
+Rep
+4.3s system notification  
+TIMEOUT
+exit null files: []

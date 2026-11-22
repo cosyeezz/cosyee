@@ -188,8 +188,14 @@ const TOOL_RESULT_KEEP = [
   'status', 'agentId', 'agentType', 'isAsync', 'description', 'outputFile', 'totalDurationMs', 'totalTokens', 'totalToolUseCount',
 ];
 
-/** message.usage 里前端用到的字段（缓存命中率图）；其余（server_tool_use、iterations、cache_creation 明细等）不下发 */
-const USAGE_KEEP = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+/**
+ * message.usage 里前端用到的字段（缓存命中率图、会话花费）；其余（server_tool_use、iterations 等）不下发。
+ * cache_creation（5 分钟 / 1 小时写入明细，对象）、speed、inference_geo 原样保留，算花费要用。
+ */
+const USAGE_KEEP = [
+  'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens',
+  'cache_creation', 'speed', 'inference_geo',
+];
 
 function slimUsage(u: Json): Json {
   const out: Json = {};

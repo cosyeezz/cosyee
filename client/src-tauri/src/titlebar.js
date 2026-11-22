@@ -114,7 +114,9 @@
     reload: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
     power: '<path d="M12 3.5v8"/><path d="M7.05 6.6a7.5 7.5 0 1 0 9.9 0"/>',
     server: '<rect x="3.5" y="4.5" width="17" height="11" rx="2"/><path d="M8.5 19.5h7M12 15.5v4"/>',
-    swap: '<path d="M8 9.5 12 5.5l4 4M8 14.5l4 4 4-4"/>'
+    swap: '<path d="M8 9.5 12 5.5l4 4M8 14.5l4 4 4-4"/>',
+    check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+    globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.9 5.2 3.9 8.5s-1.3 6.1-3.9 8.5c-2.6-2.4-3.9-5.2-3.9-8.5S9.4 5.9 12 3.5z"/>'
   };
   function icon(name) {
     return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + I[name] + '</svg>';
@@ -186,11 +188,22 @@
     '.mi.hot svg{color:var(--_fg)}',
     '.mi .k{margin-left:auto;padding-left:18px;font-size:11.5px;color:var(--_fg3);font-variant-numeric:tabular-nums;letter-spacing:.02em}',
     '.mi.danger.hot,.mi.danger.hot svg{color:var(--danger,#ff5d5d)}',
+    /* 服务器切换下拉：同一套磨砂面板，悬停用纯色底（不走液态胶囊） */
+    '.sm{left:0;min-width:240px;max-width:min(380px,90vw);transform-origin:20px 0}',
+    '.sm .mi{height:40px;gap:10px;padding:0 10px}',
+    '.sm .mi:hover,.sm .mi:focus-visible{background:var(--_hover);color:var(--_fg)}',
+    '.sm .mi:hover svg,.sm .mi:focus-visible svg{color:var(--_fg)}',
+    '.sm .t{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}',
+    '.sm .t b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.sm .t small{font-size:11px;color:var(--_fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.sm .mi.cur{color:var(--_fg)}',
+    '.sm .mi.cur .ck{color:var(--_accent)}',
+    '.sm .none{padding:10px;color:var(--_fg3);font-size:12px}',
     '.hr{height:1px;margin:5px 8px;background:var(--_line)}',
     '@media (prefers-reduced-motion:reduce){.menu,.cap{transition:none}}'
   ].join('\n');
 
-  var host, root, bar, menu, cap, maxBtn, hot = -1, items = [];
+  var host, root, bar, menu, smenu, cap, maxBtn, hot = -1, items = [];
 
   function serverLabel() {
     var h = location.hostname;
@@ -208,7 +221,7 @@
       + '<span class="brand">' + LOGO + 'Cosyee</span>';
     if (!isHome) {
       html += '<span class="sep">/</span>'
-        + '<button class="crumb" id="c" title="' + location.origin + ' — 切换服务器（' + KEY + '）">'
+        + '<button class="crumb" id="c" aria-haspopup="menu" aria-expanded="false" title="' + location.origin + ' — 切换服务器">'
         + icon('server') + '<span></span>' + icon('swap').replace('<svg ', '<svg class="sw" ') + '</button>';
     }
     html += '<div class="grow"></div>';
@@ -225,16 +238,19 @@
       + '<button class="mi" role="menuitem" data-a="reload">' + icon('reload') + '重新加载<span class="k">' + RELOAD_KEY + '</span></button>'
       + '<div class="hr" role="separator"></div>'
       + '<button class="mi danger" role="menuitem" data-a="stop">' + icon('power') + '停止本机服务</button>'
-      + '</div>';
+      + '</div>'
+      + '<div class="menu sm" role="menu" aria-label="切换服务器"></div>';
     root.innerHTML = html;
     bar = root.querySelector('.bar');
     menu = root.querySelector('.menu');
+    smenu = root.querySelector('.sm');
     cap = root.querySelector('.cap');
     items = Array.prototype.slice.call(root.querySelectorAll('.mi'));
     var crumb = root.getElementById('c');
     if (crumb) {
       crumb.querySelector('span').textContent = serverLabel();
-      crumb.onclick = function () { goList(); };
+      crumb.onclick = function () { toggleServers(); };
+      smenu.addEventListener('keydown', onServersKey);
     }
     root.getElementById('m').onclick = function () { toggle(); };
     items.forEach(function (b, i) {
@@ -279,6 +295,7 @@
   function isOpen() { return menu.classList.contains('open'); }
   function toggle(force) {
     var open = force === undefined ? !isOpen() : force;
+    if (open && smenu) toggleServers(false);
     menu.classList.toggle('open', open);
     root.getElementById('m').setAttribute('aria-expanded', String(open));
     if (open) { setHot(0, true); items[0].focus({ preventScroll: true }); }
@@ -290,6 +307,73 @@
     else if (a === 'reload') location.reload();
     else if (a === 'stop') goList('&stop=1');
   }
+  // ── 服务器切换下拉：列表由原生层在页面加载完后注入（window.__cosyeeServers，JSON 字符串） ──
+  function servers() {
+    try {
+      var a = JSON.parse(window.__cosyeeServers || '[]');
+      return Array.isArray(a) ? a.filter(function (s) { return s && typeof s.url === 'string'; }) : [];
+    } catch (e) { return []; }
+  }
+  function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function isLocalUrl(u) { return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(u); }
+  function sameOrigin(u) { try { return new URL(u).origin === location.origin; } catch (e) { return false; } }
+  function srvOpen() { return smenu.classList.contains('open'); }
+  function renderServers() {
+    var list = servers(), h = '';
+    list.forEach(function (s, i) {
+      var cur = sameOrigin(s.url);
+      h += '<button class="mi' + (cur ? ' cur' : '') + '" role="menuitemradio" aria-checked="' + cur + '" data-i="' + i + '">'
+        + icon(isLocalUrl(s.url) ? 'server' : 'globe')
+        + '<span class="t"><b>' + esc(s.name || s.url) + '</b><small>' + esc(s.url) + '</small></span>'
+        + (cur ? '<span class="ck">' + icon('check') + '</span>' : '') + '</button>';
+    });
+    if (!list.length) h += '<div class="none">还没有保存的服务器</div>';
+    h += '<div class="hr" role="separator"></div>'
+      + '<button class="mi" role="menuitem" data-a="list" style="height:34px">' + icon('list') + '管理服务器…<span class="k">' + KEY + '</span></button>';
+    smenu.innerHTML = h;
+    Array.prototype.forEach.call(smenu.querySelectorAll('.mi'), function (b) {
+      b.onclick = function () {
+        toggleServers(false);
+        if (b.getAttribute('data-a') === 'list') return goList();
+        var s = list[Number(b.getAttribute('data-i'))];
+        if (s && !sameOrigin(s.url)) location.href = s.url.replace(/\/+$/, '') + '/';
+      };
+    });
+  }
+  function toggleServers(force) {
+    var c = root.getElementById('c');
+    if (!c) return;
+    var open = force === undefined ? !srvOpen() : force;
+    if (open) {
+      toggle(false);
+      renderServers();
+      var r = c.getBoundingClientRect();
+      smenu.style.left = Math.max(6, r.left) + 'px';
+    }
+    smenu.classList.toggle('open', open);
+    c.setAttribute('aria-expanded', String(open));
+    if (open) {
+      var cur = smenu.querySelector('.mi.cur') || smenu.querySelector('.mi');
+      if (cur) cur.focus({ preventScroll: true });
+    }
+  }
+  function onServersKey(e) {
+    var bs = Array.prototype.slice.call(smenu.querySelectorAll('.mi'));
+    var i = bs.indexOf(root.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      var n = bs.length;
+      bs[i < 0 ? 0 : (i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n].focus({ preventScroll: true });
+    } else if (e.key === 'Escape') {
+      toggleServers(false);
+      root.getElementById('c').focus();
+    } else if (e.key === 'Tab') {
+      toggleServers(false);
+    }
+  }
+  // 页面加载完才收到列表；下拉已经开着时就地刷新
+  window.addEventListener('cosyee:servers', function () { if (smenu && srvOpen()) renderServers(); });
+
   function onMenuKey(e) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -304,9 +388,11 @@
     }
   }
   document.addEventListener('pointerdown', function (e) {
-    if (menu && isOpen() && e.composedPath().indexOf(host) < 0) toggle(false);
+    if (!menu || e.composedPath().indexOf(host) >= 0) return;
+    if (isOpen()) toggle(false);
+    if (srvOpen()) toggleServers(false);
   }, true);
-  window.addEventListener('blur', function () { if (menu && isOpen()) toggle(false); });
+  window.addEventListener('blur', function () { if (menu && isOpen()) toggle(false); if (smenu && srvOpen()) toggleServers(false); });
 
   // 液态胶囊：切换时前沿先到、后沿跟上（沿移动方向拉长），到位后轻微回弹
   var capBox = null, capAnim = null;

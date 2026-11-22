@@ -14,6 +14,15 @@ export interface MorphOptions {
   scrimRef?: RefObject<HTMLElement>;
   /** 收起完成后把焦点还给来源元素 */
   restoreFocus?: boolean;
+  /** false = 不播入场（同一个弹窗换了内容重新挂载时，不要再从头长出来一遍） */
+  enter?: boolean;
+}
+
+// 遮罩的「空」状态：底色透明、背景不模糊
+const SCRIM_EMPTY: Keyframe = { backgroundColor: 'transparent', backdropFilter: 'blur(0px) saturate(1)' };
+
+function fadeScrimOut(scrim: HTMLElement | null | undefined, panel: HTMLElement, ms: number) {
+  if (scrim && scrim !== panel) scrim.animate([{}, SCRIM_EMPTY], { duration: ms, easing: 'ease-in', fill: 'forwards' });
 }
 
 // 最近一次按下的可点元素：有些触发器（带 onClick 的 span、链接样式的文字）点了不会拿到焦点，
@@ -66,7 +75,7 @@ function collapsedFrame(origin: DOMRect, panel: DOMRect, originRadius: number): 
   };
 }
 
-export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFocus = false }: MorphOptions = {}) {
+export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFocus = false, enter = true }: MorphOptions = {}) {
   const originRef = useRef<HTMLElement | null>(null);
   const closing = useRef(false);
 
@@ -76,6 +85,12 @@ export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFo
     const trigger = triggerElement();
     const origin = usableOrigin(trigger, panel);
     originRef.current = trigger instanceof HTMLElement && trigger !== document.body ? trigger : null;
+    if (!enter) {
+      // 不播入场：连组件自带的 CSS 兜底入场也关掉
+      panel.style.animation = 'none';
+      if (scrimRef?.current) scrimRef.current.style.animation = 'none';
+      return;
+    }
     if (!origin || reducedMotion() || !canAnimate(panel)) return;
 
     // 关掉组件自带的 CSS 入场，改由形变负责
@@ -101,7 +116,7 @@ export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFo
     const scrim = scrimRef?.current;
     if (scrim && scrim !== panel) {
       scrim.style.animation = 'none';
-      scrim.animate([{ backgroundColor: 'transparent' }, {}], { duration: OPEN_MS * 0.7, easing: 'ease-out' });
+      scrim.animate([SCRIM_EMPTY, {}], { duration: OPEN_MS * 0.7, easing: 'ease-out' });
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -121,7 +136,9 @@ export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFo
 
       if (!origin) {
         // 来源已经看不到了：原地淡出缩小一点
+        for (const x of panel.getAnimations()) x.cancel();
         const a = panel.animate([{}, { opacity: 0, transform: 'scale(.98)' }], { duration: 160, easing: 'ease-in', fill: 'forwards' });
+        fadeScrimOut(scrimRef?.current, panel, 160);
         a.onfinish = finish;
         return;
       }
@@ -142,10 +159,7 @@ export function useMorph(panelRef: RefObject<HTMLElement>, { scrimRef, restoreFo
           fill: 'forwards',
         });
       }
-      const scrim = scrimRef?.current;
-      if (scrim && scrim !== panel) {
-        scrim.animate([{}, { backgroundColor: 'transparent' }], { duration: CLOSE_MS, easing: 'ease-in', fill: 'forwards' });
-      }
+      fadeScrimOut(scrimRef?.current, panel, CLOSE_MS);
       a.onfinish = finish;
     },
     [panelRef, scrimRef, restoreFocus],

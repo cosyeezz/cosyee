@@ -162,13 +162,42 @@
 .cz-goo__blob { border-radius: var(--goo-radius, 7px); }
 .cz-goo__bridge { width: 0; height: 0; border-radius: 999px; }
 
+/* ───── 锚定气泡的出现 / 消失（usePresence.ts 负责延迟卸载）───── */
+/* 用 transition + @starting-style 而不是 keyframes：退场途中再打开，会从当前状态接着走回去。
+ * --pop-origin：从哪个角长出（对准触发按钮）；--pop-dy：入场时的起始位移（从按钮那一侧过来） */
+.cz-pop {
+  transform-origin: var(--pop-origin, top right);
+  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+}
+@starting-style {
+  .cz-pop { opacity: 0; transform: translateY(var(--pop-dy, -4px)) scale(.95); }
+}
+.cz-pop.is-leaving {
+  opacity: 0;
+  transform: scale(.97);
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+  pointer-events: none;
+}
+
+/* ───── 模态卡片的兜底入场 ───── */
+/* 有来源元素时 useMorph 会把 animation 设成 none、改由原位展开负责；来源不在了（例如菜单项已随菜单关掉）就播这个 */
+.cz-modal { animation: cz-modal-in 220ms var(--ease-out); }
+.cz-modal-scrim { animation: cz-scrim-in 200ms ease-out; }
+@keyframes cz-modal-in { from { opacity: 0; transform: translateY(6px) scale(.96); } }
+@keyframes cz-scrim-in {
+  from { background-color: transparent; -webkit-backdrop-filter: blur(0) saturate(1); backdrop-filter: blur(0) saturate(1); }
+}
+
 /* ───── 减少动效 ───── */
+:root[data-motion="reduce"] :is(.cz-pop, .cz-modal, .cz-modal-scrim) { transition: none; animation: none; }
 :root[data-motion="reduce"] .cz-beam::after { display: none; }
 :root[data-motion="reduce"] .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }
 :root[data-motion="reduce"] .cz-spot::before,
 :root[data-motion="reduce"] .cz-spot::after { display: none; }
 :root[data-motion="reduce"] .cz-tilt { transform: none; }
 @media (prefers-reduced-motion: reduce) {
+  :is(.cz-pop, .cz-modal, .cz-modal-scrim) { transition: none; animation: none; }
   .cz-tilt { transform: none; }
   .cz-beam::after { display: none; }
   .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }

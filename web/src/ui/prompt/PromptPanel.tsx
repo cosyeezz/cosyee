@@ -1,8 +1,10 @@
 // 等用户回应的请求（AskUserQuestion 提问 / ExitPlanMode 计划审批）：显示在输入框上方。
 // 只显示队首一项；换项时用 key 重置内部状态。
-import { useEffect, useRef, useState } from 'react';
+// 动效：整块从输入框上沿浮起；换到下一项时卡片交叉淡入；全部回应完先下沉淡出再卸载。
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { AskQuestion, PendingPrompt, PromptReply } from '@cosyee/shared';
 import { Markdown } from '../flow/Markdown';
+import { leavingProps, usePresence } from '../motion/usePresence';
 import './PromptPanel.css';
 
 export interface PromptPanelProps {
@@ -12,16 +14,40 @@ export interface PromptPanelProps {
   onReply: (id: string, reply: PromptReply) => void;
 }
 
+const noop = () => {};
+
 export function PromptPanel({ items, onReply }: PromptPanelProps) {
-  const cur = items[0];
-  if (!cur) return null;
-  const more = items.length - 1;
+  const ref = useRef<HTMLElement>(null);
+  // 退场期间 items 已经空了：继续显示最后一份
+  const last = useRef(items);
+  if (items.length) last.current = items;
+  const { mounted, leaving } = usePresence(items.length > 0, ref, 140);
+  // 这次出现时的第一项：之后换成别的项才播「换项」动画，刚出现时只播整块的入场
+  const enterId = useRef<string | null>(null);
+  const shown = items.length ? items : last.current;
+  const cur = mounted ? shown[0] : undefined;
+  if (!cur) {
+    enterId.current = null;
+    return null;
+  }
+  if (enterId.current === null) enterId.current = cur.id;
+  const swap = cur.id !== enterId.current;
+  const more = shown.length - 1;
+  // 退场中不再接受回应（数字键快捷键是全局监听的）
+  const reply = leaving ? noop : onReply;
+  const cardCls = swap ? ' is-swap' : '';
   return (
-    <section className="cz-prompt" role="dialog" aria-label={cur.kind === 'question' ? 'Claude 的提问' : '计划审批'}>
+    <section
+      ref={ref}
+      className={`cz-prompt${leaving ? ' is-leaving' : ''}`}
+      role="dialog"
+      aria-label={cur.kind === 'question' ? 'Claude 的提问' : '计划审批'}
+      {...leavingProps(leaving)}
+    >
       {cur.kind === 'question' ? (
-        <QuestionCard key={cur.id} id={cur.id} questions={cur.questions} onReply={onReply} />
+        <QuestionCard key={cur.id} id={cur.id} questions={cur.questions} onReply={reply} cls={cardCls} />
       ) : (
-        <PlanCard key={cur.id} id={cur.id} plan={cur.plan} planFilePath={cur.planFilePath} onReply={onReply} />
+        <PlanCard key={cur.id} id={cur.id} plan={cur.plan} planFilePath={cur.planFilePath} onReply={reply} cls={cardCls} />
       )}
       {more > 0 && <div className="cz-prompt__more">还有 {more} 个待处理</div>}
     </section>
@@ -49,7 +75,7 @@ const isTextTarget = (t: EventTarget | null) => {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
 };
 
-function QuestionCard({ id, questions, onReply }: { id: string; questions: AskQuestion[]; onReply: PromptPanelProps['onReply'] }) {
+function QuestionCard({ id, questions, onReply, cls }: { id: string; questions: AskQuestion[]; onReply: PromptPanelProps['onReply']; cls: string }) {
   const [state, setState] = useState<QState[]>(() => questions.map(() => EMPTY_Q));
   const quick = questions.length === 1 && !questions[0]!.multiSelect;
   const answers = questions.map((q, i) => answerOf(q, state[i] ?? EMPTY_Q));
@@ -97,8 +123,11 @@ function QuestionCard({ id, questions, onReply }: { id: string; questions: AskQu
     return () => document.removeEventListener('keydown', onKey);
   }, [questions, quick]);
 
+  // 选项依次浮现：跨问题连续编号，CSS 里封顶
+  let seq = 0;
+  const stagger = () => ({ '--i': seq++ }) as CSSProperties;
   return (
-    <div className="cz-prompt__card">
+    <div className={`cz-prompt__card${cls}`}>
       <div className="cz-prompt__title">Claude 想问你</div>
       <div className="cz-prompt__body">
         {questions.map((q, i) => {
@@ -120,6 +149,7 @@ function QuestionCard({ id, questions, onReply }: { id: string; questions: AskQu
                     role={role}
                     aria-checked={on}
                     className={`cz-prompt__opt${on ? ' is-on' : ''}`}
+                    style={stagger()}
                     onClick={() => pick(i, o.label)}
                   >
                     <span className={`cz-prompt__mark cz-prompt__mark--${role}`} aria-hidden="true" />
@@ -131,7 +161,7 @@ function QuestionCard({ id, questions, onReply }: { id: string; questions: AskQu
                   </button>
                 );
               })}
-              <div className={`cz-prompt__opt cz-prompt__opt--custom${s.customOn ? ' is-on' : ''}`}>
+              <div className={`cz-prompt__opt cz-prompt__opt--custom${s.customOn ? ' is-on' : ''}`} style={stagger()}>
                 <button
                   type="button"
                   role={role}
@@ -172,7 +202,7 @@ function QuestionCard({ id, questions, onReply }: { id: string; questions: AskQu
 
 // ───────────── 计划 ─────────────
 
-function PlanCard({ id, plan, planFilePath, onReply }: { id: string; plan: string; planFilePath?: string; onReply: PromptPanelProps['onReply'] }) {
+function PlanCard({ id, plan, planFilePath, onReply, cls }: { id: string; plan: string; planFilePath?: string; onReply: PromptPanelProps['onReply']; cls: string }) {
   const [revising, setRevising] = useState(false);
   const [feedback, setFeedback] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -184,7 +214,7 @@ function PlanCard({ id, plan, planFilePath, onReply }: { id: string; plan: strin
     if (f) onReply(id, { kind: 'revise', feedback: f });
   };
   return (
-    <div className="cz-prompt__card">
+    <div className={`cz-prompt__card${cls}`}>
       <div className="cz-prompt__title">计划已就绪，等你批准</div>
       <div className="cz-prompt__plan">
         <Markdown text={plan} className="cz-flow__md--small" />

@@ -1,6 +1,7 @@
 // 前后端约定。后端 server/ 与前端 web/ 都只通过这里的类型对接。
 // 后端只监听 127.0.0.1:7878；前端开发时通过 Vite 代理访问 /api 与 /ws。
 // 鉴权：每个请求带 token（REST 用请求头 `x-cosyee-token`，WS 用 `/ws?token=`），并校验 Origin。
+import type { CostParts } from './pricing.ts';
 
 // ───────────── 基础数据 ─────────────
 
@@ -65,6 +66,20 @@ export interface AccountEntry {
   loggedIn: boolean;
   active: boolean;
   isDefault: boolean;
+  /** API 账号（API Key + 可选的自定义 Base URL）才有；claude.ai 登录的账号没有 */
+  api?: AccountApiInfo;
+}
+
+/** API 账号的认证方式：apiKey = ANTHROPIC_API_KEY（x-api-key 头）；authToken = ANTHROPIC_AUTH_TOKEN（Authorization: Bearer） */
+export type ApiAuthType = 'apiKey' | 'authToken';
+
+/** API 账号的配置（不含密钥本身） */
+export interface AccountApiInfo {
+  /** 空字符串 = 官方地址 */
+  baseUrl: string;
+  authType: ApiAuthType;
+  /** 密钥末 4 位，用于辨认；密钥太短时为空 */
+  keyHint: string;
 }
 
 /** 多账号模式：switch = 同一时间只有一个账号生效（切换时停止所有会话）；parallel = 每个会话绑定自己的账号，多个账号同时生效 */
@@ -179,6 +194,28 @@ export interface ToolStats {
   /** 统计到的会话数（主会话记录文件数） */
   sessions: number;
   at: number;
+}
+
+/**
+ * 一个子智能体（subagents/agent-<id>.jsonl）的累计花费，按服务端当前价格表计算（GET /api/sessions/:id/subagent-costs）。
+ * 同一条消息在记录里分成多行时按 message.id 去重；只算有 usage 的 assistant 消息。
+ */
+export interface SubagentCost {
+  agentId: string;
+  /** 派发它的 Agent 工具调用 id（来自 agent-<id>.meta.json）；没有 meta 的旧记录为 null */
+  toolUseId: string | null;
+  /** meta 里的 agentType，如 general-purpose / web-fetch；压缩等内部任务可能没有 */
+  agentType?: string;
+  /** 有 usage 的请求数 */
+  requests: number;
+  /** 能定价的请求的花费 */
+  cost: CostParts;
+  /** 假如完全不用缓存的花费（能定价的请求） */
+  uncached: number;
+  /** 模型不在价格表里、没算进 cost 的请求数 */
+  unpriced: number;
+  /** 出现过的模型 id（原样） */
+  models: string[];
 }
 
 export interface ContextUsage {
@@ -350,6 +387,8 @@ export interface UsageInfo {
 // GET  /api/sessions/:id/history?cwd=&since= → { version: string; entries?: unknown[]; unchanged?: true }
 //                                             主会话 jsonl 过滤后的条目；since 等于当前 version 时不返回 entries，只回 unchanged
 // GET  /api/sessions/:id/subagent/:toolUseId?cwd= → { entries: unknown[] }  子代理 jsonl 原始条目
+// GET  /api/sessions/:id/subagent-costs?cwd=  → { items: SubagentCost[] }  该会话所有子智能体的花费（没有子智能体为空数组）
+// GET  /api/pricing                            → PriceTable   当前价格表（官方页面抓取成功则为 official，否则内置）
 // POST /api/sessions/:id/rename {cwd,title} → { ok: true }
 // POST /api/sessions/:id/viewed {cwd}       → { ok: true }   清除蓝点
 // GET  /api/pins                            → SessionSummary[]   所有工作空间的置顶会话（手动置顶在前，按置顶时间倒序；其后是自动置顶）
@@ -380,6 +419,8 @@ export interface UsageInfo {
 // POST /api/accounts/remove {id}            → { ok: true }   移除添加的账号（删除其配置目录里的私有内容，共享内容只解除链接）；
 //                                             默认账号与当前账号不能移除；并行模式下还有执行中会话的账号不能移除
 // POST /api/accounts/label {id, label}      → { ok: true }   修改备注名
+// POST /api/accounts/api {id?, label?, baseUrl?, apiKey?, authType?} → { ok: true, id }   添加（不带 id）或修改 API 账号。
+//                                             baseUrl 空 = 官方地址；修改时 apiKey 留空 = 不变；该账号有执行中的会话时 409，空闲进程会先停掉
 // POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }   系统对话框，仅本机连接
 // GET  /api/browse?path=                    → BrowseDir   网页版选择窗口（远程连接）：列出服务端目录
 // POST /api/pick/paths {paths: string[]}    → { items: PickedItem[]; supportsMixed: true }   登记网页里选好的路径

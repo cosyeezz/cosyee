@@ -5,8 +5,8 @@
 import type { CachePoint, CompactMark, SessionMeta } from '@cosyee/shared';
 import { arr, isObj, str } from './util';
 
-/** 最多保留的点数（更早的丢弃） */
-export const MAX_CACHE_POINTS = 400;
+/** 最多保留的点数（更早的丢弃）；会话花费也从这些点算，所以留得多一些 */
+export const MAX_CACHE_POINTS = 2000;
 
 const tok = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
 
@@ -25,6 +25,16 @@ export function cachePointOf(message: unknown, turn: number): CachePoint | null 
   for (const b of arr(message.content)) if (isObj(b) && b.type === 'tool_use' && str(b.id)) tools.push(str(b.id));
   const p: CachePoint = { id, turn, input, create, read, rate: (read / total) * 100 };
   if (tools.length) p.tools = tools;
+  // 算花费用：输出 token、模型、1 小时缓存写入、fast / 美国境内推理
+  p.output = tok(u.output_tokens);
+  const model = str(message.model);
+  if (model && !model.startsWith('<')) p.model = model;
+  if (isObj(u.cache_creation)) {
+    const h1 = tok(u.cache_creation.ephemeral_1h_input_tokens);
+    if (h1 > 0) p.create1h = Math.min(h1, create);
+  }
+  if (u.speed === 'fast') p.fast = true;
+  if (u.inference_geo === 'us') p.usGeo = true;
   return p;
 }
 
@@ -43,10 +53,17 @@ export function pushCachePoint(list: CachePoint[], p: CachePoint): boolean {
   if (at >= 0) {
     const o = list[at]!;
     const tools = mergeTools(o.tools, p.tools);
-    if (o.input === p.input && o.create === p.create && o.read === p.read && tools === o.tools) return false;
-    const n: CachePoint = { ...p, turn: o.turn };
+    // 同一条消息分段到达时输出 token 只增不减（流式中间段的 usage 是部分值）
+    const output = Math.max(o.output ?? 0, p.output ?? 0);
+    const model = p.model ?? o.model;
+    if (
+      o.input === p.input && o.create === p.create && o.read === p.read && tools === o.tools &&
+      (o.output ?? 0) === output && o.model === model && o.create1h === p.create1h && o.fast === p.fast && o.usGeo === p.usGeo
+    ) return false;
+    const n: CachePoint = { ...p, turn: o.turn, output };
     if (tools) n.tools = tools;
     else delete n.tools;
+    if (model) n.model = model;
     list[at] = n;
     return true;
   }

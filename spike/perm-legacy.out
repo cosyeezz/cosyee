@@ -1,0 +1,19 @@
+(node:85504) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+0.7s system hook_started  
+0.8s system hook_response  
+1.0s system init bypassPermissions 
+2.2s system thinking_tokens  
+2.3s system thinking_tokens  
+2.3s assistant thinking 
+2.5s assistant tool_use ToolSearch {"query":"select:AskUserQuestion","max_results":1}
+2.7s tool_result "No matching deferred tools found"
+3.6s system thinking_tokens  
+3.8s system thinking_tokens  
+3.8s assistant thinking 
+4.3s assistant text The `AskUserQuestion` tool isn't available in this session. I searched for it and it didn't match any deferred tool, so I can't open the built-in picker. Here is the question in plain text:
+
+**What's 
+4.4s system notification  
+TIMEOUT
+exit null files: []

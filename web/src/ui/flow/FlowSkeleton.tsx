@@ -36,13 +36,20 @@ export function useFlowSkeleton(loading: boolean): { phase: 'on' | 'leaving' | '
 
 export function FlowSkeleton({ leaving = false }: { leaving?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const leaveAnim = useRef<Animation | null>(null);
   // 淡出从当前不透明度开始（加载很快时淡入可能还没走完），避免先跳到全亮再淡出
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!leaving || !canAnimate(el)) return;
+    if (!leaving) {
+      // 淡出途中又开始加载（快速连切会话）：同一个元素继续用，撤掉停在 0 的淡出，否则骨架一直不可见
+      leaveAnim.current?.cancel();
+      leaveAnim.current = null;
+      return;
+    }
+    if (!canAnimate(el)) return;
     const from = getComputedStyle(el).opacity;
     for (const a of el.getAnimations()) a.cancel();
-    el.animate([{ opacity: from }, { opacity: 0 }], { duration: LEAVE_MS, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'forwards' });
+    leaveAnim.current = el.animate([{ opacity: from }, { opacity: 0 }], { duration: LEAVE_MS, easing: 'cubic-bezier(.16, 1, .3, 1)', fill: 'forwards' });
   }, [leaving]);
   return (
     <div
