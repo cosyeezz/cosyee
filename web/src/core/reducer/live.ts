@@ -31,7 +31,7 @@ import {
 } from './core';
 import { arr, isObj, str, textOf } from './util';
 import { resolveRun } from './resume';
-import { recordCache, recordCompact } from './cacheHit';
+import { recordCache, recordCacheDelta, recordCompact } from './cacheHit';
 
 const strList = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
 
@@ -165,6 +165,13 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
   const ev = e.event;
   if (!isObj(ev)) return s;
   const type = ev.type;
+  if (type === 'message_delta') {
+    // 最终 usage 补到缓存命中率的点上（只记主线程）
+    if (scopeOf(e) !== '' || !s.turns.length) return s;
+    const id = str(e.api_message_id) || s.book?.curMsg[''] || '';
+    const meta = recordCacheDelta(s.meta, id, ev.usage, s.turns.length - 1);
+    return meta === s.meta ? s : { ...s, meta };
+  }
   if (type !== 'message_start' && type !== 'content_block_start' && type !== 'content_block_delta' && type !== 'content_block_stop') return s;
   const d = openDraft(s, now);
   if (!d) return s;

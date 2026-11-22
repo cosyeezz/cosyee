@@ -80,6 +80,39 @@ export function recordCache(meta: SessionMeta, message: unknown, turn: number): 
   return pushCachePoint(list, p) ? { ...meta, cache: list } : meta;
 }
 
+/**
+ * 实时：message_delta 带的是这条消息的最终 usage，补到同 id 的点上。
+ * 有的中转在 message_start 里把缓存字段填 0，只在 message_delta 里给真实值。CLI 收到 delta 后才修正 usage 再写进 transcript，
+ * 但 stdout 上的 assistant 事件已经按 message_start 的值发出去了，所以实时图会一直是 0。
+ * 规则与 CLI 一致：delta 里 > 0 的字段覆盖，其余沿用。没有同 id 的点时新建一个。没变化时原样返回。
+ */
+export function recordCacheDelta(meta: SessionMeta, id: string, usage: unknown, turn: number): SessionMeta {
+  if (!id || !isObj(usage)) return meta;
+  const list = (meta.cache ?? []).slice();
+  const at = list.findIndex((x) => x.id === id);
+  const o = at >= 0 ? list[at]! : null;
+  const pick = (v: unknown, prev: number): number => (tok(v) > 0 ? tok(v) : prev);
+  const input = pick(usage.input_tokens, o?.input ?? 0);
+  const create = pick(usage.cache_creation_input_tokens, o?.create ?? 0);
+  const read = pick(usage.cache_read_input_tokens, o?.read ?? 0);
+  const output = pick(usage.output_tokens, o?.output ?? 0);
+  const total = input + create + read;
+  if (total <= 0) return meta;
+  const n: CachePoint = o ? { ...o, input, create, read, output, rate: (read / total) * 100 } : { id, turn, input, create, read, output, rate: (read / total) * 100 };
+  const h1 = isObj(usage.cache_creation) ? tok(usage.cache_creation.ephemeral_1h_input_tokens) : 0;
+  const create1h = h1 > 0 ? h1 : o?.create1h;
+  if (create1h !== undefined) n.create1h = Math.min(create1h, create);
+  if (usage.speed === 'fast') n.fast = true;
+  if (usage.inference_geo === 'us') n.usGeo = true;
+  if (!o) return pushCachePoint(list, n) ? { ...meta, cache: list } : meta;
+  if (
+    o.input === n.input && o.create === n.create && o.read === n.read && (o.output ?? 0) === n.output &&
+    o.create1h === n.create1h && o.fast === n.fast && o.usGeo === n.usGeo
+  ) return meta;
+  list[at] = n;
+  return { ...meta, cache: list };
+}
+
 /** 回退 / replay 重放前：丢掉序号 >= turnCount 的轮留下的点与压缩记录 */
 export function trimCache(meta: SessionMeta, turnCount: number): SessionMeta {
   let out = meta;

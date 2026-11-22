@@ -610,6 +610,30 @@ describe('缓存命中率走势', () => {
     expect(q.fast).toBeUndefined();
     expect(q.usGeo).toBeUndefined();
   });
+  it('实时：中转在 assistant 里把缓存字段填 0，message_delta 补上真实值', () => {
+    const delta = (u: unknown, extra: Record<string, unknown> = {}) => ({
+      type: 'stream_event', parent_tool_use_id: null, ...extra,
+      event: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: u },
+    });
+    let s = applyEvent(initState(), user('问'), 1_000_000);
+    s = applyEvent(s, asst('m1', usage(16000, 0, 0), { parent_tool_use_id: null }), 2_000_000);
+    expect(s.meta.cache?.[0]?.rate).toBe(0);
+    s = applyEvent(s, delta({ input_tokens: 16000, cache_creation_input_tokens: 500, cache_read_input_tokens: 23500, output_tokens: 120 }, { api_message_id: 'm1' }), 2_000_000);
+    expect(s.meta.cache).toHaveLength(1);
+    expect(s.meta.cache?.[0]).toMatchObject({ id: 'm1', input: 16000, create: 500, read: 23500, output: 120, turn: 0 });
+    expect(Math.round(s.meta.cache![0]!.rate)).toBe(59);
+    // delta 里为 0 的字段沿用原值；没有 api_message_id 时用 message_start 记下的 id
+    s = applyEvent(s, { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'm2' } } }, 3_000_000);
+    s = applyEvent(s, asst('m2', usage(10, 20, 70), { parent_tool_use_id: null }), 3_000_000);
+    s = applyEvent(s, delta({ input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 9 }), 3_000_000);
+    expect(s.meta.cache?.[1]).toMatchObject({ id: 'm2', input: 10, create: 20, read: 70, output: 9 });
+    // 子代理的 delta 不记；重复的 delta 不产生新状态
+    const before = s;
+    s = applyEvent(s, delta(usage(1, 1, 1), { parent_tool_use_id: 'toolu_x', api_message_id: 'm2' }), 4_000_000);
+    expect(s.meta).toBe(before.meta);
+    s = applyEvent(s, delta({ output_tokens: 9 }, { api_message_id: 'm2' }), 4_000_000);
+    expect(s.meta).toBe(before.meta);
+  });
   it('同一条消息分段到达：输出 token 取较大值，模型保留', () => {
     const list: CachePoint[] = [];
     pushCachePoint(list, cachePointOf({ id: 'm1', model: 'claude-sonnet-4-5', usage: { input_tokens: 1, output_tokens: 50 } }, 0)!);
