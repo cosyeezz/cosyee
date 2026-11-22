@@ -4,7 +4,10 @@
 
 ## 0. 前提
 - **平台**：Windows、macOS；不做 Linux。
-- **驱动方式**：后端在本机启动用户自己的 `claude` 进程，参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --forward-subagent-text --dangerously-skip-permissions`。
+- **驱动方式**：后端在本机启动用户自己的 `claude` 进程，参数为 `-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --forward-subagent-text --allow-dangerously-skip-permissions --permission-mode <bypassPermissions|plan> --permission-prompt-tool stdio`。
+- **权限模式**：每个会话有 auto / plan 两档（输入框下方，模型菜单与用量环之间切换；缺省 auto，会随会话配置持久化）。auto = `bypassPermissions`，不需要审批；plan = CLI 计划模式。运行中切换通过 `set_permission_mode` 立即生效。
+  - 必须带 `--permission-prompt-tool stdio`，否则 `-p` 下没有 AskUserQuestion / ExitPlanMode 两个工具。带上后 CLI 通过 `control_request can_use_tool` 询问宿主：AskUserQuestion / ExitPlanMode 转成「待回应请求」（`prompts` 快照）推给前端，用户回应经 `prompt.reply` 变成 `control_response`（回答 → allow 且 `updatedInput.answers`；跳过 / 要求修改 → deny）；其余工具（如 plan 模式下写计划文件）一律自动放行。
+  - 批准计划（approve）后后端把会话切到 auto（`set_permission_mode bypassPermissions`）并更新已存的会话配置；要求修改则留在 plan。中断 / 回合结束 / 进程退出会清掉待回应请求（中断时先 deny）。
 - **会话**：新会话用 `--session-id <uuid>` 指定 ID，续接用 `--resume <id>`。
 - **环境变量**：启动前清掉继承来的 `CLAUDE_CODE_*` 和 `CLAUDECODE`。
 - **后端安全**：只监听 127.0.0.1；连接要带随机 token，并校验请求来源（Origin）。

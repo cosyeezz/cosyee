@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { Turn } from '@cosyee/shared';
 import {
   describeToolInput,
+  parseAskAnswers,
+  parseAskQuestions,
+  planVerdict,
+  toolLine,
   formatClock,
   formatDoneText,
   formatDuration,
@@ -289,5 +293,34 @@ describe('splitUserText', () => {
   it('无附件时整段文字', () => {
     expect(splitUserText('hi', [])).toEqual([{ type: 'text', text: 'hi' }]);
     expect(splitUserText('', [])).toEqual([]);
+  });
+});
+
+describe('AskUserQuestion / ExitPlanMode 展示', () => {
+  const ask = { questions: [{ question: '选哪个？', header: 'H', options: [{ label: 'A', description: 'd' }, { label: 'B' }] }, { question: '再选', options: [] }] };
+  it('toolLine', () => {
+    expect(toolLine({ name: 'AskUserQuestion', input: ask, summary: 'x' })).toBe('提问：选哪个？（等 2 个问题）');
+    expect(toolLine({ name: 'AskUserQuestion', input: { questions: [ask.questions[0]] }, summary: 'x' })).toBe('提问：选哪个？');
+    expect(toolLine({ name: 'AskUserQuestion', input: {}, summary: 'AskUserQuestion' })).toBe('AskUserQuestion');
+    expect(toolLine({ name: 'ExitPlanMode', input: { plan: '## 重构方案\n\n步骤' }, summary: 'ExitPlanMode' })).toBe('计划：重构方案');
+    expect(toolLine({ name: 'ExitPlanMode', input: {}, summary: 'ExitPlanMode' })).toBe('计划');
+    expect(toolLine({ name: 'Bash', input: {}, summary: 'Bash: ls' })).toBe('Bash: ls');
+  });
+  it('parseAskQuestions 容错', () => {
+    const qs = parseAskQuestions(ask);
+    expect(qs).toHaveLength(2);
+    expect(qs[0]!.options[0]).toEqual({ label: 'A', description: 'd' });
+    expect(parseAskQuestions(null)).toEqual([]);
+    expect(parseAskQuestions({ questions: [1, { question: '' }] })).toEqual([]);
+  });
+  it('parseAskAnswers', () => {
+    const t = 'Your questions have been answered: "Q1"="A1", "Q2"="B, C". You can now continue.';
+    expect(parseAskAnswers(t)).toEqual({ Q1: 'A1', Q2: 'B, C' });
+    expect(parseAskAnswers('nothing')).toBeNull();
+  });
+  it('planVerdict', () => {
+    expect(planVerdict('User has approved your plan. You can now start coding.', false)).toEqual({ approved: true });
+    expect(planVerdict("The user doesn't want to proceed. The user said: 加上测试", true)).toEqual({ approved: false, feedback: '加上测试' });
+    expect(planVerdict('', false)).toBeNull();
   });
 });

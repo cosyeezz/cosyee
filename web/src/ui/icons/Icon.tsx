@@ -26,7 +26,9 @@ export type IconName =
   // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
   | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo'
   // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行
-  | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap';
+  | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap'
+  // 权限模式：自动（闪电）/ 计划（清单）
+  | 'mode-auto' | 'mode-plan';
 
 export interface IconProps {
   name: IconName;
@@ -47,6 +49,14 @@ const hasDesign = (name: string): boolean =>
 /** 输入框与菜单用的简单线条图标（设计稿未提供前的实现），16×16 画布 */
 const SIMPLE: Record<string, JSX.Element> = {
   plus: <path d="M8 3v10M3 8h10" />,
+  // 权限模式：自动 = 闪电；计划 = 带勾选行的清单
+  'mode-auto': <path d="M9 2L3.8 9h3.7L7 14l5.2-7H8.5z" />,
+  'mode-plan': (
+    <>
+      <rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2.4" />
+      <path d="M5.4 6l.9.9 1.6-1.8M5.4 10.4l.9.9 1.6-1.8M9.6 6.2h1.6M9.6 10.6h1.6" />
+    </>
+  ),
   // skill 状态：开=圆里打勾；手动=圆角方框里一道斜杠（/名字）；关=圆里斜线
   'skill-on': (
     <>

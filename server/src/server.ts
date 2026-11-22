@@ -126,9 +126,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       get: (id) => store.state.sessionConfigs[id] ?? null,
       set: (id, c) => {
         const cur = store.state.sessionConfigs[id];
-        if (cur && cur.model === c.model && cur.effort === c.effort && !!cur.ultracode === !!c.ultracode) return;
+        if (cur && cur.model === c.model && cur.effort === c.effort && !!cur.ultracode === !!c.ultracode && (cur.permissionMode ?? 'auto') === (c.permissionMode ?? 'auto')) return;
         delete store.state.sessionConfigs[id]; // 重新插入，保持「最近使用」在末尾
-        store.state.sessionConfigs[id] = { model: c.model, effort: c.effort, ...(c.ultracode ? { ultracode: true } : {}) };
+        store.state.sessionConfigs[id] = {
+          model: c.model,
+          effort: c.effort,
+          ...(c.ultracode ? { ultracode: true } : {}),
+          ...(c.permissionMode === 'plan' ? { permissionMode: 'plan' as const } : {}), // auto 是缺省，不存
+        };
         const keys = Object.keys(store.state.sessionConfigs);
         for (const k of keys.slice(0, Math.max(0, keys.length - MAX_SESSION_CONFIGS))) delete store.state.sessionConfigs[k];
         store.save();

@@ -3,7 +3,18 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import type { AppliedSettings, CosyeeUserEvent, QueueItem, QueueMode, RunStatus, SessionConfig } from '@cosyee/shared';
+import type {
+  AppliedSettings,
+  AskQuestion,
+  CosyeeUserEvent,
+  PendingPrompt,
+  PermissionMode,
+  PromptReply,
+  QueueItem,
+  QueueMode,
+  RunStatus,
+  SessionConfig,
+} from '@cosyee/shared';
 import { LineSplitter, parseLine } from '../transcript.js';
 import { claudeEnv, resolveClaude, spawnSpec } from './bin.js';
 import { ControlTracker } from './control.js';
@@ -19,6 +30,8 @@ export interface RunnerHooks {
   onTurnEnd(): void;
   /** 排队消息列表变了（完整快照）：新排入、开始执行、被撤回、进程退出 */
   onQueue?(items: QueueItem[]): void;
+  /** 待用户回应的请求（AskUserQuestion / ExitPlanMode）变了（完整快照） */
+  onPrompts?(items: PendingPrompt[]): void;
   /** 进程已退出，runner 可丢弃 */
   onExit(): void;
 }
@@ -70,6 +83,32 @@ export const THINKING_DISPLAY = 'summarized';
 export function validateConfig(c: SessionConfig): void {
   if (!c || typeof c.model !== 'string' || !MODEL_RE.test(c.model)) throw new Error('model 不合法');
   if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(c.effort)) throw new Error('effort 不合法');
+  if (c.permissionMode !== undefined && c.permissionMode !== 'auto' && c.permissionMode !== 'plan') throw new Error('permissionMode 不合法');
+}
+
+/** 会话权限模式 -> CLI 的 --permission-mode / set_permission_mode 值 */
+export function cliPermissionMode(m?: PermissionMode): 'plan' | 'bypassPermissions' {
+  return m === 'plan' ? 'plan' : 'bypassPermissions';
+}
+
+/** AskUserQuestion 的 questions 输入清洗：只留字符串 / 布尔字段，丢弃畸形项 */
+function sanitizeQuestions(raw: unknown[]): AskQuestion[] {
+  const out: AskQuestion[] = [];
+  for (const q of raw) {
+    if (!q || typeof q !== 'object') continue;
+    const o = q as Json;
+    if (typeof o.question !== 'string' || !Array.isArray(o.options)) continue;
+    const options: AskQuestion['options'] = [];
+    for (const op of o.options) {
+      if (!op || typeof op !== 'object' || typeof op.label !== 'string') continue;
+      options.push(typeof op.description === 'string' ? { label: op.label, description: op.description } : { label: op.label });
+    }
+    const item: AskQuestion = { question: o.question, options };
+    if (typeof o.header === 'string') item.header = o.header;
+    if (typeof o.multiSelect === 'boolean') item.multiSelect = o.multiSelect;
+    out.push(item);
+  }
+  return out;
 }
 
 /**
@@ -81,6 +120,32 @@ export const PATH_PROMPT =
   'When referencing files, use Markdown links: [filename](path). Prefer absolute paths with forward slashes ' +
   '(e.g. [runner.ts](F:/repo/src/runner.ts)); append :line for a specific line ([runner.ts](F:/repo/src/runner.ts:42)); ' +
   'wrap the target in <> when the path contains spaces ([a b.md](<F:/repo/a b.md>)). Do not put file links inside backticks.';
+
+/**
+ * 分工约定：主会话负责理解、设计与最终判断，把耗 token 的搜索 / 实现交给 Sonnet 子代理。
+ * 主会话每轮都要重读整个上下文，大段工具输出留在子代理里能持续省钱。不论主会话用什么模型都追加。
+ */
+export const DELEGATION_PROMPT =
+  'Delegation policy (pre-authorized by the user; no need to ask each time). You, the main session, own understanding, ' +
+  'design and every final judgment; delegate token-heavy legwork to subagents with model "sonnet". ' +
+  '(1) Search / diagnosis: when locating something means sweeping many files, directories or naming conventions, use an ' +
+  'Explore subagent. It only locates and gathers evidence, never concludes: each finding = file:line + a 5-10 line key ' +
+  'snippet + a one-line reason. Judge from the snippets; re-read the source only when unsure. Targeted lookups that one ' +
+  'or two Grep/Read calls can settle, do yourself. ' +
+  '(2) Implementation: clarify requirements, read the necessary code, split the work into independent tasks, then give each ' +
+  'general-purpose subagent a self-contained spec: files/functions to change (with paths) and what not to touch; ' +
+  'interface signatures, data structures, naming; existing code to imitate (file:line); acceptance criteria (build, lint, ' +
+  'tests pass; expected behavior). Require a report with a change summary plus the verification commands and results. ' +
+  'Review the diff yourself; send fixes back to the same subagent via SendMessage rather than spawning a new one. ' +
+  '(3) Parallelism: only for independent tasks, split by module; define shared interfaces first; never let two subagents ' +
+  'edit the same file. Worktree isolation starts from HEAD and cannot see uncommitted changes, so if the working tree is ' +
+  'dirty, split by disjoint files in the main working tree instead. ' +
+  '(4) Keep for yourself: small changes (roughly under a few dozen lines), cross-layer changes that need decisions along ' +
+  'the way, UI tweaks that need visual iteration, and all final judgments (is it a bug, which design to choose).';
+
+/** 每次启动追加到系统提示词的全部内容 */
+// 不能含换行：claude 若解析到 .cmd / .bat，参数要经 cmd.exe 转发，换行会把整条命令行截断
+export const APPEND_PROMPT = `${PATH_PROMPT} ${DELEGATION_PROMPT}`;
 
 /** 构造 claude 命令行参数（不含可执行文件）。 */
 export function buildArgs(sessionId: string, isNew: boolean, config: SessionConfig, extraSettings: Record<string, unknown> = {}): string[] {
@@ -94,11 +159,16 @@ export function buildArgs(sessionId: string, isNew: boolean, config: SessionConf
     // 让 CLI 在“用户消息真正进入对话”的时刻回显它（isReplay）。运行中写入的消息会先被 CLI 排队，
     // 等当前这批工具跑完才插入；回显就是插入点，runner 据此精确知道“写了几条还没进对话”。
     '--replay-user-messages',
-    '--dangerously-skip-permissions',
+    // 权限：auto = bypassPermissions（等同 --dangerously-skip-permissions），plan = 计划模式。
+    // --permission-prompt-tool stdio 必须带：否则 -p 下根本没有 AskUserQuestion / ExitPlanMode 这两个工具；
+    // 带了之后它们（以及 plan 模式下的写文件等）以 control_request can_use_tool 交给我们，由 runner 放行或转给前端。
+    '--allow-dangerously-skip-permissions',
+    '--permission-mode', cliPermissionMode(config.permissionMode),
+    '--permission-prompt-tool', 'stdio',
     '--model', config.model,
     '--effort', config.effort,
     // 每次启动都要带：--resume 不会沿用上次进程的追加提示词
-    '--append-system-prompt', PATH_PROMPT,
+    '--append-system-prompt', APPEND_PROMPT,
   ];
   const settings: Record<string, unknown> = { ...extraSettings };
   if (config.ultracode) settings.ultracode = true;
@@ -151,6 +221,9 @@ export class Runner {
   /** 当前（或最近一次启动时）已生效的配置，用于判断要不要发 set_model / apply_flag_settings */
   private applied: SessionConfig;
   private chain: Promise<void> = Promise.resolve();
+  /** 等用户回应的 can_use_tool 请求（AskUserQuestion / ExitPlanMode），及各自的原始工具输入（构造 updatedInput 用） */
+  private prompts: PendingPrompt[] = [];
+  private promptInputs = new Map<string, Json>();
 
   // 回合状态
   private turnSeq = 0;
@@ -286,11 +359,11 @@ export class Runner {
     this.clearIdle();
     if (this.proc && !this.alive) throw new Error('claude 进程正在关闭，请稍后重试');
     const fresh = !this.proc;
+    this.probeMode = false; // 在 start 之前清：发消息启动的进程按正常回合走（starting），开轮事件才会进缓冲
     if (fresh) {
       this.applied = { ...config };
       this.start();
     }
-    this.probeMode = false;
     const uuid = id || randomUUID();
 
     if (this._status === 'idle' && !fresh) {
@@ -423,6 +496,10 @@ export class Runner {
       cur.model = config.model;
       changed = true;
     }
+    if ((config.permissionMode ?? 'auto') !== (cur.permissionMode ?? 'auto')) {
+      await this.control.request('set_permission_mode', { mode: cliPermissionMode(config.permissionMode) });
+      cur.permissionMode = config.permissionMode;
+    }
     const flags: Json = {};
     if (config.effort !== cur.effort) flags.effortLevel = config.effort;
     if (config.ultracode !== undefined && !!config.ultracode !== !!cur.ultracode) flags.ultracode = !!config.ultracode;
@@ -455,11 +532,116 @@ export class Runner {
     return this.control.request(subtype, extra, timeoutMs);
   }
 
+  // ───────────── 待回应的请求（AskUserQuestion / ExitPlanMode，经 can_use_tool） ─────────────
+
+  /** 待回应列表（拷贝）：订阅时补发快照用 */
+  promptItems(): PendingPrompt[] {
+    return this.prompts.map((p) => ({ ...p }));
+  }
+
+  private notifyPrompts(): void {
+    this.hooks.onPrompts?.(this.promptItems());
+  }
+
+  private clearPrompts(): void {
+    if (this.prompts.length === 0) return;
+    this.prompts = [];
+    this.promptInputs.clear();
+    this.notifyPrompts();
+  }
+
+  private dropPrompt(id: string): void {
+    const i = this.prompts.findIndex((p) => p.id === id);
+    if (i < 0) return;
+    this.prompts = this.prompts.filter((_, j) => j !== i);
+    this.promptInputs.delete(id);
+    this.notifyPrompts();
+  }
+
+  /** 写 can_use_tool 的 control_response（进程已不在则忽略） */
+  private respondPrompt(id: string, response: Json): void {
+    try {
+      this.writeLine({ type: 'control_response', response: { subtype: 'success', request_id: id, response } });
+    } catch { /* 进程已退出 */ }
+  }
+
+  private onCanUseTool(id: string, req: Json): void {
+    const input: Json = req.input && typeof req.input === 'object' ? req.input : {};
+    const toolUseId = typeof req.tool_use_id === 'string' ? req.tool_use_id : undefined;
+    let prompt: PendingPrompt | null = null;
+    if (req.tool_name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+      const questions = sanitizeQuestions(input.questions);
+      if (questions.length > 0) prompt = { kind: 'question', id, toolUseId, questions, at: Date.now() };
+    } else if (req.tool_name === 'ExitPlanMode') {
+      prompt = {
+        kind: 'plan',
+        id,
+        toolUseId,
+        plan: typeof input.plan === 'string' ? input.plan : '',
+        planFilePath: typeof input.planFilePath === 'string' ? input.planFilePath : undefined,
+        at: Date.now(),
+      };
+    }
+    if (!prompt) {
+      // 其余工具（含 plan 模式下写计划文件）自动放行
+      this.respondPrompt(id, { behavior: 'allow', updatedInput: input });
+      return;
+    }
+    this.promptInputs.set(id, input);
+    this.prompts = [...this.prompts, prompt];
+    this.notifyPrompts();
+  }
+
+  /**
+   * 回应一个待处理的请求。没有这个 id 或回应类型与请求不符返回 false。
+   * approve：放行 ExitPlanMode 并把会话切到 auto（bypassPermissions）。
+   */
+  reply(id: string, reply: PromptReply): boolean {
+    const p = this.prompts.find((x) => x.id === id);
+    if (!p || !reply || typeof reply !== 'object') return false;
+    const orig = this.promptInputs.get(id) ?? {};
+    let response: Json;
+    let switchToAuto = false;
+    if (p.kind === 'question' && reply.kind === 'answer') {
+      const a = reply.answers;
+      if (!a || typeof a !== 'object' || Array.isArray(a) || !Object.values(a).every((v) => typeof v === 'string')) return false;
+      response = { behavior: 'allow', updatedInput: { ...orig, answers: { ...a } } };
+    } else if (p.kind === 'question' && reply.kind === 'skip') {
+      response = { behavior: 'deny', message: 'The user chose not to answer these questions. Continue with your best judgment.' };
+    } else if (p.kind === 'plan' && reply.kind === 'approve') {
+      response = { behavior: 'allow', updatedInput: orig };
+      switchToAuto = true;
+    } else if (p.kind === 'plan' && reply.kind === 'revise') {
+      const fb = typeof reply.feedback === 'string' ? reply.feedback.trim() : '';
+      response = {
+        behavior: 'deny',
+        message: fb
+          ? `The user did not approve the plan. Their feedback:\n${fb}`
+          : 'The user did not approve the plan. Revise the plan, or ask the user what to change.',
+      };
+    } else {
+      return false;
+    }
+    this.dropPrompt(id);
+    this.respondPrompt(id, response);
+    if (switchToAuto) {
+      // 批准后 CLI 自己落到 default 模式，再切到 bypassPermissions（= auto）
+      this.applied.permissionMode = 'auto';
+      this.chain = this.chain
+        .then(() => (this.alive ? this.control.request('set_permission_mode', { mode: 'bypassPermissions' }).then(() => undefined) : undefined))
+        .catch((e) => console.warn(`[runner ${this.sessionId.slice(0, 8)}] 切换权限模式失败:`, e instanceof Error ? e.message : e));
+    }
+    return true;
+  }
+
   // ───────────── 中断 ─────────────
 
   interrupt(): void {
     if (!this.alive || (this._status !== 'running' && this._status !== 'starting')) return;
     this.interrupting = true;
+    // 卡在等用户回应的工具先拒掉，CLI 才能顺利走中断流程
+    for (const p of this.prompts) this.respondPrompt(p.id, { behavior: 'deny', message: 'The user interrupted.' });
+    this.clearPrompts();
     const seq = this.turnSeq;
     this.control
       .request('interrupt')
@@ -581,11 +763,16 @@ export class Runner {
         this.control.handleResponse(msg);
         return;
       case 'control_cancel_request':
+        // CLI 撤销了一个待回应的请求（如中断）：丢掉对应的 prompt
+        if (typeof msg.request_id === 'string') this.dropPrompt(msg.request_id);
         return;
       case 'control_request': {
-        // CLI 反向请求（权限 / hook / mcp）：我们用 --dangerously-skip-permissions，不应出现；统一回错误避免它一直等
+        // CLI 反向请求。can_use_tool：AskUserQuestion / ExitPlanMode 转成待回应 prompt 交给前端，
+        // 其余工具（plan 模式下写计划文件等）一律放行；其它 subtype（hook / mcp 等）回错误避免它一直等
         const id = msg.request_id;
-        if (typeof id === 'string') {
+        if (typeof id === 'string' && msg.request?.subtype === 'can_use_tool') {
+          this.onCanUseTool(id, msg.request);
+        } else if (typeof id === 'string') {
           try {
             this.writeLine({ type: 'control_response', response: { subtype: 'error', request_id: id, error: 'not supported by cosyee host' } });
           } catch { /* ignore */ }
@@ -656,7 +843,10 @@ export class Runner {
   }
 
   private pushEvent(e: unknown): void {
-    if (this.buffer.length < EVENT_BUFFER_MAX) this.buffer.push(e);
+    // 只缓冲回合内的事件：空闲时的零散事件（切权限模式的 system/status、探针进程启动时的输出等）
+    // 若进了缓冲，订阅时会被当成「当前回合」replay，前端据此丢掉历史最后一轮
+    const inTurn = this._status === 'starting' || this._status === 'running';
+    if (inTurn && this.buffer.length < EVENT_BUFFER_MAX) this.buffer.push(e);
     this.hooks.onEvent(e);
   }
 
@@ -704,6 +894,7 @@ export class Runner {
     if (this.killTimer) clearTimeout(this.killTimer);
     this.killTimer = null;
     this.buffer = [];
+    this.clearPrompts();
     this.setStatus('idle');
     if (this.alive) this.armIdle(this.timings.idleMs);
     this.hooks.onTurnEnd();
@@ -755,6 +946,7 @@ export class Runner {
     for (const line of this.splitter.flush()) this.onLine(line);
     this.control.rejectAll('claude 进程已退出');
     this.setQueue([]); // 进程没了，排队的消息也没了
+    this.clearPrompts(); // 待回应的请求也随进程失效（没法再写回）
     this.clearTimers();
     this.proc = null;
 

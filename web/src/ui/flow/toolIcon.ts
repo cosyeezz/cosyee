@@ -24,6 +24,9 @@ const BY_NAME: Record<string, IconName> = {
   TaskUpdate: 'tool-todo',
   TaskList: 'tool-todo',
   TaskGet: 'tool-todo',
+  // 交互工具：提问用说明图标，计划用清单
+  AskUserQuestion: 'info',
+  ExitPlanMode: 'mode-plan',
 };
 
 /**

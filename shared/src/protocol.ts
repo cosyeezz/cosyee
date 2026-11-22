@@ -264,12 +264,52 @@ export interface ContextMcpServer {
   tools: { name: string; tokens: number | null }[];
 }
 
-/** 每个会话可调的启动参数，改动后下一轮生效 */
+/**
+ * 权限模式：auto=自动（CLI bypassPermissions，不需要审批）；plan=计划（CLI plan，只读调研并给出计划，
+ * 模型调用 ExitPlanMode 时等用户批准，批准后切回 auto 开始执行）。
+ */
+export type PermissionMode = 'auto' | 'plan';
+
+/** 每个会话可调的启动参数，改动后下一轮生效（permissionMode 运行中切换立即生效） */
 export interface SessionConfig {
   model: string;
   effort: Effort;
   ultracode?: boolean;
+  /** 缺省 = auto */
+  permissionMode?: PermissionMode;
 }
+
+// ───────────── 需要用户回应的请求（AskUserQuestion / ExitPlanMode） ─────────────
+
+/** AskUserQuestion 的一个问题（CLI 工具输入 questions[] 的一项） */
+export interface AskQuestion {
+  question: string;
+  /** 短标签（如 "Greeting"） */
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+}
+
+/**
+ * CLI 发来的 can_use_tool 中需要用户回应的那几种（其余工具一律自动放行）。
+ * id = control_request 的 request_id；toolUseId = 对应 assistant tool_use 块的 id（前端可据此关联流里的工具步骤）。
+ */
+export type PendingPrompt =
+  | { kind: 'question'; id: string; toolUseId?: string; questions: AskQuestion[]; at: number }
+  | { kind: 'plan'; id: string; toolUseId?: string; plan: string; planFilePath?: string; at: number };
+
+/**
+ * 对一个 PendingPrompt 的回应：
+ * - answer：回答问题。answers 的键 = 问题原文，值 = 选中的 label（多选用 ", " 连接；自定义回答直接是文字）
+ * - skip：不回答（拒绝这次提问，模型自行继续）
+ * - approve：批准计划，后端随即把会话切到 auto 模式
+ * - revise：不批准，带上修改意见，模型留在计划模式继续完善
+ */
+export type PromptReply =
+  | { kind: 'answer'; answers: Record<string, string> }
+  | { kind: 'skip' }
+  | { kind: 'approve' }
+  | { kind: 'revise'; feedback: string };
 
 export type UsageSeverity = 'normal' | 'warning' | 'critical';
 
@@ -414,7 +454,9 @@ export type ClientMsg =
    */
   | { t: 'rewind'; sessionId: string; cwd: string; config: SessionConfig; targetId: string; reqId: string }
   /** 修改模型、强度等，下一轮生效 */
-  | { t: 'config'; sessionId: string; config: SessionConfig };
+  | { t: 'config'; sessionId: string; config: SessionConfig }
+  /** 回应一个待处理的请求（id = PendingPrompt.id）。已不存在（被取消 / 已回应）时忽略 */
+  | { t: 'prompt.reply'; sessionId: string; id: string; reply: PromptReply };
 
 /**
  * idle：进程在，等待输入；running：一轮进行中（含 result 之后仍有后台子代理在跑、CLI 自动续轮的阶段）；
@@ -472,6 +514,12 @@ export type ServerMsg =
   | { t: 'status'; sessionId: string; status: RunStatus; error?: string }
   /** 排队消息列表（完整快照）。变化时广播；订阅时紧跟 replay 发一次（没有排队也发空数组） */
   | { t: 'queue'; sessionId: string; items: QueueItem[] }
+  /**
+   * 等用户回应的请求（完整快照，按到达顺序）。变化时广播；订阅时紧跟 queue 发一次（没有也发空数组）。
+   * 计划被批准时后端已把会话切到 auto（runner 的已生效配置与服务端记下的会话配置都改成 auto），
+   * 前端批准时自己把输入框的 config.permissionMode 改成 auto
+   */
+  | { t: 'prompts'; sessionId: string; items: PendingPrompt[] }
   /** queue.cancel 的结果。ok=true 时 text 为被撤回消息的原文，前端填回输入框；ok=false 表示已开始执行或不存在 */
   | { t: 'queue.cancelled'; sessionId: string; id: string; ok: boolean; text?: string }
   /** rewind 的结果。ok=true 时 prefillText 为被回退消息的原文；失败时 error 为原因 */

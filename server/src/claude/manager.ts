@@ -224,6 +224,9 @@ export class Manager {
         case 'rewind':
           void this.rewind(client, msg);
           break;
+        case 'prompt.reply':
+          this.promptReply(msg);
+          break;
         default:
           throw new Error('未知消息类型');
       }
@@ -239,6 +242,37 @@ export class Manager {
   /** 消息 id 必须是 UUID（CLI 要求 user 消息的 uuid 为 UUID 格式） */
   private requireMsgId(id: unknown): asserts id is string {
     if (!isSessionUuid(id)) throw new Error('消息 id 不合法');
+  }
+
+  /** 回应 AskUserQuestion / ExitPlanMode。请求已不存在（被取消 / 已回应）时静默忽略 */
+  private promptReply(msg: Extract<ClientMsg, { t: 'prompt.reply' }>): void {
+    this.requireId(msg.sessionId);
+    if (typeof msg.id !== 'string' || !msg.id) throw new Error('请求 id 不合法');
+    const rp = msg.reply as unknown as Record<string, unknown> | null;
+    if (!rp || typeof rp !== 'object') throw new Error('回应不合法');
+    switch (rp.kind) {
+      case 'answer': {
+        const a = rp.answers as Record<string, unknown> | null;
+        if (!a || typeof a !== 'object' || Array.isArray(a) || !Object.values(a).every((v) => typeof v === 'string')) {
+          throw new Error('answers 不合法');
+        }
+        break;
+      }
+      case 'revise':
+        if (typeof rp.feedback !== 'string') throw new Error('feedback 不合法');
+        break;
+      case 'skip':
+      case 'approve':
+        break;
+      default:
+        throw new Error('回应类型不合法');
+    }
+    const ok = this.runners.get(msg.sessionId)?.reply(msg.id, msg.reply);
+    if (ok && msg.reply.kind === 'approve') {
+      // 批准计划后会话已切到 auto：记下，刷新页面后据此还原
+      const cur = this.configs?.get(msg.sessionId);
+      if (cur) this.configs?.set(msg.sessionId, { ...cur, permissionMode: 'auto' });
+    }
   }
 
   private async subscribe(client: Client, id: string): Promise<void> {
@@ -261,6 +295,8 @@ export class Manager {
     }
     // 排队消息快照（紧跟 replay；没有排队也发空数组，前端据此清掉旧状态）
     this.safeSend(client, { t: 'queue', sessionId: id, items: r ? r.queueItems() : [] });
+    // 待回应请求快照（同上，空数组也发）
+    this.safeSend(client, { t: 'prompts', sessionId: id, items: r ? r.promptItems() : [] });
     const st = this.settingsCache.get(id);
     if (st) this.safeSend(client, { t: 'settings', sessionId: id, applied: st });
     const ctx = this.contextCache.get(id);
@@ -429,6 +465,7 @@ export class Manager {
           if (pinChanged) this.notifySidebar();
         },
         onQueue: (items) => this.emit(id, { t: 'queue', sessionId: id, items }),
+        onPrompts: (items) => this.emit(id, { t: 'prompts', sessionId: id, items }),
         onSettings: (applied) => {
           this.settingsCache.set(id, { ...this.settingsCache.get(id), ...applied });
           this.emit(id, { t: 'settings', sessionId: id, applied });

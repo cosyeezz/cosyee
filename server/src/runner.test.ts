@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PATH_PROMPT, Runner, buildArgs, validateConfig } from './claude/runner.js';
+import { DELEGATION_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, validateConfig } from './claude/runner.js';
 
 type Json = Record<string, any>;
 
@@ -10,7 +10,7 @@ const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sh
 
 /** 造一个带假进程的 Runner：不 spawn，只用 handleMessage 喂消息。 */
 function make(timings: Record<string, number> = {}) {
-  const log = { status: [] as string[], events: [] as any[], turnEnds: 0, exits: 0, settings: [] as any[], queues: [] as any[][] };
+  const log = { status: [] as string[], events: [] as any[], turnEnds: 0, exits: 0, settings: [] as any[], queues: [] as any[][], prompts: [] as any[][] };
   const writes: Json[] = [];
   const r = new Runner({
     sessionId: '11111111-2222-4333-8444-555555555555',
@@ -23,6 +23,7 @@ function make(timings: Record<string, number> = {}) {
       onStatus: (s) => log.status.push(s),
       onSettings: (a) => log.settings.push(a),
       onQueue: (items) => log.queues.push(items),
+      onPrompts: (items) => log.prompts.push(items),
       onTurnEnd: () => log.turnEnds++,
       onExit: () => log.exits++,
     },
@@ -72,7 +73,8 @@ describe('buildArgs / validateConfig', () => {
     expect(a).toContain('--session-id');
     expect(a).not.toContain('--resume');
     expect(a.slice(a.indexOf('--model'), a.indexOf('--model') + 4)).toEqual(['--model', 'haiku', '--effort', 'low']);
-    expect(a).toContain('--dangerously-skip-permissions');
+    expect(a).not.toContain('--dangerously-skip-permissions');
+    expect(a).toContain('--allow-dangerously-skip-permissions');
     const b = buildArgs('sid', false, { model: 'sonnet', effort: 'high', ultracode: true });
     expect(b.slice(-2)).toEqual(['--resume', 'sid']);
     expect(b).toContain('--settings');
@@ -80,12 +82,35 @@ describe('buildArgs / validateConfig', () => {
     const c = buildArgs('sid', true, { model: 'haiku', effort: 'low', ultracode: true }, { skillOverrides: { pdf: 'off' } });
     expect(JSON.parse(c[c.indexOf('--settings') + 1]!)).toEqual({ skillOverrides: { pdf: 'off' }, ultracode: true });
   });
-  it('新建与恢复都追加路径引用约定（Markdown 链接）', () => {
+  it('新建与恢复、任意模型都追加路径引用约定与分工约定', () => {
     for (const isNew of [true, false]) {
-      const a = buildArgs('sid', isNew, { model: 'haiku', effort: 'low' });
-      expect(a[a.indexOf('--append-system-prompt') + 1]).toBe(PATH_PROMPT);
+      for (const model of ['opus', 'sonnet', 'claude-haiku-5-5']) {
+        const a = buildArgs('sid', isNew, { model, effort: 'low' });
+        const p = a[a.indexOf('--append-system-prompt') + 1]!;
+        expect(p).toBe(`${PATH_PROMPT} ${DELEGATION_PROMPT}`);
+        expect(p).not.toMatch(/[\r\n]/); // .cmd 经 cmd.exe 转发时换行会截断命令行
+      }
     }
     expect(PATH_PROMPT).toContain('[filename](path)');
+    expect(DELEGATION_PROMPT).toContain('model "sonnet"');
+  });
+  it('权限模式：缺省 / auto 为 bypassPermissions，plan 为 plan；始终带 --permission-prompt-tool stdio', () => {
+    const val = (a: string[], f: string) => a[a.indexOf(f) + 1];
+    for (const c of [{ model: 'haiku', effort: 'low' }, { model: 'haiku', effort: 'low', permissionMode: 'auto' }] as const) {
+      const a = buildArgs('sid', true, c);
+      expect(val(a, '--permission-mode')).toBe('bypassPermissions');
+      expect(val(a, '--permission-prompt-tool')).toBe('stdio');
+    }
+    const p = buildArgs('sid', false, { model: 'haiku', effort: 'low', permissionMode: 'plan' });
+    expect(val(p, '--permission-mode')).toBe('plan');
+    expect(val(p, '--permission-prompt-tool')).toBe('stdio');
+    expect(cliPermissionMode('plan')).toBe('plan');
+    expect(cliPermissionMode()).toBe('bypassPermissions');
+  });
+  it('非法 permissionMode 抛错', () => {
+    expect(() => validateConfig({ model: 'haiku', effort: 'low', permissionMode: 'yolo' as any })).toThrow();
+    expect(() => validateConfig({ model: 'haiku', effort: 'low', permissionMode: 'plan' })).not.toThrow();
+    expect(() => validateConfig({ model: 'haiku', effort: 'low', permissionMode: 'auto' })).not.toThrow();
   });
   it('非法配置抛错', () => {
     expect(() => validateConfig({ model: 'a b', effort: 'low' })).toThrow();
@@ -109,6 +134,16 @@ describe('Runner 回合状态机', () => {
     expect(log.events).toHaveLength(3);
   });
 
+  it('空闲时的零散事件（切权限模式的 system/status）照常广播但不进缓冲', () => {
+    const { r, log } = make();
+    r.handleMessage(init);
+    r.handleMessage(result);
+    r.handleMessage({ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' });
+    expect(r.status).toBe('idle');
+    expect(log.events).toHaveLength(3);
+    expect(r.snapshot().events).toHaveLength(0);
+  });
+
   it('starting 状态下第一个事件切到 running', () => {
     const { r, anyR, log } = make();
     anyR._status = 'starting';
@@ -123,9 +158,9 @@ describe('Runner 回合状态机', () => {
     expect(r.status).toBe('idle');
   });
 
-  it('CLI 反向 control_request 统一回错误', () => {
+  it('CLI 其它反向 control_request（hook / mcp 等）统一回错误', () => {
     const { r, writes } = make();
-    r.handleMessage({ type: 'control_request', request_id: 'q1', request: { subtype: 'can_use_tool' } });
+    r.handleMessage({ type: 'control_request', request_id: 'q1', request: { subtype: 'hook_callback' } });
     expect(writes).toHaveLength(1);
     expect(writes[0]!.response).toMatchObject({ subtype: 'error', request_id: 'q1' });
   });
@@ -218,6 +253,160 @@ describe('Runner 回合状态机', () => {
     r.interrupt();
     r.handleMessage({ type: 'result', subtype: 'error_during_execution' });
     expect(r.status).toBe('idle');
+  });
+});
+
+describe('Runner 待回应请求（can_use_tool）', () => {
+  const ask = (id = 'a1') => ({
+    type: 'control_request',
+    request_id: id,
+    request: {
+      subtype: 'can_use_tool',
+      tool_name: 'AskUserQuestion',
+      tool_use_id: 'toolu_1',
+      input: {
+        questions: [
+          { question: 'Pick?', header: 'H', multiSelect: false, junk: 1, options: [{ label: 'A', description: 'da', x: 1 }, { nolabel: true }] },
+          { question: 'bad', options: 'nope' },
+          null,
+        ],
+      },
+    },
+  });
+  const plan = (id = 'p1') => ({
+    type: 'control_request',
+    request_id: id,
+    request: { subtype: 'can_use_tool', tool_name: 'ExitPlanMode', tool_use_id: 'toolu_2', input: { plan: '# P', planFilePath: '/x/p.md' } },
+  });
+  const resp = (w: Json) => w.response.response as Json;
+
+  it('非交互工具自动放行，原样回传 input', () => {
+    const { r, writes, log } = make();
+    r.handleMessage({ type: 'control_request', request_id: 'w1', request: { subtype: 'can_use_tool', tool_name: 'Write', input: { file_path: 'a' } } });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ type: 'control_response', response: { subtype: 'success', request_id: 'w1', response: { behavior: 'allow', updatedInput: { file_path: 'a' } } } });
+    expect(r.promptItems()).toEqual([]);
+    expect(log.prompts).toHaveLength(0);
+  });
+
+  it('AskUserQuestion 成为待回应请求（输入被清洗），并通知 onPrompts', () => {
+    const { r, writes, log } = make();
+    r.handleMessage(ask());
+    expect(writes).toHaveLength(0);
+    expect(log.prompts).toHaveLength(1);
+    const items = r.promptItems();
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: 'question',
+      id: 'a1',
+      toolUseId: 'toolu_1',
+      questions: [{ question: 'Pick?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'da' }] }],
+    });
+    expect(JSON.stringify(items[0])).not.toContain('junk');
+  });
+
+  it('回答：写 allow 且 updatedInput 带 answers，清除待回应', () => {
+    const { r, writes, log } = make();
+    r.handleMessage(ask());
+    expect(r.reply('a1', { kind: 'answer', answers: { 'Pick?': 'A' } })).toBe(true);
+    expect(resp(writes[0]!)).toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Pick?': 'A' } } });
+    expect(resp(writes[0]!).updatedInput.questions).toHaveLength(3); // 原始输入原样保留
+    expect(r.promptItems()).toEqual([]);
+    expect(log.prompts.at(-1)).toEqual([]);
+    expect(r.reply('a1', { kind: 'skip' })).toBe(false); // 已回应
+  });
+
+  it('跳过：写 deny', () => {
+    const { r, writes } = make();
+    r.handleMessage(ask());
+    expect(r.reply('a1', { kind: 'skip' })).toBe(true);
+    expect(resp(writes[0]!).behavior).toBe('deny');
+    expect(resp(writes[0]!).message).toContain('chose not to answer');
+  });
+
+  it('类型不符 / 未知 id / answers 不合法：返回 false 且不写', () => {
+    const { r, writes } = make();
+    r.handleMessage(ask());
+    r.handleMessage(plan());
+    expect(r.reply('a1', { kind: 'approve' })).toBe(false);
+    expect(r.reply('p1', { kind: 'answer', answers: {} })).toBe(false);
+    expect(r.reply('nope', { kind: 'skip' })).toBe(false);
+    expect(r.reply('a1', { kind: 'answer', answers: { q: 1 } as any })).toBe(false);
+    expect(writes).toHaveLength(0);
+    expect(r.promptItems()).toHaveLength(2);
+  });
+
+  it('ExitPlanMode 批准：写 allow，再发 set_permission_mode bypassPermissions', async () => {
+    const { r, anyR, writes } = make();
+    anyR.applied.permissionMode = 'plan';
+    r.handleMessage(plan());
+    expect(r.promptItems()[0]).toMatchObject({ kind: 'plan', id: 'p1', plan: '# P', planFilePath: '/x/p.md' });
+    expect(r.reply('p1', { kind: 'approve' })).toBe(true);
+    expect(resp(writes[0]!)).toMatchObject({ behavior: 'allow', updatedInput: { plan: '# P' } });
+    expect(anyR.applied.permissionMode).toBe('auto');
+    await flush();
+    expect(writes[1]).toMatchObject({ type: 'control_request', request: { subtype: 'set_permission_mode', mode: 'bypassPermissions' } });
+    expect(r.promptItems()).toEqual([]);
+  });
+
+  it('ExitPlanMode 修改意见：写 deny 带上反馈，不切模式', async () => {
+    const { r, writes } = make();
+    r.handleMessage(plan());
+    expect(r.reply('p1', { kind: 'revise', feedback: ' 加上测试 ' })).toBe(true);
+    expect(resp(writes[0]!).behavior).toBe('deny');
+    expect(resp(writes[0]!).message).toBe('The user did not approve the plan. Their feedback:\n加上测试');
+    r.handleMessage(plan('p2'));
+    r.reply('p2', { kind: 'revise', feedback: '  ' });
+    expect(resp(writes[1]!).message).toContain('did not approve');
+    await flush();
+    expect(writes).toHaveLength(2);
+  });
+
+  it('control_cancel_request 丢掉对应的待回应请求', () => {
+    const { r, log } = make();
+    r.handleMessage(ask('a1'));
+    r.handleMessage(ask('a2'));
+    r.handleMessage({ type: 'control_cancel_request', request_id: 'a1' });
+    expect(r.promptItems().map((p) => p.id)).toEqual(['a2']);
+    expect(log.prompts.at(-1)).toHaveLength(1);
+    r.handleMessage({ type: 'control_cancel_request', request_id: 'zzz' }); // 不存在：无通知
+    expect(log.prompts).toHaveLength(3);
+  });
+
+  it('interrupt 先拒绝所有待回应请求再发中断', () => {
+    const { r, writes, log } = make();
+    r.handleMessage(init);
+    r.handleMessage(ask());
+    r.interrupt();
+    expect(resp(writes[0]!)).toMatchObject({ behavior: 'deny', message: 'The user interrupted.' });
+    expect(writes[1]!.request).toEqual({ subtype: 'interrupt' });
+    expect(r.promptItems()).toEqual([]);
+    expect(log.prompts.at(-1)).toEqual([]);
+  });
+
+  it('回合结束 / 进程退出时清除待回应请求', () => {
+    const a = make();
+    a.r.handleMessage(init);
+    a.r.handleMessage(ask());
+    a.r.handleMessage(result);
+    expect(a.r.promptItems()).toEqual([]);
+    const b = make();
+    b.r.handleMessage(ask());
+    b.anyR.onClose(1);
+    expect(b.r.promptItems()).toEqual([]);
+    expect(b.log.prompts.at(-1)).toEqual([]);
+  });
+
+  it('配置里的 permissionMode 变化时发 set_permission_mode', async () => {
+    const { r, writes } = make();
+    r.setConfig({ ...cfg, permissionMode: 'plan' });
+    await flush();
+    expect(writes[0]).toMatchObject({ type: 'control_request', request: { subtype: 'set_permission_mode', mode: 'plan' } });
+    respond(r, writes, 'set_permission_mode', { mode: 'plan' });
+    await flush();
+    r.setConfig({ ...cfg, permissionMode: 'plan' }); // 没变：不再发
+    await flush();
+    expect(writes.filter((w) => w.request?.subtype === 'set_permission_mode')).toHaveLength(1);
   });
 });
 

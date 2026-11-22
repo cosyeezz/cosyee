@@ -49,6 +49,8 @@ export function fromHistory(entries: unknown[], opts?: { running?: boolean }): C
  * replay 里含 cosyee_user 时：
  * - 带 id：历史里有 userId 相同的轮就从那一轮起丢掉（含其后的 steering 轮），没有就不丢（历史还没落盘）；
  * - 不带 id（旧数据）：只有历史最后一轮的用户消息与之相同才丢（历史还没落盘时不会误删上一轮）。
+ * 不含 cosyee_user 时：有开轮事件（后台子代理完成后的自动续轮）才丢最后一轮；
+ * 只有空闲时的零散事件（切权限模式带来的 system/status 等）不丢，否则只有一轮的会话会整个变空。
  * 对同一份 replay 重复调用结果相同（断线重连安全）。
  */
 export function applyReplay(s: ConvState, events: unknown[]): ConvState {
@@ -61,12 +63,17 @@ export function applyReplay(s: ConvState, events: unknown[]): ConvState {
     if (id) {
       const at = s.turns.findIndex((t) => t.userId === id);
       if (at >= 0) base = { turns: s.turns.slice(0, at), meta: trimCache(s.meta, at), book: null };
-    } else {
+    } else if (first || events.some(isTurnStart)) {
       const same = !isObj(first) || parseUserText(str(first.text)).userText === last.userText;
       if (same) base = { turns: s.turns.slice(0, -1), meta: trimCache(s.meta, s.turns.length - 1), book: null };
     }
   }
   return applyEvents(base, events);
+}
+
+/** 能开出一轮的 CLI 事件（与后端 runner 的判定一致）；只有 system/status 之类时不算 replay 了一轮 */
+function isTurnStart(e: unknown): boolean {
+  return isObj(e) && ((e.type === 'system' && e.subtype === 'init') || e.type === 'stream_event' || e.type === 'assistant');
 }
 
 /** 依次应用一批实时事件（共享草稿，只在开头克隆一次；结果与逐个 applyEvent 相同） */

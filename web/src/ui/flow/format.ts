@@ -333,3 +333,81 @@ export function effortText(effort: string | undefined, sessionEffort?: string): 
   if (effort) return `思考 ${effortName(effort)}`;
   return sessionEffort ? `思考 ${effortName(sessionEffort)}（继承主会话）` : '思考等级继承主会话';
 }
+
+// ───────────── AskUserQuestion / ExitPlanMode 的展示 ─────────────
+
+export interface AskQuestionView {
+  question: string;
+  header?: string;
+  multiSelect: boolean;
+  options: { label: string; description?: string }[];
+}
+
+/** AskUserQuestion 输入里的 questions（容错：缺字段 / 类型不对的项跳过） */
+export function parseAskQuestions(input: unknown): AskQuestionView[] {
+  const qs = input && typeof input === 'object' ? (input as Record<string, unknown>).questions : undefined;
+  if (!Array.isArray(qs)) return [];
+  const out: AskQuestionView[] = [];
+  for (const q of qs) {
+    if (!q || typeof q !== 'object') continue;
+    const o = q as Record<string, unknown>;
+    if (typeof o.question !== 'string' || !o.question.trim()) continue;
+    const options = Array.isArray(o.options)
+      ? o.options.flatMap((x) => {
+          if (!x || typeof x !== 'object') return [];
+          const p = x as Record<string, unknown>;
+          return typeof p.label === 'string'
+            ? [{ label: p.label, ...(typeof p.description === 'string' && p.description ? { description: p.description } : {}) }]
+            : [];
+        })
+      : [];
+    out.push({ question: o.question, header: typeof o.header === 'string' && o.header ? o.header : undefined, multiSelect: o.multiSelect === true, options });
+  }
+  return out;
+}
+
+/**
+ * 从 CLI 的工具结果里解析答案：`... answered: "Q1"="A1", "Q2"="A2". You can now continue...`
+ * 返回 问题原文 → 答案；解析不出返回 null（调用方回退显示原文）。
+ */
+export function parseAskAnswers(text: string): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  const re = /"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+  const unesc = (s: string) => s.replace(/\\(.)/g, '$1');
+  for (const m of text.matchAll(re)) out[unesc(m[1]!)] = unesc(m[2]!);
+  return Object.keys(out).length ? out : null;
+}
+
+/** ExitPlanMode 输入里的 plan 文本 */
+export function planOf(input: unknown): string {
+  const p = input && typeof input === 'object' ? (input as Record<string, unknown>).plan : undefined;
+  return typeof p === 'string' ? p : '';
+}
+
+/**
+ * ExitPlanMode 的结果：已批准 / 未批准（带意见）；还没结果或无法判断返回 null。
+ * 批准文案以 "User has approved" 开头；否认文案里用户意见跟在 "the user said:" 之后。
+ */
+export function planVerdict(text: string, isError: boolean): { approved: boolean; feedback?: string } | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (!isError && /approved/i.test(t)) return { approved: true };
+  const m = /(?:the user said|user said|feedback)\s*:\s*([\s\S]+)$/i.exec(t);
+  const feedback = (m ? m[1]! : t).trim();
+  return { approved: false, feedback: feedback || undefined };
+}
+
+/** 工具步骤的一行摘要：这两个交互工具用专门措辞，其余沿用 step.summary（没有则工具名） */
+export function toolLine(step: Pick<ToolStep, 'name' | 'input' | 'summary'>): string {
+  if (step.name === 'AskUserQuestion') {
+    const qs = parseAskQuestions(step.input);
+    if (qs.length === 0) return step.summary || step.name;
+    const first = plainFirstLine(qs[0]!.question, 80);
+    return qs.length > 1 ? `提问：${first}（等 ${qs.length} 个问题）` : `提问：${first}`;
+  }
+  if (step.name === 'ExitPlanMode') {
+    const line = plainFirstLine(planOf(step.input), 60);
+    return line ? `计划：${line}` : '计划';
+  }
+  return step.summary || step.name;
+}

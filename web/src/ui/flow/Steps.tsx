@@ -6,7 +6,7 @@ import { Markdown } from './Markdown';
 import { CodeBlock } from './Markdown';
 import { toolIconName } from './toolIcon';
 import { useFiles } from '../files/FileContext';
-import { describeToolInput, toolContentToText, toolFilePath, truncateText } from './format';
+import { describeToolInput, parseAskAnswers, parseAskQuestions, planOf, planVerdict, toolContentToText, toolFilePath, toolLine, truncateText } from './format';
 import { hasThinkingText, thinkingFirstLine, thinkingTokensLabel } from './thinking';
 import './flow.css';
 
@@ -120,6 +120,52 @@ function OutputBlock({ text, lang }: { text: string; lang: string }) {
   );
 }
 
+/** AskUserQuestion 展开区：每个问题 + 选项，答案从结果文本里解析（解析不出显示原文） */
+function AskBody({ step, output, turnActive }: { step: ToolStep; output: string; turnActive: boolean }) {
+  const qs = useMemo(() => parseAskQuestions(step.input), [step.input]);
+  const answers = useMemo(() => (output ? parseAskAnswers(output) : null), [output]);
+  return (
+    <div className="cz-flow__tool-body cz-flow__ask">
+      {qs.map((q, i) => {
+        const ans = answers?.[q.question];
+        const picked = ans ? ans.split(', ') : [];
+        return (
+          <div key={i} className="cz-flow__ask-q">
+            <div className="cz-flow__ask-title">
+              {q.header && <span className="cz-flow__ask-chip">{q.header}</span>}
+              {q.question}
+            </div>
+            <ul className="cz-flow__ask-opts">
+              {q.options.map((o, j) => (
+                <li key={j} className={picked.includes(o.label) ? 'is-picked' : undefined}>
+                  <b>{o.label}</b>
+                  {o.description && <span className="cz-flow__ask-desc"> — {o.description}</span>}
+                </li>
+              ))}
+            </ul>
+            {ans && <div className="cz-flow__ask-ans">回答：{ans}</div>}
+          </div>
+        );
+      })}
+      {!answers && (step.result ? (output ? <OutputBlock text={output} lang="text" /> : <div className="cz-flow__io-empty">（无输出）</div>) : <div className="cz-flow__io-empty">{turnActive ? '等待回答…' : '（无结果）'}</div>)}
+    </div>
+  );
+}
+
+/** ExitPlanMode 展开区：计划用 Markdown 渲染，结果压成一行状态 */
+function PlanBody({ step, output, turnActive }: { step: ToolStep; output: string; turnActive: boolean }) {
+  const plan = planOf(step.input);
+  const verdict = step.result ? planVerdict(output, !!step.result.isError) : null;
+  return (
+    <div className="cz-flow__tool-body cz-flow__plan">
+      {plan ? <Markdown text={plan} className="cz-flow__md--small" /> : <div className="cz-flow__io-empty">（空）</div>}
+      <div className={`cz-flow__plan-status${verdict && !verdict.approved ? ' is-no' : ''}`}>
+        {verdict ? (verdict.approved ? '已批准' : `未批准${verdict.feedback ? `：${verdict.feedback}` : ''}`) : step.result ? '（无结果）' : turnActive ? '等待批准…' : '（无结果）'}
+      </div>
+    </div>
+  );
+}
+
 const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; turnActive: boolean }) {
   const [open, setOpen] = useState(false);
   const isError = !!step.result?.isError;
@@ -131,6 +177,8 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
   // 显示摘要里「工具名: 」后面的部分（通常是相对路径，更短）；没有就显示完整路径
   const prefix = `${step.name}: `;
   const pathLabel = step.summary?.startsWith(prefix) && step.summary.length > prefix.length ? step.summary.slice(prefix.length) : filePath;
+  const line = toolLine(step);
+  const interactive = step.name === 'AskUserQuestion' || step.name === 'ExitPlanMode';
   const toggle = () => setOpen((v) => !v);
   const icon = <Icon name={toolIconName(step.name, isError)} size={16} running={running} className="cz-flow__tool-icon" />;
   return (
@@ -159,14 +207,15 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
       ) : (
         <button type="button" className="cz-flow__row-btn" aria-expanded={open} onClick={toggle}>
           {icon}
-          <span className="cz-flow__tool-summary" title={step.summary}>
-            {step.summary || step.name}
+          <span className="cz-flow__tool-summary" title={line}>
+            {line}
           </span>
           {isError && <span className="cz-flow__badge">失败</span>}
           <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
         </button>
       )}
-      {open && input && (
+      {open && interactive && (step.name === 'AskUserQuestion' ? <AskBody step={step} output={output} turnActive={turnActive} /> : <PlanBody step={step} output={output} turnActive={turnActive} />)}
+      {open && !interactive && input && (
         <div className="cz-flow__tool-body">
           <div className="cz-flow__io-label">输入</div>
           {input.text ? <OutputBlock text={input.text} lang={input.lang} /> : <div className="cz-flow__io-empty">（空）</div>}

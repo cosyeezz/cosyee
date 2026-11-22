@@ -25,6 +25,8 @@ describe('toolIconName', () => {
     ['TaskUpdate', 'tool-todo'],
     ['TaskList', 'tool-todo'],
     ['TaskGet', 'tool-todo'],
+    ['AskUserQuestion', 'info'],
+    ['ExitPlanMode', 'mode-plan'],
   ])('%s -> %s', (name, icon) => {
     expect(toolIconName(name)).toBe(icon);
   });

@@ -90,3 +90,31 @@ describe('工具行里的文件路径', () => {
     expect(noPath.querySelectorAll('button')).toHaveLength(1);
   });
 });
+
+describe('交互工具的展示', () => {
+  it('AskUserQuestion：摘要、选项与解析出的答案', () => {
+    const step: ToolStep = {
+      kind: 'tool', id: 'q1', name: 'AskUserQuestion', summary: 'AskUserQuestion',
+      input: { questions: [{ question: '选哪个？', options: [{ label: 'A', description: '说明' }, { label: 'B' }] }] },
+      result: { content: 'Your questions have been answered: "选哪个？"="B". You can now continue.', isError: false },
+    };
+    const el = mount(step, null);
+    expect(el.querySelector('.cz-flow__tool-summary')!.textContent).toBe('提问：选哪个？');
+    act(() => el.querySelector<HTMLButtonElement>('.cz-flow__row-btn')!.click());
+    expect(el.querySelector('.cz-flow__ask-ans')!.textContent).toBe('回答：B');
+    expect(el.textContent).toContain('说明');
+  });
+
+  it('ExitPlanMode：渲染 Markdown 计划与批准状态', () => {
+    const step: ToolStep = {
+      kind: 'tool', id: 'p1', name: 'ExitPlanMode', summary: 'ExitPlanMode',
+      input: { plan: '# 方案\n\n- 第一步' },
+      result: { content: 'User has approved your plan.', isError: false },
+    };
+    const el = mount(step, null);
+    expect(el.querySelector('.cz-flow__tool-summary')!.textContent).toBe('计划：方案');
+    act(() => el.querySelector<HTMLButtonElement>('.cz-flow__row-btn')!.click());
+    expect(el.querySelector('.cz-flow__plan li')!.textContent).toContain('第一步');
+    expect(el.querySelector('.cz-flow__plan-status')!.textContent).toBe('已批准');
+  });
+});

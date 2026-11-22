@@ -1,7 +1,7 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  Account, Attachment, Bootstrap, DeletedSession, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, ToolStats, Workspace,
+  Account, Attachment, Bootstrap, DeletedSession, PromptReply, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, ToolStats, Workspace,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { resolveSessionConfig } from '../core/sessionConfig';
@@ -22,6 +22,7 @@ import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/F
 import { FilePreview } from '../ui/files/FilePreview';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
+import { PromptPanel } from '../ui/prompt/PromptPanel';
 import { useSessionStream } from './useSessionStream';
 import { motionOK } from '../ui/motion/reduced';
 import { useCssHeight } from '../ui/layout/useCssHeight';
@@ -453,13 +454,22 @@ export function MainApp() {
   const onConfigChange = useCallback((c: SessionConfig) => {
     setConfig(c);
     // 全局记忆：下次启动 / 新会话沿用
-    api.saveDefaults(c).catch(() => { /* 记忆失败不影响使用 */ });
-    setBoot((b) => (b ? { ...b, defaults: c } : b));
+    // 权限模式只属于当前会话：不进全局默认，新会话永远从自动模式开始
+    const { permissionMode: _pm, ...persistent } = c;
+    api.saveDefaults(persistent).catch(() => { /* 记忆失败不影响使用 */ });
+    setBoot((b) => (b ? { ...b, defaults: persistent } : b));
     if (!sel) return;
     configs.current.set(sel.id, c);
     // 进程在就立即下发（下一轮生效）；不在则服务端只记下，随下一次 send 带上。无论哪种都要发，服务端据此持久化这个会话的配置
     socket.send({ t: 'config', sessionId: sel.id, config: c });
   }, [sel, view]);
+
+  const onPromptReply = useCallback((id: string, reply: PromptReply) => {
+    if (!sel) return;
+    socket.send({ t: 'prompt.reply', sessionId: sel.id, id, reply });
+    // 批准计划后回到自动模式（服务端同样会切换）
+    if (reply.kind === 'approve') onConfigChange({ ...config, permissionMode: 'auto' });
+  }, [sel, config, onConfigChange]);
 
   const onRename = useCallback((title: string) => {
     if (!sel) return;
@@ -829,6 +839,7 @@ export function MainApp() {
       </div>
       {notice && <div className="cz-app__notice" role="status">{notice}</div>}
       <div className="cz-app__composer" ref={composerWrapRef}>
+        {view?.prompts && view.prompts.length > 0 && <PromptPanel items={view.prompts} onReply={onPromptReply} />}
         <Composer
           ref={composerRef}
           quotes={quotes}

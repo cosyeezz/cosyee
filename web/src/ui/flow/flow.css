@@ -585,3 +585,14 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* AskUserQuestion / ExitPlanMode 展开区 */
+.cz-flow__ask-q + .cz-flow__ask-q { margin-top: var(--sp-3); }
+.cz-flow__ask-title { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
+.cz-flow__ask-chip { margin-right: var(--sp-2); padding: 0 6px; font-size: 11px; font-weight: 400; line-height: 18px; border-radius: 9px; background: var(--bg-active); color: var(--text-3); }
+.cz-flow__ask-opts { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-xs); color: var(--text-2); }
+.cz-flow__ask-desc { color: var(--text-3); }
+.cz-flow__ask-opts li.is-picked { color: var(--accent); }
+.cz-flow__ask-ans { margin-top: 4px; font-size: var(--fs-xs); color: var(--accent); }
+.cz-flow__plan-status { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
+.cz-flow__plan-status.is-no { color: var(--warn); }

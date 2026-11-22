@@ -1,0 +1,11 @@
+/* 计划模式：触发按钮用主题强调色（深浅主题各自的 --accent） */
+.cz-mode__trigger svg { flex: none; }
+.cz-mode__trigger.is-plan {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cz-mode__trigger.is-plan:hover,
+.cz-mode__trigger.is-plan.is-open {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}

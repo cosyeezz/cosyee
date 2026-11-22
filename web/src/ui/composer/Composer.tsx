@@ -7,6 +7,7 @@ import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegm
 import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
 import { Icon } from '../icons/Icon';
 import { ModelMenu } from '../menus/ModelMenu';
+import { ModeMenu } from '../menus/ModeMenu';
 import { UsageMeter } from '../usage/UsageMeter';
 import { ChipPreview } from './ChipPreview';
 import { RewindPicker, type RewindTarget } from './RewindPicker';
@@ -642,6 +643,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <div className="cz-composer__foot">
         {props.footLeft && <div className="cz-composer__foot-left">{props.footLeft}</div>}
         <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} />
+        <ModeMenu mode={config.permissionMode ?? 'auto'} onChange={(m) => onConfigChange({ ...config, permissionMode: m })} disabled={disabled} />
         {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
       </div>
       {preview && (

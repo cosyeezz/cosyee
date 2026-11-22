@@ -352,6 +352,14 @@ describe('applyReplay', () => {
     const a = applyReplay(hist(true), [user('新问题'), ...ev]);
     expect(a.turns.map((t) => t.userText)).toEqual(['先前的问题', '看一下', '新问题']);
   });
+  it('只有空闲时的零散事件（system/status）→ 不丢轮（只有一轮的会话不会变空）', () => {
+    const one = fromHistory([
+      { type: 'user', timestamp: '2026-11-16T10:00:00.000Z', sessionId: 'S', message: { role: 'user', content: '唯一的问题' } },
+      { type: 'assistant', timestamp: '2026-11-16T10:00:01.000Z', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: '答复' }] } },
+    ]);
+    const a = applyReplay(one, [{ type: 'system', subtype: 'status', status: null, permissionMode: 'plan' }]);
+    expect(a.turns.map((t) => t.userText)).toEqual(['唯一的问题']);
+  });
   it('空 replay 返回原状态；replay 后可继续实时事件', () => {
     const h = hist(true);
     expect(applyReplay(h, [])).toBe(h);

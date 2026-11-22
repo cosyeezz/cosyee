@@ -124,7 +124,12 @@ function sanitize(raw: unknown): PersistedState {
       const c = v as Record<string, unknown> | null;
       if (!isSafeId(sid) || !c || typeof c !== 'object') continue;
       if (typeof c.model !== 'string' || !MODEL_ID_RE.test(c.model) || !EFFORT_IDS.includes(c.effort as Effort)) continue;
-      s.sessionConfigs[sid] = { model: c.model, effort: c.effort as Effort, ...(c.ultracode === true ? { ultracode: true } : {}) };
+      s.sessionConfigs[sid] = {
+        model: c.model,
+        effort: c.effort as Effort,
+        ...(c.ultracode === true ? { ultracode: true } : {}),
+        ...(c.permissionMode === 'plan' ? { permissionMode: 'plan' as const } : {}), // 只认 plan / auto，auto 是缺省不存
+      };
     }
   }
   if (Array.isArray(o.disabledTools)) {
