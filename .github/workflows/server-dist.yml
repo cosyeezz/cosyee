@@ -7,6 +7,7 @@ name: server-dist
 on:
   push:
     branches: [main]
+    tags: ['v*']   # 发版打 tag 时再构建一次，服务端版本号就恰好等于 tag（0.1.4）
     paths: ['server/**', 'shared/**', 'web/**', 'package.json', 'package-lock.json', '.github/workflows/server-dist.yml']
   workflow_dispatch:
 
@@ -32,9 +33,19 @@ jobs:
       - run: npm test -w server
       - name: 打包
         run: |
-          base=$(node -p "require('./server/package.json').version")
-          # 版本号带上 main 的提交序号，npm update / 客户端「更新」能看出是否有新版本
-          COSYEE_VERSION="${base}-main.$(git rev-list --count HEAD)" npm run pack:server
+          # 版本号和 git tag 对齐：恰好在 tag 上就是 0.1.4；tag 之后又有 N 个提交就是 0.1.4-main.N
+          # 没有任何 tag 时才退回 package.json 的版本
+          if desc=$(git describe --tags --match 'v*' 2>/dev/null); then
+            if [[ "$desc" =~ ^v([0-9][^-]*.*)-([0-9]+)-g[0-9a-f]+$ ]]; then
+              v="${BASH_REMATCH[1]}-main.${BASH_REMATCH[2]}"
+            else
+              v="${desc#v}"
+            fi
+          else
+            v="$(node -p "require('./server/package.json').version")-main.$(git rev-list --count HEAD)"
+          fi
+          echo "版本：$v"
+          COSYEE_VERSION="$v" npm run pack:server
           cat server/dist/cosyee-server/package.json
       - name: 推送 server-dist 分支
         working-directory: server/dist/cosyee-server
