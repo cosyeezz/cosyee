@@ -42,7 +42,7 @@ export function resolveRun(s: ConvState, d: Draft, k: RunKey): SubagentRun | und
   if (!hit) return undefined;
   let run = hit.run;
   if (!hit.here) {
-    run = { ...run, turn: cloneTurn(run.turn) };
+    run = { ...run, afterStep: d.turn.steps.length, turn: cloneTurn(run.turn) };
     d.turn.subagents.push(run);
   }
   if (k.taskId && !run.taskId) run.taskId = k.taskId;

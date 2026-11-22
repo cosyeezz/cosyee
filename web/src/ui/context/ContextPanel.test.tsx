@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CachePoint, ContextUsage } from '@cosyee/shared';
+import type { CachePoint, ContextUsage, Turn } from '@cosyee/shared';
 import { ContextPanel } from './ContextPanel';
 import { mockContextUsage } from '../../mock/shell';
 
@@ -295,6 +295,75 @@ describe('ContextPanel 缓存命中率走势', () => {
   });
 });
 
+describe('ContextPanel 上下文走势', () => {
+  const pt = (i: number, total: number, turn: number, tools?: string[]): CachePoint => ({
+    id: 'm' + i, turn, read: total, create: 0, input: 0, rate: 100, ...(tools ? { tools } : {}),
+  });
+  const turns: Turn[] = [
+    {
+      id: 't0', userText: '看看代码', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0,
+      steps: [
+        { kind: 'tool', id: 'a', name: 'Read', input: { file_path: 'big.ts' }, summary: 'Read: big.ts', result: { content: 'x'.repeat(40_000), isError: false } },
+        { kind: 'tool', id: 'b', name: 'Glob', input: { pattern: '*' }, summary: 'Glob: *', result: { content: 'a.ts', isError: false } },
+      ],
+    },
+    { id: 't1', userText: '第二个问题', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0, steps: [] },
+  ];
+  // m1 调用了 a、b → m2 涨 10k；m3 是新一轮
+  const series = [pt(0, 20_000, 0), pt(1, 21_000, 0, ['b', 'a']), pt(2, 31_000, 0), pt(3, 31_500, 1)];
+  const mountCtx = (cache?: CachePoint[]) =>
+    render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} cache={cache} turns={turns} />);
+  const svgOf = (el: HTMLElement) => {
+    const svg = el.querySelector('svg.cz-ctx__ctx-svg') as SVGSVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 280, height: 76, right: 280, bottom: 76, x: 0, y: 0, toJSON: () => ({}) });
+    return svg;
+  };
+
+  it('在缓存命中率上方；每次请求一根柱，涨幅大的标警示色；悬停显示较上次变化', () => {
+    const el = mountCtx(series);
+    const subs = [...el.querySelectorAll('.cz-ctx__sub')].map((n) => n.textContent);
+    expect(subs.indexOf('上下文走势')).toBeLessThan(subs.indexOf('缓存命中率'));
+    expect(el.querySelector('[data-testid="ctx-now"]')?.textContent).toBe('31.5k');
+    const bars = el.querySelectorAll('.cz-ctx__ctx-bar');
+    expect(bars).toHaveLength(4);
+    expect([...bars].map((b) => b.classList.contains('is-jump'))).toEqual([false, false, true, false]);
+    const svg = svgOf(el);
+    // 4 个槽位，每个宽 67：x=170 落在第 3 个
+    act(() => { svg.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 170 })); });
+    expect(el.querySelector('[data-testid="ctx-tip"]')?.textContent).toContain('较上次 +10k');
+  });
+
+  it('点击柱子列出上一次请求调用的工具（按大小排序）；新一轮显示用户消息；再点收起', () => {
+    const el = mountCtx(series);
+    const svg = svgOf(el);
+    act(() => { svg.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 170 })); });
+    const g = el.querySelector('[data-testid="ctx-growth"]')!;
+    expect(g.textContent).toContain('第 3 次请求');
+    const names = [...g.querySelectorAll('.cz-ctx__item-name')].map((n) => n.textContent);
+    expect(names).toEqual(['Read: big.ts', 'Glob: *']);
+    expect(g.querySelector('.cz-ctx__item-tokens')?.textContent).toMatch(/约 10k/);
+
+    act(() => { svg.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 270 })); });
+    expect(el.querySelector('[data-testid="ctx-growth"]')?.textContent).toContain('第二个问题');
+    act(() => { svg.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 270 })); });
+    expect(el.querySelector('[data-testid="ctx-growth"]')).toBeNull();
+  });
+
+  it('「最大增长」按钮直接打开涨得最多的那次', () => {
+    const el = mountCtx(series);
+    const btn = el.querySelector('.cz-ctx__grow-top')!;
+    expect(btn.textContent).toContain('+10k');
+    click(btn);
+    expect(el.querySelector('[data-testid="ctx-growth"]')?.textContent).toContain('第 3 次请求');
+  });
+
+  it('没有数据时显示空态', () => {
+    const el = mountCtx(undefined);
+    expect(el.querySelector('svg.cz-ctx__ctx-svg')).toBeNull();
+    expect(el.textContent).toContain('这里显示每次请求的上下文大小');
+  });
+});
+
 describe('ContextPanel 工具', () => {
   const INIT = ['Bash', 'Glob', 'WebFetch', 'mcp__github__search', 'Read'];
   const mountTools = (extra: Partial<React.ComponentProps<typeof ContextPanel>> = {}) =>
@@ -314,7 +383,72 @@ describe('ContextPanel 工具', () => {
     expect(names).toEqual(['Bash', 'Glob', 'WebFetch', 'Read', 'Notebook']);
     expect(toggles(el).map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'false', 'true', 'false']);
     expect(el.querySelector('.cz-ctx__tool.is-off .cz-ctx__item-name')?.textContent).toBe('WebFetch');
-    expect(el.querySelector('.cz-ctx__note')?.textContent).toContain('立即拦截');
+    expect([...el.querySelectorAll('.cz-ctx__note')].some((n) => n.textContent?.includes('立即拦截'))).toBe(true);
+  });
+
+  it('显示工具定义占用（常驻 / 延迟加载）与每个工具在本会话的调用次数', () => {
+    const step = (name: string) => ({ kind: 'tool' as const, id: `${name}-${Math.random()}`, name, input: {}, summary: name });
+    const base = { id: 't', userText: '', attachments: [], status: 'done' as const, statusText: '', answer: '', startedAt: 0 };
+    const turns: Turn[] = [
+      { ...base, steps: [step('Bash'), step('Bash'), step('Read')], subagents: [] },
+      { ...base, steps: [], subagents: [{ toolUseId: 'a', title: 'd', status: 'done', turn: { ...base, steps: [step('Read')], subagents: [] } }] },
+    ];
+    const el = mountTools({ turns });
+    const fold = [...el.querySelectorAll('.cz-ctx__fold')].find((b) => b.querySelector('.cz-ctx__fold-title')?.textContent === '工具')!;
+    expect(fold.querySelector('.cz-ctx__fold-extra')?.textContent).toBe('9.8k · 2 已停用');
+    openFold(el, '工具');
+    const stats = el.querySelector('.cz-ctx__tool-stats')!.textContent!;
+    expect(stats).toContain('常驻占用9.8k');
+    expect(stats).toContain('延迟加载5.7k');
+    expect(stats).toContain('本会话调用4 次');
+    // 没拿到所有会话的统计：累计显示占位，行内不出累计列
+    expect(stats).toContain('累计调用—');
+    expect(el.querySelector('.cz-ctx__tool-total')).toBeNull();
+    expect(stats).toContain('不提供单个工具的占用');
+    const calls = Object.fromEntries(
+      [...el.querySelectorAll('.cz-ctx__tool')].map((r) => [r.querySelector('.cz-ctx__item-name')!.textContent, r.querySelector('.cz-ctx__tool-calls')!.textContent]),
+    );
+    expect(calls).toEqual({ Bash: '×2', Glob: '—', WebFetch: '—', Read: '×2', Notebook: '—' });
+  });
+
+  it('拿到所有会话的统计时，分别显示本会话调用与累计调用；Agent / Task 的累计合在一起', () => {
+    const step = (name: string) => ({ kind: 'tool' as const, id: `${name}-${Math.random()}`, name, input: {}, summary: name });
+    const base = { id: 't', userText: '', attachments: [], status: 'done' as const, statusText: '', answer: '', startedAt: 0 };
+    const turns: Turn[] = [{ ...base, steps: [step('Bash')], subagents: [] }];
+    const toolStats = { counts: { Bash: 12_345, Read: 7, Task: 3, Agent: 2, mcp__x__y: 9 }, sessions: 40, at: 0 };
+    const el = render(
+      <ContextPanel
+        usage={mockContextUsage}
+        loading={false}
+        onRefresh={() => undefined}
+        onCompact={() => undefined}
+        tools={['Bash', 'Read', 'Glob', 'Agent']}
+        turns={turns}
+        toolStats={toolStats}
+      />,
+    );
+    openFold(el, '工具');
+    const stats = el.querySelector('.cz-ctx__tool-stats')!.textContent!;
+    expect(stats).toContain('本会话调用1 次');
+    // 只合计列表里的内置工具：12345 + 7 + 0 + (3 + 2)
+    expect(stats).toContain('累计调用12.4k 次');
+    const row = (n: string) => [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')!.textContent === n)!;
+    const cells = (n: string) => [row(n).querySelector('.cz-ctx__tool-calls')!.textContent, row(n).querySelector('.cz-ctx__tool-total')!.textContent];
+    expect(cells('Bash')).toEqual(['×1', '12.3k']);
+    expect(cells('Read')).toEqual(['—', '7']);
+    expect(cells('Glob')).toEqual(['—', '—']);
+    expect(cells('Agent')).toEqual(['—', '5']);
+  });
+
+  it('CLI 给了单个工具占用时，行内显示 token，不再提示只有合计', () => {
+    const el = render(
+      <ContextPanel usage={{ ...mockContextUsage, toolTokens: [{ name: 'Bash', tokens: 1_200 }] }} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={['Bash', 'Read']} />,
+    );
+    openFold(el, '工具');
+    const rows = [...el.querySelectorAll('.cz-ctx__tool')];
+    expect(rows[0]!.querySelector('.cz-ctx__item-tokens')?.textContent).toBe('1.2k');
+    expect(rows[1]!.querySelector('.cz-ctx__item-tokens')).toBeNull();
+    expect(el.querySelector('.cz-ctx__tool-stats')!.textContent).not.toContain('不提供单个工具的占用');
   });
 
   it('点开关回调 onToolToggle(名字, 目标状态)；不传回调时开关禁用', () => {

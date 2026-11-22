@@ -92,7 +92,7 @@ fs.writeFileSync(
 // 作为 npm 包安装（CI 把本目录推到 server-dist 分支）：npm i -g github:cosyeezz/cosyee#server-dist
 // 没有任何依赖和安装脚本，装完就是 cosyee-server 命令
 const cli = `#!/usr/bin/env node
-// cosyee-server [--tailscale] [--host <IPv4>] [--port <n>]；其余配置见 README.txt 的环境变量
+// cosyee-server [--tailscale | --local] [--host <IPv4>] [--port <n>]；其余配置见 README.txt 的环境变量
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -102,11 +102,12 @@ for (let i = 0; i < args.length; i++) {
     return v;
   };
   if (a === '--tailscale') process.env.COSYEE_HOST = 'tailscale';
+  else if (a === '--local') process.env.COSYEE_HOST = '127.0.0.1';
   else if (a === '--host' || a.startsWith('--host=')) process.env.COSYEE_HOST = val();
   else if (a === '--port' || a.startsWith('--port=')) process.env.COSYEE_PORT = val();
   else if (a === '-v' || a === '--version') { console.log(${JSON.stringify(version)}); process.exit(0); }
   else if (a === '-h' || a === '--help') {
-    console.log('用法: cosyee-server [--tailscale] [--host <IPv4>] [--port <端口>]\\n  --tailscale  本机 + tailnet 内设备可访问（不需要令牌）\\n  默认只监听 127.0.0.1:7878');
+    console.log('用法: cosyee-server [--tailscale | --local] [--host <IPv4>] [--port <端口>]\\n  --tailscale  本机 + tailnet 内设备可访问，不需要令牌（默认）\\n  --local      只监听 127.0.0.1\\n  默认端口 7878');
     process.exit(0);
   } else { console.error('未知参数: ' + a + '（--help 查看用法）'); process.exit(2); }
 }

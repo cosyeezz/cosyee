@@ -23,8 +23,12 @@ export interface ContextExtra {
   mcpStatus?: Raw | null;
   /** Cosyee 保存的已停用内置工具 */
   disabledTools?: string[] | null;
+  /** Cosyee 保存的已关闭智能体 */
+  disabledAgents?: string[] | null;
   /** 内置工具名（init.tools 去掉 mcp__ 工具） */
   tools?: string[] | null;
+  /** Cosyee 保存的自动压缩窗口（null = 不覆盖） */
+  compactWindow?: number | null;
 }
 
 /** 插件 skill 名去掉前缀：anthropic-skills:pdf -> pdf */
@@ -174,6 +178,20 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     tokens: num(a.tokens),
   }));
 
+  // 单个内置工具的占用：当前 CLI 恒不给（只有合计），给了就带上；同名以常驻的为准
+  const toolTokens: NonNullable<ContextUsage['toolTokens']> = [];
+  const seenTool = new Set<string>();
+  const pushTools = (list: unknown, deferred: boolean): void => {
+    for (const t of Array.isArray(list) ? (list as Raw[]) : []) {
+      const name = typeof t?.name === 'string' ? t.name : '';
+      if (!name || seenTool.has(name)) continue;
+      seenTool.add(name);
+      toolTokens.push({ name, tokens: num(t.tokens), ...(deferred && t.isLoaded !== true ? { deferred: true as const } : {}) });
+    }
+  };
+  pushTools(raw.systemTools, false);
+  pushTools(raw.deferredBuiltinTools, true);
+
   const threshold = raw.autoCompactThreshold;
   const untilAutocompact =
     raw.isAutoCompactEnabled === false || typeof threshold !== 'number' ? null : Math.max(0, threshold - used);
@@ -189,8 +207,12 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     skills: buildSkills(raw, extra),
     mcpServers: buildMcpServers(mcpTools, extra.mcpStatus),
     ...(extra.disabledTools ? { disabledTools: [...extra.disabledTools] } : {}),
+    ...(extra.disabledAgents ? { disabledAgents: [...extra.disabledAgents] } : {}),
     ...(extra.tools ? { tools: [...extra.tools] } : {}),
+    ...(toolTokens.length ? { toolTokens } : {}),
     untilAutocompact,
+    ...(raw.isAutoCompactEnabled !== false && typeof threshold === 'number' ? { autoCompactThreshold: threshold } : {}),
+    compactWindow: extra.compactWindow ?? null,
     at,
   };
 }

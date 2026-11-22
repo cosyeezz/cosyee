@@ -1,0 +1,177 @@
+/* 交互动效的共用样式：液态玻璃胶囊、卡片聚光、边缘流光。
+ * 颜色全部来自本文件顶部的变量，深浅主题各一套；组件只加类名。
+ * 减少动效：应用内 data-motion="reduce" 或系统 prefers-reduced-motion，二者任一即降级。 */
+
+:root,
+:root[data-theme="dark"] {
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+
+  /* 液态玻璃：上亮下暗的半透明暖白，顶部一道高光、底部一道暗边，下方一层很短的投影 */
+  --glass-fill: linear-gradient(180deg, rgb(255 246 236 / .095), rgb(255 246 236 / .04) 60%, rgb(255 246 236 / .055));
+  --glass-edge: rgb(255 244 232 / .1);
+  --glass-hi: rgb(255 255 255 / .1);
+  --glass-lo: rgb(0 0 0 / .28);
+  --glass-shadow: 0 1px 2px rgb(0 0 0 / .35), 0 6px 16px -6px rgb(0 0 0 / .55);
+  --glass-sheen: radial-gradient(120% 90% at 18% 0%, rgb(255 255 255 / .09), transparent 55%);
+
+  /* 卡片聚光 */
+  --spot-fill: rgb(255 244 230 / .055);
+  --spot-edge: rgb(255 240 222 / .42);
+
+  /* 边缘流光：头部偏白，尾巴是强调色 */
+  --beam-head: color-mix(in oklab, var(--accent) 45%, #fff);
+  --beam-tail: color-mix(in oklab, var(--accent) 70%, transparent);
+  --beam-rest: color-mix(in oklab, var(--accent) 22%, var(--border));
+
+  /* 粘性融合指示器 */
+  --goo-fill: var(--bg-hover);
+}
+
+:root[data-theme="light"] {
+  --glass-fill: linear-gradient(180deg, rgb(255 255 255 / .98), rgb(255 255 255 / .78));
+  --glass-edge: rgb(60 40 20 / .09);
+  --glass-hi: rgb(255 255 255 / 1);
+  --glass-lo: rgb(60 40 20 / .05);
+  --glass-shadow: 0 1px 2px rgb(60 40 20 / .1), 0 6px 14px -6px rgb(60 40 20 / .22);
+  --glass-sheen: radial-gradient(120% 90% at 18% 0%, rgb(255 255 255 / .9), transparent 60%);
+
+  --spot-fill: color-mix(in srgb, var(--accent) 6%, transparent);
+  --spot-edge: color-mix(in srgb, var(--accent) 55%, transparent);
+
+  --beam-head: color-mix(in oklab, var(--accent) 80%, #fff);
+  --beam-tail: color-mix(in oklab, var(--accent) 50%, transparent);
+  --beam-rest: color-mix(in oklab, var(--accent) 30%, var(--border));
+
+  /* 粘性融合指示器：浅色下用纯白块浮在米色底上 */
+  --goo-fill: var(--bg-elev);
+}
+
+/* ───── 液态玻璃胶囊（LiquidCapsule.tsx）───── */
+.cz-capsule {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 0;
+  height: 0;
+  border-radius: var(--r-md);
+  transform-origin: 0 0;
+  will-change: transform;
+  background: var(--glass-sheen), var(--glass-fill);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 var(--glass-lo), var(--glass-shadow);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+.cz-capsule.is-on { opacity: 1; }
+
+/* ───── 卡片聚光（spotlight.ts 负责写 --spot-x / --spot-y 和 is-lit）───── */
+/* 低优先级：组件自己的 position（例如 fixed 的弹层）优先 */
+:where(.cz-spot) { position: relative; isolation: isolate; }
+.cz-spot::before,
+.cz-spot::after {
+  content: '';
+  position: absolute;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 360ms var(--ease-out);
+}
+/* 面上的柔光：垫在内容下面 */
+.cz-spot::before {
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(var(--spot-r, 260px) circle at var(--spot-x, 50%) var(--spot-y, 50%), var(--spot-fill), transparent 70%);
+}
+/* 边上的光：只画在 1px 边框那一圈 */
+.cz-spot::after {
+  inset: -1px;
+  padding: 1px;
+  background: radial-gradient(
+    calc(var(--spot-r, 260px) * .6) circle at calc(var(--spot-x, 50%) + 1px) calc(var(--spot-y, 50%) + 1px),
+    var(--spot-edge),
+    transparent 72%
+  );
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+.cz-spot.is-lit::before,
+.cz-spot.is-lit::after { opacity: 1; transition-duration: 180ms; }
+
+/* 倾斜（.cz-spot.cz-tilt）：跟手时过渡很短，离开后 700ms 缓出回正 */
+.cz-tilt {
+  transform: perspective(900px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+  transition: transform 700ms var(--ease-out);
+  will-change: transform;
+}
+.cz-tilt.is-lit { transition-duration: 140ms; }
+
+/* ───── 边缘流光（border beam）───── */
+/* 放在 position: relative 的卡片里；只在 1.5px 的边框环上可见，一段光沿边框匀速绕圈（offset-path 保证四边速度一致） */
+.cz-beam {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border: 1.5px solid transparent;
+  border-radius: inherit;
+  pointer-events: none;
+  mask: linear-gradient(#000 0 0) padding-box exclude, linear-gradient(#000 0 0) border-box;
+  opacity: 0;
+  transition: opacity 480ms var(--ease-out);
+}
+.cz-beam::after {
+  content: '';
+  position: absolute;
+  width: var(--beam-size, 120px);
+  aspect-ratio: 1;
+  background: linear-gradient(to left, var(--beam-head), var(--beam-tail) 35%, transparent);
+  offset-path: rect(0 auto auto 0 round var(--beam-radius, 20px));
+  offset-anchor: 90% 50%;
+  animation: cz-beam-run var(--beam-period, 4.8s) linear infinite paused;
+}
+.cz-beam.is-on { opacity: 1; }
+/* 挂载时就在执行中（例如切到一个正在跑的会话）：也从 0 淡入，不要一下子亮出来 */
+@starting-style { .cz-beam.is-on { opacity: 0; } }
+.cz-beam.is-on::after { animation-play-state: running; }
+@keyframes cz-beam-run {
+  from { offset-distance: 0%; }
+  to { offset-distance: 100%; }
+}
+
+/* ───── 粘性融合指示器（GooeyIndicator.tsx）───── */
+/* 外层负责投影（滤镜层里的投影会被阈值吃掉），内层做模糊 + 阈值的液态融合；按钮文字在这两层之外 */
+.cz-goo {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / .28));
+}
+:root[data-theme="light"] .cz-goo { filter: drop-shadow(0 1px 1.5px rgb(60 40 20 / .16)); }
+.cz-goo.is-on { opacity: 1; }
+.cz-goo__defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+.cz-goo__ink { position: absolute; inset: 0; }
+.cz-goo__blob,
+.cz-goo__bridge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: var(--goo-fill);
+}
+.cz-goo__blob { border-radius: var(--goo-radius, 7px); }
+.cz-goo__bridge { width: 0; height: 0; border-radius: 999px; }
+
+/* ───── 减少动效 ───── */
+:root[data-motion="reduce"] .cz-beam::after { display: none; }
+:root[data-motion="reduce"] .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }
+:root[data-motion="reduce"] .cz-spot::before,
+:root[data-motion="reduce"] .cz-spot::after { display: none; }
+:root[data-motion="reduce"] .cz-tilt { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cz-tilt { transform: none; }
+  .cz-beam::after { display: none; }
+  .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }
+  .cz-spot::before,
+  .cz-spot::after { display: none; }
+}

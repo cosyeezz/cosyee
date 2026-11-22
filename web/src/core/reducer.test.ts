@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Turn } from '@cosyee/shared';
-import { applyEvent, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
 
 const FIX = path.resolve(__dirname, '../../../shared/fixtures');
 
@@ -576,4 +576,33 @@ describe('缓存命中率走势', () => {
     expect(s.meta.cache).toHaveLength(400);
     expect(s.meta.cache![399]!.id).toBe('m449');
   });
+  it('记下每次请求调用的工具 id；同一条消息分多行时合并', () => {
+    const tu = (id: string, mid: string) => ({
+      type: 'assistant', timestamp: t,
+      message: { id: mid, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: 'a' } }], usage: usage(1, 0, 9) },
+    });
+    const s = fromHistory(hist(asst('m1', usage(1, 0, 9)), tu('t1', 'm1'), tu('t2', 'm1'), asst('m2', usage(1, 0, 9))));
+    expect(s.meta.cache?.map((p) => [p.id, p.tools])).toEqual([['m1', ['t1', 't2']], ['m2', undefined]]);
+  });
+});
+
+describe('applyEvents（批量共享草稿）', () => {
+  const FIXTURES = ['basic-tool.jsonl', 'thinking.jsonl', 'interrupt.jsonl', 'subagents.jsonl', 'subagents-fg.jsonl', 'skill.jsonl', 'resume.jsonl', 'queue-a.jsonl', 'queue-e.jsonl', 'queue-h.jsonl'];
+  for (const name of FIXTURES) {
+    it(`${name}：结果与逐个 applyEvent 相同，且不改动输入状态`, () => {
+      // 以一个已有的轮为起点，验证起点状态在批量期间不被原地修改
+      const start = applyEvent(applyEvent(initState(), user('上一轮'), 1_000_000), { type: 'result', subtype: 'success' }, 1_500_000);
+      const before = JSON.stringify(start);
+      const events = [user('问题'), ...lines(name)];
+      let seq = start;
+      for (const e of events) seq = applyEvent(seq, e, 2_000_000);
+      const batched = applyEvents(start, events, 2_000_000);
+      expect(batched).toEqual(seq);
+      expect(JSON.stringify(start)).toBe(before);
+      // 批量结束后恢复不可变更新：再来一个事件不影响批量结果
+      const snap = JSON.stringify(batched);
+      applyEvent(batched, { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'x' } } }, 3_000_000);
+      expect(JSON.stringify(batched)).toBe(snap);
+    });
+  }
 });

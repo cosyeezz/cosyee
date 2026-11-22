@@ -243,6 +243,23 @@ describe('Trash：软删除 / 恢复', () => {
     expect(() => trash.restore(B)).toThrow(/不在已删除列表/);
     pins.dispose();
   });
+
+  it('批量：softDeleteMany 跳过执行中的并清掉置顶；restoreMany 忽略不在列表里的 id', () => {
+    const store = newStore();
+    const dots = new DotState(store);
+    const pins = new Pins(store);
+    const trash = new Trash(store, dots, pins, () => 7000);
+    pins.pin(A, CWD);
+    dots.setRunning(B, true);
+    const r = trash.softDeleteMany([{ id: A, cwd: CWD, title: 'a' }, { id: B, cwd: CWD, title: 'b' }]);
+    expect(r).toEqual({ deleted: [A], skipped: [B] });
+    expect(store.state.deleted[A]).toEqual({ cwd: CWD, title: 'a', deletedAt: 7000 });
+    expect(store.state.deleted[B]).toBeUndefined();
+    expect(store.state.pinned[A]).toBeUndefined();
+    expect(trash.restoreMany([A, B])).toEqual([A]);
+    expect(trash.list()).toEqual([]);
+    pins.dispose();
+  });
 });
 
 describe('Trash：永久删除的路径校验', () => {
@@ -341,6 +358,20 @@ describe('Trash：永久删除的路径校验', () => {
     expect(fs.existsSync(nestedFile)).toBe(true);
     expect(fs.existsSync(real.file)).toBe(true);
     expect(store.state.deleted[A]).toBeDefined();
+    pins.dispose();
+  });
+
+  it('purgeMany：逐个校验，单个失败不影响其它', async () => {
+    const a = putSession(A, CWD);
+    const b = putSession(B, CWD);
+    const { store, trash, pins, locate } = setup();
+    store.state.deleted[A] = { cwd: CWD, title: 't', deletedAt: 1 };
+    // B 不在已删除列表里 → 404，文件保留
+    const r = await trash.purgeMany([B, A], locate);
+    expect(r.purged).toEqual([A]);
+    expect(r.failed.map((f) => f.id)).toEqual([B]);
+    expect(fs.existsSync(a.file)).toBe(false);
+    expect(fs.existsSync(b.file)).toBe(true);
     pins.dispose();
   });
 });
@@ -486,6 +517,31 @@ describe('HTTP 接口', () => {
     expect(fs.existsSync(path.join(dir, `${A}.jsonl`))).toBe(true);
     expect(await get('/api/deleted')).toEqual([]);
     expect((await post('/api/sessions/not-a-uuid/purge')).status).toBe(400);
+  });
+
+  it('批量删除 → 批量恢复 → 批量永久删除', async () => {
+    const C = '33333333-4444-4555-8666-777777777777';
+    putSession(C, wsDir);
+    const dir = path.join(tmp, 'claude', 'projects', encodeCwd(wsDir));
+    // 不存在的 id 忽略；只删给出的那些
+    const r = await (await post('/api/sessions/delete-many', { cwd: wsDir, ids: [A, C, 'nope'] })).json();
+    expect(r).toEqual({ deleted: 2, skipped: 0 });
+    expect((await get(`/api/sessions?cwd=${encodeURIComponent(wsDir)}`)).map((s: { id: string }) => s.id)).not.toContain(A);
+    expect((await get('/api/deleted')).map((d: { id: string }) => d.id).sort()).toEqual([A, C].sort());
+
+    expect(await (await post('/api/deleted/restore', { ids: [A] })).json()).toEqual({ restored: 1 });
+    expect((await get('/api/deleted')).map((d: { id: string }) => d.id)).toEqual([C]);
+
+    // A 未删除 → 失败计数；C 被永久删除
+    const p = await (await post('/api/deleted/purge', { ids: [A, C] })).json();
+    expect(p).toMatchObject({ purged: 1, failed: 1 });
+    expect(fs.existsSync(path.join(dir, `${C}.jsonl`))).toBe(false);
+    expect(fs.existsSync(path.join(dir, `${A}.jsonl`))).toBe(true);
+    expect(await get('/api/deleted')).toEqual([]);
+
+    expect((await post('/api/deleted/purge', { ids: [] })).status).toBe(400);
+    expect((await post('/api/deleted/restore', { ids: ['../x'] })).status).toBe(400);
+    expect((await post('/api/sessions/delete-many', { ids: [A] })).status).toBe(400);
   });
 
   it('打开文件夹：只接受工作空间列表里的路径', async () => {

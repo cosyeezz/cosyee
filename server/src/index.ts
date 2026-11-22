@@ -8,6 +8,9 @@ import { startServer } from './server.js';
 declare const __COSYEE_VERSION__: string | undefined;
 
 async function main(): Promise<void> {
+  // 默认 Tailscale 模式（本机 + tailnet 内设备可访问）；只给本机用时设 COSYEE_HOST=127.0.0.1（或 cosyee-server --local）。
+  // 桌面版走 desktop-entry.ts，不受影响。
+  if (!process.env.COSYEE_HOST) process.env.COSYEE_HOST = TAILSCALE_MODE;
   const bundled = typeof __COSYEE_VERSION__ === 'string';
   let requestShutdown: (sig: string) => void = () => {};
   const srv = await startServer({
@@ -15,7 +18,7 @@ async function main(): Promise<void> {
     // 客户端「停止本地服务」（Windows 上后台进程收不到信号，只能走接口）
     onShutdown: () => requestShutdown('POST /api/shutdown'),
   });
-  const bindHost = process.env.COSYEE_HOST ?? '127.0.0.1';
+  const bindHost = process.env.COSYEE_HOST;
   // 源码运行时开发前端跑在 Vite（COSYEE_WEB_PORT）；生产 / 独立包由本服务托管
   if (!bundled) console.log(`Cosyee（开发，Vite）: http://127.0.0.1:${devPort()}/`);
   console.log(`Cosyee: http://127.0.0.1:${srv.port}/`);

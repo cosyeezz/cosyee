@@ -5,18 +5,21 @@
 
 import type { SessionMeta, Turn } from '@cosyee/shared';
 import {
+  addUserSkill,
   applyAssistantMessage,
+  applySkillBody,
   applyToolResults,
   finishTurn,
   isActive,
   makeTurn,
   newBook,
+  parseSkillBody,
   touch,
   type ConvState,
   type Draft,
 } from './core';
 import { arr, isObj, str } from './util';
-import { cachePointOf, pushCachePoint } from './cacheHit';
+import { cachePointOf, compactMarkOf, pushCachePoint, pushCompactMark } from './cacheHit';
 
 /** 不是用户说的话的 user 文本（标签开头） */
 const NOISE_RE = /^\s*<(?:bash-[\w-]+|local-command-[\w-]+|task-notification|system-reminder|tick|teammate-message|cross-session-message|command-[\w-]+)[\s>]/;
@@ -32,6 +35,8 @@ interface Ctx {
   meta: SessionMeta;
   /** 子代理模式：条目全是 isSidechain，且首条 user 是 prompt */
   sub: boolean;
+  /** 当前轮由斜杠命令开启时的命令名 / 参数；紧随其后的技能正文条目据此建 user 来源的技能加载 */
+  cmd: { name: string; args: string } | null;
 }
 
 /** user 条目的文字：字符串，或 text 块拼接；含 tool_result 的返回 null */
@@ -169,7 +174,7 @@ function activeBranch(entries: unknown[]): unknown[] {
 }
 
 function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx {
-  const ctx: Ctx = { turns: [], cur: null, last: null, meta: {}, sub };
+  const ctx: Ctx = { turns: [], cur: null, last: null, meta: {}, sub, cmd: null };
   let last = 0;
   for (const raw of sub ? entries : activeBranch(entries)) {
     if (!isObj(raw)) continue;
@@ -185,7 +190,24 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
 
     switch (raw.type) {
       case 'user': {
-        if (raw.isMeta === true || raw.isCompactSummary === true) break;
+        if (raw.isMeta === true) {
+          // 其它 meta 一律忽略；只认技能正文：有 sourceToolUseID 的归 Skill 工具调用，没有的是用户 /技能名 的正文
+          const mc = isObj(raw.message) ? raw.message.content : undefined;
+          const mt = userText(mc);
+          if (ctx.cur && mt !== null && parseSkillBody(mt)) {
+            const src = str(raw.sourceToolUseID);
+            if (src) applySkillBody(ctx.cur, '', mt, src);
+            else if (ctx.cmd) {
+              const k = addUserSkill(ctx.cur.turn, ctx.cmd.name, ctx.cmd.args);
+              const parsed = parseSkillBody(mt)!;
+              k.body = parsed.body;
+              if (parsed.dir) k.dir = parsed.dir;
+              ctx.cmd = null;
+            }
+          }
+          break;
+        }
+        if (raw.isCompactSummary === true) break;
         const content = isObj(raw.message) ? raw.message.content : undefined;
         const text = userText(content);
         if (text === null) {
@@ -202,7 +224,11 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
           break;
         }
         const real = realUserText(text);
-        if (real !== null) openTurn(ctx, real, at, { userId: str(raw.uuid) || undefined });
+        if (real !== null) {
+          openTurn(ctx, real, at, { userId: str(raw.uuid) || undefined });
+          const c = CMD_NAME_RE.exec(text);
+          ctx.cmd = c?.[1] ? { name: c[1].replace(/^\//, ''), args: CMD_ARGS_RE.exec(text)?.[1]?.trim() ?? '' } : null;
+        }
         break;
       }
       case 'attachment': {
@@ -228,6 +254,13 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         break;
       }
       case 'system': {
+        if (raw.subtype === 'compact_boundary') {
+          if (sub) break;
+          const cache = ctx.meta.cache;
+          const m = compactMarkOf(raw, ctx.cur ? ctx.turns.length : Math.max(0, ctx.turns.length - 1), cache?.length ? cache[cache.length - 1]!.id : null, at);
+          if (m) pushCompactMark((ctx.meta.compactions ??= []), m);
+          break;
+        }
         if (raw.subtype !== 'turn_duration' || !ctx.cur || !isActive(ctx.cur.turn)) break;
         const dur = typeof raw.durationMs === 'number' ? raw.durationMs : 0;
         const ended = typeof raw.timestamp === 'string' && Number.isFinite(Date.parse(raw.timestamp)) ? at : ctx.cur.turn.startedAt + dur;

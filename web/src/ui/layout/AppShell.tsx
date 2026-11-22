@@ -1,6 +1,8 @@
 // 三栏外壳：左侧栏 / 中间（顶部标题 + 主区）/ 右侧上下文。纯布局，不含业务。
-import type { ReactNode } from 'react';
+// 窄屏（narrow）时两侧栏不占位置，改为盖在会话上的浮层抽屉，点遮罩关闭。
+import { useRef, type ReactNode } from 'react';
 import { Icon } from '../icons/Icon';
+import { useCssHeight } from './useCssHeight';
 import './AppShell.css';
 
 export interface AppShellProps {
@@ -13,12 +15,22 @@ export interface AppShellProps {
   /** 右侧上下文栏收起（收起按钮在面板里，展开按钮在顶部右侧） */
   contextCollapsed?: boolean;
   onToggleContext?: () => void;
+  /** 窄屏：两侧栏改为浮层抽屉（collapsed=false 表示抽屉打开） */
+  narrow?: boolean;
+  /** 窄屏下点遮罩：关掉打开的抽屉 */
+  onDismiss?: () => void;
 }
 
 export function AppShell({
   sidebar, header, main, context, sidebarCollapsed, onToggleSidebar, contextCollapsed = false, onToggleContext,
+  narrow = false, onDismiss,
 }: AppShellProps) {
-  const cls = `cz-shell${sidebarCollapsed ? ' cz-shell--collapsed' : ''}${contextCollapsed ? ' cz-shell--ctx-collapsed' : ''}`;
+  const centerRef = useRef<HTMLDivElement>(null);
+  const topRef = useRef<HTMLDivElement>(null);
+  // 顶栏浮在主区上面（磨砂玻璃），主区按 --top-h 让出位置
+  useCssHeight(centerRef, topRef, '--top-h');
+  const drawerOpen = narrow && (!sidebarCollapsed || !contextCollapsed);
+  const cls = `cz-shell${narrow ? ' cz-shell--narrow' : ''}${sidebarCollapsed ? ' cz-shell--collapsed' : ''}${contextCollapsed ? ' cz-shell--ctx-collapsed' : ''}`;
   return (
     <div className={cls}>
       {/* 收起时宽度变 0 并隐藏内容（visibility 使其不可聚焦），内层保持固定宽度避免重排 */}
@@ -26,8 +38,8 @@ export function AppShell({
         <div className="cz-shell__sidebar-inner">{sidebar}</div>
       </aside>
 
-      <div className="cz-shell__center">
-        <div className="cz-shell__top">
+      <div className="cz-shell__center" ref={centerRef}>
+        <div className="cz-shell__top" ref={topRef}>
           {sidebarCollapsed && (
             <button
               type="button"
@@ -55,6 +67,10 @@ export function AppShell({
         <div className="cz-shell__main">{main}</div>
       </div>
 
+      {narrow && (
+        <div className={`cz-shell__scrim${drawerOpen ? ' is-on' : ''}`} onClick={onDismiss} aria-hidden="true" />
+      )}
+
       {/* 同左侧栏：收起时宽度变 0 并隐藏，内层固定宽度 */}
       <aside className="cz-shell__context" aria-hidden={contextCollapsed}>
         <div className="cz-shell__context-inner">{context}</div>
@@ -62,3 +78,4 @@ export function AppShell({
     </div>
   );
 }
+

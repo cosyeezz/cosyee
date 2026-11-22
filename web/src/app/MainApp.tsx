@@ -1,20 +1,31 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  Account, Attachment, Bootstrap, DeletedSession, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, Workspace,
+  Account, Attachment, Bootstrap, DeletedSession, QueueMode, SessionConfig, SessionSummary, SkillMode, SubagentRun, ToolStats, Workspace,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { resolveSessionConfig } from '../core/sessionConfig';
+import { addQuote, type QuoteReply } from '../core/quote';
+import { uuid } from '../core/browser';
 import { rewindTo, subagentModelFromHistory, subagentTurnFromHistory } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
+import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import { ConversationView } from '../ui/flow/ConversationView';
+import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
 import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
+import { FlowMetaContext, defaultSkillLoader, type FlowMeta } from '../ui/flow/flowContext';
+import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/FileContext';
+import { FilePreview } from '../ui/files/FilePreview';
+import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { useSessionStream } from './useSessionStream';
+import { motionOK } from '../ui/motion/reduced';
+import { useCssHeight } from '../ui/layout/useCssHeight';
+import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
 import './MainApp.css';
 
 let socketStarted = false;
@@ -29,14 +40,44 @@ const FALLBACK_CONFIG: SessionConfig = { model: 'sonnet', effort: 'medium' };
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** 新会话草稿：先分配好会话 id，右侧面板据此拉起探测进程（可在发第一条消息前调整 skill / MCP），第一条消息复用它 */
-const draftSel = (cwd: string) => ({ id: crypto.randomUUID(), cwd, fresh: true });
+const draftSel = (cwd: string) => ({ id: uuid(), cwd, fresh: true });
+
+/** 会话列表按工作空间缓存时用的键（与 samePath 同一套规则：不区分大小写、忽略末尾分隔符） */
+const pathKey = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
 
 export function MainApp() {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
+  // 远程连接：服务端桌面上的窗口（系统选择对话框、文件管理器、终端）远程设备看不到。
+  // 选择文件 / 文件夹改用网页版选择窗口（在远端浏览服务端的文件）；文件管理器、终端的按钮不显示
+  const remote = !!boot?.remote;
+  const [webPick, setWebPick] = useState<{ mode: PickerMode; title: string } | null>(null);
+  const webPickDone = useRef<((paths: string[]) => void) | null>(null);
+  const askPaths = useCallback(
+    (mode: PickerMode, title: string) =>
+      new Promise<string[]>((resolve) => {
+        webPickDone.current?.([]); // 已有一个打开着：当作取消
+        webPickDone.current = resolve;
+        setWebPick({ mode, title });
+      }),
+    [],
+  );
+  const finishWebPick = useCallback((paths: string[]) => {
+    const done = webPickDone.current;
+    webPickDone.current = null;
+    setWebPick(null);
+    done?.(paths);
+  }, []);
+  /** 输入框「+」：本机 → 系统对话框；远程 → 网页版选择窗口 */
+  const pickFiles = useCallback<typeof api.pick>(async (mode) => {
+    if (!remote) return api.pick(mode);
+    const paths = await askPaths('mixed', '添加文件或文件夹');
+    return paths.length ? api.pickPaths(paths) : { items: [], supportsMixed: true };
+  }, [remote, askPaths]);
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [wsState, setWsState] = useState<{ current: string | null; list: Workspace[] }>({ current: null, list: [] });
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  /** 各工作空间的会话（侧栏按工作空间分组显示，所以每个工作空间都要读）；键见 pathKey */
+  const [sessionMap, setSessionMap] = useState<Record<string, SessionSummary[]>>({});
   /** 置顶（全局，可来自任何工作空间）与已删除（全局） */
   const [pins, setPins] = useState<SessionSummary[]>([]);
   const [deleted, setDeleted] = useState<DeletedSession[]>([]);
@@ -52,12 +93,24 @@ export function MainApp() {
   const [collapsed, setCollapsed] = useState(false);
   /** 右侧上下文栏收起；新开会话时自动展开 */
   const [ctxCollapsed, setCtxCollapsed] = useState(false);
+  /** 窄屏（手机）：两侧栏是浮层抽屉，同一时间最多开一个；与宽屏的收起状态各管各的 */
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [drawer, setDrawer] = useState<'left' | 'right' | null>(null);
+  const closeDrawer = useCallback(() => setDrawer(null), []);
+  // 安卓客户端的返回手势（外壳脚本派发可取消的 cosyee:back）：有打开的抽屉就先关抽屉
+  useEffect(() => {
+    if (!narrow || !drawer) return;
+    const onBack = (e: Event) => { e.preventDefault(); setDrawer(null); };
+    window.addEventListener('cosyee:back', onBack);
+    return () => window.removeEventListener('cosyee:back', onBack);
+  }, [narrow, drawer]);
   const [config, setConfig] = useState<SessionConfig>(FALLBACK_CONFIG);
   const [openSub, setOpenSub] = useState<{ turnId: string; toolUseId: string } | null>(null);
   const [loadedSub, setLoadedSub] = useState<SubagentRun | null>(null);
   const [ctxLoading, setCtxLoading] = useState(false);
-  /** 选中回复带来的引用文字（同时只保留一个）；由输入框负责拼进消息并在发送后清除 */
-  const [quote, setQuote] = useState<string | null>(null);
+  const [toolStats, setToolStats] = useState<ToolStats | null>(null);
+  /** 选中回复带来的引用文字（可累积多段）；由输入框负责拼进消息并在发送后清除 */
+  const [quotes, setQuotes] = useState<readonly QuoteReply[]>([]);
   const composerRef = useRef<ComposerHandle>(null);
 
   const configs = useRef(new Map<string, SessionConfig>());
@@ -69,18 +122,36 @@ export function MainApp() {
   const lastMeta = useRef<{ slash: string[]; skills: string[] }>({ slash: [], skills: [] });
 
   const cwd = wsState.current;
+  /** 当前工作空间的会话 */
+  const sessions = useMemo(() => (cwd ? sessionMap[pathKey(cwd)] ?? [] : []), [sessionMap, cwd]);
+  /** 所有工作空间的会话（侧栏分组用；当前工作空间不在列表里时也算上） */
+  const allSessions = useMemo(() => {
+    const dirs = wsState.list.map((w) => w.path);
+    if (cwd && !dirs.some((d) => samePath(d, cwd))) dirs.push(cwd);
+    return dirs.flatMap((d) => sessionMap[pathKey(d)] ?? []);
+  }, [sessionMap, wsState.list, cwd]);
+  /** 对每个工作空间缓存的会话列表做同一个改动（比如清掉蓝点、改标题） */
+  const mapSessions = useCallback((fn: (l: SessionSummary[]) => SessionSummary[]) => {
+    setSessionMap((m) => Object.fromEntries(Object.entries(m).map(([k, l]) => [k, fn(l)])));
+  }, []);
   /** 当前打开的会话所属的目录（没有打开会话时就是当前工作空间） */
   const selCwd = sel?.cwd ?? cwd;
   const { view, patch } = useSessionStream(sel?.id ?? null, selCwd, sel?.fresh ?? false);
 
   // 切换会话 / 工作空间 / 新会话时清空引用
-  useEffect(() => { setQuote(null); }, [sel?.id]);
+  useEffect(() => { setQuotes((q) => (q.length ? [] : q)); }, [sel?.id]);
 
   const onReply = useCallback((q: string, reply: string) => {
-    setQuote(q);
-    composerRef.current?.appendText(reply);
+    // 回复跟着它的引用走（不再拼进输入框，免得多段回复粘在一起、分不清对应哪段）；完全相同的引用不重复加
+    setQuotes((list) => addQuote(list, q, reply));
+    composerRef.current?.appendText(''); // 只聚焦输入框，Enter 即可发送
   }, []);
-  const onClearQuote = useCallback(() => setQuote(null), []);
+  const onRemoveQuote = useCallback((index: number) => setQuotes((list) => list.filter((_, i) => i !== index)), []);
+  const onEditQuoteReply = useCallback(
+    (index: number, reply: string) => setQuotes((list) => list.map((q, i) => (i === index ? { ...q, reply } : q))),
+    [],
+  );
+  const onClearQuotes = useCallback(() => setQuotes((q) => (q.length ? [] : q)), []);
 
   const flash = useCallback((msg: string) => {
     setNotice(msg);
@@ -105,26 +176,37 @@ export function MainApp() {
 
   const cwdRef = useRef(cwd);
   cwdRef.current = cwd;
+  const wsListRef = useRef(wsState.list);
+  wsListRef.current = wsState.list;
   /** 当前 sessions 列表属于哪个工作空间（用来判断列表是否已为当前工作空间加载完） */
   const sessionsFor = useRef<string | null>(null);
   /** 启动 / 切换工作空间后还没有做过“自动打开第一个会话”；点“新会话”后置 false，避免覆盖用户的选择 */
   const autoPick = useRef(true);
-  /** 请求序号：并发的重读只接受最后一次发出的结果，避免较早的旧结果后到把新数据覆盖掉 */
-  const sessionsSeq = useRef(0);
+  /** 请求序号（每个工作空间各一个）：并发的重读只接受最后一次发出的结果，避免较早的旧结果后到把新数据覆盖掉 */
+  const sessionsSeq = useRef(new Map<string, number>());
   const pinsSeq = useRef(0);
   const loadSessions = useCallback((dir: string | null) => {
-    const seq = ++sessionsSeq.current;
-    if (!dir) { setSessions([]); return; }
+    if (!dir) return;
+    const key = pathKey(dir);
+    const seq = (sessionsSeq.current.get(key) ?? 0) + 1;
+    sessionsSeq.current.set(key, seq);
     api.sessions(dir).then((list) => {
-      // 只接受仍是当前工作空间、且是最新一次请求的结果
-      if (seq === sessionsSeq.current && samePath(cwdRef.current, dir)) {
-        sessionsFor.current = dir;
-        setSessions(list);
-      }
-    }).catch((e) => flash(`读取会话列表失败：${errText(e)}`));
+      if (sessionsSeq.current.get(key) !== seq) return;
+      if (samePath(cwdRef.current, dir)) sessionsFor.current = dir;
+      setSessionMap((m) => ({ ...m, [key]: list }));
+    }).catch((e) => {
+      // 别的工作空间读不出来（比如文件夹已被删）不打扰用户，只在当前工作空间出错时提示
+      if (samePath(cwdRef.current, dir)) flash(`读取会话列表失败：${errText(e)}`);
+    });
   }, [flash]);
 
   useEffect(() => { loadSessions(cwd); }, [cwd, loadSessions]);
+
+  // 工作空间列表变化（启动读完、新增）后，把其余工作空间的会话也读进来
+  const wsPaths = wsState.list.map((w) => w.path).join('\n');
+  useEffect(() => {
+    for (const w of wsListRef.current) if (!samePath(w.path, cwdRef.current)) loadSessions(w.path);
+  }, [wsPaths, loadSessions]);
 
   // 分支跟着「打开的会话」走（置顶里别的工作空间的会话也要显示它自己的分支）
   useEffect(() => {
@@ -145,6 +227,7 @@ export function MainApp() {
   /** 置顶 / 删除 / 恢复之类的操作之后：三块数据一起重读 */
   const refreshSidebar = useCallback(() => {
     loadSessions(cwdRef.current);
+    for (const w of wsListRef.current) if (!samePath(w.path, cwdRef.current)) loadSessions(w.path);
     loadPins();
     loadDeleted();
   }, [loadSessions, loadPins, loadDeleted]);
@@ -159,7 +242,8 @@ export function MainApp() {
   // 全局消息：会话列表刷新（任何工作空间的变化都可能影响置顶里的行）、侧栏整体刷新、账号切换、错误提示
   useEffect(() => socket.on((m) => {
     if (m.t === 'sessions.changed') {
-      if (samePath(m.cwd, cwd)) loadSessions(cwd);
+      // 侧栏显示所有工作空间的会话：列表里任何一个工作空间有变化都要重读
+      if (samePath(m.cwd, cwd) || wsListRef.current.some((w) => samePath(w.path, m.cwd))) loadSessions(m.cwd);
       loadPins();
     } else if (m.t === 'sidebar.changed') {
       refreshSidebar();
@@ -182,11 +266,17 @@ export function MainApp() {
   // ───────────── 当前会话派生数据 ─────────────
 
   const turns = view?.conv.turns ?? [];
+  // 加载会话：骨架屏 → 骨架淡出、内容逐块浮现
+  const skeleton = useFlowSkeleton(!!view?.loading);
+  // 切换会话：新会话加载期间，旧对话留在原位淡出（不先闪成空白）；新内容到了再整体换上、逐块浮现
+  const lastFlow = useRef<{ key: string; turns: typeof turns } | null>(null);
+  if (view && !view.loading && !view.loadError) lastFlow.current = turns.length > 0 ? { key: view.id, turns } : null;
+  const heldFlow = view?.loading && motionOK() ? lastFlow.current : null;
   const meta = view?.conv.meta;
   if (meta?.slashCommands?.length) lastMeta.current.slash = meta.slashCommands;
   if (meta?.skills?.length) lastMeta.current.skills = meta.skills;
   const running = view?.status === 'running' || view?.status === 'starting';
-  const current = sel ? sessions.find((s) => s.id === sel.id) ?? pins.find((s) => s.id === sel.id) ?? null : null;
+  const current = sel ? allSessions.find((s) => s.id === sel.id) ?? pins.find((s) => s.id === sel.id) ?? null : null;
   /** 工作空间列表里实际显示的会话（已置顶的在「置顶」里） */
   const listed = useMemo(() => excludePinned(sessions, pins), [sessions, pins]);
   /** 额度按当前会话所用的账号取（并行模式下不同会话可能是不同账号）；会话或账号变了就换一个函数，让额度圆环重新读取 */
@@ -198,29 +288,39 @@ export function MainApp() {
 
   // ───────────── 工作空间与会话切换 ─────────────
 
+  /** 新会话输入框里换工作空间：停在这个工作空间的空白新会话上（不去打开它的某个旧会话） */
   const selectWorkspace = useCallback((path: string) => {
     api.setCurrentWorkspace(path)
-      .then(() => { autoPick.current = true; setWsState((w) => ({ ...w, current: path })); setSel(null); })
+      .then(() => {
+        autoPick.current = false;
+        setWsState((w) => ({ ...w, current: path }));
+        setSel(draftSel(path));
+        setOpenSub(null);
+      })
       .catch((e) => flash(errText(e)));
   }, [flash]);
 
   const openFolder = useCallback(() => {
-    api.pickWorkspace()
+    const picked: Promise<{ workspace: Workspace | null }> = remote
+      ? askPaths('folder', '打开文件夹').then(([dir]): Promise<{ workspace: Workspace | null }> | { workspace: null } =>
+          dir ? api.openWorkspace(dir) : { workspace: null })
+      : api.pickWorkspace();
+    picked
       .then(({ workspace }) => {
         if (!workspace) return;
-        autoPick.current = true;
+        autoPick.current = false;
         setWsState((w) => ({
           current: workspace.path,
           list: w.list.some((x) => samePath(x.path, workspace.path)) ? w.list : [...w.list, workspace],
         }));
-        setSel(null);
+        setSel(draftSel(workspace.path)); // 新打开的文件夹：直接进入它的新会话
       })
       .catch((e) => flash(`打开文件夹失败：${errText(e)}`));
-  }, [flash]);
+  }, [flash, remote, askPaths]);
 
   const selectSession = useCallback((id: string) => {
     // 会话可能来自当前工作空间的列表，也可能来自「置顶」（任何工作空间）
-    const hit = sessions.find((s) => s.id === id) ?? pins.find((s) => s.id === id);
+    const hit = allSessions.find((s) => s.id === id) ?? pins.find((s) => s.id === id);
     const dir = hit?.cwd ?? cwd;
     if (!dir) return;
     setSel({ id, cwd: dir, fresh: false });
@@ -228,16 +328,20 @@ export function MainApp() {
     // 每个会话各自的配置：本页记着的 > 服务端记下的（刷新页面后也在）> 会话记录里最后用的模型 + 全局默认
     setConfig(configs.current.get(id) ?? resolveSessionConfig(hit, boot?.defaults ?? FALLBACK_CONFIG));
     const clearDot = (l: SessionSummary[]) => l.map((s) => (s.id === id && s.dot === 'unread' ? { ...s, dot: null } : s));
-    setSessions(clearDot);
+    mapSessions(clearDot);
     setPins(clearDot);
     api.viewed(id, dir).catch(() => { /* 蓝点下次刷新再说 */ });
-  }, [cwd, boot, sessions, pins]);
+  }, [cwd, boot, allSessions, pins, mapSessions]);
 
   const newSession = useCallback(() => {
     autoPick.current = false;
     const dir = cwdRef.current;
-    // 已经停在同一工作空间的空白新会话上：沿用它（不再多起一个探测进程）
-    setSel((s) => (!dir ? null : s && isDraft(s) && samePath(s.cwd, dir) ? s : draftSel(dir)));
+    // 已经停在空白的新会话上：沿用它（不再多起一个探测进程）；否则在当前打开的会话所属的工作空间里新建（没有打开会话就用当前工作空间）
+    setSel((s) => {
+      if (s && isDraft(s)) return s;
+      const d = s?.cwd ?? dir;
+      return d ? draftSel(d) : null;
+    });
     setOpenSub(null);
     setCtxCollapsed(false);
     setConfig(boot?.defaults ?? FALLBACK_CONFIG);
@@ -287,7 +391,7 @@ export function MainApp() {
     let id = sel?.id;
     let isNew = false;
     if (!id) {
-      id = crypto.randomUUID();
+      id = uuid();
       isNew = true;
       setSel({ id, cwd: selCwd, fresh: true });
     } else if (sel?.fresh && !sentIds.current.has(id)) {
@@ -296,7 +400,7 @@ export function MainApp() {
     sentIds.current.add(id);
     configs.current.set(id, config); // 这个会话此刻显示的配置就是实际执行的配置
     // 消息 id 由前端生成：CLI 以它作为 user 消息的 uuid，也是之后 rewind / 撤回 / 立即发送的目标
-    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: crypto.randomUUID(), ...(mode ? { mode } : {}) });
+    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: uuid(), ...(mode ? { mode } : {}) });
   }, [selCwd, sel, config]);
 
   const onSend = useCallback((text: string, _attachments: Attachment[], mode?: QueueMode) => sendText(text, mode), [sendText]);
@@ -317,7 +421,7 @@ export function MainApp() {
   const rewindReq = useRef<string | null>(null);
   const onRewind = useCallback((targetId: string) => {
     if (!sel || !selCwd) return;
-    const reqId = crypto.randomUUID();
+    const reqId = uuid();
     rewindReq.current = reqId;
     socket.send({ t: 'rewind', sessionId: sel.id, cwd: selCwd, config, targetId, reqId });
   }, [sel, selCwd, config]);
@@ -361,13 +465,13 @@ export function MainApp() {
     if (!sel) return;
     if (!current) { flash('会话还没有记录，发送第一条消息后才能改名'); return; }
     const rename = (l: SessionSummary[]) => l.map((s) => (s.id === sel.id ? { ...s, title } : s));
-    setSessions(rename);
+    mapSessions(rename);
     setPins(rename);
-    const reload = () => { loadSessions(cwdRef.current); loadPins(); };
+    const reload = () => { loadSessions(sel.cwd); loadPins(); };
     api.rename(sel.id, sel.cwd, title)
       .then(reload)
       .catch((e) => { flash(`改名失败：${errText(e)}`); reload(); });
-  }, [sel, current, flash, loadSessions, loadPins]);
+  }, [sel, current, flash, loadSessions, loadPins, mapSessions]);
 
   // ───────────── 上下文面板 ─────────────
 
@@ -380,6 +484,20 @@ export function MainApp() {
       .catch((e) => flash(`刷新上下文失败：${errText(e)}`))
       .finally(() => setCtxLoading(false));
   }, [sel, current, patch, flash]);
+
+  // 所有会话的工具累计调用次数：换会话、一轮结束（记录有新增）时重新取；服务端是增量扫描，开销很小。
+  // 取不到（老服务端没有这个接口）就保持空，面板只显示本会话的次数。
+  const toolStatsSeq = useRef(0);
+  const loadToolStats = useCallback(() => {
+    const seq = ++toolStatsSeq.current;
+    api.getToolStats()
+      .then((s) => { if (seq === toolStatsSeq.current) setToolStats(s); })
+      .catch(() => {});
+  }, []);
+  const selKey = sel?.id ?? null;
+  useEffect(() => {
+    if (!running) loadToolStats();
+  }, [selKey, running, loadToolStats]);
 
   // 打开已有会话时后端若没有缓存（例如刚重启），自动采集一次，不用再点「刷新」；
   // 新会话草稿也自动采集（后端用 --session-id 拉起探测进程），这样发第一条消息前就能调整 skill / MCP。
@@ -466,6 +584,22 @@ export function MainApp() {
     });
   }, [sel, patch, flash, refreshContext]);
 
+  // 智能体开关：同工具开关，乐观更新；失败则提示并重新采集
+  const toggleAgent = useCallback((name: string, enabled: boolean) => {
+    const id = sel?.id;
+    if (id) {
+      patch((v) => {
+        if (v.id !== id || !v.context) return;
+        const rest = (v.context.disabledAgents ?? []).filter((n) => n !== name);
+        v.context = { ...v.context, disabledAgents: enabled ? rest : [...rest, name] };
+      });
+    }
+    api.setAgent(name, enabled).catch((e) => {
+      flash(`${enabled ? '开启' : '关闭'}智能体失败：${errText(e)}`);
+      refreshContext();
+    });
+  }, [sel, patch, flash, refreshContext]);
+
   // MCP 开关：切换期间禁用该开关，等后端返回切换后的上下文
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
   const toggleMcp = useCallback((server: string, enabled: boolean) => {
@@ -512,6 +646,34 @@ export function MainApp() {
 
   const purgeSession = useCallback((id: string) => {
     api.purgeSession(id).then(refreshSidebar).catch((e) => { flash(`永久删除失败：${errText(e)}`); refreshSidebar(); });
+  }, [refreshSidebar, flash]);
+
+  // 批量删除一个工作空间分组里的会话（ids 由侧栏给出：组里当前显示、不在执行中的）
+  const deleteSessions = useCallback((dir: string, ids: string[]) => {
+    const gone = new Set(ids);
+    const wasOpen = !!sel && gone.has(sel.id);
+    api.deleteSessions(dir, ids)
+      .then((r) => {
+        if (wasOpen) {
+          const next = listed.find((x) => !gone.has(x.id)) ?? pins.find((x) => !gone.has(x.id));
+          if (next) selectSession(next.id);
+          else newSession();
+        }
+        if (r.skipped > 0) flash(`已删除 ${r.deleted} 个会话，${r.skipped} 个正在执行的已跳过`);
+        refreshSidebar();
+      })
+      .catch((e) => { flash(`删除失败：${errText(e)}`); refreshSidebar(); });
+  }, [sel, listed, pins, selectSession, newSession, refreshSidebar, flash]);
+
+  const restoreSessions = useCallback((ids: string[]) => {
+    api.restoreDeleted(ids).then(refreshSidebar).catch((e) => flash(`恢复失败：${errText(e)}`));
+  }, [refreshSidebar, flash]);
+
+  const purgeSessions = useCallback((ids: string[]) => {
+    api.purgeDeleted(ids)
+      .then((r) => { if (r.failed > 0) flash(`${r.failed} 个会话永久删除失败：${r.error ?? '未知原因'}`); })
+      .catch((e) => flash(`永久删除失败：${errText(e)}`))
+      .finally(refreshSidebar);
   }, [refreshSidebar, flash]);
 
   const moveWorkspaceTop = useCallback((path: string) => {
@@ -571,6 +733,55 @@ export function MainApp() {
   const onOpenSubagent = useCallback((turnId: string, toolUseId: string) => setOpenSub({ turnId, toolUseId }), []);
   const closeSub = useCallback(() => setOpenSub(null), []);
 
+  // ───────────── 本地文件预览 ─────────────
+
+  /** 当前打开的预览（nonce：同一路径再次点击也会重新定位 / 刷新） */
+  const [preview, setPreview] = useState<{ path: string; line?: number; nonce: number } | null>(null);
+  /** 触发预览的元素：关闭后焦点还给它 */
+  const openerRef = useRef<HTMLElement | null>(null);
+  const previewOpen = useRef(false);
+  previewOpen.current = preview != null;
+  const selDir = sel?.cwd ?? null;
+
+  const openPreview = useCallback((req: FileOpenRequest, opener?: HTMLElement | null) => {
+    // 预览里再点链接时不覆盖最初的触发元素
+    if (!previewOpen.current) openerRef.current = opener ?? (document.activeElement as HTMLElement | null);
+    setPreview((p) => ({ path: req.path, ...(req.line ? { line: req.line } : {}), nonce: (p?.nonce ?? 0) + 1 }));
+  }, []);
+  const closePreview = useCallback((restoreFocus: boolean) => {
+    setPreview(null);
+    const el = openerRef.current;
+    openerRef.current = null;
+    if (restoreFocus && el && el.isConnected) el.focus();
+  }, []);
+  // 切换会话 / 工作空间：预览属于旧会话，直接关掉
+  useEffect(() => { setPreview(null); openerRef.current = null; }, [selId]);
+
+  const filesApi = useMemo<FilesApi | null>(() => {
+    if (!selId || !selDir) return null;
+    return {
+      cwd: selDir,
+      session: selId,
+      open: openPreview,
+      ...(remote ? {} : {
+        reveal: (path: string) => { api.revealFile({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开文件管理器失败：${errText(e)}`)); },
+        terminal: (path: string) => { api.openTerminalAt({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开终端失败：${errText(e)}`)); },
+      }),
+    };
+  }, [selId, selDir, openPreview, flash, remote]);
+
+  // 技能 / MCP 面板用：MCP 服务器名（解析 mcp__ 工具名）
+  const mcpKey = JSON.stringify(meta?.mcpServers?.map((m) => m.name) ?? []);
+  const flowMeta = useMemo<FlowMeta>(
+    () => ({ mcpServers: JSON.parse(mcpKey) as string[], loadSkill: defaultSkillLoader }),
+    [mcpKey],
+  );
+
+  // 输入框是浮在会话流上的磨砂卡片：量出它的高度，会话流底部按 --composer-h 让出位置
+  const mainRef = useRef<HTMLDivElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
+  useCssHeight(mainRef, composerWrapRef, '--composer-h', [!!boot, !!cwd]);
+
   // ───────────── 渲染 ─────────────
 
   if (fatal) {
@@ -582,30 +793,48 @@ export function MainApp() {
   }
   if (!boot) return <div className="cz-app__fatal">正在连接…</div>;
 
+  const showWorkspacePicker = !sel || isDraft(sel);
+
   const main = !cwd ? (
     <div className="cz-app__empty">
       <p>先打开一个文件夹作为工作空间</p>
       <button type="button" className="cz-app__btn" onClick={openFolder}>打开文件夹…</button>
     </div>
   ) : (
-    <div className="cz-app__main">
-      <div className="cz-app__flow">
-        {view?.loading ? (
-          <div className="cz-app__hint">正在加载会话…</div>
-        ) : view?.loadError ? (
+    <div className="cz-app__main" ref={mainRef}>
+      <div className={`cz-app__flow${heldFlow ? ' is-leaving' : ''}`}>
+        {heldFlow ? (
+          <ConversationView
+            key={heldFlow.key}
+            turns={heldFlow.turns}
+            onOpenSubagent={onOpenSubagent}
+            sessionKey={heldFlow.key}
+          />
+        ) : view?.loading ? null : view?.loadError ? (
           <div className="cz-app__hint">加载会话失败：{view.loadError}</div>
         ) : turns.length === 0 ? (
           <div className="cz-app__hint">{!sel || isDraft(sel) ? '新会话：输入消息开始' : ''}</div>
         ) : (
-          <ConversationView turns={turns} onOpenSubagent={onOpenSubagent} onReply={onReply} sessionKey={sel?.id ?? null} />
+          <ConversationView
+            key={view?.id ?? 'none'}
+            turns={turns}
+            onOpenSubagent={onOpenSubagent}
+            onReply={onReply}
+            sessionKey={sel?.id ?? null}
+            reveal={skeleton.reveal}
+          />
         )}
+        {/* 骨架固定在这个位置渲染：加载中 → 淡出是同一个元素，不会重新挂载闪一下 */}
+        {skeleton.phase !== 'off' && <FlowSkeleton leaving={skeleton.phase === 'leaving'} />}
       </div>
       {notice && <div className="cz-app__notice" role="status">{notice}</div>}
-      <div className="cz-app__composer">
+      <div className="cz-app__composer" ref={composerWrapRef}>
         <Composer
           ref={composerRef}
-          quote={quote}
-          onClearQuote={onClearQuote}
+          quotes={quotes}
+          onRemoveQuote={onRemoveQuote}
+          onEditQuoteReply={onEditQuoteReply}
+          onClearQuotes={onClearQuotes}
           onSend={onSend}
           queue={view?.queue}
           onQueueSendNow={onQueueSendNow}
@@ -614,7 +843,8 @@ export function MainApp() {
           onRewind={onRewind}
           onInterrupt={onInterrupt}
           running={running}
-          pick={api.pick}
+          sessionKey={view?.id ?? null}
+          pick={pickFiles}
           paste={api.paste}
           supportsMixed={boot.supportsMixedPick}
           previewInfo={api.previewInfo}
@@ -626,40 +856,52 @@ export function MainApp() {
           loadUsage={loadUsage}
           disabled={!!view?.loading}
           ultracodeAvailable={view?.applied?.ultracodeAvailable}
+          footLeft={showWorkspacePicker ? (
+            // 只在新会话（还没发出第一条消息）时显示；会话开始后工作空间就固定了
+            <WorkspaceMenu
+              workspaces={wsState.list}
+              currentWorkspace={selCwd}
+              onSelectWorkspace={selectWorkspace}
+              onOpenFolder={openFolder}
+              onMoveToTop={moveWorkspaceTop}
+              onRemove={removeWorkspace}
+              onReveal={remote ? undefined : revealWorkspace}
+            />
+          ) : undefined}
         />
       </div>
     </div>
   );
 
   return (
-    <>
+    <FilesContext.Provider value={filesApi}>
+    <FlowMetaContext.Provider value={flowMeta}>
       <AppShell
-        sidebarCollapsed={collapsed}
-        onToggleSidebar={() => setCollapsed((v) => !v)}
-        contextCollapsed={ctxCollapsed}
-        onToggleContext={() => setCtxCollapsed((v) => !v)}
+        narrow={narrow}
+        onDismiss={closeDrawer}
+        sidebarCollapsed={narrow ? drawer !== 'left' : collapsed}
+        onToggleSidebar={() => (narrow ? setDrawer((d) => (d === 'left' ? null : 'left')) : setCollapsed((v) => !v))}
+        contextCollapsed={narrow ? drawer !== 'right' : ctxCollapsed}
+        onToggleContext={() => (narrow ? setDrawer((d) => (d === 'right' ? null : 'right')) : setCtxCollapsed((v) => !v))}
         sidebar={
           <Sidebar
             workspaces={wsState.list}
-            currentWorkspace={cwd}
-            sessions={sessions}
+            sessions={allSessions}
             pinned={pins}
             deleted={deleted}
             currentSessionId={sel?.id ?? null}
             account={account}
             accountVersion={accountVersion}
-            onNewSession={newSession}
-            onCollapse={() => setCollapsed(true)}
-            onSelectWorkspace={selectWorkspace}
-            onOpenFolder={openFolder}
-            onMoveWorkspaceTop={moveWorkspaceTop}
-            onRemoveWorkspace={removeWorkspace}
-            onRevealWorkspace={revealWorkspace}
-            onSelectSession={selectSession}
+            onNewSession={narrow ? () => { closeDrawer(); newSession(); } : newSession}
+            onCollapse={narrow ? closeDrawer : () => setCollapsed(true)}
+            onSelectSession={narrow ? (id: string) => { closeDrawer(); selectSession(id); } : selectSession}
             onTogglePin={togglePin}
             onDeleteSession={deleteSession}
             onRestoreSession={restoreSession}
             onPurgeSession={purgeSession}
+            onDeleteSessions={deleteSessions}
+            onRestoreSessions={restoreSessions}
+            onPurgeSessions={purgeSessions}
           />
         }
         header={selCwd ? <SessionHeader title={current?.title ?? null} cwd={selCwd} branch={branch} onRename={onRename} /> : null}
@@ -668,22 +910,31 @@ export function MainApp() {
           <ContextPanel
             usage={sel && view?.id === sel.id ? view.context : null}
             cache={sel && view?.id === sel.id ? view.conv.meta.cache : undefined}
+            turns={sel && view?.id === sel.id ? view.conv.turns : undefined}
+            toolStats={toolStats}
             loading={ctxLoading}
             onRefresh={refreshContext}
             onCompact={compact}
             compactDisabled={!sel || isDraft(sel) || running}
-            onCollapse={() => setCtxCollapsed(true)}
+            onCollapse={narrow ? closeDrawer : () => setCtxCollapsed(true)}
             onSkillMode={setSkillMode}
             onSkillModes={setSkillModes}
             onSkillRemove={removeSkill}
             tools={sel && view?.id === sel.id ? view.conv.meta.tools : undefined}
             onToolToggle={toggleTool}
+            agents={sel && view?.id === sel.id ? view.conv.meta.agents : undefined}
+            onAgentToggle={toggleAgent}
             onMcpToggle={toggleMcp}
             mcpBusy={mcpBusy}
           />
         }
       />
+      {webPick && <PickerDialog mode={webPick.mode} title={webPick.title} onDone={finishWebPick} />}
       <SubagentOverlay run={overlayRun} onClose={closeSub} sessionEffort={config.effort} />
-    </>
+      {preview && selId && selDir && (
+        <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />
+      )}
+    </FlowMetaContext.Provider>
+    </FilesContext.Provider>
   );
 }

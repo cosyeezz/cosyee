@@ -176,32 +176,71 @@ export function pickLastActive(lastTs: number | undefined, mtimeMs: number): num
 /** 保留的消息链类型；其余（attachment、api-request*、session-owner、queue-operation、prompt_snapshot 等）一律丢弃。 */
 const KEEP_CHAIN = new Set(['user', 'assistant', 'system']);
 const TITLE_TYPES = ['custom-title', 'agent-name', 'ai-title'];
-/** 在保留条目里剔除的字段（注入给模型的渲染文本、附件）。 */
-const STRIP_FIELDS = ['rendered', 'renderedRole', 'attachment'];
+/** 在保留条目里剔除的字段（注入给模型的渲染文本、附件、发给 API 的工具入参副本）。 */
+const STRIP_FIELDS = ['rendered', 'renderedRole', 'attachment', 'wireToolInputs'];
 /** 含这些子类型的 system 条目带环境信息，丢弃。 */
 const DROP_SYSTEM_SUBTYPES = new Set(['session_context', 'prompt_snapshot']);
-/** toolUseResult 序列化后超过这个长度就只保留摘要字段（内容已在 message.content 的 tool_result 里）。 */
-const TOOL_RESULT_MAX = 50_000;
+/**
+ * toolUseResult 是工具结果的结构化副本，内容已在 message.content 的 tool_result 里；
+ * 前端只用它识别子代理（agentId / 后台启动），所以只留这些摘要字段。
+ */
 const TOOL_RESULT_KEEP = [
   'status', 'agentId', 'agentType', 'isAsync', 'description', 'outputFile', 'totalDurationMs', 'totalTokens', 'totalToolUseCount',
 ];
 
-/** 过滤一条原始条目；返回 null 表示丢弃。 */
-export function filterEntry(e: Json): Json | null {
+/** message.usage 里前端用到的字段（缓存命中率图）；其余（server_tool_use、iterations、cache_creation 明细等）不下发 */
+const USAGE_KEEP = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'];
+
+function slimUsage(u: Json): Json {
+  const out: Json = {};
+  for (const k of USAGE_KEEP) if (k in u) out[k] = u[k];
+  return out;
+}
+
+/** 前端只有 MCP 面板会显示工具结果里的图片，其它工具（Read 等）只显示「[图片]」，图片数据不必下发 */
+const keepsImages = (toolName: string | undefined): boolean => !toolName || toolName.startsWith('mcp__');
+
+function slimToolResult(r: unknown): Json | undefined {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return undefined;
+  const src = r as Json;
+  const slim: Json = {};
+  for (const k of TOOL_RESULT_KEEP) if (k in src) slim[k] = src[k];
+  return Object.keys(slim).length > 0 ? slim : undefined;
+}
+
+/** tool_result 里的图片块去掉 base64（保留 type: 'image'，前端据此显示「[图片]」）；没有改动时返回原数组 */
+function dropImages(content: unknown[], toolName: (id: string) => string | undefined): unknown[] {
+  let changed = false;
+  const out = content.map((c) => {
+    const b = c as Json;
+    if (!b || b.type !== 'tool_result' || !Array.isArray(b.content) || keepsImages(toolName(String(b.tool_use_id)))) return c;
+    if (!b.content.some((x: Json) => x?.type === 'image' && x.source)) return c;
+    changed = true;
+    return { ...b, content: b.content.map((x: Json) => (x?.type === 'image' && x.source ? { type: 'image', omitted: true } : x)) };
+  });
+  return changed ? out : content;
+}
+
+/**
+ * 过滤一条原始条目；返回 null 表示丢弃。
+ * toolName：tool_use id → 工具名（HistoryFilter 从前面的 assistant 条目里记下来），用于判断结果里的图片要不要保留。
+ */
+export function filterEntry(e: Json, toolName: (id: string) => string | undefined = () => undefined): Json | null {
   if (!KEEP_CHAIN.has(e.type)) return null;
   if (e.type === 'system' && DROP_SYSTEM_SUBTYPES.has(e.subtype)) return null;
   const out: Json = { ...e };
   for (const f of STRIP_FIELDS) delete out[f];
-  if (out.toolUseResult && typeof out.toolUseResult === 'object') {
-    let len = 0;
-    try {
-      len = JSON.stringify(out.toolUseResult).length;
-    } catch { /* ignore */ }
-    if (len > TOOL_RESULT_MAX) {
-      const slim: Json = { truncated: true };
-      for (const k of TOOL_RESULT_KEEP) if (k in out.toolUseResult) slim[k] = out.toolUseResult[k];
-      out.toolUseResult = slim;
-    }
+  if ('toolUseResult' in out) {
+    const slim = slimToolResult(out.toolUseResult);
+    if (slim) out.toolUseResult = slim;
+    else delete out.toolUseResult;
+  }
+  if (out.type === 'assistant' && out.message?.usage && typeof out.message.usage === 'object') {
+    out.message = { ...out.message, usage: slimUsage(out.message.usage) };
+  }
+  if (out.type === 'user' && Array.isArray(out.message?.content)) {
+    const content = dropImages(out.message.content, toolName);
+    if (content !== out.message.content) out.message = { ...out.message, content };
   }
   return out;
 }
@@ -210,6 +249,9 @@ export function filterEntry(e: Json): Json | null {
 export class HistoryFilter {
   private entries: Json[] = [];
   private titles = new Map<string, Json>();
+  /** tool_use id → 工具名 */
+  private tools = new Map<string, string>();
+  private toolName = (id: string): string | undefined => this.tools.get(id);
 
   push(line: string): void {
     // 元数据行以 {"type":" 开头，可以不解析就判断类型，省掉大行的 JSON.parse
@@ -225,7 +267,10 @@ export class HistoryFilter {
       this.titles.set(e.type, keep);
       return;
     }
-    const f = filterEntry(e);
+    if (e.type === 'assistant' && Array.isArray(e.message?.content)) {
+      for (const c of e.message.content) if (c?.type === 'tool_use' && typeof c.id === 'string') this.tools.set(c.id, String(c.name));
+    }
+    const f = filterEntry(e, this.toolName);
     if (f) this.entries.push(f);
   }
 

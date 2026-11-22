@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import type { Attachment, SessionConfig } from '@cosyee/shared';
 import '../styles/tokens.css';
 import { parseUserText } from '../core/composer';
+import { addQuote, type QuoteReply } from '../core/quote';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import {
   MOCK_SKILLS, MOCK_SLASH_COMMANDS, mockPick, mockPreviewInfo, mockPreviewRawUrl,
@@ -17,7 +18,8 @@ export default function ComposerDev() {
   const [config, setConfig] = useState<SessionConfig>({ model: 'sonnet', effort: 'medium' });
   const [sent, setSent] = useState<Sent | null>(null);
   const [log, setLog] = useState<string[]>([]);
-  const [quote, setQuote] = useState<string | null>(null);
+  const [quotes, setQuotes] = useState<readonly QuoteReply[]>([]);
+  const replyCount = useRef(0);
   const composerRef = useRef<ComposerHandle>(null);
 
   const parsed = sent ? parseUserText(sent.text) : null;
@@ -32,7 +34,15 @@ export default function ComposerDev() {
         <button onClick={() => setRunning((v) => !v)}>running：{String(running)}</button>
         <label><input type="checkbox" checked={mixed} onChange={(e) => setMixed(e.target.checked)} /> supportsMixed</label>
         <label><input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} /> disabled</label>
-        <button onClick={() => { setQuote('这是一段被选中的答复文字，\n可以有多行'); composerRef.current?.appendText('我的回复'); }}>模拟选中回复</button>
+        <button
+          onClick={() => {
+            const n = ++replyCount.current;
+            setQuotes((list) => addQuote(list, n === 1 ? '这是一段被选中的答复文字，\n可以有多行' : `第 ${n} 段被选中的文字`, `我的回复 ${n}`));
+            composerRef.current?.appendText('');
+          }}
+        >
+          模拟选中回复（可连点，累积多段）
+        </button>
         <span style={{ color: 'var(--text-3)' }}>config：{JSON.stringify(config)}</span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -47,8 +57,10 @@ export default function ComposerDev() {
       </div>
       <Composer
         ref={composerRef}
-        quote={quote}
-        onClearQuote={() => setQuote(null)}
+        quotes={quotes}
+        onRemoveQuote={(i) => setQuotes((list) => list.filter((_, k) => k !== i))}
+        onEditQuoteReply={(i, reply) => setQuotes((list) => list.map((q, k) => (k === i ? { ...q, reply } : q)))}
+        onClearQuotes={() => { setQuotes([]); replyCount.current = 0; }}
         onSend={(text, attachments) => setSent({ text, attachments })}
         onInterrupt={() => { setLog((l) => [...l.slice(-9), 'onInterrupt']); setRunning(false); }}
         running={running}

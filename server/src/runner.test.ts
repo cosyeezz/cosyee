@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Runner, buildArgs, validateConfig } from './claude/runner.js';
+import { PATH_PROMPT, Runner, buildArgs, validateConfig } from './claude/runner.js';
 
 type Json = Record<string, any>;
 
@@ -79,6 +79,13 @@ describe('buildArgs / validateConfig', () => {
     expect(a).not.toContain('--settings');
     const c = buildArgs('sid', true, { model: 'haiku', effort: 'low', ultracode: true }, { skillOverrides: { pdf: 'off' } });
     expect(JSON.parse(c[c.indexOf('--settings') + 1]!)).toEqual({ skillOverrides: { pdf: 'off' }, ultracode: true });
+  });
+  it('新建与恢复都追加路径引用约定（Markdown 链接）', () => {
+    for (const isNew of [true, false]) {
+      const a = buildArgs('sid', isNew, { model: 'haiku', effort: 'low' });
+      expect(a[a.indexOf('--append-system-prompt') + 1]).toBe(PATH_PROMPT);
+    }
+    expect(PATH_PROMPT).toContain('[filename](path)');
   });
   it('非法配置抛错', () => {
     expect(() => validateConfig({ model: 'a b', effort: 'low' })).toThrow();

@@ -1,11 +1,14 @@
-// 工作空间下拉：每行一个文件夹图标，当前行高亮；悬停出现 复制路径 / 打开文件夹 / 置于顶部 / 从列表移除。
+// 工作空间选择器：显示在新会话输入框的左下角，向上展开。每行一个文件夹图标，当前行高亮；
+// 悬停出现 复制路径 / 打开文件夹 / 置于顶部 / 从列表移除。
 // 「从列表移除」只改 Cosyee 自己的最近列表，不会动磁盘上的文件。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Workspace } from '@cosyee/shared';
+import { copyText } from '../../core/browser';
 import { Icon } from '../icons/Icon';
 import { ActionButton, ConfirmActionButton } from './ActionButtons';
 import { samePath } from './sidebarUtil';
 import { useDismiss } from './useDismiss';
+import './Sidebar.css'; // 菜单行 / 操作按钮的样式与侧栏共用
 
 export interface WorkspaceMenuProps {
   workspaces: Workspace[];
@@ -14,18 +17,10 @@ export interface WorkspaceMenuProps {
   onOpenFolder: () => void;
   onMoveToTop: (path: string) => void;
   onRemove: (path: string) => void;
-  onReveal: (path: string) => void;
+  /** 打开工作空间文件夹；远程连接时不传，菜单里不显示这一项 */
+  onReveal?: (path: string) => void;
 }
 
-/** 复制到剪贴板；失败（比如没有权限）时静默返回 false */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export function WorkspaceMenu({
   workspaces,
@@ -72,7 +67,7 @@ export function WorkspaceMenu({
       </button>
 
       {open && (
-        <div className="cz-sidebar__menu" role="group" aria-label="工作空间">
+        <div className="cz-sidebar__menu cz-sidebar__menu--above" role="group" aria-label="工作空间">
           <div className="cz-sidebar__menu-list">
             {workspaces.map((w) => {
               const active = samePath(w.path, currentWorkspace);
@@ -102,7 +97,7 @@ export function WorkspaceMenu({
                       label={copied === w.path ? '已复制' : '复制路径'}
                       onClick={() => copy(w.path)}
                     />
-                    <ActionButton icon="folder-reveal" label="打开工作空间文件夹" onClick={() => onReveal(w.path)} />
+                    {onReveal && <ActionButton icon="folder-reveal" label="打开工作空间文件夹" onClick={() => onReveal(w.path)} />}
                     <ActionButton icon="pin" label="置于顶部" onClick={() => onMoveToTop(w.path)} />
                     <ConfirmActionButton
                       icon="trash"

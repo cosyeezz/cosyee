@@ -67,7 +67,10 @@
   flex-direction: column;
   gap: var(--sp-3);
 }
-.cz-ctx.is-loading .cz-ctx__body { opacity: .6; transition: opacity var(--dur) var(--ease); }
+.cz-ctx__body { transition: opacity 260ms var(--ease-out), filter 260ms var(--ease-out); }
+.cz-ctx.is-loading .cz-ctx__body { opacity: .6; }
+/* 切换会话：新数据还没到，先留着上一份并压暗，到了再亮回来 */
+.cz-ctx.is-stale .cz-ctx__body { opacity: .42; filter: saturate(.6); pointer-events: none; }
 
 /* 概览 */
 .cz-ctx__overview { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
@@ -83,7 +86,7 @@
   background: var(--cz-ctx-free);
   gap: 1px;
 }
-.cz-ctx__seg { flex: none; height: 100%; min-width: 2px; }
+.cz-ctx__seg { flex: none; height: 100%; min-width: 2px; transition: width 560ms var(--ease-out); }
 
 /* 列表 */
 .cz-ctx__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -256,9 +259,11 @@
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   color: var(--text-2);
-  box-shadow: var(--shadow);
+  box-shadow: var(--mat-hi), var(--shadow);
   font-size: var(--fs-xs);
   line-height: 1.5;
   pointer-events: none;
@@ -389,8 +394,10 @@
 .cz-ctx__cache-now { font-size: 22px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--text); }
 .cz-ctx__cache-sub { color: var(--text-3); font-size: var(--fs-xs); }
 .cz-ctx__cache-plot { position: relative; }
-.cz-ctx__cache-svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; border-radius: var(--r-sm); }
-.cz-ctx__cache-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-ctx__cache-svg,
+.cz-ctx__ctx-svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; border-radius: var(--r-sm); }
+.cz-ctx__cache-svg:focus-visible,
+.cz-ctx__ctx-svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cz-ctx__cache-base { stroke: var(--border); stroke-width: 1; }
 .cz-ctx__cache-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .cz-ctx__cache-cross { stroke: var(--border-strong); stroke-width: 1; }
@@ -404,9 +411,11 @@
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   color: var(--text-2);
-  box-shadow: var(--shadow);
+  box-shadow: var(--mat-hi), var(--shadow);
   font-size: var(--fs-xs);
   line-height: 1.5;
   white-space: nowrap;
@@ -417,6 +426,71 @@
 .cz-ctx__cache-tip-row.is-total { margin-top: 2px; color: var(--text-3); }
 .cz-ctx__cache-empty { color: var(--text-3); font-size: var(--fs-xs); padding: var(--sp-1) 0; }
 
+/* 上下文走势（柱状，与缓存图共用 cz-ctx__cache-* 的框架） */
+.cz-ctx__ctx-svg { cursor: pointer; }
+.cz-ctx__ctx-bar { fill: color-mix(in srgb, var(--accent) 45%, transparent); transition: fill var(--dur-fast) var(--ease); }
+.cz-ctx__ctx-bar.is-jump { fill: var(--warn); }
+.cz-ctx__ctx-bar.is-hover { fill: var(--accent); }
+.cz-ctx__ctx-bar.is-jump.is-hover { fill: color-mix(in srgb, var(--warn) 75%, var(--text)); }
+.cz-ctx__ctx-bar.is-sel { fill: var(--text); }
+.cz-ctx__grow-top { margin-left: auto; }
+.cz-ctx__grow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+}
+.cz-ctx__grow-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.cz-ctx__grow-title { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cz-ctx__grow-delta { color: var(--text-2); font-weight: 500; }
+.cz-ctx__grow-delta.is-jump { color: var(--warn); }
+.cz-ctx__grow-note { color: var(--text-3); font-size: var(--fs-xs); line-height: 1.5; overflow-wrap: anywhere; }
+
 /* 工具：行内只有名字 + 开关；说明文字放在列表上方 */
 .cz-ctx__note { margin: 2px 0 var(--sp-1); color: var(--text-3); font-size: var(--fs-xs); line-height: 1.5; }
 .cz-ctx__tool { min-height: 28px; }
+
+/* ───── 数据唤醒（is-waking 只在数据第一次到达后挂约 1.6s；之后界面完全静止）───── */
+/* 各块自上而下依次浮现 */
+.cz-ctx.is-waking .cz-ctx__body > * { animation: cz-wake-rise 460ms var(--ease-out) backwards; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(2) { animation-delay: 60ms; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(3) { animation-delay: 120ms; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(4) { animation-delay: 180ms; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(5) { animation-delay: 240ms; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(6) { animation-delay: 300ms; }
+.cz-ctx.is-waking .cz-ctx__body > :nth-child(n + 7) { animation-delay: 360ms; }
+/* 分段条换成从左往右擦出 */
+.cz-ctx.is-waking .cz-ctx__bar { animation: cz-wake-wipe 820ms var(--ease-out) 80ms backwards; }
+/* 命中率折线从左往右描出，描完最新点再出现 */
+.cz-ctx.is-waking .cz-ctx__cache-line { stroke-dasharray: 1; animation: cz-wake-draw 900ms var(--ease-out) 380ms backwards; }
+.cz-ctx.is-waking .cz-ctx__cache-dot { transform-box: fill-box; transform-origin: center; animation: cz-wake-pop 320ms var(--ease-out) 1080ms backwards; }
+/* 上下文柱子自下而上、从左到右依次长出（--k = 第几根 / 总数） */
+.cz-ctx.is-waking .cz-ctx__ctx-bar {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: cz-wake-grow 560ms var(--ease-out) backwards;
+  animation-delay: calc(240ms + var(--k, 0) * 420ms);
+}
+
+@keyframes cz-wake-rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes cz-wake-wipe { from { clip-path: inset(0 100% 0 0 round 5px); } to { clip-path: inset(0 0 0 0 round 5px); } }
+@keyframes cz-wake-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes cz-wake-pop { from { opacity: 0; transform: scale(.4); } }
+@keyframes cz-wake-grow { from { transform: scaleY(0); } }
+
+/* 工具：列表上方的占用 / 调用统计，行内的调用次数 */
+.cz-ctx__tool-stats { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.cz-ctx__tool-stats dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); margin: 0; }
+.cz-ctx__tool-stats dl > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cz-ctx__tool-stats dt { color: var(--text-3); font-size: var(--fs-xs); }
+.cz-ctx__tool-stats dd { margin: 0; color: var(--text); font-size: var(--fs-sm); font-weight: 500; font-variant-numeric: tabular-nums; }
+.cz-ctx__tool-stats .cz-ctx__note { margin: 0; }
+.cz-ctx__tool-calls { flex: none; min-width: 32px; color: var(--text-2); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; text-align: right; }
+.cz-ctx__tool-calls.is-zero { color: var(--text-3); }
+/* 累计次数：比本会话次数淡一档，固定宽度让各行对齐 */
+.cz-ctx__tool-total { flex: none; min-width: 40px; color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; text-align: right; }
+.cz-ctx__tool-total.is-zero { opacity: .6; }

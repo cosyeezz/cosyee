@@ -1,10 +1,11 @@
 // 当前打开的会话：订阅 WS、加载历史、把实时事件交给 reducer。
 // 时序：先挂监听再 subscribe（后端先发 status，若本轮未结束再发 replay），同时拉历史；
 // 历史回来之前收到的 event / replay / status 先排队，历史载入后按顺序应用，避免与历史重复或丢失。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import type { AppliedSettings, ContextUsage, QueueItem, RunStatus, ServerMsg } from '@cosyee/shared';
 import { api, socket } from '../core/api';
-import { applyEvent, applyReplay, applyStatus, fromHistory, initState, type ConvState } from '../core/reducer';
+import { dropHistory, getHistory, putHistory } from '../core/historyCache';
+import { applyEvent, applyReplay, applyStatus, batch, fromHistory, initState, type ConvState } from '../core/reducer';
 
 export interface SessionView {
   id: string;
@@ -78,20 +79,36 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
     commit();
 
     if (!fresh) {
-      api.history(sessionId, cwd)
-        .then(({ entries }) => {
+      const isRunning = () => cur.status === 'running' || cur.status === 'starting';
+      const hit = getHistory(cwd, sessionId);
+      api.history(sessionId, cwd, hit?.version)
+        .then(async (r) => {
           if (!alive) return;
-          const running = cur.status === 'running' || cur.status === 'starting';
-          cur.conv = fromHistory(entries, { running });
+          // 没变且进程不在跑：直接复用上次构建好的状态
+          if (r.unchanged && hit && !isRunning()) {
+            cur.conv = hit.conv;
+            return;
+          }
+          // 没变但进程在跑（缓存是按「已结束」构建的，最后一轮要保持未结束）：重新拉完整历史
+          if (!r.entries) r = await api.history(sessionId, cwd);
+          if (!alive) return;
+          const running = isRunning();
+          cur.conv = fromHistory(r.entries ?? [], { running });
+          if (r.version && !running) putHistory(cwd, sessionId, r.version, cur.conv);
+          else dropHistory(cwd, sessionId);
         })
         .catch((err: unknown) => { cur.loadError = err instanceof Error ? err.message : String(err); })
         .finally(() => {
           if (!alive) return;
           loaded = true;
           cur.loading = false;
-          for (const m of pending) apply(m);
+          // 加载期间排队的事件一次性应用（共享草稿，避免逐个克隆）
+          const queued = pending;
           pending = [];
-          commit();
+          batch(() => { for (const m of queued) apply(m); });
+          // 整段历史挂载很重（Markdown 解析）：用 transition 分片渲染，期间旧对话的淡出、胶囊流动不掉帧。
+          // 每次 commit 都是完整快照，之后到达的实时事件即使抢先提交也不会丢数据
+          startTransition(commit);
         });
       api.context(sessionId)
         .then((u) => { if (alive && u && !cur.context) cur.context = u; })

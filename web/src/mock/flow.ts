@@ -1,5 +1,5 @@
 // 会话流调试用 mock 数据：覆盖各种状态。
-import type { Step, SubagentRun, Turn } from '@cosyee/shared';
+import type { SkillLoad, Step, SubagentRun, Turn } from '@cosyee/shared';
 
 const NOW = Date.now();
 const min = (n: number) => n * 60_000;
@@ -11,6 +11,7 @@ const base = (over: Partial<Turn> & Pick<Turn, 'id' | 'userText'>): Turn => ({
   steps: [],
   answer: '',
   subagents: [],
+  skills: [],
   startedAt: NOW - min(30),
   ...over,
 });
@@ -38,6 +39,34 @@ export const understandingTurn: Turn = base({
   startedAt: NOW - 3_000,
 });
 
+// 技能加载样例：模型加载（带正文）、同名加载 ×2、用户手动（实时无正文）、加载失败、加载中
+const reviewBody = '# Code review\n\n按以下步骤审查当前 diff：\n\n1. 先看改动范围\n2. 逐个文件找**正确性问题**\n3. 输出带行号的结论\n\n参数：src/core\n';
+const doneSkills: SkillLoad[] = [
+  {
+    id: 'tu_skill_review_1',
+    name: 'code-review',
+    args: 'src/core',
+    source: 'model',
+    status: 'loaded',
+    body: reviewBody,
+    dir: 'F:\\Cosyee\\.claude\\skills\\code-review',
+    afterStep: 1,
+  },
+  {
+    id: 'tu_skill_review_2',
+    name: 'code-review',
+    args: 'src/ui',
+    source: 'model',
+    status: 'loaded',
+    body: reviewBody.replace('src/core', 'src/ui'),
+    dir: 'F:\\Cosyee\\.claude\\skills\\code-review',
+    afterStep: 2,
+  },
+  { id: 'user:turn-done', name: 'anthropic-skills:pdf', args: 'report.pdf', source: 'user', status: 'loaded', afterStep: 0 },
+  { id: 'tu_skill_missing', name: 'no-such-skill', source: 'model', status: 'error', error: 'Unknown skill: no-such-skill', afterStep: 3 },
+];
+const runningSkills: SkillLoad[] = [{ id: 'tu_skill_loading', name: 'frontend-design', source: 'model', status: 'loading', afterStep: 1 }];
+
 // 2. running：thinking + 两个工具 + 中间文字 + 流式 answer
 export const runningTurn: Turn = base({
   id: 'turn-running',
@@ -46,6 +75,7 @@ export const runningTurn: Turn = base({
   status: 'running',
   statusText: '先读一下 reducer，再决定怎么拆分',
   startedAt: NOW - 25_000,
+  skills: runningSkills,
   steps: [
     { kind: 'thinking', text: '用户想重构 reducer。我需要先读取文件，了解现有结构，再判断是否按事件类型拆分为多个纯函数。注意保持对外接口不变，避免影响 UI 层。' },
     {
@@ -73,6 +103,7 @@ export const runningTurn: Turn = base({
 export const doneTurn: Turn = base({
   id: 'turn-done',
   userText: '跑一下测试，并总结结果',
+  skills: doneSkills,
   status: 'done',
   statusText: '',
   startedAt: NOW - min(12) - 185_000,
@@ -121,7 +152,9 @@ export function formatDuration(ms: number): string {
 }
 \`\`\`
 
-> 提示：\`lint\` 报了一个 \`any\` 的问题，可以另行处理，详见 [文档](https://example.com)。`,
+> 提示：\`lint\` 报了一个 \`any\` 的问题，可以另行处理，详见 [文档](https://example.com)。
+
+本地文件（点击打开预览浮窗）：[reducer.ts 第 42 行](web/src/core/reducer.ts#L42)、[README](F:\\Cosyee\\README.md)，行内路径 \`web/src/ui/flow/format.ts\` 悬停可看完整路径。`,
 });
 
 // 4. interrupted

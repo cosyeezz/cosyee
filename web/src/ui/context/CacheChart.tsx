@@ -3,6 +3,7 @@
 // 最新一点用实心圆点标出，旁边的大号百分比在标题行；悬停 / 键盘左右键显示十字线与明细。
 import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { CachePoint } from '@cosyee/shared';
+import { CountUp } from '../motion/CountUp';
 import { formatTokens } from './formatTokens';
 
 const W = 280;
@@ -14,7 +15,8 @@ const R = 4; // 标记点半径 4 → 直径 8px
 
 const pctText = (n: number) => `${Math.round(n)}%`;
 
-export function CacheChart({ points }: { points: CachePoint[] | undefined }) {
+/** intro：面板的数据唤醒期间为 true，最新值从 0 滚上来，折线从左往右描出（样式见 ContextPanel.css 的 is-waking） */
+export function CacheChart({ points, intro = false }: { points: CachePoint[] | undefined; intro?: boolean }) {
   const list = points ?? [];
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -70,9 +72,7 @@ export function CacheChart({ points }: { points: CachePoint[] | undefined }) {
   return (
     <div className="cz-ctx__cache">
       <div className="cz-ctx__cache-head">
-        <span className="cz-ctx__cache-now" data-testid="cache-now">
-          {pctText(list[last].rate)}
-        </span>
+        <CountUp className="cz-ctx__cache-now" testId="cache-now" value={list[last].rate} format={pctText} play={intro} delay={240} />
         <span className="cz-ctx__cache-sub">最新一次请求</span>
       </div>
       <div className="cz-ctx__cache-plot">
@@ -89,7 +89,7 @@ export function CacheChart({ points }: { points: CachePoint[] | undefined }) {
           onKeyDown={onKey}
         >
           <line className="cz-ctx__cache-base" x1={PAD_X} x2={W - PAD_X} y1={geo.base} y2={geo.base} />
-          {list.length > 1 && <path className="cz-ctx__cache-line" d={geo.d} />}
+          {list.length > 1 && <path className="cz-ctx__cache-line" d={geo.d} pathLength={1} />}
           {hover !== null && (
             <line className="cz-ctx__cache-cross" x1={geo.xs[hover]} x2={geo.xs[hover]} y1={PAD_TOP} y2={geo.base} />
           )}

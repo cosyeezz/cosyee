@@ -11,6 +11,7 @@ import { ConfirmActionButton } from './ActionButtons';
 import { AccountDialog } from './AccountDialog';
 import { AccountModeSwitch } from './AccountModeSwitch';
 import { AccountQuota, type QuotaState } from './AccountQuota';
+import { ThemeSwitch } from './ThemeSwitch';
 import { avatarColor, avatarInitial } from './avatar';
 import { useDismiss } from './useDismiss';
 
@@ -262,6 +263,8 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
               </span>
             </button>
           </div>
+          <div className="cz-sidebar__menu-sep" />
+          <ThemeSwitch />
         </div>
       )}
 

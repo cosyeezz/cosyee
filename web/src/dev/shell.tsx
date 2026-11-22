@@ -1,10 +1,12 @@
 // 外壳调试页：http://127.0.0.1:5173/?dev=shell
 import { useMemo, useState } from 'react';
-import type { ContextUsage, DeletedSession, SessionSummary, Workspace } from '@cosyee/shared';
+import type { CachePoint, ContextUsage, DeletedSession, SessionSummary, Turn, Workspace } from '@cosyee/shared';
 import { AppShell } from '../ui/layout/AppShell';
 import { Sidebar } from '../ui/sidebar/Sidebar';
+import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
+import { FilesContext, type FilesApi } from '../ui/files/FileContext';
 import {
   mockAccount,
   mockContextUsage,
@@ -14,6 +16,39 @@ import {
   mockSessionsFor,
   mockWorkspaces,
 } from '../mock/shell';
+
+/** 上下文走势 / 缓存命中率的演示数据：第 4 次请求读了个大文件，第 5 次因此涨了一大截 */
+const devTurns: Turn[] = [
+  {
+    id: 'dt0', userText: '看看这个项目的结构', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0,
+    steps: [
+      { kind: 'tool', id: 'd1', name: 'Glob', input: { pattern: 'src/**/*.ts' }, summary: 'Glob: src/**/*.ts', result: { content: 'a.ts b.ts '.repeat(80), isError: false } },
+      { kind: 'tool', id: 'd2', name: 'Read', input: { file_path: 'src/reducer.ts' }, summary: 'Read: src/reducer.ts', result: { content: 'x'.repeat(56_000), isError: false } },
+      { kind: 'tool', id: 'd3', name: 'Bash', input: { command: 'git log -5' }, summary: 'Bash: git log -5', result: { content: 'commit …'.repeat(60), isError: false } },
+    ],
+  },
+  { id: 'dt1', userText: '把 reducer 拆开', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0, steps: [] },
+];
+const devCache: CachePoint[] = [
+  [0, 0, 18_000, 120, undefined],
+  [1, 18_000, 900, 40, ['d1']],
+  [2, 18_900, 1_400, 30, ['d2', 'd3']],
+  [3, 20_300, 15_600, 20, undefined],
+  [4, 35_900, 1_200, 600, undefined],
+  [5, 37_100, 800, 30, undefined],
+].map(([i, read, create, input, tools], n) => ({
+  id: `dm${i}`, turn: n < 4 ? 0 : 1, read: read as number, create: create as number, input: input as number,
+  rate: ((read as number) / ((read as number) + (create as number) + (input as number))) * 100,
+  ...(tools ? { tools: tools as string[] } : {}),
+}));
+
+/** 调试页没有后端：路径操作只打印到控制台，让标题栏里的「显示 / 终端」按钮能看到 */
+const devFiles: FilesApi = {
+  cwd: mockWorkspaces[0].path,
+  open: (req) => console.info('[dev] open', req),
+  reveal: (path) => console.info('[dev] reveal', path),
+  terminal: (path) => console.info('[dev] terminal', path),
+};
 
 export default function ShellDev() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>(mockWorkspaces);
@@ -32,9 +67,14 @@ export default function ShellDev() {
   const [loading, setLoading] = useState(false);
 
   const sessions = sessionsByWs[currentWs] ?? mockSessionsFor(currentWs);
+  // 侧栏按工作空间分组，所以给它所有工作空间的会话
+  const allSessions = useMemo(
+    () => workspaces.flatMap((w) => sessionsByWs[w.path] ?? mockSessionsFor(w.path)),
+    [workspaces, sessionsByWs],
+  );
   const current = useMemo(
-    () => sessions.find((s) => s.id === currentId) ?? pins.find((s) => s.id === currentId) ?? null,
-    [sessions, pins, currentId],
+    () => allSessions.find((s) => s.id === currentId) ?? pins.find((s) => s.id === currentId) ?? null,
+    [allSessions, pins, currentId],
   );
 
   const updateSessions = (fn: (list: SessionSummary[]) => SessionSummary[]) =>
@@ -129,30 +169,33 @@ export default function ShellDev() {
   };
 
   return (
+    <FilesContext.Provider value={devFiles}>
     <AppShell
       sidebarCollapsed={collapsed}
       onToggleSidebar={() => setCollapsed((v) => !v)}
       sidebar={
         <Sidebar
           workspaces={workspaces}
-          currentWorkspace={currentWs}
-          sessions={sessions}
+          sessions={allSessions}
           pinned={pins}
           deleted={deleted}
           currentSessionId={currentId}
           account={signedIn ? mockAccount : null}
           onNewSession={() => setCurrentId(null)}
           onCollapse={() => setCollapsed(true)}
-          onSelectWorkspace={selectWorkspace}
-          onOpenFolder={openFolder}
-          onMoveWorkspaceTop={moveWorkspaceTop}
-          onRemoveWorkspace={removeWorkspace}
-          onRevealWorkspace={() => undefined}
           onSelectSession={selectSession}
           onTogglePin={togglePin}
           onDeleteSession={deleteSession}
           onRestoreSession={restoreSession}
           onPurgeSession={purgeSession}
+          onDeleteSessions={(_cwd, ids) => {
+            for (const id of ids) {
+              const x = allSessions.find((y) => y.id === id);
+              if (x) deleteSession(x);
+            }
+          }}
+          onRestoreSessions={(ids) => ids.forEach(restoreSession)}
+          onPurgeSessions={(ids) => setDeleted((l) => l.filter((x) => !ids.includes(x.id)))}
         />
       }
       header={
@@ -168,6 +211,18 @@ export default function ShellDev() {
           <div style={{ textAlign: 'center', lineHeight: 2 }}>
             <div>会话流 + 输入框 占位</div>
             <div>点账户栏可切换「已登录 / 未登录」</div>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              {/* 工作空间选择器真实位置在输入框左下角（仅新会话草稿）；这里单独摆一份方便调样式 */}
+              <WorkspaceMenu
+                workspaces={workspaces}
+                currentWorkspace={currentWs}
+                onSelectWorkspace={selectWorkspace}
+                onOpenFolder={openFolder}
+                onMoveToTop={moveWorkspaceTop}
+                onRemove={removeWorkspace}
+                onReveal={() => undefined}
+              />
+            </div>
             <button
               type="button"
               onClick={() => setUsage((u) => (u ? null : mockContextUsage))}
@@ -178,7 +233,8 @@ export default function ShellDev() {
           </div>
         </div>
       }
-      context={<ContextPanel usage={usage} loading={loading} onRefresh={refresh} onCompact={compact} />}
+      context={<ContextPanel usage={usage} loading={loading} onRefresh={refresh} onCompact={compact} cache={devCache} turns={devTurns} />}
     />
+    </FilesContext.Provider>
   );
 }

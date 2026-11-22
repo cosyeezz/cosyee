@@ -5,7 +5,8 @@ import { Icon } from '../icons/Icon';
 import { Markdown } from './Markdown';
 import { CodeBlock } from './Markdown';
 import { toolIconName } from './toolIcon';
-import { describeToolInput, toolContentToText, truncateText } from './format';
+import { useFiles } from '../files/FileContext';
+import { describeToolInput, toolContentToText, toolFilePath, truncateText } from './format';
 import { hasThinkingText, thinkingFirstLine, thinkingTokensLabel } from './thinking';
 import './flow.css';
 
@@ -125,21 +126,46 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
   const running = !!step.streaming || (!step.result && turnActive);
   const input = useMemo(() => (open ? describeToolInput(step) : null), [open, step]);
   const output = useMemo(() => (open && step.result ? toolContentToText(step.result.content) : ''), [open, step.result]);
+  const files = useFiles();
+  const filePath = toolFilePath(step);
+  // 显示摘要里「工具名: 」后面的部分（通常是相对路径，更短）；没有就显示完整路径
+  const prefix = `${step.name}: `;
+  const pathLabel = step.summary?.startsWith(prefix) && step.summary.length > prefix.length ? step.summary.slice(prefix.length) : filePath;
+  const toggle = () => setOpen((v) => !v);
+  const icon = <Icon name={toolIconName(step.name, isError)} size={16} running={running} className="cz-flow__tool-icon" />;
   return (
     <div className={`cz-flow__tool${open ? ' is-open' : ''}${isError ? ' is-error' : ''}`}>
-      <button type="button" className="cz-flow__row-btn" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <Icon
-          name={toolIconName(step.name, isError)}
-          size={16}
-          running={running}
-          className="cz-flow__tool-icon"
-        />
-        <span className="cz-flow__tool-summary" title={step.summary}>
-          {step.summary || step.name}
-        </span>
-        {isError && <span className="cz-flow__badge">失败</span>}
-        <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
-      </button>
+      {filePath && files ? (
+        // 摘要里的文件路径单独是一个按钮（点击打开预览），行的其余部分仍是展开 / 收起按钮；两者是兄弟节点，不嵌套
+        <div className="cz-flow__row-split">
+          <button type="button" className="cz-flow__row-btn cz-flow__row-btn--lead" aria-expanded={open} onClick={toggle}>
+            {icon}
+            <span className="cz-flow__tool-name">{step.name}:</span>
+          </button>
+          <button
+            type="button"
+            className="cz-flow__tool-path"
+            title={filePath}
+            data-file-path={filePath}
+            onClick={(e) => files.open({ path: filePath }, e.currentTarget)}
+          >
+            {pathLabel}
+          </button>
+          <button type="button" className="cz-flow__row-btn cz-flow__row-btn--tail" aria-expanded={open} aria-label={open ? '收起工具详情' : '展开工具详情'} onClick={toggle}>
+            {isError && <span className="cz-flow__badge">失败</span>}
+            <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
+          </button>
+        </div>
+      ) : (
+        <button type="button" className="cz-flow__row-btn" aria-expanded={open} onClick={toggle}>
+          {icon}
+          <span className="cz-flow__tool-summary" title={step.summary}>
+            {step.summary || step.name}
+          </span>
+          {isError && <span className="cz-flow__badge">失败</span>}
+          <Icon name="chevron" size={16} open={open} className="cz-flow__chev" />
+        </button>
+      )}
       {open && input && (
         <div className="cz-flow__tool-body">
           <div className="cz-flow__io-label">输入</div>

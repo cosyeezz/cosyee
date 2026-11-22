@@ -157,10 +157,42 @@ describe('历史过滤', () => {
     expect(out.map((e) => e.subtype)).toEqual(['turn_duration']);
   });
 
-  it('超大 toolUseResult 精简为摘要并标记 truncated', () => {
-    const big = { type: 'user', message: { role: 'user', content: [] }, toolUseResult: { status: 'completed', agentId: 'a1', content: 'x'.repeat(80_000) } };
-    const [e] = filterHistory([JSON.stringify(big)]);
-    expect(e!.toolUseResult).toEqual({ truncated: true, status: 'completed', agentId: 'a1' });
+  it('toolUseResult 只保留子代理相关的摘要字段；没有可留的字段就整个去掉', () => {
+    const agent = { type: 'user', message: { role: 'user', content: [] }, toolUseResult: { status: 'completed', agentId: 'a1', content: 'x'.repeat(80_000) } };
+    const read = { type: 'user', message: { role: 'user', content: [] }, toolUseResult: { type: 'text', file: { filePath: 'a', content: 'y'.repeat(1000) } } };
+    const err = { type: 'user', message: { role: 'user', content: [] }, toolUseResult: 'Error: boom' };
+    const [a, r, x] = filterHistory([agent, read, err].map((o) => JSON.stringify(o)));
+    expect(a!.toolUseResult).toEqual({ status: 'completed', agentId: 'a1' });
+    expect(r).not.toHaveProperty('toolUseResult');
+    expect(x).not.toHaveProperty('toolUseResult');
+  });
+
+  it('非 MCP 工具结果里的图片去掉数据，MCP 的保留；用户自己贴的图不动', () => {
+    const img = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(5000) } };
+    const lines = [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'mcp__browser__screenshot', input: {} }] } },
+      { type: 'user', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 't1', content: [img, { type: 'text', text: 'ok' }] },
+        { type: 'tool_result', tool_use_id: 't2', content: [img] },
+      ] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '看图' }, img] } },
+    ].map((o) => JSON.stringify(o));
+    const [, res, mine] = filterHistory(lines);
+    const [read, mcp] = res!.message.content;
+    expect(read.content).toEqual([{ type: 'image', omitted: true }, { type: 'text', text: 'ok' }]);
+    expect(mcp.content).toEqual([img]);
+    expect(mine!.message.content[1]).toEqual(img);
+  });
+
+  it('assistant 的 usage 只留 token 计数', () => {
+    const usage = { input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000, server_tool_use: { web_search_requests: 0 }, service_tier: 'standard', cache_creation: { ephemeral_1h_input_tokens: 100 } };
+    const [e] = filterHistory([JSON.stringify({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [], usage } })]);
+    expect(e!.message.usage).toEqual({ input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 100, cache_read_input_tokens: 2000 });
+  });
+
+  it('剥离 wireToolInputs', () => {
+    const [e] = filterHistory([JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [] }, wireToolInputs: { t1: { a: 1 } } })]);
+    expect(e).not.toHaveProperty('wireToolInputs');
   });
 
   it('剥离 rendered / attachment 字段', () => {

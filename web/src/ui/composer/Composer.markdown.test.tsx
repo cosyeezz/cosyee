@@ -217,7 +217,7 @@ describe('Composer 草稿', () => {
   });
 
   it('编辑区已有内容（挂载后）不会被草稿覆盖；引用不进草稿', () => {
-    const m = mount({ quote: '被引用的话' });
+    const m = mount({ quotes: [{ quote: '被引用的话', reply: '' }] });
     expect(m.text()).toBe('');
     m.type('正文');
     act(() => { vi.advanceTimersByTime(400); });

@@ -51,6 +51,10 @@ export interface ConfirmActionButtonProps {
   disabledTitle?: string;
   /** 单击后点「确认」或直接双击时触发 */
   onConfirm: () => void;
+  /** 关掉「双击跳过确认」：批量 / 不可撤销的操作必须经过气泡确认 */
+  requireConfirm?: boolean;
+  /** 非危险操作（如批量恢复）：按钮悬停与确认键不用红色 */
+  safe?: boolean;
 }
 
 interface PopPos {
@@ -60,7 +64,7 @@ interface PopPos {
 }
 
 /**
- * 危险操作按钮：单击弹出确认气泡（锚定在按钮上），双击跳过确认直接执行。
+ * 危险操作按钮：单击弹出确认气泡（锚定在按钮上），双击跳过确认直接执行（requireConfirm 时不允许跳过）。
  * 单击的动作延迟约 250ms，双击到来时取消它；所有点击都 stopPropagation，避免触发整行的选中。
  * 气泡用 position: fixed，不会被列表的滚动容器裁掉。
  */
@@ -73,6 +77,8 @@ export function ConfirmActionButton({
   disabled,
   disabledTitle,
   onConfirm,
+  requireConfirm,
+  safe,
 }: ConfirmActionButtonProps) {
   const [pos, setPos] = useState<PopPos | null>(null);
   const wrapRef = useRef<HTMLSpanElement>(null);
@@ -124,6 +130,7 @@ export function ConfirmActionButton({
 
   const onDoubleClick = (e: MouseEvent) => {
     e.stopPropagation();
+    if (requireConfirm) return; // 两次 click 已经各自处理（打开 → 收起由第二次 click 决定），这里什么都不做
     window.clearTimeout(timer.current);
     close();
     onConfirm();
@@ -134,7 +141,7 @@ export function ConfirmActionButton({
       <button
         ref={btnRef}
         type="button"
-        className="cz-sidebar__act cz-sidebar__act--danger"
+        className={`cz-sidebar__act${safe ? '' : ' cz-sidebar__act--danger'}`}
         title={disabled ? disabledTitle ?? label : label}
         aria-label={label}
         aria-haspopup="dialog"
@@ -162,7 +169,7 @@ export function ConfirmActionButton({
             </button>
             <button
               type="button"
-              className="cz-sidebar__confirm-btn cz-sidebar__confirm-btn--danger"
+              className={`cz-sidebar__confirm-btn ${safe ? 'cz-sidebar__confirm-btn--primary' : 'cz-sidebar__confirm-btn--danger'}`}
               onClick={() => {
                 close();
                 onConfirm();

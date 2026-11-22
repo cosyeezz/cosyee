@@ -95,6 +95,23 @@ describe('Sessions', () => {
     await expect(sessions.history('../../x', CWD)).rejects.toMatchObject({ status: 404 });
   });
 
+  it('historyVersioned：版本没变只回 unchanged；文件追加后版本变化并返回条目', async () => {
+    const a = await sessions.historyVersioned(SID, CWD);
+    expect(a.entries).toEqual(await sessions.history(SID, CWD));
+    expect(a.version).toMatch(/^\d+\.\d+\./);
+    expect(await sessions.historyVersioned(SID, CWD, a.version)).toEqual({ version: a.version, unchanged: true });
+    expect((await sessions.historyVersioned(SID, CWD, 'stale')).entries).toEqual(a.entries);
+
+    const EMPTY = '99999999-0000-4000-8000-000000000000';
+    const b = await sessions.historyVersioned(EMPTY, CWD);
+    fs.appendFileSync(path.join(tmp, 'projects', encodeCwd(CWD), `${EMPTY}.jsonl`), '{"type":"mode","mode":"plan"}\n');
+    const c = await sessions.historyVersioned(EMPTY, CWD, b.version);
+    expect(c.version).not.toBe(b.version);
+    expect(c.unchanged).toBeUndefined();
+    expect(c.entries).toEqual([]);
+    await expect(sessions.historyVersioned('00000000-0000-4000-8000-0000000000ff', CWD)).rejects.toMatchObject({ status: 404 });
+  });
+
   it('subagent：按 meta.json 的 toolUseId 找到记录', async () => {
     const entries = await sessions.subagent(SID, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD);
     expect(entries.length).toBeGreaterThan(0);

@@ -4,7 +4,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import zlib from 'node:zlib';
 import { WebSocket } from 'ws';
+import { sendJsonMaybeGzip } from './http.js';
 import { type RunningServer, startServer } from './server.js';
 
 let tmp: string;
@@ -368,5 +370,68 @@ describe('POST /api/shutdown（客户端停止本地服务）', () => {
     } finally {
       await s5.stop();
     }
+  });
+});
+
+describe('GET /api/skills/content', () => {
+  it('读用户级 SKILL.md（去 frontmatter）；找不到 404；名字不合法 400', async () => {
+    const dir = path.join(tmp, 'claude', 'skills', 'http-skill');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\ndescription: 测试\n---\n# 正文\n');
+    const r = await fetch(`${base}/api/skills/content?name=http-skill`, { headers: auth });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ name: 'http-skill', description: '测试', body: '# 正文\n', dir });
+    expect((await fetch(`${base}/api/skills/content?name=nope`, { headers: auth })).status).toBe(404);
+    expect((await fetch(`${base}/api/skills/content?name=${encodeURIComponent('a b')}`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/api/skills/content`, { headers: auth })).status).toBe(400);
+  });
+});
+
+describe('sendJsonMaybeGzip', () => {
+  function fake(remoteAddress: string, acceptEncoding?: string) {
+    const req = { headers: acceptEncoding ? { 'accept-encoding': acceptEncoding } : {}, socket: { remoteAddress } } as unknown as http.IncomingMessage;
+    const out: { status?: number; headers?: Record<string, unknown>; body?: Buffer } = {};
+    const res = {
+      writeHead: (s: number, h: Record<string, unknown>) => ((out.status = s), (out.headers = h)),
+      end: (b: string | Buffer) => (out.body = Buffer.from(b)),
+    } as unknown as http.ServerResponse;
+    return { req, res, out };
+  }
+  const big = { entries: Array.from({ length: 5000 }, (_, i) => ({ type: 'assistant', text: `第 ${i} 条消息` })) };
+
+  it('远程客户端 + 大响应 → gzip，解压后与原 JSON 相同', async () => {
+    const { req, res, out } = fake('100.64.0.2', 'gzip, deflate, br');
+    await sendJsonMaybeGzip(req, res, 200, big);
+    expect(out.headers?.['content-encoding']).toBe('gzip');
+    expect(out.headers?.['content-length']).toBe(out.body!.length);
+    expect(JSON.parse(zlib.gunzipSync(out.body!).toString('utf8'))).toEqual(big);
+  });
+
+  it('本机回环 / 不接受 gzip / 小响应 → 原样', async () => {
+    for (const [addr, enc, body] of [
+      ['127.0.0.1', 'gzip', big],
+      ['::ffff:127.0.0.1', 'gzip', big],
+      ['100.64.0.2', undefined, big],
+      ['100.64.0.2', 'gzip', { ok: true }],
+    ] as const) {
+      const { req, res, out } = fake(addr, enc);
+      await sendJsonMaybeGzip(req, res, 200, body);
+      expect(out.headers?.['content-encoding']).toBeUndefined();
+      expect(JSON.parse(out.body!.toString('utf8'))).toEqual(body);
+    }
+  });
+});
+
+describe('GET /api/tools/stats', () => {
+  it('返回所有会话的工具累计调用次数', async () => {
+    const dir = path.join(tmp, 'claude', 'projects', 'F--x');
+    fs.mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: {} }] } });
+    fs.writeFileSync(path.join(dir, 'stats-test.jsonl'), `${line}\n`);
+    const r = await fetch(`${base}/api/tools/stats`, { headers: auth });
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as { counts: Record<string, number>; sessions: number };
+    expect(j.counts.Bash).toBeGreaterThanOrEqual(1);
+    expect(j.sessions).toBeGreaterThanOrEqual(1);
   });
 });

@@ -25,27 +25,36 @@
 
   --sidebar-w: 280px;
   --context-w: 300px;
+  /* 窄屏抽屉的宽度（另外不超过屏宽的 86% / 90%） */
+  --sidebar-w-narrow: 320px;
+  --context-w-narrow: 340px;
   --content-max: 820px;
 
   --dur-fast: 120ms;
   --dur: 200ms;
   --ease: cubic-bezier(.2, .8, .2, 1);
+  --dur-drawer: 280ms;
+  --ease-drawer: cubic-bezier(.32, .72, 0, 1);
 }
 
+/* 深色：暖石墨。所有中性色同一色相（OKLCH h≈70，彩度 0.005–0.009），
+ * 只靠明度拉开层级：两侧栏下沉（--bg-sidebar）→ 会话画布（--bg）→ 浮起的卡片、输入框、菜单。
+ * 与浅色主题的暖纸色同一温度。调色时保持色相一致，只动明度。 */
 :root,
 :root[data-theme="dark"] {
-  --bg: #1a1a1a;
-  --bg-sidebar: #131416;
-  --bg-elev: #242424;
-  --bg-input: #2b2b2b;
-  --bg-menu: #2e2e2e;
-  --bg-hover: #333333;
-  --bg-active: #2a2b2e;
-  --border: #353535;
-  --border-strong: #454545;
-  --text: #ececec;
-  --text-2: #b4b4b4;
-  --text-3: #8a8a8a;
+  color-scheme: dark;
+  --bg: #1b1916;          /* oklch(.215 .006 70) */
+  --bg-sidebar: #141210;  /* oklch(.183 .005 70) */
+  --bg-elev: #24221f;     /* oklch(.252 .007 70) */
+  --bg-input: #262320;    /* oklch(.258 .007 70) */
+  --bg-menu: #2a2723;     /* oklch(.275 .008 70) */
+  --bg-hover: #302d2a;    /* oklch(.300 .008 70) */
+  --bg-active: #2d2925;   /* oklch(.285 .009 70) */
+  --border: #2e2b28;
+  --border-strong: #43403c;
+  --text: #ece9e5;
+  --text-2: #bcb8b4;
+  --text-3: #94908b;
   --accent: #4a90e2;
   --dot-running: #3ddc97;
   --dot-unread: #4a9eff;
@@ -61,31 +70,75 @@
   --ctx-3: #14b8a6;
   --ctx-other: #9ca3af;
   --ctx-buffer: #6b7280;
-  --ctx-free: #2d2d2d;
+  --ctx-free: #2b2826;
+
+  /* 磨砂材质：半透明底 + 背景模糊 + 发丝边 + 顶沿高光。
+   * panel = 两侧栏，bar = 顶栏，card = 输入框，pop = 菜单 / 气泡 / 对话框 */
+  --mat-panel: rgb(20 18 16 / .78);
+  --mat-bar: rgb(27 25 22 / .62);
+  --mat-card: rgb(38 35 32 / .66);
+  --mat-pop: rgb(44 41 37 / .76);
+  --mat-blur: blur(22px) saturate(1.5);
+  --mat-edge: rgb(255 255 255 / .07);
+  --mat-hi: inset 0 1px 0 rgb(255 255 255 / .06);
+  --mat-grain-o: .05;
+  /* 整个外壳底下的环境光：左上一抹冷蓝、右下一抹暖橙，透过磨砂层隐约可见 */
+  --ambient:
+    radial-gradient(1100px 680px at 8% -12%, rgb(74 144 226 / .13), transparent 62%),
+    radial-gradient(900px 620px at 104% 112%, rgb(255 140 66 / .09), transparent 60%),
+    radial-gradient(700px 500px at 60% 40%, rgb(139 123 255 / .04), transparent 70%);
 }
 
 :root[data-theme="light"] {
-  --bg: #faf9f6;
-  --bg-sidebar: #f2f0eb;
+  color-scheme: light;
+  /* 浅色：近白的暖灰，彩度压到很低（不再是米黄纸色），层级同样只靠明度 */
+  --bg: #fcfcfb;
+  --bg-sidebar: #f5f4f2;
   --bg-elev: #ffffff;
   --bg-input: #ffffff;
   --bg-menu: #ffffff;
-  --bg-hover: #ece9e2;
-  --bg-active: #e6e2da;
-  --border: #e3dfd6;
-  --border-strong: #d0cbc0;
-  --text: #1f1f1f;
-  --text-2: #4b4b4b;
-  --text-3: #7a7a7a;
+  --bg-hover: #efeeeb;
+  --bg-active: #e9e7e3;
+  --border: #e7e5e1;
+  --border-strong: #d6d3ce;
+  --text: #1d1c1a;
+  --text-2: #4a4845;
+  --text-3: #7c7975;
   --accent: #2f6fd1;
   --dot-running: #0f9d63;
   --dot-unread: #2f6fd1;
   --danger: #dc2f3f;
   --warn: #c77d0a;
   --new-chat: #d9601a;
-  --scrim: rgba(0, 0, 0, .25);
-  --shadow: 0 8px 28px rgba(0, 0, 0, .12);
-  --ctx-free: #e9e6df;
+  --scrim: rgba(20, 18, 15, .18);
+  --shadow: 0 10px 30px rgba(20, 18, 15, .10), 0 1px 3px rgba(20, 18, 15, .06);
+  --ctx-free: #ebe9e5;
+
+  --mat-panel: rgb(246 245 243 / .74);
+  --mat-bar: rgb(252 252 251 / .66);
+  --mat-card: rgb(255 255 255 / .72);
+  --mat-pop: rgb(255 255 255 / .80);
+  --mat-blur: blur(22px) saturate(1.8);
+  --mat-edge: rgb(20 18 15 / .07);
+  --mat-hi: inset 0 1px 0 rgb(255 255 255 / .9);
+  --mat-grain-o: .035;
+  --ambient:
+    radial-gradient(1100px 680px at 8% -12%, rgb(47 111 209 / .09), transparent 62%),
+    radial-gradient(900px 620px at 104% 112%, rgb(217 96 26 / .07), transparent 60%),
+    radial-gradient(700px 500px at 60% 40%, rgb(139 123 255 / .04), transparent 70%);
+}
+
+/* 切换主题的那一刻：所有颜色一起过渡（core/theme.ts 临时加这个类） */
+.cz-theme-fade,
+.cz-theme-fade *,
+.cz-theme-fade *::before,
+.cz-theme-fade *::after {
+  transition: background-color 280ms ease, border-color 280ms ease, color 280ms ease, fill 280ms ease, box-shadow 280ms ease !important;
+}
+
+/* 磨砂颗粒：极淡的噪点，让半透明层有「磨砂」的质感而不是一块平涂的半透明色 */
+:root {
+  --mat-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 *,
@@ -101,9 +154,14 @@ body {
   font-size: var(--fs-md);
   line-height: var(--lh);
   -webkit-font-smoothing: antialiased;
+  /* 触屏点按时 WebView 默认会给可点元素闪一下淡蓝色高亮（切换会话时尤其明显）；按下反馈由各控件自己的样式负责 */
+  -webkit-tap-highlight-color: transparent;
 }
 
 button { font: inherit; color: inherit; }
+
+::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--text); }
+input, textarea, [contenteditable] { caret-color: var(--accent); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }

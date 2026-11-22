@@ -147,6 +147,10 @@ jobs:
             || { echo "::error::AndroidManifest.xml 里没有 usesCleartextTraffic 占位"; exit 1; }
           # 应用图标
           cp -r src-tauri/icons/android/* src-tauri/gen/android/app/src/main/res/
+          # 自己的 MainActivity：系统栏 / 输入法避让交给页面、返回手势回到服务器列表（见文件头注释）
+          act=$(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt | head -n1)
+          [ -n "$act" ] || { echo "::error::找不到生成的 MainActivity.kt（Tauri 模板变了？）"; exit 1; }
+          cp android/MainActivity.kt "$act"
       - name: 构建
         working-directory: client
         run: npx tauri android build --apk --target aarch64 --ci

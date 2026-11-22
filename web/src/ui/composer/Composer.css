@@ -1,14 +1,29 @@
 .cz-composer { width: 100%; }
 .cz-composer__boxwrap { position: relative; }
 
+/* 输入框是浮在会话流上的磨砂玻璃卡片：对话滚到它后面时模糊透出。
+   材质画在单独的 .cz-composer__glass 上（而不是盒子本身的 backdrop-filter），这样从输入框弹出的菜单仍能模糊到它后面的会话流 */
 .cz-composer__box {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   padding: var(--sp-2);
-  background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--r-xl);
-  transition: border-color var(--dur-fast) var(--ease);
+  box-shadow: var(--mat-hi), 0 10px 32px -12px var(--scrim);
+}
+.cz-composer__glass {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  background: var(--mat-grain), var(--mat-card);
+  background-blend-mode: soft-light, normal;
+  background-size: 160px 160px, auto;
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  pointer-events: none;
 }
 .cz-composer__row {
   display: flex;
@@ -16,7 +31,8 @@
   gap: var(--sp-1);
 }
 .cz-composer__box:focus-within { border-color: var(--border-strong); }
-.cz-composer__box.is-disabled { opacity: .6; }
+/* 只让内容变淡，玻璃本身不变透明（否则加载时会话流会清晰地透出来） */
+.cz-composer__box.is-disabled > :not(.cz-composer__glass) { opacity: .55; }
 
 .cz-composer__btn {
   flex: none;
@@ -61,6 +77,8 @@
 }
 
 .cz-composer__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2) 0; }
+/* 左下角的槽位：把模型菜单和额度推到右边 */
+.cz-composer__foot-left { margin-right: auto; min-width: 0; display: flex; align-items: center; }
 
 /* 排队中的消息：输入框上方，一行一条（类型 + 单行截断文字 + 操作） */
 .cz-queue {
@@ -106,10 +124,12 @@
   bottom: calc(100% + var(--sp-2));
   z-index: 800;
   padding: var(--sp-1);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow);
+  box-shadow: var(--mat-hi), var(--shadow);
 }
 .cz-rewind__title,
 .cz-rewind__note { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
@@ -156,10 +176,12 @@
   max-height: 280px;
   overflow-y: auto;
   padding: var(--sp-1);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow);
+  box-shadow: var(--mat-hi), var(--shadow);
   font-size: var(--fs-sm);
 }
 .cz-slash__group { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
@@ -184,32 +206,61 @@
 
 .cz-composer__hint { padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm, 12px); color: var(--text-2); }
 
-/* 选中回复的引用卡片：位于输入框盒子内部顶部 */
-.cz-composer__quote {
+/* 选中回复的引用卡片：位于输入框盒子内部顶部；多段引用竖向堆叠，太多时容器内滚动 */
+/* 选中回复带来的引用：合成一张卡片，每段一行「引用（灰，单行省略）| 对这段的回复（可编辑）| ✕」 */
+.cz-composer__quotes {
   display: flex;
-  align-items: center;
-  gap: var(--sp-2);
+  flex-direction: column;
   margin: 0 0 var(--sp-1);
-  padding: 4px var(--sp-1) 4px var(--sp-3);
+  max-height: 156px; /* 约 4.5 行：露出半行提示可以滚动 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-active);
   border-radius: var(--r-md);
+}
+.cz-composer__quote {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 4px var(--sp-1) 4px var(--sp-3);
   color: var(--text-2);
   font-size: var(--fs-sm);
   line-height: 20px;
 }
-.cz-composer__quote-icon { color: var(--text-3); }
-.cz-composer__quote-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.cz-composer__quote-tag {
-  flex: none;
-  padding: 0 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
+.cz-composer__quote + .cz-composer__quote { border-top: 1px solid var(--border); }
+.cz-composer__quote-icon { flex: none; margin-top: 3px; color: var(--text-3); }
+.cz-composer__quote-text {
+  flex: 0 1 auto;
+  max-width: 50%;
+  min-width: 0;
+  padding: 1px 0 1px var(--sp-2);
+  border-left: 2px solid var(--border-strong);
   color: var(--text-3);
-  font-size: 11px;
-  line-height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
+.cz-composer__quote-reply {
+  flex: 1 1 40%;
+  min-width: 0;
+  margin: 0;
+  padding: 1px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 20px;
+  height: 22px;
+}
+.cz-composer__quote-reply::placeholder { color: var(--text-3); opacity: .7; }
 .cz-composer__quote-x {
   flex: none;
+  margin-top: -1px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

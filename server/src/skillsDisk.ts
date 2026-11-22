@@ -102,3 +102,52 @@ export function removeDiskSkill(name: string, configDir: string, cwd: string | n
   }
   return dest;
 }
+
+/** 拆出 SKILL.md 的 frontmatter（--- 包起来的头）与正文；没有 frontmatter 时 head 为空 */
+function splitFrontmatter(text: string): { head: string; body: string } {
+  const src = text.replace(/^﻿/, '');
+  const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(src);
+  if (!m) return { head: '', body: src };
+  return { head: m[1] ?? '', body: src.slice(m[0].length).replace(/^\r?\n/, '') };
+}
+
+/** frontmatter 里的 description：支持单行（可带引号）与 `>` / `|` 多行块 */
+function frontmatterDescription(head: string): string | undefined {
+  const lines = head.split(/\r?\n/);
+  const i = lines.findIndex((l) => /^description\s*:/.test(l));
+  if (i < 0) return undefined;
+  const first = lines[i]!.replace(/^description\s*:\s*/, '').trim();
+  if (/^[>|][+-]?$/.test(first)) {
+    const parts: string[] = [];
+    for (const l of lines.slice(i + 1)) {
+      if (l.trim() && !/^\s/.test(l)) break; // 缩进结束 = 块结束
+      parts.push(l.trim());
+    }
+    const joined = (first.startsWith('>') ? parts.join(' ') : parts.join('\n')).trim();
+    return joined || undefined;
+  }
+  const unq = first.replace(/^(["'])([\s\S]*)\1$/, '$2').trim();
+  return unq || undefined;
+}
+
+/**
+ * 读磁盘上的 SKILL.md（技能面板兜底展示）：只服务 listDiskSkills 扫描到的 skill，名字不在其中返回 null，
+ * 路径不由外部输入拼接，因此无法穿越。返回的正文已去掉 frontmatter。
+ */
+export function readSkillContent(
+  name: string,
+  configDir: string,
+  cwd: string | null,
+): { name: string; description?: string; body: string; dir: string } | null {
+  const hit = listDiskSkills(configDir, cwd).find((s) => s.name === name);
+  if (!hit) return null;
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(hit.dir, 'SKILL.md'), 'utf8');
+  } catch {
+    return null;
+  }
+  const { head, body } = splitFrontmatter(text);
+  const description = frontmatterDescription(head);
+  return { name, ...(description ? { description } : {}), body, dir: hit.dir };
+}

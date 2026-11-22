@@ -81,7 +81,10 @@
     display: flex; justify-content: center;
     padding: max(44px, env(safe-area-inset-top)) 20px max(40px, env(safe-area-inset-bottom));
     transition: background-color .25s var(--ease), color .25s var(--ease);
+    -webkit-tap-highlight-color: transparent;
   }
+  /* 安卓客户端：系统栏避让已经由外壳脚本加在 html 上，这里只留正常的页边距 */
+  html[data-cosyee-insets] body { padding-top: 24px; padding-bottom: 24px; }
   ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--text); }
   input { caret-color: var(--accent); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -619,6 +622,10 @@
   $('add-open').onclick = function () { morph(true); };
   $('add-close').onclick = function () { morph(false); };
   $('add').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); morph(false); } });
+  // 安卓返回手势：展开着的添加表单先收起（列表为空时表单就是主界面，不收）
+  window.addEventListener('cosyee:back', function (e) {
+    if (adder.classList.contains('open') && load().length) { e.preventDefault(); morph(false); }
+  });
 
   function addError(text) {
     $('add-err').textContent = text;

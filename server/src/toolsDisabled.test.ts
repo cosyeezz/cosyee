@@ -127,3 +127,39 @@ describe('POST /api/tools', () => {
     expect(ctx.tools).toEqual(['Bash', 'Read']);
   }, 30_000);
 });
+
+describe('POST /api/agents', () => {
+  const applies = () =>
+    log().filter((l) => l.startsWith('CTRL apply_flag_settings ')).map((l) => JSON.parse(l.slice('CTRL apply_flag_settings '.length)) as { permissions: { deny: string[] } });
+
+  it('校验：含括号 / 空白的名字与非布尔 enabled 返回 400', async () => {
+    expect((await post('/api/agents', { name: 'a(b)', enabled: false })).status).toBe(400);
+    expect((await post('/api/agents', { name: 'a b', enabled: false })).status).toBe(400);
+    expect((await post('/api/agents', { name: 'Explore', enabled: 1 })).status).toBe(400);
+  });
+
+  it('关闭后落盘，以 Agent(名字) 与停用工具一起整体下发；随上下文带上；重新开启后移除', async () => {
+    await post('/api/tools', { name: 'Glob', enabled: false });
+    const r = await post('/api/agents', { name: 'Explore', enabled: false });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { disabledAgents: string[] }).disabledAgents).toEqual(['Explore']);
+    expect(applies().pop()?.permissions.deny).toEqual(['Glob', 'Agent(Explore)']);
+    await vi.waitFor(() => {
+      const o = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { disabledAgents?: string[] };
+      expect(o.disabledAgents).toEqual(['Explore']);
+    });
+
+    const sid = '0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a13';
+    const ctx = (await (await post(`/api/context/${sid}/refresh`, { cwd, draft: true })).json()) as { disabledAgents?: string[] };
+    expect(ctx.disabledAgents).toEqual(['Explore']);
+    const args = log().filter((l) => l.startsWith('ARGS ')).pop()!;
+    const argv = JSON.parse(args.slice(5)) as string[];
+    const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]!) as { permissions?: { deny?: string[] } };
+    expect(settings.permissions?.deny).toEqual(['Glob', 'Agent(Explore)']);
+
+    await post('/api/agents', { name: 'Explore', enabled: true });
+    expect(applies().pop()?.permissions.deny).toEqual(['Glob']);
+    await post('/api/tools', { name: 'Glob', enabled: true });
+    expect(applies().pop()?.permissions.deny).toEqual([]);
+  }, 30_000);
+});

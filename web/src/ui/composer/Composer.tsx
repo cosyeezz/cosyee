@@ -1,10 +1,10 @@
 // 输入框：大圆角长条，左「+」、中间 contenteditable（文字与标签混排）、右侧麦克风与发送 / 停止，下方模型菜单。
 // 编辑区的内部 DOM 完全由本组件命令式维护（React 不渲染其子节点），内容变化后统一走 afterChange()。
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
 import type { Attachment } from '@cosyee/shared';
 import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
-import { buildQuotedMessage } from '../../core/quote';
+import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
 import { Icon } from '../icons/Icon';
 import { ModelMenu } from '../menus/ModelMenu';
 import { UsageMeter } from '../usage/UsageMeter';
@@ -31,6 +31,8 @@ export interface ComposerProps {
   onSend: (text: string, attachments: Attachment[], mode?: QueueMode) => void;
   onInterrupt: () => void;
   running: boolean;
+  /** 当前会话：换会话时流光直接消失（不带着绕圈的光头淡出，否则会闪一道蓝光） */
+  sessionKey?: string | null;
   pick: (mode?: 'mixed' | 'files' | 'folders') => Promise<{ items: PickedItem[]; supportsMixed: boolean }>;
   /** 粘贴图片：上传到后端，返回可作为标签的项。不传则忽略剪贴板里的图片 */
   paste?: (blob: Blob) => Promise<PickedItem>;
@@ -47,10 +49,17 @@ export interface ComposerProps {
   loadUsage?: (refresh: boolean) => Promise<UsageInfo | null>;
   /** false 时模型菜单隐藏 Ultracode 开关 */
   ultracodeAvailable?: boolean;
-  /** 选中回复带来的引用文字：显示在输入框顶部的引用卡片里，发送时作为 `> ` 引用块拼在消息开头 */
-  quote?: string | null;
-  /** 点引用卡片的 ✕；发送后也会调用它清掉引用 */
-  onClearQuote?: () => void;
+  /**
+   * 选中回复带来的引用（可有多段），每段带着对它的回复：显示在输入框顶部（每段一行：引用 + 可编辑的回复），
+   * 发送时按「引用 → 它的回复 → 下一段 …… → 正文」交错拼在消息开头
+   */
+  quotes?: readonly QuoteReply[];
+  /** 点某段引用的 ✕：只移除这一段（index 对应 quotes 下标） */
+  onRemoveQuote?: (index: number) => void;
+  /** 改了某段引用的回复（index 对应 quotes 下标） */
+  onEditQuoteReply?: (index: number, reply: string) => void;
+  /** 发送后调用，清掉全部引用 */
+  onClearQuotes?: () => void;
   /** 已发给 CLI、还没开始执行的消息（后端推送的快照）：显示在输入框上方 */
   queue?: QueueItem[];
   /** 排队项的「立即发送」：中断当前这一轮，马上执行它 */
@@ -61,6 +70,8 @@ export interface ComposerProps {
   rewindTargets?: RewindTarget[];
   /** 在浮层里选定了回退目标 */
   onRewind?: (targetId: string) => void;
+  /** 输入框下方一行的左侧内容（新会话时放工作空间选择器）；不传则不占位 */
+  footLeft?: ReactNode;
 }
 
 /** 给外部（选中回复）用的命令式接口 */
@@ -102,8 +113,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const composing = useRef(false);
   const picking = useRef(false);
   const [empty, setEmpty] = useState(true);
-  // 全是空白的引用等同于没有
-  const quote = props.quote && props.quote.trim() ? props.quote : null;
+  // 全是空白的引用等同于没有；下标仍对应 props.quotes（移除时回传）
+  const quoteItems = useMemo(
+    () => (props.quotes ?? []).map((q, index) => ({ ...q, index })).filter((q) => q.quote.trim()),
+    [props.quotes],
+  );
+  const hasQuote = quoteItems.length > 0;
   const [preview, setPreview] = useState<HTMLElement | null>(null);
   const [slash, setSlash] = useState<SlashState | null>(null);
   const [slashIdx, setSlashIdx] = useState(0);
@@ -228,16 +243,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const ed = editorRef.current;
     if (!ed || disabled) return null;
     const segs = labelChips(trimSegments(readSegments(ed)));
-    if (!segs.length && !quote) return null; // 有引用时正文可以为空
-    const out = { text: buildQuotedMessage(quote, serialize(segs)), attachments: toAttachments(segs) };
+    if (!segs.length && !hasQuote) return null; // 有引用时正文可以为空
+    const out = { text: buildQuotedMessage(quoteItems, serialize(segs)), attachments: toAttachments(segs) };
     ed.innerHTML = '';
     setEmpty(true);
     setSlash(null);
     setPreview(null);
     clearDraft();
-    if (quote) latest.current.onClearQuote?.();
+    if (hasQuote) latest.current.onClearQuotes?.();
     return out;
-  }, [disabled, quote, clearDraft]);
+  }, [disabled, hasQuote, quoteItems, clearDraft]);
 
   // 空闲时直接发送；执行中按 mode 发给 CLI（next=插话 / later=排队），排队由后端与 CLI 维护，前端只显示快照
   const send = useCallback((mode: QueueMode = 'next') => {
@@ -247,7 +262,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     else onSend(m.text, m.attachments);
   }, [take, onSend]);
 
-  // ───────────── 选中回复：把弹层里输入的内容放进编辑区 ─────────────
+  // ───────────── 选中回复：聚焦编辑区 / 追加文字 ─────────────
 
   useImperativeHandle(handleRef, () => ({
     appendText(text: string) {
@@ -538,21 +553,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         />
       )}
       <div className={`cz-composer__box${disabled ? ' is-disabled' : ''}`}>
-        {quote && (
-          <div className="cz-composer__quote">
-            <Icon name="reply" size={14} className="cz-composer__quote-icon" />
-            <span className="cz-composer__quote-text" title={quote}>“{quote}”</span>
-            <span className="cz-composer__quote-tag">附带回复</span>
-            <button
-              type="button"
-              className="cz-composer__quote-x"
-              title="移除引用"
-              aria-label="移除引用"
-              onMouseDown={keepFocus}
-              onClick={() => props.onClearQuote?.()}
-            >
-              <Icon name="close" size={12} />
-            </button>
+        {/* 磨砂玻璃底（单独一层） */}
+        <span className="cz-composer__glass" aria-hidden="true" />
+        {hasQuote && (
+          <div className="cz-composer__quotes">
+            {quoteItems.map(({ quote, reply, index }) => (
+              <QuoteRow
+                key={`${index}:${quote}`}
+                quote={quote}
+                reply={reply}
+                disabled={!!disabled}
+                onReply={(text) => props.onEditQuoteReply?.(index, text)}
+                onRemove={() => props.onRemoveQuote?.(index)}
+                onSend={(mode) => send(mode)}
+                keepFocus={keepFocus}
+              />
+            ))}
           </div>
         )}
         <div className="cz-composer__row">
@@ -592,7 +608,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               onDragOver={(e) => e.preventDefault()}
             />
           </div>
-          {running && empty && !quote ? (
+          {running && empty && !hasQuote ? (
             <button
               type="button"
               className="cz-composer__btn cz-composer__btn--stop"
@@ -603,7 +619,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             >
               <Icon name="stop" size={16} />
             </button>
-          ) : empty && !quote ? null : ( // 没有内容（空白 / 无附件 / 无引用）时不显示发送按钮，输入区自动占满空出的宽度
+          ) : empty && !hasQuote ? null : ( // 没有内容（空白 / 无附件 / 无引用）时不显示发送按钮，输入区自动占满空出的宽度
             <button
               type="button"
               className="cz-composer__btn cz-composer__btn--send"
@@ -624,6 +640,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       </div>
       {hint && <div className="cz-composer__hint" role="status">{hint}</div>}
       <div className="cz-composer__foot">
+        {props.footLeft && <div className="cz-composer__foot-left">{props.footLeft}</div>}
         <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} />
         {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
       </div>
@@ -633,3 +650,63 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     </div>
   );
 });
+
+/** 一段引用：左侧引用文字（单行省略），右侧是对这段的回复（可编辑，Enter 发送整条消息） */
+function QuoteRow({
+  quote, reply, disabled, onReply, onRemove, onSend, keepFocus,
+}: {
+  quote: string;
+  reply: string;
+  disabled: boolean;
+  onReply: (text: string) => void;
+  onRemove: () => void;
+  onSend: (mode: QueueMode) => void;
+  keepFocus: (e: React.MouseEvent) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
+  // 高度随内容（最多约 4 行）
+  useLayoutEffect(() => {
+    const ta = ref.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, 96)}px`;
+  }, [reply]);
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onSend(e.ctrlKey || e.metaKey ? 'later' : 'next');
+    }
+  };
+  return (
+    <div className="cz-composer__quote">
+      <Icon name="reply" size={14} className="cz-composer__quote-icon" />
+      <span className="cz-composer__quote-text" title={quote}>{quote}</span>
+      <textarea
+        ref={ref}
+        className="cz-composer__quote-reply"
+        rows={1}
+        value={reply}
+        disabled={disabled}
+        placeholder="回复这段（可留空）"
+        aria-label="对这段引用的回复"
+        spellCheck={false}
+        onChange={(e) => onReply(e.target.value)}
+        onKeyDown={onKeyDown}
+        onCompositionStart={() => { composing.current = true; }}
+        onCompositionEnd={() => { composing.current = false; }}
+      />
+      <button
+        type="button"
+        className="cz-composer__quote-x"
+        title="移除引用"
+        aria-label="移除引用"
+        onMouseDown={keepFocus}
+        onClick={onRemove}
+      >
+        <Icon name="close" size={12} />
+      </button>
+    </div>
+  );
+}

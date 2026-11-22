@@ -1,17 +1,47 @@
 .cz-shell {
+  position: relative;
+  isolation: isolate;
   display: flex;
   height: 100%;
   min-width: 0;
-  background: var(--bg);
+  /* 环境光铺在最底下，两侧磨砂栏与顶栏、输入框透出它 */
+  background: var(--ambient), var(--bg);
   color: var(--text);
   overflow: hidden;
 }
+
+/* 两侧栏的磨砂面：半透明底 + 颗粒；画在伪元素上，不让栏内的弹出菜单被当成背景模糊的子层 */
+.cz-shell__sidebar,
+.cz-shell__context { position: relative; isolation: isolate; }
+.cz-shell__sidebar::before,
+.cz-shell__context::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--mat-grain), var(--mat-panel);
+  background-blend-mode: soft-light, normal;
+  background-size: 160px 160px, auto;
+  pointer-events: none;
+}
+.cz-shell__sidebar::after,
+.cz-shell__context::after {
+  /* 贴着画布那一侧的发丝高光，比实线边更像玻璃的切边 */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, var(--mat-edge), transparent 40%, transparent 60%, var(--mat-edge));
+  pointer-events: none;
+}
+.cz-shell__sidebar::after { right: 0; }
+.cz-shell__context::after { left: 0; }
 
 /* ───── 左侧栏 ───── */
 .cz-shell__sidebar {
   flex: none;
   width: var(--sidebar-w);
-  background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   overflow: hidden;
   transition: width var(--dur) var(--ease), visibility 0s linear 0s;
@@ -30,18 +60,39 @@
 
 /* ───── 中间 ───── */
 .cz-shell__center {
+  position: relative;
   flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
+/* 顶栏浮在会话流上面：对话滚上去时从磨砂玻璃后面模糊地透出来。
+   高度由 AppShell 量出来写进 --top-h，主区用它留出位置（会话流自己把这段补回去，见 MainApp.css） */
 .cz-shell__top {
-  flex: none;
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: flex-start;
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4) var(--sp-2);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--mat-edge);
+  isolation: isolate;
+}
+.cz-shell__top::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--mat-grain), var(--mat-bar);
+  background-blend-mode: soft-light, normal;
+  background-size: 160px 160px, auto;
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi);
+  pointer-events: none;
 }
 .cz-shell__header {
   flex: 1 1 0;
@@ -67,6 +118,7 @@
 .cz-shell__main {
   flex: 1 1 0;
   min-height: 0;
+  padding-top: var(--top-h, 52px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -76,7 +128,8 @@
 .cz-shell__context {
   flex: none;
   width: var(--context-w);
-  background: var(--bg);
+  /* 与左侧栏同为下沉面，把会话画布夹在中间；面板内引用 --bg 的控件跟着换底（底色本身是磨砂伪元素） */
+  --bg: var(--bg-sidebar);
   border-left: 1px solid var(--border);
   overflow: hidden;
   transition: width var(--dur) var(--ease), visibility 0s linear 0s;
@@ -90,4 +143,65 @@
   border-left-color: transparent;
   visibility: hidden;
   transition: width var(--dur) var(--ease), visibility 0s linear var(--dur);
+}
+
+/* ───── 窄屏（手机）：两侧栏是盖在会话上的浮层抽屉 ─────
+   不再挤占中间的宽度；打开时从各自那一侧滑入，下面铺一层遮罩，点遮罩关闭。 */
+.cz-shell--narrow .cz-shell__sidebar,
+.cz-shell--narrow .cz-shell__context {
+  position: absolute;
+  z-index: 21;
+  top: 0;
+  bottom: 0;
+  /* 抽屉压在会话上面，磨砂半透明底会透出底下的字：垫一层实底 */
+  background: var(--bg-sidebar);
+  box-shadow: 0 0 0 1px var(--border), 0 18px 48px -8px var(--scrim);
+  transition: transform var(--dur-drawer) var(--ease-drawer), visibility 0s linear 0s;
+  will-change: transform;
+}
+.cz-shell--narrow .cz-shell__sidebar {
+  left: 0;
+  width: min(var(--sidebar-w-narrow), 86%);
+  border-right: 0;
+}
+.cz-shell--narrow .cz-shell__context {
+  right: 0;
+  width: min(var(--context-w-narrow), 90%);
+  border-left: 0;
+}
+.cz-shell--narrow .cz-shell__sidebar-inner,
+.cz-shell--narrow .cz-shell__context-inner { width: 100%; }
+/* 收起 = 滑出屏幕；宽度保持不变（不做宽度动画），滑完再隐藏 */
+.cz-shell--narrow.cz-shell--collapsed .cz-shell__sidebar,
+.cz-shell--narrow.cz-shell--ctx-collapsed .cz-shell__context {
+  width: min(var(--sidebar-w-narrow), 86%);
+  visibility: hidden;
+  box-shadow: none;
+  transition: transform var(--dur-drawer) var(--ease-drawer), box-shadow 0s linear var(--dur-drawer), visibility 0s linear var(--dur-drawer);
+}
+.cz-shell--narrow.cz-shell--collapsed .cz-shell__sidebar { transform: translateX(-100%); }
+.cz-shell--narrow.cz-shell--ctx-collapsed .cz-shell__context {
+  width: min(var(--context-w-narrow), 90%);
+  transform: translateX(100%);
+}
+.cz-shell__scrim {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  background: var(--scrim);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--dur-drawer) var(--ease), visibility 0s linear var(--dur-drawer);
+}
+.cz-shell__scrim.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--dur-drawer) var(--ease), visibility 0s linear 0s;
+}
+/* 窄屏下顶栏的展开按钮是唯一入口，按触屏尺寸放大 */
+.cz-shell--narrow .cz-shell__expand { width: 36px; height: 36px; }
+@media (prefers-reduced-motion: reduce) {
+  .cz-shell--narrow .cz-shell__sidebar,
+  .cz-shell--narrow .cz-shell__context,
+  .cz-shell__scrim { transition-duration: 0s !important; transition-delay: 0s !important; }
 }

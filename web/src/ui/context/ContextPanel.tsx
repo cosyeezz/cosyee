@@ -1,13 +1,20 @@
 // 右侧上下文面板：已用占比 / 分段条 / 分类明细 / deferred / Skills（三态）/ MCP（按服务器开关）/ 智能体 / 压缩。
 // 约定：ContextUsage.percent 与 categories[].percent 均按 0–100 解释（22.6 表示 22.6%）。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { CachePoint, ContextMcpServer, ContextSkill, ContextUsage, SkillMode } from '@cosyee/shared';
+import type { CachePoint, ContextMcpServer, ContextSkill, ContextUsage, SkillMode, ToolStats as ToolStatsData, Turn } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { Menu, type MenuEntry } from '../menus/Menu';
+import { CountUp } from '../motion/CountUp';
+import { useWake } from '../motion/useWake';
+import { useHeld } from '../motion/useHeld';
 import { CacheChart } from './CacheChart';
+import { ContextChart } from './ContextChart';
 import { toolInfo } from './toolCatalog';
-import { toolRows, type ToolRow } from './tools';
+import {
+  agentRows, callsOf, skillCallCounts, skillCallsOf, toolCallCounts, toolRows, totalCallsOf, totalSkillCallsOf,
+  type AgentRow, type SkillCalls, type ToolCalls, type ToolRow,
+} from './tools';
 import { formatPercent, formatTokens } from './formatTokens';
 import { presetChanges, skillBaseName, skillInfo } from './skillCatalog';
 import './ContextPanel.css';
@@ -31,8 +38,16 @@ export interface ContextPanelProps {
   tools?: string[];
   /** 启用 / 停用内置工具；不传则只读 */
   onToolToggle?: (name: string, enabled: boolean) => void;
+  /** 本会话 init 报告的智能体名（SessionMeta.agents，含内置）；没有时只列 usage.agents 里的自定义智能体 */
+  agents?: string[];
+  /** 开启 / 关闭智能体；不传则只读 */
+  onAgentToggle?: (name: string, enabled: boolean) => void;
   /** 缓存命中率走势（SessionMeta.cache）；不传或为空则显示空态 */
   cache?: CachePoint[];
+  /** 会话流（上下文走势点开某次请求时，按 tool_use id 找工具摘要与结果大小） */
+  turns?: Turn[];
+  /** 所有会话的工具累计调用次数（GET /api/tools/stats）；不传或为 null 时只显示本会话的次数 */
+  toolStats?: ToolStatsData | null;
   /** 「压缩会话」不可用（例如还没发过消息的新会话、回合进行中） */
   compactDisabled?: boolean;
   /** 收起面板；不传则不显示收起按钮 */
@@ -75,14 +90,28 @@ function categoryColor(name: string): string {
 const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
-  usage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onMcpToggle, mcpBusy = null, tools, onToolToggle, cache, compactDisabled = false, onCollapse,
+  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCollapse,
 }: ContextPanelProps) {
+  // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
+  const live = useMemo(
+    () => (liveUsage ? { usage: liveUsage, cache: liveCache, turns: liveTurns, tools: liveTools, agents: liveAgents } : null),
+    [liveUsage, liveCache, liveTurns, liveTools, liveAgents],
+  );
+  const held = useHeld(live);
+  const usage = held.value?.usage ?? null;
+  const { cache, turns, tools, agents } = held.value ?? {};
+  const stale = held.stale;
   const [skillsOpen, setSkillsOpen] = useState(false);
   // 一键推荐配置之前的状态，用于撤销；手动改任何一个 skill 后失效
   const [undo, setUndo] = useState<Record<string, SkillMode> | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  // 数据第一次到达时：数字滚动、条形擦出、走势描出、各块依次出现
+  const waking = useWake(!!usage);
+  // 每个工具在本会话里的调用次数（会话流每次更新都会变，按 turns 记忆）
+  const callCounts = useMemo(() => toolCallCounts(turns), [turns]);
+  const skillCounts = useMemo(() => skillCallCounts(turns), [turns]);
 
   const refreshBtn = (
     <button type="button" className="cz-ctx__link" onClick={onRefresh} disabled={loading}>
@@ -123,9 +152,20 @@ export function ContextPanel({
   const servers = usage.mcpServers ?? [];
   // 本会话收到过 init 就用它；没收到（探测进程不发消息 / 页面重开错过了 init）用服务端记下的
   const toolList = toolRows(tools?.length ? tools : usage.tools, usage.disabledTools);
+  const toolTok = toolTokenSummary(usage);
+  const toolTokOf = new Map((usage.toolTokens ?? []).map((t) => [t.name, t]));
+  const sessionCalls = toolList.reduce((n, t) => {
+    const c = callsOf(callCounts, t.name);
+    return n + c.main + c.sub;
+  }, 0);
+  const allCounts = toolStats?.counts;
+  const allCalls = allCounts ? toolList.reduce((n, t) => n + totalCallsOf(allCounts, t.name), 0) : null;
+  const offCount = toolList.filter((t) => !t.enabled).length;
+  const agentList = agentRows(agents, usage.agents, usage.disabledAgents);
+  const agentOff = agentList.filter((a) => !a.enabled).length;
 
   return (
-    <div className={`cz-ctx${loading ? ' is-loading' : ''}`}>
+    <div className={`cz-ctx${loading ? ' is-loading' : ''}${waking ? ' is-waking' : ''}${stale ? ' is-stale' : ''}`} aria-busy={stale || undefined}>
       <div className="cz-ctx__head">
         <h2 className="cz-ctx__title">上下文</h2>
         <div className="cz-ctx__head-actions">
@@ -137,9 +177,9 @@ export function ContextPanel({
       <div className="cz-ctx__body">
         {/* 概览 */}
         <section className="cz-ctx__overview">
-          <div className="cz-ctx__percent">{formatPercent(usage.percent)}</div>
+          <CountUp className="cz-ctx__percent" value={usage.percent} format={formatPercent} play={waking} duration={1000} />
           <div className="cz-ctx__used">
-            {formatTokens(usage.usedTokens)} / {formatTokens(usage.totalTokens)}
+            <CountUp value={usage.usedTokens} format={formatTokens} play={waking} duration={1000} /> / {formatTokens(usage.totalTokens)}
           </div>
         </section>
 
@@ -169,6 +209,12 @@ export function ContextPanel({
           ))}
         </ul>
 
+        {/* 上下文走势：每次请求的输入大小，点柱子看增长来自哪些工具 */}
+        <section className="cz-ctx__section">
+          <h3 className="cz-ctx__sub">上下文走势</h3>
+          <ContextChart points={cache} turns={turns} intro={waking} />
+        </section>
+
         {/* deferred：延迟加载项的占用，单独一节 */}
         {usage.deferred.length > 0 && (
           <section className="cz-ctx__section">
@@ -189,7 +235,7 @@ export function ContextPanel({
         {/* 缓存命中率走势 */}
         <section className="cz-ctx__section">
           <h3 className="cz-ctx__sub">缓存命中率</h3>
-          <CacheChart points={cache} />
+          <CacheChart points={cache} intro={waking} />
         </section>
 
         {/* 可展开：Skills（开 / 手动 / 关 三态） */}
@@ -220,6 +266,8 @@ export function ContextPanel({
             <SkillRow
               key={s.name}
               skill={s}
+              calls={skillCallsOf(skillCounts, s.name)}
+              total={totalSkillCallsOf(toolStats?.skills, s.name)}
               onRemove={
                 onSkillRemove &&
                 ((name) => {
@@ -242,13 +290,32 @@ export function ContextPanel({
         <Collapsible
           title="工具"
           count={toolList.length}
-          extra={toolList.some((t) => !t.enabled) ? `${toolList.filter((t) => !t.enabled).length} 已停用` : undefined}
+          extra={[toolTok.resident !== null && formatTokens(toolTok.resident), offCount > 0 && `${offCount} 已停用`].filter(Boolean).join(' · ') || undefined}
           open={toolsOpen}
           onToggle={() => setToolsOpen((v) => !v)}
-          toolbar={<p className="cz-ctx__note">停用后当前会话立即拦截调用；新会话里模型将看不到该工具。设置对所有会话生效。</p>}
+          toolbar={
+            <>
+              <ToolStats
+                resident={toolTok.resident}
+                deferred={toolTok.deferred}
+                perTool={toolTokOf.size > 0}
+                session={sessionCalls}
+                all={allCalls}
+                sessions={toolStats?.sessions ?? 0}
+              />
+              <p className="cz-ctx__note">停用后当前会话立即拦截调用；新会话里模型将看不到该工具。设置对所有会话生效。</p>
+            </>
+          }
         >
           {toolList.map((t) => (
-            <ToolItem key={t.name} tool={t} onToggle={onToolToggle} />
+            <ToolItem
+              key={t.name}
+              tool={t}
+              calls={callsOf(callCounts, t.name)}
+              total={allCounts ? totalCallsOf(allCounts, t.name) : null}
+              tokens={toolTokOf.get(t.name)}
+              onToggle={onToolToggle}
+            />
           ))}
         </Collapsible>
 
@@ -265,20 +332,17 @@ export function ContextPanel({
           ))}
         </Collapsible>
 
-        {/* 可展开：自定义智能体 */}
+        {/* 可展开：智能体（含内置；按智能体开关，名单全局保存） */}
         <Collapsible
-          title="自定义智能体"
-          count={usage.agents.length}
+          title="智能体"
+          count={agentList.length}
+          extra={agentOff > 0 ? `${agentOff} 已关闭` : undefined}
           open={agentsOpen}
           onToggle={() => setAgentsOpen((v) => !v)}
+          toolbar={<p className="cz-ctx__note">关闭后模型不能再派发该智能体（当前会话立即拦截，新会话里看不到它）。设置对所有会话生效。</p>}
         >
-          {usage.agents.map((a) => (
-            <li key={a.name} className="cz-ctx__item">
-              <span className="cz-ctx__item-name" title={a.name}>
-                {a.name}
-              </span>
-              <span className="cz-ctx__item-tokens">{formatTokens(a.tokens)}</span>
-            </li>
+          {agentList.map((a) => (
+            <AgentItem key={a.name} agent={a} onToggle={onAgentToggle} />
           ))}
         </Collapsible>
       </div>
@@ -338,9 +402,13 @@ function SkillToolbar({
 }
 
 function SkillRow({
-  skill, onMode, onRemove,
+  skill, calls, total, onMode, onRemove,
 }: {
   skill: ContextSkill;
+  /** 本会话的加载次数 */
+  calls: SkillCalls;
+  /** 所有会话累计；取不到为 null */
+  total: number | null;
   onMode?: (name: string, mode: SkillMode) => void;
   onRemove?: (name: string) => void;
 }) {
@@ -350,7 +418,8 @@ function SkillRow({
   const [confirming, setConfirming] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const cur = MODE_INFO[skill.mode];
-  const tip = useSkillTip(skill);
+  const here = calls.model + calls.user + calls.sub;
+  const tip = useSkillTip(skill, calls, total);
 
   const items: MenuEntry[] = [
     { kind: 'text', key: 'hd', text: `${label} 的状态` },
@@ -387,6 +456,14 @@ function SkillRow({
   return (
     <li ref={tip.ref} className={`cz-ctx__item cz-ctx__skill${skill.mode === 'on' ? '' : ' is-off'}`} {...tip.handlers}>
       <span className="cz-ctx__item-name cz-ctx__skill-name">{label}</span>
+      <span className={`cz-ctx__tool-calls${here === 0 ? ' is-zero' : ''}`} aria-label={`本会话调用 ${here} 次`}>
+        {here > 0 ? `×${here}` : '—'}
+      </span>
+      {total !== null && (
+        <span className={`cz-ctx__tool-total${total === 0 ? ' is-zero' : ''}`} aria-label={`累计调用 ${total} 次`}>
+          {total > 0 ? formatCount(total) : '—'}
+        </span>
+      )}
       <span className="cz-ctx__item-tokens">{skill.tokens === null ? '—' : formatTokens(skill.tokens)}</span>
       <button
         ref={btnRef}
@@ -568,8 +645,14 @@ function useRowTip(content: () => ReactNode) {
   return { ref, node, hide, handlers: { onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide } };
 }
 
-/** Skill 行的悬浮提示：中文用途 + 当前状态 + 推荐 */
-function useSkillTip(skill: ContextSkill) {
+/** Skill 行的悬浮提示：中文用途 + 当前状态 + 推荐 + 调用次数 */
+function useSkillTip(skill: ContextSkill, calls: SkillCalls, total: number | null) {
+  const here = calls.model + calls.user + calls.sub;
+  const parts = [
+    calls.model > 0 && `模型 ${calls.model}`,
+    calls.user > 0 && `手动 ${calls.user}`,
+    calls.sub > 0 && `子智能体 ${calls.sub}`,
+  ].filter(Boolean);
   const info = skillInfo(skill.name);
   const rec = info ? MODE_INFO[info.mode] : null;
   const cur = MODE_INFO[skill.mode];
@@ -601,11 +684,80 @@ function useSkillTip(skill: ContextSkill) {
           <span className='cz-ctx__tip-why'>{info.reason}</span>
         </div>
       )}
+      <div className='cz-ctx__tip-row'>
+        <span className='cz-ctx__tip-k'>调用</span>
+        <span className='cz-ctx__tip-why'>
+          {here === 0 ? '本会话还没有调用过' : `本会话 ${here} 次（${parts.join('，')}）`}
+          {total !== null && <><br />{total === 0 ? '所有会话里都没有调用过' : `所有会话累计 ${total} 次`}</>}
+        </span>
+      </div>
     </>
   ));
 }
 
-function ToolItem({ tool, onToggle }: { tool: ToolRow; onToggle?: (name: string, enabled: boolean) => void }) {
+/** 工具定义的 token 合计：分类里的「System tools」与延迟加载里的「System tools (deferred)」；没有该项为 null */
+function toolTokenSummary(usage: ContextUsage): { resident: number | null; deferred: number | null } {
+  const isSys = (n: string) => n.trim().toLowerCase().startsWith('system tools');
+  const isDef = (n: string) => n.toLowerCase().includes('deferred');
+  const resident = usage.categories.find((c) => isSys(c.name) && !isDef(c.name));
+  const deferred = usage.deferred.find((d) => isSys(d.name)) ?? usage.categories.find((c) => isSys(c.name) && isDef(c.name));
+  return { resident: resident ? resident.tokens : null, deferred: deferred ? deferred.tokens : null };
+}
+
+/** 工具列表上方的统计：定义占用（常驻 / 延迟加载）与调用次数（本会话 / 所有会话累计） */
+function ToolStats({
+  resident, deferred, perTool, session, all, sessions,
+}: {
+  resident: number | null;
+  deferred: number | null;
+  perTool: boolean;
+  session: number;
+  /** 所有会话累计；取不到为 null */
+  all: number | null;
+  sessions: number;
+}) {
+  return (
+    <div className="cz-ctx__tool-stats">
+      <dl>
+        <div title="每次请求都随提示词发送的内置工具定义">
+          <dt>常驻占用</dt>
+          <dd>{resident === null ? '—' : formatTokens(resident)}</dd>
+        </div>
+        <div title="平时只列名字（几乎不占上下文），模型用 ToolSearch 加载后才放入完整定义">
+          <dt>延迟加载</dt>
+          <dd>{deferred === null ? '—' : formatTokens(deferred)}</dd>
+        </div>
+        <div title="本会话（含历史与子智能体）调用内置工具的总次数">
+          <dt>本会话调用</dt>
+          <dd>{session} 次</dd>
+        </div>
+        <div title={all === null ? '暂时取不到所有会话的统计' : `所有会话（${sessions} 个，含子智能体）调用内置工具的总次数；已删除的会话不计`}>
+          <dt>累计调用</dt>
+          <dd>{all === null ? '—' : `${formatCount(all)} 次`}</dd>
+        </div>
+      </dl>
+      {!perTool && <p className="cz-ctx__note">CLI 只报告工具定义的合计，不提供单个工具的占用。</p>}
+    </div>
+  );
+}
+
+/** 调用次数：一万以下写全数，以上用 k / m 缩写 */
+function formatCount(n: number): string {
+  return n < 10_000 ? String(n) : formatTokens(n);
+}
+
+function ToolItem({
+  tool, calls, total, tokens, onToggle,
+}: {
+  tool: ToolRow;
+  /** 本会话的调用次数 */
+  calls: ToolCalls;
+  /** 所有会话累计；取不到为 null */
+  total: number | null;
+  tokens?: { tokens: number; deferred?: true };
+  onToggle?: (name: string, enabled: boolean) => void;
+}) {
+  const here = calls.main + calls.sub;
   const info = toolInfo(tool.name);
   const tip = useRowTip(() => (
     <>
@@ -614,6 +766,18 @@ function ToolItem({ tool, onToggle }: { tool: ToolRow; onToggle?: (name: string,
       <div className='cz-ctx__tip-row'>
         <span className='cz-ctx__tip-k'>当前</span>
         <span className={`cz-ctx__tip-mode is-${tool.enabled ? 'on' : 'off'}`}>{tool.enabled ? '启用' : '已停用'}</span>
+        {tokens && (
+          <span className='cz-ctx__tip-tok'>
+            {tokens.deferred ? `延迟加载，定义 ${formatTokens(tokens.tokens)} token` : `占 ${formatTokens(tokens.tokens)} token`}
+          </span>
+        )}
+      </div>
+      <div className='cz-ctx__tip-row'>
+        <span className='cz-ctx__tip-k'>调用</span>
+        <span className='cz-ctx__tip-why'>
+          {here === 0 ? '本会话还没有调用过' : `本会话 ${here} 次${calls.sub > 0 ? `（其中子智能体 ${calls.sub} 次）` : ''}`}
+          {total !== null && <><br />{total === 0 ? '所有会话里都没有调用过' : `所有会话累计 ${total} 次`}</>}
+        </span>
       </div>
       {(info?.core || info?.note) && (
         <div className='cz-ctx__tip-row'>
@@ -626,6 +790,15 @@ function ToolItem({ tool, onToggle }: { tool: ToolRow; onToggle?: (name: string,
   return (
     <li ref={tip.ref} className={`cz-ctx__item cz-ctx__tool${tool.enabled ? '' : ' is-off'}`} {...tip.handlers}>
       <span className="cz-ctx__item-name">{tool.name}</span>
+      <span className={`cz-ctx__tool-calls${here === 0 ? ' is-zero' : ''}`} aria-label={`本会话调用 ${here} 次`}>
+        {here > 0 ? `×${here}` : '—'}
+      </span>
+      {total !== null && (
+        <span className={`cz-ctx__tool-total${total === 0 ? ' is-zero' : ''}`} aria-label={`累计调用 ${total} 次`}>
+          {total > 0 ? formatCount(total) : '—'}
+        </span>
+      )}
+      {tokens && <span className="cz-ctx__item-tokens">{formatTokens(tokens.tokens)}</span>}
       <button
         type="button"
         role="switch"
@@ -641,6 +814,29 @@ function ToolItem({ tool, onToggle }: { tool: ToolRow; onToggle?: (name: string,
         <span className="cz-ctx__knob" />
       </button>
       {tip.node}
+    </li>
+  );
+}
+
+function AgentItem({ agent, onToggle }: { agent: AgentRow; onToggle?: (name: string, enabled: boolean) => void }) {
+  return (
+    <li className={`cz-ctx__item cz-ctx__tool${agent.enabled ? '' : ' is-off'}`}>
+      <span className="cz-ctx__item-name" title={agent.name}>
+        {agent.name}
+      </span>
+      <span className="cz-ctx__item-tokens">{agent.tokens === null ? '—' : formatTokens(agent.tokens)}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={agent.enabled}
+        aria-label={`${agent.enabled ? '关闭' : '开启'}智能体 ${agent.name}`}
+        title={agent.enabled ? '关闭：模型不能再派发这个智能体' : '开启'}
+        className={`cz-ctx__switch${agent.enabled ? ' is-on' : ''}`}
+        disabled={!onToggle}
+        onClick={() => onToggle?.(agent.name, !agent.enabled)}
+      >
+        <span className="cz-ctx__knob" />
+      </button>
     </li>
   );
 }

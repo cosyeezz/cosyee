@@ -2,7 +2,7 @@
 // 约定：对外的 applyXxx 都是不可变更新——先 openDraft 克隆最后一轮，在草稿上随意改，再 commit 生成新状态。
 // 簿记只服务当前这一轮，开新轮时整体重置，所以克隆的开销不随会话长度增长。
 
-import type { SessionMeta, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
+import type { SessionMeta, SkillLoad, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
 import { arr, isAgentName, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
 import { parseUserText } from '../composer';
 
@@ -101,6 +101,7 @@ export function cloneTurn(t: Turn): Turn {
     ...t,
     steps: t.steps.map((s) => ({ ...s })) as Step[],
     subagents: t.subagents.map((r) => ({ ...r, turn: cloneTurn(r.turn) })),
+    ...(t.skills ? { skills: t.skills.map((k) => ({ ...k })) } : {}),
   };
 }
 
@@ -108,15 +109,41 @@ export const isActive = (t: Turn): boolean => t.status === 'understanding' || t.
 
 // ───────────── 草稿的开合 ─────────────
 
-/** 克隆最后一轮得到草稿；没有任何轮时返回 null */
+/**
+ * 批量应用期间（batch）本批次克隆出来的轮 / 簿记：外界看不到中间状态，之后的事件可以直接原地修改，
+ * 不必每个事件都整份克隆一次（回放上万个流式事件时克隆是 O(n²)，切换到运行中的会话会卡几百毫秒）。
+ */
+let owned: WeakSet<object> | null = null;
+
+/** 在 fn 内依次应用的事件共享草稿；fn 只能把最终状态交出去，不能保留中间状态。 */
+export function batch<T>(fn: () => T): T {
+  if (owned) return fn(); // 嵌套：沿用外层
+  owned = new WeakSet();
+  try {
+    return fn();
+  } finally {
+    owned = null;
+  }
+}
+
+/** 克隆最后一轮得到草稿；没有任何轮时返回 null。批量应用期间已克隆过的直接复用 */
 export function openDraft(s: ConvState, now: number): Draft | null {
   const last = s.turns[s.turns.length - 1];
   if (!last) return null;
+  if (owned) {
+    const turn = owned.has(last) ? last : cloneTurn(last);
+    const book = s.book && owned.has(s.book) ? s.book : s.book ? cloneBook(s.book) : newBook(now);
+    owned.add(turn);
+    owned.add(book);
+    return { turn, book, now };
+  }
   return { turn: cloneTurn(last), book: s.book ? cloneBook(s.book) : newBook(now), now };
 }
 
 export function commit(s: ConvState, d: Draft): ConvState {
-  const turns = s.turns.slice();
+  // 批量期间 turns 数组也只复制一次
+  const turns = owned?.has(s.turns) ? s.turns : s.turns.slice();
+  owned?.add(turns);
   turns[turns.length - 1] = d.turn;
   return { turns, meta: s.meta, book: d.book };
 }
@@ -136,6 +163,7 @@ export function makeTurn(index: number, text: string, at: number, extra?: { user
     steps: [],
     answer: '',
     subagents: [],
+    skills: [],
     startedAt: at,
   };
 }
@@ -302,6 +330,8 @@ function addSubagent(d: Draft, id: string, input: unknown): void {
     toolUseId: id,
     title: str(o.description),
     status: 'running',
+    // ensureTool 已先 flushAnswer，之前的文字都在 steps 里
+    afterStep: d.turn.steps.length,
     turn: {
       id: `sub-${id}`,
       userText: str(o.prompt),
@@ -311,6 +341,7 @@ function addSubagent(d: Draft, id: string, input: unknown): void {
       steps: [],
       answer: '',
       subagents: [],
+      skills: [],
       startedAt: d.now,
     },
   };
@@ -336,6 +367,7 @@ export function ensureTool(d: Draft, scope: string, key: string, id: string, nam
     d.book.blocks[key] = { scope, kind: 'tool', where: 'step', idx: -1, toolId: id };
     return;
   }
+  if (name === 'Skill') addSkillLoad(t, id, input);
   const idx = t.steps.length;
   const step: ToolStep = { kind: 'tool', id, name, input, summary: toolSummary(name, input) };
   if (streaming) step.streaming = true;
@@ -362,7 +394,21 @@ export function setToolInput(d: Draft, id: string, input: unknown): void {
   if (st && st.kind === 'tool') {
     st.input = input;
     st.summary = toolSummary(st.name, input);
+    if (st.name === 'Skill' && isObj(input)) {
+      const k = findSkill(getTurn(d, ref.scope), id);
+      if (k) fillSkillInput(k, input);
+    }
   }
+}
+
+/** 去掉尾部空白后最后一个字符是否为 } */
+function endsWithBrace(s: string): boolean {
+  for (let i = s.length - 1; i >= 0; i--) {
+    const c = s.charCodeAt(i);
+    if (c === 0x20 || c === 0x0a || c === 0x0d || c === 0x09) continue;
+    return c === 0x7d;
+  }
+  return false;
 }
 
 /** 流式输入的 JSON 片段累积：能解析就用对象；Agent 的 description 尽早用正则抠出来 */
@@ -371,7 +417,8 @@ export function appendToolJson(d: Draft, key: string, id: string, partial: strin
   d.book.bufs[key] = buf;
   const ref = d.book.tools[id];
   if (!ref) return;
-  const parsed = tryParse(buf);
+  // 对象 JSON 一定以 } 结尾：其它时候不必尝试解析（每个片段都解析整个缓冲是 O(n²)）
+  const parsed = endsWithBrace(buf) ? tryParse(buf) : undefined;
   if (isObj(parsed)) {
     setToolInput(d, id, parsed);
     return;
@@ -438,10 +485,87 @@ export function applyToolResult(d: Draft, id: string, content: unknown, isError:
   if (st && st.kind === 'tool') {
     st.result = { content, isError };
     delete st.streaming;
+    if (st.name === 'Skill') {
+      const k = findSkill(getTurn(d, ref.scope), id);
+      if (k) {
+        if (isError) {
+          k.status = 'error';
+          k.error = skillErrorText(content);
+        } else {
+          k.status = 'loaded';
+        }
+      }
+    }
   }
 }
 
+// ───────────── 技能加载（Skill 工具 / 用户输入 /技能名） ─────────────
+
+const SKILL_BODY_RE = /^Base directory for this skill:[ \t]*([^\r\n]*)(?:\r?\n\r?\n?|$)([\s\S]*)$/;
+const TOOL_ERROR_RE = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/;
+
+function findSkill(t: Turn | undefined, id: string): SkillLoad | undefined {
+  return t?.skills?.find((k) => k.id === id);
+}
+
+/** 把 Skill 工具的 input（skill / args）写进加载记录 */
+function fillSkillInput(k: SkillLoad, input: Record<string, unknown>): void {
+  if (str(input.skill)) k.name = str(input.skill);
+  if (str(input.args)) k.args = str(input.args);
+}
+
+/** 模型调用 Skill 工具：在所属轮追加一条 loading 的加载记录（流式开始时 input 还是空的，之后由 setToolInput 补全） */
+function addSkillLoad(t: Turn, id: string, input: unknown): void {
+  const skills = (t.skills ??= []);
+  if (skills.some((k) => k.id === id)) return;
+  const k: SkillLoad = { id, name: '', source: 'model', status: 'loading', afterStep: t.steps.length };
+  if (isObj(input)) fillSkillInput(k, input);
+  skills.push(k);
+}
+
+/** 失败原因：去掉 <tool_use_error> 标签 */
+function skillErrorText(content: unknown): string {
+  const text = textOf(content);
+  return (TOOL_ERROR_RE.exec(text)?.[1] ?? text).trim();
+}
+
+/** 用户输入 /技能名 参数：本轮追加一条 user 来源的记录（实时没有正文，历史由 applySkillBody 补上）；已有则返回原记录 */
+export function addUserSkill(t: Turn, name: string, args: string): SkillLoad {
+  const id = `user:${t.id}`;
+  const skills = (t.skills ??= []);
+  let k = skills.find((x) => x.id === id);
+  if (!k) {
+    k = { id, name, source: 'user', status: 'loaded', afterStep: 0 };
+    if (args) k.args = args;
+    skills.push(k);
+  }
+  return k;
+}
+
+/** 技能正文：user 消息里以「Base directory for this skill:」开头的文字 → { 目录, 正文 }；不是则 null */
+export function parseSkillBody(text: string): { dir: string; body: string } | null {
+  const m = SKILL_BODY_RE.exec(text);
+  return m ? { dir: (m[1] ?? '').trim(), body: m[2] ?? '' } : null;
+}
+
+/**
+ * 给模型调用的技能挂上正文。toolUseId（历史的 sourceToolUseID）指明所属调用；
+ * 没有（实时）时归给该代理最近一个还在等正文的模型调用。找不到就忽略。
+ */
+export function applySkillBody(d: Draft, scope: string, text: string, toolUseId?: string): void {
+  const parsed = parseSkillBody(text);
+  if (!parsed) return;
+  const t = getTurn(d, toolUseId ? (d.book.tools[toolUseId]?.scope ?? scope) : scope);
+  const k = toolUseId
+    ? findSkill(t, toolUseId)
+    : [...(t?.skills ?? [])].reverse().find((x) => x.source === 'model' && x.status !== 'error' && x.body === undefined);
+  if (!k) return;
+  k.body = parsed.body;
+  if (parsed.dir) k.dir = parsed.dir;
+}
+
 // ───────────── 完整 assistant 消息（实时与历史共用） ─────────────
+
 
 /** 一条完整 assistant 消息：每个 block 按到达顺序对应流式 index，与已有的流式块合并而不是重复 */
 export function applyAssistantMessage(d: Draft, scope: string, message: unknown): void {

@@ -12,9 +12,14 @@ const SUMMARY_MAX = 100;
 
 /** 取文字里第一个非空行并截断，作为状态行文字；没有则返回空串 */
 export function statusLine(text: string): string {
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
+  // 逐行找，不 split 整段（流式时每个片段都会调用，整段切分是 O(n²)）
+  let start = 0;
+  while (start <= text.length) {
+    let end = text.indexOf('\n', start);
+    if (end < 0) end = text.length;
+    const line = text.slice(start, end).trim();
     if (line) return line.length > STATUS_MAX ? line.slice(0, STATUS_MAX) + '…' : line;
+    start = end + 1;
   }
   return '';
 }

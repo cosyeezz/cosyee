@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionSummary, Workspace } from '@cosyee/shared';
-import { displayTitle, excludePinned, filterByTitle, samePath, workspaceName } from './sidebarUtil';
+import { displayTitle, excludePinned, filterByTitle, groupByWorkspace, samePath, workspaceName } from './sidebarUtil';
 
 const mk = (id: string, title: string): SessionSummary => ({ id, cwd: 'F:\\a', title, lastActiveAt: 0, dot: null, pinned: null });
 
@@ -35,5 +35,14 @@ describe('sidebarUtil', () => {
     const list = [mk('1', 'a'), mk('2', 'b')];
     expect(excludePinned(list, [mk('2', 'b')]).map((s) => s.id)).toEqual(['1']);
     expect(excludePinned(list, [])).toBe(list);
+  });
+
+  it('groupByWorkspace：按工作空间列表顺序分组，空工作空间保留，列表外的目录另起一组', () => {
+    const ws: Workspace[] = [{ path: 'F:\\a', name: 'a' }, { path: 'D:\\b', name: 'b' }];
+    const x = { ...mk('x', 'X'), cwd: 'f:\\a\\' };
+    const y = { ...mk('y', 'Y'), cwd: 'E:\\gone' };
+    const z = { ...mk('z', 'Z'), cwd: 'F:\\a' };
+    const groups = groupByWorkspace([x, y, z], ws);
+    expect(groups.map((g) => [g.name, g.sessions.map((s) => s.id)])).toEqual([['a', ['x', 'z']], ['b', []], ['gone', ['y']]]);
   });
 });

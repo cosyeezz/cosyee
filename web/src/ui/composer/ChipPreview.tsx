@@ -3,13 +3,15 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { PreviewInfo } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
-import { readChip } from './editorDom';
+import { readChip, type ChipData } from './editorDom';
 import { CHIP_ICON } from './chipElement';
 import './ChipPreview.css';
 
 export interface ChipPreviewProps {
   /** 被点击的标签元素 */
   anchor: HTMLElement;
+  /** 直接给出标签数据（会话流里的附件标签没有 data- 属性）；不给则从 anchor 的 dataset 读 */
+  chip?: ChipData;
   onClose: () => void;
   previewInfo: (token: string) => Promise<PreviewInfo>;
   previewRawUrl: (token: string) => string;
@@ -39,8 +41,8 @@ function place(anchor: HTMLElement): Place {
   return { left, top: r.bottom + gap, maxHeight: Math.max(spaceBelow, 80) };
 }
 
-export function ChipPreview({ anchor, onClose, previewInfo, previewRawUrl }: ChipPreviewProps) {
-  const chip = readChip(anchor);
+export function ChipPreview({ anchor, chip: chipProp, onClose, previewInfo, previewRawUrl }: ChipPreviewProps) {
+  const chip = chipProp ?? readChip(anchor);
   const token = chip.token;
   const isImage = chip.kind === 'img';
   const [pos, setPos] = useState<Place>(() => place(anchor));
@@ -92,6 +94,7 @@ export function ChipPreview({ anchor, onClose, previewInfo, previewRawUrl }: Chi
     };
   }, [anchor, onClose]);
 
+  const rawUrl = isImage && token ? previewRawUrl(token) : '';
   const path = info?.path ?? chip.path;
   const meta: string[] = [];
   if (info?.size != null && info.kind === 'file') meta.push(formatSize(info.size));
@@ -105,9 +108,9 @@ export function ChipPreview({ anchor, onClose, previewInfo, previewRawUrl }: Chi
         if (!(e.target as Element).closest('.cz-preview__path')) e.preventDefault();
       }}
     >
-      {isImage && token && !imgFailed && (
+      {isImage && rawUrl && !imgFailed && (
         <div className="cz-preview__thumb">
-          <img src={previewRawUrl(token)} alt={chip.label} onError={() => setImgFailed(true)} />
+          <img src={rawUrl} alt={chip.label} onError={() => setImgFailed(true)} />
         </div>
       )}
       <div className="cz-preview__head">

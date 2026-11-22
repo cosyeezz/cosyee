@@ -5,10 +5,12 @@
   max-width: calc(100vw - 16px);
   overflow: auto;
   padding: var(--sp-3);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  box-shadow: var(--shadow);
+  box-shadow: var(--mat-hi), var(--shadow);
   font-size: var(--fs-sm);
   color: var(--text);
 }

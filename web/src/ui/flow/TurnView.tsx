@@ -1,6 +1,7 @@
 // 一轮回复：状态行 + 展开区 + 子代理面板 + 模型文字。
-// 状态行只由「模型有没有文本、最近一段文本是什么」决定（见 format.ts 的 getStatusLine）：
-//   没有文本 → 星轨 + 「正在理解问题」；有文本 → 神经脉冲 + 最近一段文本（单行省略号）；
+// 状态行只由模型最近一次「输出」决定，委派子代理与文字同等对待、谁新显示谁（见 format.ts 的 getStatusLine）：
+//   没有输出 → 星轨 + 「正在理解问题」；
+//   有输出 → 神经脉冲 + 最近一段文本或「委派子代理：…」（单行省略号）；
 //   结束 → 完成 / 中断 / 出错图标 + 「已完成 · 14:32 · 共 N 步 · 用时 18 秒」。
 // 整行可点击展开；展开后状态行吸顶，点击吸顶的行收起并滚回原位。工具行只在展开区出现。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
@@ -9,6 +10,8 @@ import { Icon, type IconName } from '../icons/Icon';
 import { Markdown } from './Markdown';
 import { NeuralIcon } from './NeuralIcon';
 import { CompactingIcon, DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
+import { McpPanel } from './McpPanel';
+import { SkillPanel } from './SkillPanel';
 import { StepView } from './Steps';
 import { getLiveText, getStatusLine, isTurnActive, subagentProgress, type StatusLine } from './format';
 import './flow.css';
@@ -213,6 +216,8 @@ export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagen
       {!isSubagentView && turn.subagents.length > 0 && (
         <SubagentPanel turnId={turn.id} subagents={turn.subagents} onOpenSubagent={onOpenSubagent} />
       )}
+      {turn.skills && turn.skills.length > 0 && <SkillPanel skills={turn.skills} active={active} />}
+      <McpPanel steps={turn.steps} active={active} />
 
       {live.text && (
         <Markdown

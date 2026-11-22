@@ -99,6 +99,91 @@ export const CompactingIcon = memo(function CompactingIcon({ size = 16, classNam
   );
 });
 
+/** 四角星（闪光）：以 (x, y) 为中心、r 为半径的内凹四角星 */
+const sparkle = (x: number, y: number, r: number) =>
+  `M${x} ${y - r}Q${x} ${y} ${x + r} ${y}Q${x} ${y} ${x} ${y + r}Q${x} ${y} ${x - r} ${y}Q${x} ${y} ${x} ${y - r}Z`;
+const PAGE_L = 'M30.5 17C24 13.2 15 13 7 16.5V48.5C15 45.5 24 45.8 30.5 49.5Z';
+const PAGE_R = 'M33.5 17C40 13.2 49 13 57 16.5V48.5C49 45.5 40 45.8 33.5 49.5Z';
+const SPARKS: [number, number, number][] = [
+  [11, 7, 5],
+  [32, 5.5, 3.6],
+  [53, 7.5, 4.4],
+];
+
+/**
+ * 魔法书：摊开的书，右页不停翻到左边，上方三颗四角星依次闪烁。技能面板头部。
+ * 全部加载完（is-still）：翻页停下、星星定格，表示「已读入」。
+ */
+export const SkillIcon = memo(function SkillIcon({ size = 16, className }: IconProps) {
+  const uid = useUid();
+  return (
+    <svg viewBox="0 0 64 64" width={size} height={size} className={cls('skill', className)} aria-hidden focusable="false">
+      <defs>
+        <linearGradient id={`${uid}-l`} gradientUnits="userSpaceOnUse" x1="7" y1="14" x2="57" y2="50">
+          <stop offset="0" style={{ stopColor: 'var(--tk-b)' }} />
+          <stop offset=".5" style={{ stopColor: 'var(--tk-a)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--tk-c)' }} />
+        </linearGradient>
+        <linearGradient id={`${uid}-f`} gradientUnits="userSpaceOnUse" x1="33" y1="14" x2="57" y2="50">
+          <stop offset="0" style={{ stopColor: 'var(--tk-d)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--tk-c)' }} />
+        </linearGradient>
+      </defs>
+      <g fill={`url(#${uid}-l)`}>
+        <path d={PAGE_L} />
+        <path d={PAGE_R} />
+      </g>
+      <g className="cz-ss-ln">
+        <path d="M12 25Q19 23 26 25.5M12 32.5Q19 30.5 26 33M12 40Q19 38 26 40.5" />
+        <path d="M38 25.5Q45 23 52 25M38 33Q45 30.5 52 32.5M38 40.5Q45 38 52 40" />
+      </g>
+      {/* 正在翻的一页：暖色（琥珀 → 粉），和冷色的书页区分开 */}
+      <g className="cz-ss-flip">
+        <path d={PAGE_R} fill={`url(#${uid}-f)`} />
+        <path className="cz-ss-ln" d="M38 25.5Q45 23 52 25M38 33Q45 30.5 52 32.5M38 40.5Q45 38 52 40" />
+      </g>
+      {SPARKS.map(([x, y, r], i) => (
+        <path key={i} className={`cz-ss-sp cz-ss-sp${i + 1}`} d={sparkle(x, y, r)} />
+      ))}
+    </svg>
+  );
+});
+
+/**
+ * 插头：斜放的插头插进插座，接触瞬间迸出琥珀色电火花，光点顺着插座的线缆流走，随后拔出再插。MCP 面板头部。
+ * 没有进行中的调用（is-still）：插头停在插好的位置，表示「已连接」。
+ * 图形按水平方向画（插头在左、插座在右），整组旋转 -45° 摆成斜向。
+ */
+export const McpIcon = memo(function McpIcon({ size = 16, className }: IconProps) {
+  const uid = useUid();
+  const fill = `url(#${uid}-l)`;
+  return (
+    <svg viewBox="0 0 64 64" width={size} height={size} className={cls('mcp', className)} aria-hidden focusable="false">
+      <defs>
+        <linearGradient id={`${uid}-l`} gradientUnits="userSpaceOnUse" x1="-2" y1="32" x2="66" y2="32">
+          <stop offset="0" style={{ stopColor: 'var(--tk-b)' }} />
+          <stop offset=".5" style={{ stopColor: 'var(--tk-a)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--tk-c)' }} />
+        </linearGradient>
+      </defs>
+      <g transform="rotate(-45 32 32)">
+        <path className="cz-ss-cable" d="M-3 32H16M48 32H67" stroke={fill} />
+        <path className="cz-ss-flow" d="M44 32H67" pathLength={100} />
+        <g className="cz-ss-plug" fill={fill}>
+          <rect x="9" y="21" width="15" height="22" rx="5" />
+          <rect x="22" y="25" width="10" height="4.4" rx="2.2" />
+          <rect x="22" y="34.6" width="10" height="4.4" rx="2.2" />
+        </g>
+        <rect className="cz-ss-sock" x="33" y="19" width="16" height="26" rx="5.5" fill={fill} />
+        <g className="cz-ss-spark">
+          <circle cx="32.5" cy="32" r="7" />
+          <path d="M32.5 19V14M32.5 45V50M26 22.5L23 19M39 22.5L42 19M26 41.5L23 45M39 41.5L42 45" />
+        </g>
+      </g>
+    </svg>
+  );
+});
+
 /** 完成：绿色圆环画一圈，对勾跟着画出，外圈淡淡散开一次，之后静止 */
 export const DoneIcon = memo(function DoneIcon({ size = 20, className }: IconProps) {
   return (

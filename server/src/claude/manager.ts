@@ -27,6 +27,8 @@ export interface ManagerOptions {
   skills?: SkillStore;
   /** 已停用的内置工具名单的存取（全局）；不传则不下发 permissions.deny（旧测试） */
   tools?: ToolStore;
+  /** 自动压缩窗口的存取（全局，null = 不覆盖）；不传则不下发（旧测试） */
+  compactWindow?: CompactWindowStore;
   /** 多账号：会话用哪个账号启动；不传则沿用当前账号（旧测试） */
   accounts?: SessionAccounts;
   /** 每个会话最近一次使用的配置（模型 / 强度）的存取；不传则不记录（旧测试） */
@@ -47,6 +49,11 @@ export interface SessionAccounts {
   bind(sessionId: string, accountId: string): void;
 }
 
+export interface CompactWindowStore {
+  get(): number | null;
+  set(window: number | null): void;
+}
+
 export interface ToolStore {
   /** 当前已停用的工具名 */
   get(): string[];
@@ -55,6 +62,9 @@ export interface ToolStore {
   /** 最近一次 init 报告的内置工具名（落盘；探测进程收不到 init 时用它） */
   known?(): string[];
   setKnown?(names: string[]): void;
+  /** 已关闭的智能体名（全局）；以 Agent(名字) 并入 permissions.deny */
+  agents?(): string[];
+  setAgents?(names: string[]): void;
 }
 
 /** 内置工具名（与 workspaces.ts 的 TOOL_NAME_RE 一致）；mcp__ 工具另由 MCP 一节管理 */
@@ -94,6 +104,7 @@ export class Manager {
   private readonly claudePath?: string;
   private readonly skills?: SkillStore;
   private readonly tools?: ToolStore;
+  private readonly compactWindow?: CompactWindowStore;
   private readonly accounts?: SessionAccounts;
   private readonly configs?: SessionConfigStore;
   /** 会话最近一次 system/init 的 skills（带插件前缀），另按 cwd 存一份给探测进程（探测进程不发消息，收不到 init） */
@@ -103,7 +114,7 @@ export class Manager {
   private initTools = new Map<string, string[]>();
   /** MCP pending 重采：按会话的计时器与已重试次数 */
   private mcpRetry = new Map<string, { timer: NodeJS.Timeout | null; n: number }>();
-  /** 每轮结束后仍没有标题的会话，主动让 CLI 生成一个 */
+  /** 没有标题的会话：首条消息被接收后立即让 CLI 生成一个（每轮结束时再兜底重试） */
   private readonly autoTitle: AutoTitle;
 
   constructor(opts: ManagerOptions) {
@@ -114,6 +125,7 @@ export class Manager {
     this.claudePath = opts.claudePath;
     this.skills = opts.skills;
     this.tools = opts.tools;
+    this.compactWindow = opts.compactWindow;
     this.accounts = opts.accounts;
     this.configs = opts.configs;
     this.autoTitle = new AutoTitle({
@@ -387,7 +399,7 @@ export class Manager {
       probe,
       timings: this.timings,
       claudePath: this.claudePath,
-      flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings() }),
+      flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
@@ -402,7 +414,7 @@ export class Manager {
             this.initTools.set(id, list);
             if (list.length) this.tools?.setKnown?.(list);
           }
-          this.autoTitle.collect(id, e);
+          this.autoTitle.observe(runner, cwd, e);
           // 一条完整的 assistant / user(tool_result) 消息落地后，上下文用量就变了：节流刷新，让右侧面板实时更新
           const type = (e as { type?: unknown } | null)?.type;
           if (type === 'assistant' || type === 'user') this.scheduleLiveContext(runner);
@@ -453,10 +465,19 @@ export class Manager {
     return Object.keys(map).length ? { skillOverrides: { ...map } } : {};
   }
 
-  /** 启动参数里的 --settings 附加项：已停用的工具（permissions.deny）。启动时下发，模型根本看不到这些工具 */
+  /** 启动参数里的 --settings 附加项：已停用的工具与关闭的智能体（permissions.deny）。启动时下发，模型根本看不到它们 */
   private toolFlagSettings(): Record<string, unknown> {
-    const list = this.tools?.get() ?? [];
-    return list.length ? { permissions: { deny: [...list] } } : {};
+    const list = this.denyList();
+    return list.length ? { permissions: { deny: list } } : {};
+  }
+
+  /**
+   * 启动参数里的 --settings 附加项：自动压缩窗口。走 flag settings 而不是进程环境变量——
+   * 用户 ~/.claude/settings.json 的 env 会盖过进程环境变量，flag settings 则盖过用户设置（实测）。
+   */
+  private compactFlagSettings(): Record<string, unknown> {
+    const w = this.compactWindow?.get() ?? null;
+    return w ? { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(w) } } : {};
   }
 
   /**
@@ -479,7 +500,9 @@ export class Manager {
       hidden: this.hiddenSkills(disk),
       mcpStatus: mcp,
       disabledTools: this.tools?.get() ?? null,
+      disabledAgents: this.tools?.agents?.() ?? null,
       tools: this.initTools.get(r.sessionId) ?? this.tools?.known?.() ?? null,
+      compactWindow: this.compactWindow?.get() ?? null,
     });
     this.contextCache.set(r.sessionId, usage);
     this.emit(r.sessionId, { t: 'context', sessionId: r.sessionId, usage });
@@ -688,9 +711,38 @@ export class Manager {
     const cur = this.tools.get();
     const has = cur.includes(name);
     if (enabled === !has) return [...cur];
-    const list = enabled ? cur.filter((n) => n !== name) : [...cur, name];
-    this.tools.set(list);
-    const deny = [...this.tools.get()];
+    this.tools.set(enabled ? cur.filter((n) => n !== name) : [...cur, name]);
+    const list = [...this.tools.get()];
+    await this.pushDeny({ disabledTools: list });
+    return list;
+  }
+
+  /**
+   * 开启 / 关闭一个智能体（子代理）：同工具开关，名单全局保存，以 Agent(名字) 规则并入 permissions.deny。
+   * 关闭后模型派发该智能体会被拒绝；新启动的会话里它不再出现在 Agent 工具的可选列表中。
+   */
+  async setAgentEnabled(name: string, enabled: boolean): Promise<string[]> {
+    if (!this.tools?.agents || !this.tools.setAgents) throw new HttpError(500, '未启用智能体设置');
+    const cur = this.tools.agents();
+    const has = cur.includes(name);
+    if (enabled === !has) return [...cur];
+    this.tools.setAgents(enabled ? cur.filter((n) => n !== name) : [...cur, name]);
+    const list = [...this.tools.agents()];
+    await this.pushDeny({ disabledAgents: list });
+    return list;
+  }
+
+  /** 完整的 permissions.deny：停用的工具 + 关闭的智能体（Agent(名字)） */
+  private denyList(): string[] {
+    return [...(this.tools?.get() ?? []), ...(this.tools?.agents?.() ?? []).map((a) => `Agent(${a})`)];
+  }
+
+  /**
+   * 把完整的 deny 名单下发给所有运行中的进程，并刷新面板；没有进程、但面板开着的会话直接改缓存里的名单。
+   * apply_flag_settings 对 permissions.deny 是整体替换，实测空数组即清除，所以每次都发全量。
+   */
+  private async pushDeny(patch: Pick<ContextUsage, 'disabledTools' | 'disabledAgents'>): Promise<void> {
+    const deny = this.denyList();
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {
@@ -700,14 +752,42 @@ export class Manager {
         if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
       }),
     );
-    // 没有进程、但面板开着的会话：直接改缓存里的名单
     for (const [id, usage] of this.contextCache) {
       if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
-      const next = { ...usage, disabledTools: deny };
+      const next = { ...usage, ...patch };
       this.contextCache.set(id, next);
       this.emit(id, { t: 'context', sessionId: id, usage: next });
     }
-    return deny;
+  }
+
+  /**
+   * 设置自动压缩窗口（null = 不覆盖）：先存下来（新启动的进程经 --settings env 带上），再下发给所有运行中的进程。
+   * 实测（claude 2.x）：运行中 apply_flag_settings 的 env 立即生效，get_context_usage 的 autoCompactThreshold 随之变为 窗口 - 33k；
+   * 之后再下发 effortLevel / permissions 等其它顶层键不会冲掉它（按顶层键合并）。
+   * 恢复默认时下发空 env：进程里已经写入的环境变量未必撤销，重启进程后才确定回到默认。
+   */
+  async setCompactWindow(window: number | null): Promise<number | null> {
+    if (!this.compactWindow) throw new HttpError(500, '未启用压缩窗口设置');
+    if (this.compactWindow.get() === window) return window;
+    this.compactWindow.set(window);
+    const env = window ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) } : {};
+    const alive = [...this.runners.values()].filter((r) => r.alive);
+    await Promise.all(
+      alive.map(async (r) => {
+        try {
+          await r.request('apply_flag_settings', { settings: { env } });
+        } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
+        if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
+      }),
+    );
+    // 没有进程、但面板开着的会话：只改设置值，触发点要等进程启动后由 CLI 报告
+    for (const [id, usage] of this.contextCache) {
+      if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
+      const next = { ...usage, compactWindow: window };
+      this.contextCache.set(id, next);
+      this.emit(id, { t: 'context', sessionId: id, usage: next });
+    }
+    return window;
   }
 
   /**
@@ -849,6 +929,11 @@ export class Manager {
   /** 同步强杀（process 'exit' 事件里使用）。 */
   killAllSync(): void {
     for (const r of this.runners.values()) r.killSync();
+  }
+
+  /** 会话所在的工作目录：该会话有过进程时的 cwd（文件预览用它划定可读范围）；没有则 undefined，调用方再查会话记录 */
+  knownCwd(id: string): string | undefined {
+    return this.cwdOf.get(id);
   }
 
   /** 正在执行（starting / running）的会话数；空闲的探测进程不算。传 accountId 只数该账号的。 */

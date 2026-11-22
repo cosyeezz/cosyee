@@ -4,7 +4,7 @@
 //     所以服务端网页切换深浅主题时标题栏自动跟着变；页面没有这些变量时按 data-theme / 背景亮度兜底。
 //   - 页面整体下移一个标题栏高度（html 的 padding-top），并暴露 --cosyee-titlebar-h 给页面自己用。
 //   - 只调用窗口相关的接口（最小化 / 最大化 / 关闭 / 拖动），远程页面也只开放了这些权限。
-// 手机端：没有标题栏，只保留左边缘「回到服务器列表」小标签。
+// 手机端：没有标题栏；页面按系统栏 / 输入法让位，返回手势回到服务器列表（配合 client/android/MainActivity.kt）。
 // __HOME__ / __OS__ 由 lib.rs 替换。
 (function () {
   'use strict';
@@ -49,20 +49,61 @@
     else fn();
   }
 
-  // ───────────── 手机：左边缘小标签 ─────────────
+  // ───────────── 手机：系统栏避让 + 返回手势 ─────────────
+  // 原生层（client/android/MainActivity.kt）提供 CosyeeNative：系统栏 / 输入法占的区域、状态栏图标深浅。
+  // 返回手势 / 返回键先问 window.__cosyeeBack：页面可以监听可取消的 'cosyee:back' 事件自己处理
+  // （例如关掉打开的侧栏），没人处理就回到服务器列表；已经在服务器列表页时交还系统。
   if (mobile) {
+    var N = window.CosyeeNative;
+    var insets = null;
+    function applyInsets() {
+      var rootEl = document.documentElement;
+      if (!rootEl || !insets) return;
+      var s = document.getElementById('__cosyee_inset_style');
+      if (!s) {
+        s = document.createElement('style');
+        s.id = '__cosyee_inset_style';
+        (document.head || rootEl).appendChild(s);
+      }
+      var t = insets[0], r = insets[1], b = insets[2], l = insets[3];
+      s.textContent = 'html{--cosyee-inset-top:' + t + 'px;--cosyee-inset-bottom:' + b + 'px;'
+        + 'padding:' + t + 'px ' + r + 'px ' + b + 'px ' + l + 'px!important;box-sizing:border-box!important;'
+        + 'scroll-padding-top:' + t + 'px;-webkit-tap-highlight-color:transparent}';
+      rootEl.setAttribute('data-cosyee-insets', '');
+    }
+    window.__cosyeeInsets = function (t, r, b, l) {
+      insets = [t, r, b, l];
+      applyInsets();
+    };
+    if (N && N.insets) {
+      var v = String(N.insets()).split(',').map(Number);
+      if (v.length === 4 && v.every(isFinite)) insets = v;
+    }
+    applyInsets();
+
+    var dark = null;
+    function syncBars() {
+      var d = pageTheme() === 'dark';
+      if (d === dark || !N || !N.setDark) return;
+      dark = d;
+      N.setDark(d);
+    }
+
+    window.__cosyeeBack = function () {
+      var ev;
+      try { ev = new CustomEvent('cosyee:back', { cancelable: true }); } catch (e) { ev = null; }
+      if (ev && !window.dispatchEvent(ev)) return true;
+      if (isHome) return false;
+      goList();
+      return true;
+    };
+
     whenReady(function () {
-      if (isHome || document.getElementById('__cosyee_back')) return;
-      var b = document.createElement('div');
-      b.id = '__cosyee_back';
-      b.textContent = '‹';
-      b.title = '回到服务器列表';
-      b.setAttribute('style', 'position:fixed;left:0;top:50%;transform:translateY(-50%);z-index:2147483647;width:20px;height:56px;'
-        + 'display:flex;align-items:center;justify-content:center;font:24px/1 sans-serif;color:#fff;background:rgba(74,144,226,.55);'
-        + 'border-radius:0 10px 10px 0;opacity:.45;cursor:pointer;user-select:none;-webkit-user-select:none;');
-      b.onclick = function () { goList(); };
-      (document.body || document.documentElement).appendChild(b);
+      applyInsets(); // 解析过程中 head 可能被替换，样式补挂一次
+      syncBars();
+      new MutationObserver(syncBars).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] });
     });
+    window.addEventListener('load', function () { applyInsets(); syncBars(); });
     return;
   }
 

@@ -118,6 +118,41 @@ describe('AutoTitle', () => {
     expect(t2.reqs).toHaveLength(0);
   });
 
+  it('observe：用户消息之后的第一个本轮事件立即触发，不等本轮结束；会话文件未落盘也照样生成', async () => {
+    const t = setup({ has: null });
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    t.at.observe(t.r, 'c', user('修bug'));
+    await tick();
+    expect(t.reqs).toHaveLength(0); // CLI 还没接收这条消息
+    t.at.observe(t.r, 'c', { type: 'system', subtype: 'init' });
+    await tick();
+    expect(t.reqs).toEqual([{ subtype: 'generate_session_title', description: '修bug', persist: true }]);
+    expect(t.onTitled).toHaveBeenCalledTimes(1);
+    // 已生成：后续消息不再触发
+    t.at.observe(t.r, 'c', user('再改一下'));
+    t.at.observe(t.r, 'c', { type: 'stream_event' });
+    await tick();
+    expect(t.reqs).toHaveLength(1);
+  });
+
+  it('observe：非本轮开始事件不触发；已有标题则不请求', async () => {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    const t = setup();
+    t.at.observe(t.r, 'c', user('hi'));
+    t.at.observe(t.r, 'c', { type: 'system', subtype: 'status' });
+    await tick();
+    expect(t.reqs).toHaveLength(0);
+    t.at.observe(t.r, 'c', asst('答'));
+    await tick();
+    expect(t.reqs).toHaveLength(1);
+
+    const t2 = setup({ has: true });
+    t2.at.observe(t2.r, 'c', user('hi'));
+    t2.at.observe(t2.r, 'c', asst('答'));
+    await tick();
+    expect(t2.reqs).toHaveLength(0);
+  });
+
   it('素材截断到 MATERIAL_MAX', async () => {
     const t = setup();
     t.at.collect('s1', user('a'.repeat(MATERIAL_MAX - 10)));

@@ -88,18 +88,18 @@
 }
 
 /* ───── 工作空间 ───── */
-.cz-sidebar__ws { position: relative; flex: none; }
+/* 选择器在新会话输入框的左下角（与右侧的模型菜单同一行），菜单向上展开 */
+.cz-sidebar__ws { position: relative; flex: none; min-width: 0; max-width: 260px; }
 .cz-sidebar__ws-btn {
-  width: 100%;
-  display: flex;
+  max-width: 100%;
+  display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  height: 32px;
-  padding: 0 var(--sp-3);
+  padding: 2px var(--sp-2);
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: transparent;
-  color: var(--text-2);
+  color: var(--text);
   font-size: var(--fs-sm);
   cursor: pointer;
   text-align: left;
@@ -107,13 +107,11 @@
 .cz-sidebar__ws-btn:hover,
 .cz-sidebar__ws-btn.is-open { background: var(--bg-hover); color: var(--text); }
 .cz-sidebar__ws-name {
-  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .cz-sidebar__menu {
   position: absolute;
   z-index: 20;
@@ -123,10 +121,23 @@
   padding: var(--sp-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--bg-menu);
-  box-shadow: var(--shadow);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi), var(--shadow);
 }
 .cz-sidebar__menu-list { max-height: 280px; overflow-y: auto; }
+/* 工作空间菜单：贴着按钮上沿向上展开，左对齐按钮。
+   必须写在 .cz-sidebar__menu 之后——两者优先级相同，写在前面会被基础规则的 top 覆盖，变成向下展开被裁掉 */
+.cz-sidebar__menu--above {
+  top: auto;
+  bottom: calc(100% + var(--sp-1));
+  right: auto;
+  width: 320px;
+  max-width: calc(100vw - 2 * var(--sp-4));
+}
+/* 窗口矮的时候列表跟着缩，菜单顶部不会超出窗口 */
+.cz-sidebar__menu--above .cz-sidebar__menu-list { max-height: min(280px, calc(100vh - 220px)); }
 .cz-sidebar__menu-sep { height: 1px; margin: var(--sp-1) 0; background: var(--border); }
 .cz-sidebar__menu-item {
   position: relative;
@@ -195,6 +206,35 @@
   flex-direction: column;
   gap: 2px;
 }
+/* 工作空间分组：组头（文件夹 + 名字 + 折叠箭头）+ 组内会话行 */
+.cz-sidebar__group { flex: none; display: flex; flex-direction: column; gap: 2px; }
+.cz-sidebar__group + .cz-sidebar__group { margin-top: var(--sp-2); }
+/* 组头行 / 已删除标题行：标题按钮占满整行，右侧悬停出现批量操作按钮（叠在按钮上，所以悬停样式挂在外层上） */
+.cz-sidebar__group-bar,
+.cz-sidebar__deleted-bar { position: relative; flex: none; display: flex; border-radius: var(--r-md); }
+.cz-sidebar__group-bar > .cz-sidebar__group-head,
+.cz-sidebar__deleted-bar > .cz-sidebar__deleted-head { flex: 1 1 0; min-width: 0; }
+.cz-sidebar__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-sidebar__group-bar:hover .cz-sidebar__group-head,
+.cz-sidebar__group-bar:has(.cz-sidebar__confirm) .cz-sidebar__group-head { background: var(--bg-hover); color: var(--text); }
+/* 悬停时给 1 个操作按钮留位置（折叠箭头左移，不被盖住） */
+.cz-sidebar__group-bar.has-actions:is(:hover, :focus-within) .cz-sidebar__group-head,
+.cz-sidebar__group-bar.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__group-head { padding-right: 32px; }
+.cz-sidebar__group-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-sidebar__group-body { display: flex; flex-direction: column; gap: 2px; }
 .cz-sidebar__empty {
   padding: var(--sp-5) var(--sp-3);
   color: var(--text-3);
@@ -213,6 +253,10 @@
 .cz-sidebar__row.has-sub { height: 44px; }
 .cz-sidebar__row:hover { background: var(--bg-hover); color: var(--text); }
 .cz-sidebar__row.is-active { background: var(--bg-active); color: var(--text); }
+/* 列表里有液态玻璃胶囊时（motion/LiquidCapsule），选中行的底色由胶囊来画 */
+.cz-sidebar__pinned-list,
+.cz-sidebar__list { position: relative; }
+:is(.cz-sidebar__pinned-list, .cz-sidebar__list):has(> .cz-capsule.is-on) .cz-sidebar__row.is-active { background: transparent; }
 .cz-sidebar__row-main {
   flex: 1 1 0;
   min-width: 0;
@@ -286,7 +330,11 @@
 .cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__actions,
 .cz-sidebar__menu-item:hover .cz-sidebar__actions,
 .cz-sidebar__menu-item:focus-within .cz-sidebar__actions,
-.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__actions {
+.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__group-bar:is(:hover, :focus-within) .cz-sidebar__actions,
+.cz-sidebar__group-bar:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__deleted-bar:is(:hover, :focus-within) .cz-sidebar__actions,
+.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm) .cz-sidebar__actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -319,8 +367,10 @@
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--bg-menu);
-  box-shadow: var(--shadow);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi), var(--shadow);
   color: var(--text);
   text-align: left;
   cursor: default;
@@ -341,6 +391,8 @@
 .cz-sidebar__confirm-btn:hover { background: var(--bg-hover); }
 .cz-sidebar__confirm-btn--danger { border-color: transparent; background: var(--danger); color: #fff; }
 .cz-sidebar__confirm-btn--danger:hover { background: var(--danger); filter: brightness(1.1); }
+.cz-sidebar__confirm-btn--primary { border-color: transparent; background: var(--accent); color: var(--on-accent); }
+.cz-sidebar__confirm-btn--primary:hover { background: var(--accent); filter: brightness(1.1); }
 
 /* ───── 已删除 ───── */
 .cz-sidebar__deleted { flex: none; display: flex; flex-direction: column; gap: 2px; }
@@ -358,7 +410,10 @@
   text-align: left;
   cursor: pointer;
 }
-.cz-sidebar__deleted-head:hover { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__deleted-bar:hover .cz-sidebar__deleted-head,
+.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm) .cz-sidebar__deleted-head { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__deleted-bar.has-actions:is(:hover, :focus-within) .cz-sidebar__deleted-head,
+.cz-sidebar__deleted-bar.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__deleted-head { padding-right: 58px; }
 .cz-sidebar__deleted-body { display: flex; flex-direction: column; gap: 2px; }
 .cz-sidebar__deleted-list {
   max-height: 180px;
@@ -420,14 +475,17 @@
 /* ───── 账号模式：账号菜单顶部的分段切换（两段等宽，选中的一段像「被按下的标签」） ───── */
 .cz-sidebar__mode { padding: var(--sp-1) var(--sp-1) var(--sp-2); }
 .cz-sidebar__seg {
+  position: relative; /* 粘性融合指示器（GooeyIndicator）叠在按钮下面 */
   display: flex;
   gap: 2px;
   padding: 2px;
   border-radius: var(--r-md);
-  background: var(--bg-sidebar);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
   border: 1px solid var(--border);
 }
 .cz-sidebar__seg-btn {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   min-width: 0;
   height: 26px;
@@ -449,10 +507,14 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
   cursor: default;
 }
+/* 有指示器时选中底色由它来画，按钮本身透明 */
+.cz-sidebar__seg.has-goo .cz-sidebar__seg-btn.is-on { background: transparent; box-shadow: none; }
 .cz-sidebar__seg-btn:disabled:not(.is-on) { opacity: .5; cursor: default; }
 .cz-sidebar__seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cz-sidebar__mode .cz-sidebar__acct-confirm { margin-top: var(--sp-2); font-size: var(--fs-xs); }
 .cz-sidebar__mode .cz-sidebar__acct-note { margin-top: var(--sp-1); }
+.cz-sidebar__theme { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
+.cz-sidebar__theme-label { padding: 0 2px var(--sp-1); font-size: var(--fs-xs); color: var(--text-3); }
 
 /* ───── 账号切换菜单（从账户栏向上弹出） ───── */
 .cz-sidebar__account-wrap {
@@ -465,7 +527,7 @@
 .cz-sidebar__menu--up {
   top: auto;
   bottom: calc(100% + var(--sp-1));
-  /* 比账户栏（不含设置按钮）稍宽一些，名字不至于太挤 */
+  /* 至少 280px，侧栏窄时名字不至于太挤 */
   right: auto;
   width: max(100%, 280px);
 }
@@ -498,14 +560,18 @@
   align-items: center;
   justify-content: center;
   background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(1.2);
+  backdrop-filter: blur(6px) saturate(1.2);
 }
 .cz-acct-dlg {
   width: min(400px, calc(100vw - 2 * var(--sp-4)));
   padding: var(--sp-4);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
-  background: var(--bg-menu);
-  box-shadow: var(--shadow);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi), var(--shadow);
   color: var(--text);
   display: flex;
   flex-direction: column;

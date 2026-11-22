@@ -1,0 +1,53 @@
+/* 会话加载骨架（FlowSkeleton.tsx）。尺寸对齐 flow.css 里的 .cz-flow__column / __item / __bubble。 */
+.cz-skel {
+  --skel-base: color-mix(in srgb, var(--text) 6%, transparent);
+  --skel-hi: color-mix(in srgb, var(--text) 12%, transparent);
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  pointer-events: none;
+  /* 很快就加载完的会话不让骨架闪一下：先等 120ms 再淡入 */
+  animation: cz-skel-in 260ms var(--ease-out) 280ms backwards; /* 快的加载（<280ms）根本不出骨架 */
+}
+
+.cz-skel__column {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-5) var(--sp-4) var(--sp-6);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+.cz-skel__item { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cz-skel__user { display: flex; justify-content: flex-end; }
+.cz-skel__status { display: flex; align-items: center; gap: var(--sp-2); height: 24px; }
+.cz-skel__lines { display: flex; flex-direction: column; gap: 10px; padding-top: var(--sp-1); }
+
+/* 所有色块共用同一道光：渐变按视口铺开（fixed），扫动时各块看到的是同一条光带的不同部分 */
+.cz-skel__block {
+  display: block;
+  background: linear-gradient(105deg, var(--skel-base) 0 38%, var(--skel-hi) 50%, var(--skel-base) 62% 100%) fixed;
+  background-size: 200vw 100vh;
+  animation: cz-skel-sweep 1.5s linear infinite;
+}
+.cz-skel__bubble { height: 42px; max-width: 85%; border-radius: var(--r-lg); }
+.cz-skel__dot { width: 14px; height: 14px; border-radius: 50%; }
+.cz-skel__label { width: 96px; height: 10px; border-radius: 5px; }
+.cz-skel__line { height: 12px; border-radius: 6px; }
+
+@keyframes cz-skel-sweep {
+  from { background-position: -120vw 0; }
+  to { background-position: 20vw 0; }
+}
+@keyframes cz-skel-in { from { opacity: 0; } }
+
+:root[data-motion="reduce"] .cz-skel__block { animation: none; background: var(--skel-base); }
+@media (prefers-reduced-motion: reduce) {
+  .cz-skel__block { animation: none; background: var(--skel-base); }
+}

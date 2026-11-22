@@ -10,15 +10,44 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative; /* 加载骨架叠在这里 */
+  /* 会话流铺满整个中间栏：向上伸到磨砂顶栏后面，向下伸到磨砂输入框后面，
+     内容列自己用 padding 把这两段让出来（滚到头时不会被盖住） */
+  margin-top: calc(-1 * var(--top-h, 52px));
+}
+.cz-app__flow .cz-flow__column,
+.cz-app__flow .cz-skel__column {
+  padding-top: calc(var(--top-h, 52px) + var(--sp-5));
+  padding-bottom: calc(var(--composer-h, 120px) + var(--sp-4));
+}
+/* 展开的步骤行吸顶：吸在顶栏下沿，而不是钻到顶栏后面 */
+.cz-app__flow .cz-flow__status.is-open { top: var(--top-h, 52px); }
+.cz-app__flow .cz-flow__nav--top { top: calc(var(--top-h, 52px) + var(--sp-3)); }
+.cz-app__flow .cz-flow__nav--bottom { bottom: calc(var(--composer-h, 120px) + var(--sp-2)); }
+/* 新会话 / 失败提示：在顶栏与输入框之间的可见区域里居中 */
+.cz-app__flow > .cz-app__hint { padding: var(--top-h, 52px) 0 var(--composer-h, 120px); }
+/* 切换会话、新会话还在加载：旧对话原地淡出并轻轻下沉，不可交互 */
+.cz-app__flow.is-leaving > .cz-flow__wrap {
+  pointer-events: none;
+  animation: cz-flow-leave 220ms var(--ease-out) forwards;
+}
+@keyframes cz-flow-leave {
+  to { opacity: 0; transform: scale(.99); filter: blur(2px); }
 }
 .cz-app__composer {
-  flex: none;
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100%;
   max-width: var(--content-max);
   margin: 0 auto;
   padding: 0 var(--sp-4) var(--sp-4);
   box-sizing: border-box;
+  pointer-events: none; /* 两侧留白处的滚动 / 点击穿透给会话流 */
 }
+.cz-app__composer > * { pointer-events: auto; }
 .cz-app__hint {
   margin: auto;
   color: var(--text-3);
@@ -44,16 +73,18 @@
 .cz-app__notice {
   position: absolute;
   left: 50%;
-  bottom: 120px;
+  bottom: calc(var(--composer-h, 120px) + var(--sp-2));
   transform: translateX(-50%);
   max-width: 80%;
   padding: var(--sp-2) var(--sp-4);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background: var(--bg-menu);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
   color: var(--text);
   font-size: var(--fs-sm);
-  box-shadow: 0 4px 16px var(--scrim);
+  box-shadow: var(--mat-hi), 0 4px 16px var(--scrim);
   z-index: 5;
 }
 .cz-app__fatal {
@@ -62,7 +93,7 @@
   place-items: center;
   padding: var(--sp-5);
   color: var(--text-2);
-  background: var(--bg);
+  background: var(--ambient), var(--bg);
   text-align: center;
 }
 .cz-app__fatal code { font-family: var(--font-mono); }

@@ -81,6 +81,10 @@
   line-clamp: 3;
   overflow: hidden;
 }
+/* 多段引用：每段「引用 + 它的回复」一组，组与组之间稍微拉开 */
+.cz-flow__qpart > .cz-flow__quote { margin-bottom: var(--sp-1); }
+.cz-flow__qpart > .cz-flow__quote:last-child { margin-bottom: 0; }
+.cz-flow__qpart + .cz-flow__qpart { margin-top: var(--sp-3); }
 /* 与输入框里的标签保持一致：小圆角胶囊 */
 .cz-flow__tag {
   display: inline-flex;
@@ -97,8 +101,9 @@
   line-height: 1;
   color: var(--text);
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
 }
+.cz-flow__tag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cz-flow__tag .icon { color: var(--text-2); }
 
 /* ---------- 一轮回复 ---------- */
@@ -252,6 +257,31 @@
   text-overflow: ellipsis;
   font-family: var(--font-mono);
 }
+/* 读写文件类工具行：「图标 Name:」按钮 + 路径按钮 + 「失败 / 箭头」按钮 并排（兄弟节点，不嵌套按钮） */
+.cz-flow__row-split { display: flex; align-items: center; min-width: 0; }
+.cz-flow__row-split > .cz-flow__row-btn { width: auto; flex: none; }
+.cz-flow__row-btn--lead { padding-right: var(--sp-1); }
+.cz-flow__row-btn--tail { margin-left: auto; padding-left: var(--sp-2); }
+.cz-flow__tool-name { font-family: var(--font-mono); }
+.cz-flow__tool-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-flow__tool-path:hover { color: var(--accent); text-decoration: underline; }
+.cz-flow__tool-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-sm); }
+.cz-flow__tool.is-error .cz-flow__tool-path { color: var(--danger); }
+@media (hover: none), (pointer: coarse) { .cz-flow__tool-path { min-height: 44px; } }
 .cz-flow__tool.is-error .cz-flow__tool-summary,
 .cz-flow__tool.is-error .cz-flow__tool-icon { color: var(--danger); }
 .cz-flow__badge {
@@ -313,6 +343,83 @@
 .cz-flow__agent-row > svg { flex: none; }
 .cz-flow__agent-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text); }
 .cz-flow__agent-row:hover .cz-flow__agent-title { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--text-3); }
+/* ---------- 技能 / MCP 面板（复用子代理面板外观） ---------- */
+.cz-flow__pitem-row { cursor: pointer; }
+.cz-flow__mcp-row { cursor: default; flex-wrap: wrap; }
+.cz-flow__mcp-row:hover { background: none; }
+.cz-flow__pitem-row > .cz-flow__agent-title { flex: 1; }
+.cz-flow__psub { margin-left: var(--sp-2); color: var(--text-3); font-size: var(--fs-xs); }
+/* 「×2」紧跟名字；「手动」是名字后的小胶囊 */
+.cz-flow__pcount { margin-left: var(--sp-1); color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.cz-flow__ptag {
+  display: inline-block;
+  margin-left: var(--sp-2);
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: 1px;
+}
+.cz-flow__mcp-sep { color: var(--text-3); }
+.cz-flow__mcp-name { flex: none; color: var(--text); }
+.cz-flow__mcp-tools { flex: 1; min-width: 0; color: var(--text-3); font-size: var(--fs-xs); }
+.cz-flow__mcp-tool {
+  padding: 0 var(--sp-1);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  font: inherit;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cz-flow__mcp-tool:hover, .cz-flow__mcp-tool.is-open { background: var(--bg-hover); color: var(--text); }
+.cz-flow__mcp-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cz-flow__mcp-tool.is-error { color: var(--tk-err, #d4483b); }
+/* 展开区：浅底色块，与上下的行分开 */
+.cz-flow__pdetail {
+  margin: 2px 0 var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+}
+.cz-flow__pdetail-scroll {
+  max-height: 50vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--sp-2);
+}
+/* 技能正文的标题压小，免得盖过会话正文 */
+.cz-flow__pdetail .cz-flow__md :is(h1, h2, h3, h4) { margin: var(--sp-3) 0 var(--sp-1); font-size: var(--fs-md); color: var(--text); }
+.cz-flow__pdetail .cz-flow__md > :first-child { margin-top: 0; }
+.cz-flow__pdetail-error .cz-flow__ppre { color: inherit; }
+.cz-flow__pdetail-note { color: var(--text-3); font-size: var(--fs-xs); margin-bottom: var(--sp-1); }
+.cz-flow__pdetail-error { color: var(--tk-err, #d4483b); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cz-flow__pdetail-close {
+  display: block;
+  margin: var(--sp-1) 0 0 auto;
+  padding: 2px var(--sp-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-flow__pdetail-close:hover { background: var(--bg-hover); }
+.cz-flow__ppre {
+  margin: 0 0 var(--sp-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.cz-flow__pimg { display: block; max-width: 100%; margin-bottom: var(--sp-2); border-radius: var(--r-sm); }
+.cz-flow__pcall + .cz-flow__pcall { margin-top: var(--sp-3); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+.cz-flow__pcall-no { color: var(--text-3); font-size: var(--fs-xs); margin-bottom: var(--sp-1); }
 .cz-flow__icon-btn {
   display: inline-flex;
   align-items: center;
@@ -432,6 +539,8 @@
   display: flex;
   justify-content: flex-end;
   background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(1.2);
+  backdrop-filter: blur(6px) saturate(1.2);
   animation: cz-flow-fade var(--dur) var(--ease);
 }
 @keyframes cz-flow-fade { from { opacity: 0; } }

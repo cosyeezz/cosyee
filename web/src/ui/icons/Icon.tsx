@@ -24,7 +24,9 @@ export type IconName =
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
   | 'thinking'
   // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
-  | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo';
+  | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo'
+  // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行
+  | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap';
 
 export interface IconProps {
   name: IconName;
@@ -202,6 +204,30 @@ const SIMPLE: Record<string, JSX.Element> = {
     <>
       <rect x="5.5" y="5.5" width="8" height="8" rx="2" />
       <path d="M10.5 5.5V4.5a2 2 0 00-2-2h-4a2 2 0 00-2 2v4a2 2 0 002 2h1" />
+    </>
+  ),
+  // 终端：圆角窗口 + 提示符 > 与光标线
+  terminal: (
+    <>
+      <rect x="2" y="3" width="12" height="10" rx="2.2" />
+      <path d="M5 6.6l2 1.6-2 1.6M8.8 10.2h2.4" />
+    </>
+  ),
+  // 最大化：单个方框；还原：两个错位叠放的方框
+  maximize: <rect x="3" y="3" width="10" height="10" rx="2" />,
+  'window-restore': (
+    <>
+      <rect x="2.6" y="5.6" width="7.8" height="7.8" rx="1.8" />
+      <path d="M5.6 5.6V4.8a1.8 1.8 0 011.8-1.8h3.8A1.8 1.8 0 0113 4.8v3.8a1.8 1.8 0 01-1.8 1.8h-.8" />
+    </>
+  ),
+  // 刷新：顺时针回转的箭头（与 restore 的逆时针相对）
+  refresh: <path d="M13 3v3.2H9.8M12.6 6.2A5 5 0 108 13" />,
+  // 自动换行：一行文字折回下一行
+  wrap: (
+    <>
+      <path d="M2.5 4h11M2.5 12h4" />
+      <path d="M2.5 8h8.2a2.1 2.1 0 010 4.2H8.6M9.8 10.9l-1.2 1.3 1.2 1.3" />
     </>
   ),
   // 思考：一大一小两颗四角火花

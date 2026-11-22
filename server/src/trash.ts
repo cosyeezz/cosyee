@@ -34,6 +34,53 @@ export class Trash {
     this.store.save();
   }
 
+  /**
+   * 批量软删除（工作空间分组的「删除全部会话」）：执行中的会话跳过，其余同 softDelete；只存一次盘。
+   * 返回实际删除的与跳过的 id。
+   */
+  softDeleteMany(items: { id: string; cwd: string; title: string }[]): { deleted: string[]; skipped: string[] } {
+    const deleted: string[] = [];
+    const skipped: string[] = [];
+    const at = this.now();
+    for (const it of items) {
+      if (this.dots.isRunning(it.id)) {
+        skipped.push(it.id);
+        continue;
+      }
+      this.store.state.deleted[it.id] = { cwd: it.cwd, title: it.title, deletedAt: at };
+      this.pins.clear(it.id);
+      deleted.push(it.id);
+    }
+    if (deleted.length) this.store.save();
+    return { deleted, skipped };
+  }
+
+  /** 批量恢复：不在已删除列表里的 id 忽略。返回实际恢复的 id。 */
+  restoreMany(ids: string[]): string[] {
+    const restored = ids.filter((id) => this.store.state.deleted[id]);
+    for (const id of restored) delete this.store.state.deleted[id];
+    if (restored.length) this.store.save();
+    return restored;
+  }
+
+  /** 批量永久删除：逐个走 purge 的全部校验，单个失败不影响其它。 */
+  async purgeMany(
+    ids: string[],
+    locate: (id: string, cwd: string) => Promise<LocatedSession | null>,
+  ): Promise<{ purged: string[]; failed: { id: string; error: string }[] }> {
+    const purged: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+    for (const id of ids) {
+      try {
+        await this.purge(id, locate);
+        purged.push(id);
+      } catch (e) {
+        failed.push({ id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { purged, failed };
+  }
+
   /** 恢复：回到原工作空间的列表（不会自动重新置顶）。返回它的 cwd。 */
   restore(id: string): string {
     const e = this.store.state.deleted[id];

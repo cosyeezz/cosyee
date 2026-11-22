@@ -3,7 +3,7 @@
 // 实现拆在 reducer/ 下：core（草稿与簿记）、live（实时事件）、history（历史条目）、util（摘要等小工具）。
 
 import type { RunStatus, Turn } from '@cosyee/shared';
-import { cloneTurn, finishTurn, isActive, type ConvState } from './reducer/core';
+import { batch, cloneTurn, finishTurn, isActive, type ConvState } from './reducer/core';
 import { buildFromHistory, buildSubagentTurn } from './reducer/history';
 import { applyLive } from './reducer/live';
 import { trimCache } from './reducer/cacheHit';
@@ -66,10 +66,19 @@ export function applyReplay(s: ConvState, events: unknown[]): ConvState {
       if (same) base = { turns: s.turns.slice(0, -1), meta: trimCache(s.meta, s.turns.length - 1), book: null };
     }
   }
-  let cur = base;
-  for (const e of events) cur = applyLive(cur, e, Date.now());
-  return cur;
+  return applyEvents(base, events);
 }
+
+/** 依次应用一批实时事件（共享草稿，只在开头克隆一次；结果与逐个 applyEvent 相同） */
+export function applyEvents(s: ConvState, events: unknown[], now?: number): ConvState {
+  return batch(() => {
+    let cur = s;
+    for (const e of events) cur = applyLive(cur, e, now ?? Date.now());
+    return cur;
+  });
+}
+
+export { batch };
 
 /**
  * rewind 成功后的本地回退：删掉 userId 相同的那一轮及其后所有轮（含 steering 轮）。找不到目标则原样返回。

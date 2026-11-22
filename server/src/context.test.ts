@@ -166,4 +166,25 @@ describe('toContextUsage', () => {
     expect(toContextUsage({}, 0, { tools: ['Bash', 'Read'] }).tools).toEqual(['Bash', 'Read']);
     expect('tools' in toContextUsage({}, 0, {})).toBe(false);
   });
+
+  it('toolTokens：当前 CLI 不给单个工具占用时不出现；给了就合并常驻与延迟加载', () => {
+    expect('toolTokens' in u).toBe(false);
+    const t = toContextUsage(
+      {
+        systemTools: [{ name: 'Bash', tokens: 900 }, { name: 'Read', tokens: 400 }],
+        deferredBuiltinTools: [
+          { name: 'WebFetch', tokens: 300, isLoaded: false },
+          { name: 'Monitor', tokens: 200, isLoaded: true },
+          { name: 'Bash', tokens: 1, isLoaded: false },
+        ],
+      },
+      0,
+    );
+    expect(t.toolTokens).toEqual([
+      { name: 'Bash', tokens: 900 },
+      { name: 'Read', tokens: 400 },
+      { name: 'WebFetch', tokens: 300, deferred: true },
+      { name: 'Monitor', tokens: 200 },
+    ]);
+  });
 });

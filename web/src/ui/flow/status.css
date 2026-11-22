@@ -93,6 +93,81 @@
 /* 子代理面板全部完成：液滴停在原地（动画暂停），文字流光由 TurnView 去掉 */
 .cz-ss-compacting.is-still * { animation-play-state: paused; }
 
+/* 魔法书（技能面板）：右页翻到左边后隐入左页，再从右边出现；三颗星依次闪烁 */
+.cz-ss-skill .cz-ss-ln { fill: none; stroke: var(--tk-on); stroke-opacity: .55; stroke-width: 2.6; stroke-linecap: round; }
+.cz-ss-skill .cz-ss-flip {
+  opacity: 0;
+  transform-origin: 32px 32px;
+  animation: cz-ss-flip 2.8s cubic-bezier(.55, .05, .35, 1) infinite;
+}
+.cz-ss-skill .cz-ss-sp {
+  fill: var(--tk-d);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cz-ss-twinkle 2.8s ease-in-out infinite;
+}
+.cz-ss-skill .cz-ss-sp2 { fill: var(--tk-b); animation-delay: -1.9s; }
+.cz-ss-skill .cz-ss-sp3 { fill: var(--tk-c); animation-delay: -.9s; }
+@keyframes cz-ss-flip {
+  0% { transform: scaleX(1); opacity: 0; }
+  10% { transform: scaleX(1); opacity: 1; }
+  58% { transform: scaleX(-1); opacity: 1; }
+  70%, 100% { transform: scaleX(-1); opacity: 0; }
+}
+@keyframes cz-ss-twinkle {
+  0%, 100% { transform: scale(.25) rotate(0deg); opacity: .2; }
+  40% { transform: scale(1.15) rotate(45deg); opacity: 1; }
+  70% { transform: scale(.6) rotate(90deg); opacity: .55; }
+}
+/* 全部加载完：不再翻页，星星定格成静态的小闪光 */
+.cz-ss-skill.is-still .cz-ss-flip { animation: none; opacity: 0; }
+.cz-ss-skill.is-still .cz-ss-sp { animation: none; transform: scale(.85); opacity: .9; }
+.cz-ss-skill.is-still .cz-ss-sp2 { transform: scale(.7); opacity: .7; }
+
+/* 插头（MCP 面板）：插入 → 火花 → 光点沿插座线缆流走 → 拔出 */
+.cz-ss-mcp .cz-ss-cable { fill: none; stroke-width: 5; stroke-linecap: round; }
+.cz-ss-mcp .cz-ss-plug { animation: cz-ss-plug 2.6s cubic-bezier(.5, 0, .3, 1) infinite; }
+.cz-ss-mcp .cz-ss-sock { transform-box: fill-box; transform-origin: center; animation: cz-ss-sock 2.6s ease-out infinite; }
+.cz-ss-mcp .cz-ss-spark {
+  fill: none;
+  stroke: var(--tk-d);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: cz-ss-spark 2.6s ease-out infinite;
+}
+.cz-ss-mcp .cz-ss-flow {
+  fill: none;
+  stroke: var(--tk-d);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 14 200;
+  stroke-dashoffset: 14;
+  opacity: 0;
+  animation: cz-ss-flow 2.6s linear infinite;
+}
+@keyframes cz-ss-plug {
+  0%, 8% { transform: translateX(-8px); }
+  30%, 74% { transform: translateX(0); }
+  96%, 100% { transform: translateX(-8px); }
+}
+@keyframes cz-ss-sock { 0%, 29%, 50%, 100% { transform: scale(1); } 34% { transform: scale(1.1); } }
+@keyframes cz-ss-spark {
+  0%, 29% { transform: scale(.4); opacity: 0; }
+  31% { transform: scale(.7); opacity: 1; }
+  46%, 100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes cz-ss-flow {
+  0%, 32% { stroke-dashoffset: 14; opacity: 0; }
+  36% { opacity: 1; }
+  64% { opacity: 1; }
+  70%, 100% { stroke-dashoffset: -100; opacity: 0; }
+}
+/* 没有进行中的调用：插头停在插好的位置，不出火花 */
+.cz-ss-mcp.is-still * { animation: none !important; }
+
 /* 完成 / 出错 / 中止：只在出现时播一次，之后静止 */
 .cz-ss-done :is(.cz-ss-r, .cz-ss-c, .cz-ss-w) { fill: none; stroke: var(--tk-ok); stroke-linecap: round; stroke-linejoin: round; }
 .cz-ss-done .cz-ss-r { stroke-width: 3; stroke-dasharray: 1; animation: cz-ss-draw .7s ease-out both; }
@@ -121,6 +196,10 @@
 :root[data-motion="reduce"] :is(.cz-ss-thinking, .cz-ss-compacting) * { animation: none !important; }
 :root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o circle { transform: translateY(-12px); }
 :root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o2 circle { transform: translateY(-9px); }
+:root[data-motion="reduce"] :is(.cz-ss-skill, .cz-ss-mcp):not(.is-still) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] :is(.cz-ss-skill, .cz-ss-mcp) * { animation: none !important; }
+:root[data-motion="reduce"] .cz-ss-skill .cz-ss-flip { opacity: 0; }
+:root[data-motion="reduce"] .cz-ss-skill .cz-ss-sp { transform: scale(.85); opacity: .9; }
 :root[data-motion="reduce"] .cz-ss-done :is(.cz-ss-r, .cz-ss-c) { animation: none; stroke-dashoffset: 0; }
 :root[data-motion="reduce"] .cz-ss-done .cz-ss-w { animation: none; opacity: 0; }
 :root[data-motion="reduce"] :is(.cz-ss-error, .cz-ss-stopped) .cz-ss-g { animation: none; }

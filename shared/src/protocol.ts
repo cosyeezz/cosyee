@@ -114,6 +114,73 @@ export interface PreviewInfo {
  * categories=kind 为 used/buffer/free 的类别，deferred=kind 为 deferred 的类别，
  * untilAutocompact=autoCompactThreshold-totalTokens（未开启自动压缩为 null）。
  */
+/** 上下文大小分桶：[from, to)，to 为 null 表示不封顶 */
+export interface TokenBucket {
+  from: number;
+  to: number | null;
+}
+
+/** 按「这次请求送给模型的上下文大小」分桶的请求统计（只含主线程） */
+export interface ContextBucketStats extends TokenBucket {
+  /** 请求数（一条 assistant 消息 = 一次请求） */
+  requests: number;
+  /** 这些请求发起的工具调用数 / 其中返回 is_error 的（含权限拒绝、用户拒绝） */
+  toolCalls: number;
+  toolErrors: number;
+  /** 紧跟在这些请求之后的用户中断（[Request interrupted by user]） */
+  interrupts: number;
+  /** 输入 token 合计（未缓存 + 写缓存 + 读缓存），算平均每次请求的上下文 */
+  inputTokens: number;
+}
+
+/** 按「压缩时的上下文大小（preTokens）」分桶的压缩统计；各字段为合计，比率由前端算 */
+export interface CompactBucketStats extends TokenBucket {
+  count: number;
+  auto: number;
+  /** postTokens 合计（有值的条数见 postCount） */
+  post: number;
+  postCount: number;
+  /** 压缩前 / 后各 N 次请求（见 CompactStats.window）的工具调用与出错、中断 */
+  callsBefore: number;
+  errorsBefore: number;
+  callsAfter: number;
+  errorsAfter: number;
+  interruptsAfter: number;
+  /** 压缩后窗口内实际有的请求数（会话可能很快结束） */
+  requestsAfter: number;
+  /** 压缩后窗口内 Read 过的文件数（去重） / 其中压缩前（自上次压缩起）已经 Read 过的 */
+  readsAfter: number;
+  rereads: number;
+  /** 到下一次压缩之间的请求数合计 / 有下一次压缩的条数 */
+  gap: number;
+  gapCount: number;
+}
+
+/** 跨会话的压缩效果统计（GET /api/compact/stats）：扫描全部主会话记录，观察性数据，不是对照实验 */
+export interface CompactStats {
+  byContext: ContextBucketStats[];
+  byCompact: CompactBucketStats[];
+  /** 压缩前后各取多少次请求做比较 */
+  window: number;
+  sessions: number;
+  requests: number;
+  at: number;
+}
+
+/** 跨会话的工具累计调用次数（GET /api/tools/stats）：扫描全部会话记录，含子智能体；已删除的会话不计 */
+export interface ToolStats {
+  /** 工具名 -> 调用次数（含 mcp__ 工具；子智能体派发按 CLI 记录的名字，新版为 Agent、旧版为 Task） */
+  counts: Record<string, number>;
+  /**
+   * skill 名 -> 调用次数：模型调用 Skill 工具（按 input.skill，可能带或不带插件前缀）与用户输入 /名字。
+   * 用户输入的斜杠命令里也有内置命令（clear 等），这里不区分；旧服务端没有这个字段
+   */
+  skills?: Record<string, number>;
+  /** 统计到的会话数（主会话记录文件数） */
+  sessions: number;
+  at: number;
+}
+
 export interface ContextUsage {
   usedTokens: number;
   totalTokens: number;
@@ -131,12 +198,27 @@ export interface ContextUsage {
   /** Cosyee 保存的「已停用的内置工具」名单（全局）；前端据此显示开关。停用后的工具不再出现在 init.tools 里，所以要单独带上 */
   disabledTools?: string[];
   /**
+   * Cosyee 保存的「已关闭的智能体」名单（全局，智能体名如 Explore、my-reviewer）。经 permissions.deny 的 Agent(名字) 下发：
+   * 模型看不到 / 派发不了这些智能体；关闭后它们可能不再出现在 init.agents 与 agents 里，前端据此保留在列表上
+   */
+  disabledAgents?: string[];
+  /**
    * 内置工具名（最近一次 system/init 的 tools，不含 mcp__ 工具）。探测进程不发消息、收不到 init，
    * 页面重开也会错过 init，所以服务端记下来随上下文下发：本会话的优先，否则用最近一次见到的（落盘）
    */
   tools?: string[];
+  /**
+   * 单个内置工具定义的 token 占用（get_context_usage 的 systemTools / deferredBuiltinTools）。
+   * 目前的 CLI 版本这两项恒为空，只给「System tools」「System tools (deferred)」两个合计；CLI 以后给了才会有。
+   * deferred = 延迟加载：平时只列名字，ToolSearch 加载后才把完整定义放进上下文。
+   */
+  toolTokens?: { name: string; tokens: number; deferred?: true }[];
   /** 距自动压缩还剩多少 token */
   untilAutocompact: number | null;
+  /** 自动压缩的触发点（CLI 报告的 autoCompactThreshold，约等于 窗口 - 33k）；未开启自动压缩时没有 */
+  autoCompactThreshold?: number;
+  /** Cosyee 设置的自动压缩窗口（全局，CLAUDE_CODE_AUTO_COMPACT_WINDOW）；null = 不覆盖，沿用用户设置 / CLI 默认 */
+  compactWindow?: number | null;
   /** 采集时间 */
   at: number;
 }
@@ -159,6 +241,17 @@ export interface ContextSkill {
   source: string | null;
   /** 磁盘上是用户级 / 项目级 skill，可以移除（插件、内置的不行）；读不到磁盘信息时不带 */
   removable?: boolean;
+}
+
+/** 磁盘上的 SKILL.md（GET /api/skills/content） */
+export interface SkillContent {
+  name: string;
+  /** frontmatter 的 description */
+  description?: string;
+  /** 去掉 frontmatter 的正文（参数占位符 $ARGUMENTS 未替换） */
+  body: string;
+  /** 技能目录 */
+  dir: string;
 }
 
 /** MCP 服务器：status 取 mcp_status 的 connected / pending / failed / needs-auth / disabled；读不到 mcp_status 时为 unknown */
@@ -214,7 +307,8 @@ export interface UsageInfo {
 // POST /api/workspaces/remove   {path}      → { current: string | null; list: Workspace[] }   仅从最近列表移除，不动磁盘；移除当前工作空间时 current 切到下一个（或 null）
 // POST /api/workspaces/reveal   {path}      → { ok: true }   在系统文件管理器里打开；path 必须在工作空间列表里
 // GET  /api/sessions?cwd=                   → SessionSummary[]   按 lastActiveAt 倒序
-// GET  /api/sessions/:id/history?cwd=       → { entries: unknown[] }   主会话 jsonl 原始条目
+// GET  /api/sessions/:id/history?cwd=&since= → { version: string; entries?: unknown[]; unchanged?: true }
+//                                             主会话 jsonl 过滤后的条目；since 等于当前 version 时不返回 entries，只回 unchanged
 // GET  /api/sessions/:id/subagent/:toolUseId?cwd= → { entries: unknown[] }  子代理 jsonl 原始条目
 // POST /api/sessions/:id/rename {cwd,title} → { ok: true }
 // POST /api/sessions/:id/viewed {cwd}       → { ok: true }   清除蓝点
@@ -225,6 +319,11 @@ export interface UsageInfo {
 // POST /api/sessions/:id/delete {cwd}       → { ok: true }   软删除：移入已删除列表，不碰会话记录文件；执行中的会话返回 409
 // POST /api/sessions/:id/restore                → { ok: true }   从已删除列表恢复
 // POST /api/sessions/:id/purge                  → { ok: true }   永久删除：删除记录文件 <id>.jsonl 与同名目录；只允许已在已删除列表里的会话
+// POST /api/sessions/delete-many {cwd, ids}  → { deleted: number; skipped: number }   批量软删除（工作空间分组的「删除全部会话」）：
+//                                             只处理该工作空间里存在且未删除的 id；执行中的跳过（计入 skipped）
+// POST /api/deleted/restore {ids}           → { restored: number }   批量恢复；不在已删除列表里的 id 忽略
+// POST /api/deleted/purge   {ids}           → { purged: number; failed: number; error: string | null }   批量永久删除；
+//                                             每个 id 走单个 purge 的全部校验，单个失败不影响其它，error 为第一个失败的原因
 // GET  /api/git?cwd=                        → { branch: string | null }
 // GET  /api/account                         → Account | null   当前账号（并行模式下 = 新会话使用的账号）
 // GET  /api/accounts                        → AccountList   账号列表（默认账号 + 添加的账号）与进行中的登录
@@ -241,7 +340,10 @@ export interface UsageInfo {
 // POST /api/accounts/remove {id}            → { ok: true }   移除添加的账号（删除其配置目录里的私有内容，共享内容只解除链接）；
 //                                             默认账号与当前账号不能移除；并行模式下还有执行中会话的账号不能移除
 // POST /api/accounts/label {id, label}      → { ok: true }   修改备注名
-// POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }
+// POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }   系统对话框，仅本机连接
+// GET  /api/browse?path=                    → BrowseDir   网页版选择窗口（远程连接）：列出服务端目录
+// POST /api/pick/paths {paths: string[]}    → { items: PickedItem[]; supportsMixed: true }   登记网页里选好的路径
+// POST /api/workspaces/open {path}          → { workspace }   网页里选好的工作空间文件夹
 // GET  /api/preview/:token/info             → PreviewInfo
 // GET  /api/preview/:token/raw              → 文件原始内容（仅图片）
 // POST /api/defaults {model,effort}         → { ok: true }   记住模型与思考强度（全局，下次启动沿用）
@@ -252,6 +354,8 @@ export interface UsageInfo {
 // POST /api/skills {modes: {名字: mode}}    → { ok: true }   批量设置（「一键推荐配置」与撤销用），只落盘 / 下发 / 采集一次
 // POST /api/skills/remove {name, session?, cwd?} → { ok: true, backup }   移除用户级 / 项目级 skill：目录移到 ~/.cosyee/removed-skills（可手动放回恢复）；
 //                                             插件 / 内置 skill 不能移除（400），请改用「关」
+// GET  /api/skills/content?name=&cwd=       → SkillContent   读磁盘上的 SKILL.md（技能面板展开时兜底：实时的 /技能 输入拿不到注入正文）；
+//                                             项目级优先于用户级，插件 skill 按 plugin:name 找；找不到 404
 // POST /api/context/:id/mcp {cwd?, server, enabled} → ContextUsage | null   开关 MCP 服务器（CLI 的 mcp_toggle，
 //                                             与终端 /mcp 里的启用 / 禁用相同：按项目写进 ~/.claude.json）
 // GET  /api/context/:id                     → ContextUsage | null   最近一次采集的上下文数据
@@ -263,6 +367,12 @@ export interface Bootstrap {
   homeDir: string;
   supportsMixedPick: boolean;
   defaults: SessionConfig;
+  /**
+   * 这次连接不是来自服务端本机（经 Tailscale 等远程访问）。此时不显示「在文件管理器中显示」「打开终端」
+   * 「打开工作空间文件夹」——这些窗口会弹在服务端机器的桌面上，远程设备看不到；「添加文件」「打开文件夹」
+   * 改用网页版选择窗口（/api/browse），在远端浏览服务端的文件。
+   */
+  remote: boolean;
 }
 
 // ───────────── WebSocket ─────────────

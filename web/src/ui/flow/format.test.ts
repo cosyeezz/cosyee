@@ -126,6 +126,36 @@ describe('getStatusLine', () => {
     // 正在写的 answer 优先
     expect(getStatusLine({ ...t3, answer: '最终结论如下' }, 2_000)).toMatchObject({ phase: 'text', text: '最终结论如下' });
   });
+  it('委派子代理与文字同等对待：文字图标 + 委派描述，谁新显示谁', () => {
+    const sub = (title: string, afterStep?: number) => ({
+      toolUseId: title,
+      title,
+      status: 'running' as const,
+      turn: baseTurn,
+      ...(afterStep != null ? { afterStep } : {}),
+    });
+    // 没有文字，直接委派
+    const one = { ...baseTurn, subagents: [sub('重构登录模块', 0)] };
+    expect(getStatusLine(one, 1_000)).toMatchObject({ kind: 'active', phase: 'text', text: '委派子代理：重构登录模块' });
+    // 同一条消息并行委派：合成一行；没有描述的只计数
+    const many = { ...baseTurn, steps: [thinking], subagents: [sub('A', 1), sub('B', 1), sub('', 1)] };
+    expect(getStatusLine(many, 1_000)).toMatchObject({ phase: 'text', text: '委派 3 个子代理：A、B' });
+    expect(getStatusLine({ ...baseTurn, subagents: [sub('', 0)] }, 1_000)).toMatchObject({ text: '委派子代理' });
+    // 先文字后委派 → 委派；委派之后又有文字 → 文字
+    const s1 = [text('先拆一下任务'), tool];
+    const t1 = { ...baseTurn, steps: s1, subagents: [sub('A', 2)] };
+    expect(getStatusLine(t1, 1_000)).toMatchObject({ text: '委派子代理：A' });
+    const t2 = { ...t1, steps: [...s1, text('A 做完了，接着派 B')] };
+    expect(getStatusLine(t2, 1_000)).toMatchObject({ text: 'A 做完了，接着派 B' });
+    // 再委派一批：只显示最新这一批
+    const t3 = { ...t2, steps: [...t2.steps, tool], subagents: [...t2.subagents, sub('B', 4)] };
+    expect(getStatusLine(t3, 1_000)).toMatchObject({ text: '委派子代理：B' });
+    // 正在写的 answer 一定最新
+    expect(getStatusLine({ ...t3, answer: '汇总一下' }, 1_000)).toMatchObject({ text: '汇总一下' });
+    // 旧数据没有 afterStep：视为最早，有文字时显示文字
+    expect(getStatusLine({ ...baseTurn, steps: [text('先看看')], subagents: [sub('A')] }, 1_000)).toMatchObject({ text: '先看看' });
+    expect(getStatusLine({ ...baseTurn, subagents: [sub('A')] }, 1_000)).toMatchObject({ text: '委派子代理：A' });
+  });
   it('进行中：有未完成的子代理时附加进度，全部完成后不再显示', () => {
     const sub = (status: 'running' | 'done' | 'error') => ({ toolUseId: status, title: '', status, turn: baseTurn });
     const t = { ...baseTurn, subagents: [sub('done'), sub('running'), sub('error')] };

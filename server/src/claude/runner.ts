@@ -72,6 +72,16 @@ export function validateConfig(c: SessionConfig): void {
   if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(c.effort)) throw new Error('effort 不合法');
 }
 
+/**
+ * 追加到 CLI 系统提示词的路径引用约定（同 axiom2）：模型用 Markdown 链接引用文件，
+ * 前端据此把路径渲染成可点击、可预览的文件按钮。正斜杠避免 `\.` 等被 Markdown 当转义吃掉，
+ * 含空格的路径用 <> 包住，否则链接目标会在空格处截断。
+ */
+export const PATH_PROMPT =
+  'When referencing files, use Markdown links: [filename](path). Prefer absolute paths with forward slashes ' +
+  '(e.g. [runner.ts](F:/repo/src/runner.ts)); append :line for a specific line ([runner.ts](F:/repo/src/runner.ts:42)); ' +
+  'wrap the target in <> when the path contains spaces ([a b.md](<F:/repo/a b.md>)). Do not put file links inside backticks.';
+
 /** 构造 claude 命令行参数（不含可执行文件）。 */
 export function buildArgs(sessionId: string, isNew: boolean, config: SessionConfig, extraSettings: Record<string, unknown> = {}): string[] {
   const args = [
@@ -87,6 +97,8 @@ export function buildArgs(sessionId: string, isNew: boolean, config: SessionConf
     '--dangerously-skip-permissions',
     '--model', config.model,
     '--effort', config.effort,
+    // 每次启动都要带：--resume 不会沿用上次进程的追加提示词
+    '--append-system-prompt', PATH_PROMPT,
   ];
   const settings: Record<string, unknown> = { ...extraSettings };
   if (config.ultracode) settings.ultracode = true;

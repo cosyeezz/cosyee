@@ -3,8 +3,10 @@
 
 import type { SessionMeta } from '@cosyee/shared';
 import {
+  addUserSkill,
   appendToolJson,
   applyAssistantMessage,
+  applySkillBody,
   applyToolResults,
   cloneTurn,
   commit,
@@ -27,9 +29,9 @@ import {
   type ConvState,
   type Draft,
 } from './core';
-import { arr, isObj, str } from './util';
+import { arr, isObj, str, textOf } from './util';
 import { resolveRun } from './resume';
-import { recordCache } from './cacheHit';
+import { recordCache, recordCompact } from './cacheHit';
 
 const strList = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
 
@@ -50,8 +52,15 @@ export function startTurn(s: ConvState, text: string, at: number, opts: { id?: s
     finishTurn(c, 'done', at);
     turns = [...turns.slice(0, -1), c];
   }
-  return { turns: [...turns, makeTurn(turns.length, text, at, { userId: opts.id, steer: opts.steer })], meta: s.meta, book: newBook(at) };
+  const turn = makeTurn(turns.length, text, at, { userId: opts.id, steer: opts.steer });
+  // 用户输入「/技能名 参数」：CLI 实时不回传正文，只记一条没有 body 的手动加载
+  const cmd = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  if (cmd && s.meta.skills?.includes(cmd[1]!)) addUserSkill(turn, cmd[1]!, (cmd[2] ?? '').trim());
+  return { turns: [...turns, turn], meta: s.meta, book: newBook(at) };
 }
+
+const CMD_NAME_RE = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/;
+const CMD_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/;
 
 function mergeInit(meta: SessionMeta, e: Record<string, unknown>): SessionMeta {
   const next: SessionMeta = { ...meta };
@@ -99,6 +108,12 @@ function applySystem(s: ConvState, e: Record<string, unknown>, now: number): Con
       if (!st) return s;
       st.tokens = e.estimated_tokens;
       return commit(s, d);
+    }
+    case 'compact_boundary': {
+      // 会话压缩：只记主线程（子代理自己的压缩不算）
+      if (e.parent_tool_use_id) return s;
+      const meta = recordCompact(s.meta, e, Math.max(0, s.turns.length - 1), now);
+      return meta === s.meta ? s : { ...s, meta };
     }
     case 'background_tasks_changed': {
       const d = openDraft(s, now);
@@ -255,6 +270,26 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
       return scope === '' ? { ...next, meta: recordCache(next.meta, isObj(e.message) ? e.message : null, next.turns.length - 1) } : next;
     }
     case 'user': {
+      // 技能正文：CLI 合成的 user 消息（isSynthetic），归给该代理最近一个等正文的 Skill 调用
+      if (e.isSynthetic === true) {
+        const text = textOf(isObj(e.message) ? e.message.content : undefined);
+        if (!text.startsWith('Base directory for this skill:')) return s;
+        const d = openDraft(s, now);
+        if (!d) return s;
+        applySkillBody(d, scopeOf(e), text);
+        return commit(s, d);
+      }
+      // 用户 /技能名 的回放（<command-name>）：cosyee_user 到达时 init 可能还没带来 skills 列表，在这里补记
+      if (e.isReplay === true && isObj(e.message) && typeof e.message.content === 'string') {
+        const name = CMD_NAME_RE.exec(e.message.content)?.[1];
+        const last = s.turns[s.turns.length - 1];
+        if (!name || !last || !s.meta.skills?.includes(name) || last.userText.trim().split(/\s/)[0] !== `/${name}`) return s;
+        if (last.skills?.some((k) => k.id === `user:${last.id}`)) return s;
+        const d = openDraft(s, now);
+        if (!d) return s;
+        addUserSkill(d.turn, name, (CMD_ARGS_RE.exec(e.message.content)?.[1] ?? '').trim());
+        return commit(s, d);
+      }
       // 只处理 tool_result；其它 user 文本（中断提示、压缩摘要、子代理 prompt 等）忽略
       const content = isObj(e.message) ? e.message.content : undefined;
       if (!arr(content).some((b) => isObj(b) && b.type === 'tool_result')) return s;

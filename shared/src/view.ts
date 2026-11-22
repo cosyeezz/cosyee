@@ -53,8 +53,40 @@ export interface SubagentRun {
   /** Agent 调用参数里指定的思考等级；未指定时为空，UI 显示「继承主会话」 */
   effort?: string;
   status: 'running' | 'done' | 'error';
+  /**
+   * 委派时所在轮的 steps.length：它排在 steps[afterStep - 1] 之后。
+   * 状态行把委派当作模型输出，与文字比先后、显示最新的那个；旧数据没有时视为排在最前。
+   */
+  afterStep?: number;
   /** 子代理自己的会话流（只有一轮；不会再有 subagents） */
   turn: Turn;
+}
+
+/**
+ * 一次技能加载。模型调用 Skill 工具、或用户输入「/技能名 参数」都算。
+ * 同一轮里同名技能各自一条，UI 按名字合并成一行（×N）。
+ */
+export interface SkillLoad {
+  /** 模型调用：Skill 工具的 tool_use id；用户输入：`user:<turn.id>` */
+  id: string;
+  /** 技能名（插件技能带前缀，如 anthropic-skills:pdf） */
+  name: string;
+  /** 调用参数（Skill 工具的 args / 命令后面的文字）；没有为空 */
+  args?: string;
+  /** model = 模型调用 Skill 工具；user = 用户输入 /技能名（UI 标「手动」） */
+  source: 'model' | 'user';
+  status: 'loading' | 'loaded' | 'error';
+  /**
+   * 模型实际看到的注入正文（已替换参数、不含 frontmatter，去掉了首行「Base directory for this skill: …」）。
+   * 实时的 /技能 输入 CLI 不回传正文，此时为空，UI 展开时调 GET /api/skills/content 读磁盘兜底。
+   */
+  body?: string;
+  /** 「Base directory for this skill:」后的目录 */
+  dir?: string;
+  /** 加载失败的原因（已去掉 <tool_use_error> 标签） */
+  error?: string;
+  /** 加载时所在轮的 steps.length（同 SubagentRun.afterStep） */
+  afterStep?: number;
 }
 
 export interface Attachment {
@@ -91,6 +123,8 @@ export interface Turn {
   answer: string;
   /** 本轮所有子代理，按启动顺序追加 */
   subagents: SubagentRun[];
+  /** 本轮加载的技能，按加载顺序追加（子代理加载的在子代理自己的 turn 里）。旧数据可能没有 */
+  skills?: SkillLoad[];
   startedAt: number;
   endedAt?: number;
   /** interrupted / error 时的一句原因 */
@@ -111,6 +145,26 @@ export interface CachePoint {
   read: number;
   /** 命中率 0–100 = read / (input + create + read) */
   rate: number;
+  /** 这次请求的回复里调用的工具（tool_use id，按出现顺序）；没有调用工具时为空 */
+  tools?: string[];
+}
+
+/** 一次会话压缩（compact_boundary）：只含主线程 */
+export interface CompactMark {
+  /** compact_boundary 的 uuid（去重用） */
+  id: string;
+  /** 发生在第几轮（回退时按它截断） */
+  turn: number;
+  trigger: 'auto' | 'manual';
+  /** 压缩前 / 后的上下文 token（CLI 报告） */
+  pre: number;
+  post: number | null;
+  /** 压缩耗时（毫秒） */
+  durationMs: number | null;
+  /** 压缩前最后一次请求的 CachePoint id（图上把标记画在它之后）；会话开头就压缩时为 null */
+  after: string | null;
+  /** 时间戳（毫秒） */
+  at: number;
 }
 
 export interface SessionMeta {
@@ -124,6 +178,8 @@ export interface SessionMeta {
   mcpServers?: { name: string; status: string }[];
   /** 缓存命中率走势：每次 API 请求一个点（只含主线程，按 message.id 去重） */
   cache?: CachePoint[];
+  /** 会话压缩记录（主线程，按发生顺序） */
+  compactions?: CompactMark[];
 }
 
 export interface Conversation {

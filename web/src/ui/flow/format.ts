@@ -101,6 +101,44 @@ export function latestTextLine(turn: Pick<Turn, 'answer' | 'steps'>): string {
   return '';
 }
 
+/**
+ * 委派子代理的单行描述：一个「委派子代理：标题」，多个「委派 N 个子代理：A、B、C」。
+ * 标题为空的不列出；没有子代理返回空串。
+ */
+export function delegationLine(subagents: Pick<SubagentRun, 'title'>[]): string {
+  if (subagents.length === 0) return '';
+  const titles = subagents.map((s) => plainFirstLine(s.title)).filter(Boolean).join('、');
+  const head = subagents.length === 1 ? '委派子代理' : `委派 ${subagents.length} 个子代理`;
+  return titles ? `${head}：${titles}` : head;
+}
+
+/**
+ * 模型最近一次「输出」的单行形式：文字和委派子代理同等对待，谁新显示谁。
+ * 正在写的 answer 一定最新；否则比较 steps 里最后一段文字的位置与最近一批委派的 afterStep
+ * （同一条消息里并行发起的委派 afterStep 相同，合成一行）。都没有返回空串。
+ */
+export function latestOutputLine(turn: Pick<Turn, 'answer' | 'steps' | 'subagents'>): string {
+  const fromAnswer = plainFirstLine(turn.answer);
+  if (fromAnswer) return fromAnswer;
+  let textIdx = -1;
+  let textLine = '';
+  for (let i = turn.steps.length - 1; i >= 0; i--) {
+    const s = turn.steps[i]!;
+    if (s.kind !== 'text') continue;
+    const line = plainFirstLine(s.text);
+    if (line) {
+      textIdx = i;
+      textLine = line;
+      break;
+    }
+  }
+  if (turn.subagents.length === 0) return textLine;
+  const at = Math.max(...turn.subagents.map((r) => r.afterStep ?? -1));
+  // afterStep = k 表示委派时已有 k 个步骤；之后的文字下标 ≥ k，所以 at > textIdx 才是委派更新
+  if (textIdx >= 0 && at <= textIdx) return textLine;
+  return delegationLine(turn.subagents.filter((r) => (r.afterStep ?? -1) === at));
+}
+
 /** 状态行短原因：取首个非空行，压缩空白，超长截断 */
 export function shortReason(reason: string | undefined, max = 60): string {
   const line = (reason ?? '').split(/\r?\n/).find((l) => l.trim()) ?? '';
@@ -110,9 +148,10 @@ export function shortReason(reason: string | undefined, max = 60): string {
 
 /**
  * 状态行状态机。
- * 进行中只由「是否已有文本、最近一段文本是什么」决定，思考和工具调用不改变它：
- *   没有文本 → phase=understanding，「正在理解问题」；
- *   有文本   → phase=text，最近一段文本的首行。
+ * 进行中只由模型最近一次「输出」决定——文字和委派子代理同等对待，新的替换旧的（见 latestOutputLine）；
+ * 思考和普通工具调用不改变它：
+ *   有输出 → phase=text，最近一段文字的首行，或最近一批委派的描述（见 delegationLine）；
+ *   没有   → phase=understanding，「正在理解问题」。
  * 结束态：已完成（时间 · 共 N 步 · 用时）/ 已中断 / 出错了，meta 前带上结束的具体时间（非今天带日期）。
  * now 用于进行中的用时（组件每秒传入一次）和「是否今天」；结束态用 endedAt。
  */
@@ -124,7 +163,8 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
       const parts = [formatDuration(now - turn.startedAt)];
       const sub = subagentProgress(turn.subagents);
       if (sub.total > 0 && !sub.allDone) parts.push(`子代理 ${sub.finished}/${sub.total}`);
-      const line = latestTextLine(turn);
+      // 委派子代理（Agent 工具调用）与文字同等对待：显示最新的那个，同样用文字图标
+      const line = latestOutputLine(turn);
       return line
         ? { kind: 'active', phase: 'text', text: line, meta: parts.join(' · '), title: line }
         : { kind: 'active', phase: 'understanding', text: UNDERSTANDING_TEXT, meta: parts.join(' · ') };
@@ -222,6 +262,15 @@ export function describeToolInput(step: Pick<ToolStep, 'name' | 'input'>): { lan
   if (typeof input === 'string') return { lang: 'text', text: input };
   if (input === undefined) return { lang: 'json', text: '' };
   return { lang: 'json', text: safeStringify(input) };
+}
+
+/** 读写文件类工具：输入里的文件路径（用于让摘要里的路径可点击预览）；没有则 undefined */
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+export function toolFilePath(step: Pick<ToolStep, 'name' | 'input'>): string | undefined {
+  if (!FILE_TOOLS.has(step.name) || !step.input || typeof step.input !== 'object') return undefined;
+  const o = step.input as Record<string, unknown>;
+  const p = step.name === 'NotebookEdit' ? (o.notebook_path ?? o.file_path) : (o.file_path ?? o.path);
+  return typeof p === 'string' && p.trim() ? p : undefined;
 }
 
 /** 思考折叠时的预览：压成单行并截前 n 个字符 */

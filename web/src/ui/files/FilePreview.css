@@ -1,0 +1,163 @@
+/* 本地文件预览浮窗：非模态悬浮窗口。类名前缀 cz-fp__；颜色 / 间距只用 tokens.css 变量。
+   根元素同时带 cz-flow（代码高亮配色、Markdown 样式都挂在它下面）。 */
+
+.cz-fp {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: 120; /* 高于子代理浮层（100），低于菜单（1000） */
+  width: min(960px, 92vw);
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  outline: none;
+  animation: cz-fp-in var(--dur) var(--ease);
+}
+@keyframes cz-fp-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+.cz-fp.is-max { width: 100vw; height: 100vh; border-radius: 0; border: 0; }
+@media (prefers-reduced-motion: reduce) { .cz-fp { animation: none; } }
+
+/* 头部：图标 + 文件名 + 最大化 / 关闭；第二行是路径（带复制 / 显示 / 终端按钮） */
+.cz-fp__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+.cz-fp__title { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-2); color: var(--text-2); }
+.cz-fp__name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; font-size: var(--fs-md); color: var(--text); }
+.cz-fp__path { flex: 0 0 100%; }
+
+.cz-fp__icon-btn,
+.cz-fp__btn,
+.cz-fp__mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-fp__icon-btn { width: 28px; height: 28px; padding: 0; }
+.cz-fp__btn { height: 26px; padding: 0 var(--sp-2); }
+.cz-fp__icon-btn:hover,
+.cz-fp__btn:hover,
+.cz-fp__mode:hover { background: var(--bg-hover); color: var(--text); }
+.cz-fp__icon-btn:focus-visible,
+.cz-fp__btn:focus-visible,
+.cz-fp__mode:focus-visible,
+.cz-fp__entry:focus-visible,
+.cz-fp__more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-fp__btn.is-on { background: var(--bg-active); color: var(--text); }
+@media (hover: none), (pointer: coarse) {
+  .cz-fp__icon-btn { width: 44px; height: 44px; }
+  .cz-fp__btn, .cz-fp__mode { min-height: 44px; padding: 0 var(--sp-3); }
+}
+
+/* 工具条：显示方式（分段按钮）+ 换行 + 刷新 */
+.cz-fp__bar { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) var(--sp-4); border-bottom: 1px solid var(--border); min-height: 36px; }
+.cz-fp__spacer { flex: 1; }
+.cz-fp__modes { display: inline-flex; padding: 2px; gap: 2px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--r-md); }
+.cz-fp__mode { height: 24px; padding: 0 var(--sp-3); }
+.cz-fp__mode.is-on { background: var(--bg-active); color: var(--text); }
+
+/* 主体：自己滚动 */
+.cz-fp__body { flex: 1; min-height: 0; overflow: auto; position: relative; }
+.cz-fp__state { padding: var(--sp-6) var(--sp-4); text-align: center; color: var(--text-3); font-size: var(--fs-sm); }
+.cz-fp__state p { margin: 0 0 var(--sp-3); color: var(--danger); overflow-wrap: anywhere; }
+.cz-fp__state .cz-fp__btn { border: 1px solid var(--border-strong); }
+.cz-fp__read { padding: var(--sp-4) var(--sp-5); max-width: 860px; }
+.cz-fp__frame { display: block; width: 100%; height: 100%; min-height: 360px; border: 0; background: #fff; }
+.cz-fp__media { display: grid; place-items: center; min-height: 100%; padding: var(--sp-4); background: var(--bg-elev); }
+.cz-fp__media img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* 对比：左源码右渲染，各自滚动 */
+.cz-fp__split { display: grid; grid-template-columns: 1fr 1fr; height: 100%; min-height: 0; }
+.cz-fp__pane { min-width: 0; min-height: 0; overflow: auto; }
+.cz-fp__pane + .cz-fp__pane { border-left: 1px solid var(--border); }
+.cz-fp__split .cz-fp__read { padding: var(--sp-3) var(--sp-4); }
+@media (max-width: 720px) {
+  .cz-fp__split { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  .cz-fp__pane + .cz-fp__pane { border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* 带行号的代码：每行一个 grid 行（行号列 + 内容列），自动换行时行号仍对齐首行 */
+.cz-fp__code {
+  min-width: max-content;
+  padding: var(--sp-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  tab-size: 4;
+}
+.cz-fp__code.is-wrap { min-width: 0; }
+.cz-fp__row { display: grid; grid-template-columns: calc(var(--cz-fp-ln, 3ch) + var(--sp-4)) 1fr; }
+.cz-fp__row.is-target { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cz-fp__ln {
+  padding-right: var(--sp-3);
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.cz-fp__lc { padding-right: var(--sp-4); white-space: pre; }
+.cz-fp__lc:empty::before { content: ' '; }
+.cz-fp__code.is-wrap .cz-fp__lc { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cz-fp__more {
+  margin: var(--sp-2) var(--sp-4);
+  padding: 2px var(--sp-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-fp__more:hover { background: var(--bg-hover); }
+
+/* 目录 */
+.cz-fp__dir { list-style: none; margin: 0; padding: var(--sp-2); }
+.cz-fp__entry {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 4px var(--sp-2);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-fp__entry:hover { background: var(--bg-hover); }
+.cz-fp__entry span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cz-fp__empty { padding: var(--sp-2); color: var(--text-3); font-size: var(--fs-xs); }
+
+/* 底栏：大小 · 行数 · 编码 */
+.cz-fp__foot {
+  padding: var(--sp-1) var(--sp-4);
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  min-height: 24px;
+}

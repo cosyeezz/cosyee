@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import type { AccountMode } from '@cosyee/shared';
 import { api, ApiError } from '../../core/api';
+import { GooeyIndicator } from '../motion/GooeyIndicator';
 import { accountPage } from './AccountMenu';
 
 export interface AccountModeSwitchProps {
@@ -25,18 +26,24 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
   /** 回到切换模式被执行中的会话拦下：执行中的数量 */
   const [confirm, setConfirm] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 点下去就先把选中块移过去（乐观），失败或被拦下时退回；读到新模式后清掉 */
+  const [pending, setPending] = useState<AccountMode | null>(null);
+  if (pending !== null && pending === mode) setPending(null);
+  const shown = pending ?? mode;
 
   const apply = async (next: AccountMode, force = false) => {
     if (busy || next === mode) return;
     setBusy(true);
     setError(null);
     setConfirm(null);
+    setPending(next);
     try {
       await api.setAccountMode(next, force);
       // 回到切换模式：其它账号的进程已停，整页刷新让所有信息都回到当前账号
       if (next === 'switch') accountPage.reload();
       else onChanged();
     } catch (e) {
+      setPending(null);
       if (e instanceof ApiError && e.status === 409 && typeof e.data.running === 'number') setConfirm(e.data.running);
       else setError(msg(e));
     } finally {
@@ -47,6 +54,7 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
   return (
     <div className="cz-sidebar__mode">
       <div className="cz-sidebar__seg" role="radiogroup" aria-label="账号模式">
+        <GooeyIndicator activeKey={shown} selector=".cz-sidebar__seg-btn.is-on" />
         {OPTIONS.map((o) => {
           const on = mode === o.mode;
           return (
@@ -56,7 +64,7 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
               role="radio"
               aria-checked={on}
               title={o.tip}
-              className={`cz-sidebar__seg-btn${on ? ' is-on' : ''}`}
+              className={`cz-sidebar__seg-btn${shown === o.mode ? ' is-on' : ''}`}
               disabled={busy || mode === null}
               onClick={() => void apply(o.mode)}
             >

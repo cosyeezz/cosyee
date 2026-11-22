@@ -4,16 +4,50 @@ import type { Step, Turn } from '@cosyee/shared';
 import '../styles/tokens.css';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
+import { FilesContext, type FilesApi } from '../ui/files/FileContext';
+import { FlowMetaContext, type FlowMeta } from '../ui/flow/flowContext';
+import { FilePreview } from '../ui/files/FilePreview';
 import { mockTurns } from '../mock/flow';
+import { mockWorkspaces } from '../mock/shell';
+
+// 技能 / MCP 面板的本地演示轮（不依赖 mock/flow.ts）
+const PANEL_DEMO: Turn = {
+  id: 'panel-demo',
+  userText: '演示技能与 MCP 面板',
+  attachments: [],
+  status: 'done',
+  statusText: '',
+  steps: [
+    { kind: 'tool', id: 'm1', name: 'mcp__playwright__browser_navigate', input: { url: 'https://example.com' }, summary: 'browser_navigate', result: { content: [{ type: 'text', text: 'ok' }], isError: false } },
+    { kind: 'tool', id: 'm2', name: 'mcp__playwright__browser_click', input: { ref: 'e3' }, summary: 'browser_click', result: { content: 'Element not found', isError: true } },
+    { kind: 'tool', id: 'm3', name: 'mcp__my-docs__search', input: { q: 'hooks' }, summary: 'search' },
+  ],
+  answer: '已演示。',
+  subagents: [],
+  skills: [
+    { id: 's1', name: 'impeccable', source: 'model', status: 'loaded', body: '# impeccable\n\n演示正文：**设计**前端界面。' },
+    { id: 's2', name: 'verify', source: 'user', status: 'loaded', args: 'alpha' },
+    { id: 's3', name: 'verify', source: 'model', status: 'loaded' },
+    { id: 's4', name: 'ghost', source: 'model', status: 'error', error: 'Unknown skill: ghost' },
+    { id: 's5', name: 'debug', source: 'model', status: 'loading' },
+  ],
+  startedAt: Date.now() - 5000,
+  endedAt: Date.now(),
+};
+const DEV_FLOW_META: FlowMeta = {
+  mcpServers: ['playwright', 'my-docs'],
+  loadSkill: async (name) => ({ name, description: '演示描述', body: `# ${name}\n\n（演示：来自磁盘的 SKILL.md）`, dir: '/demo' }),
+};
 
 const SIM_ID = 'sim-turn';
+const DEV_CWD = mockWorkspaces[0].path;
 const SIM_ANSWER =
   '好的，分析完成。\n\n这是一段**流式**输出的答复，用来观察贴底滚动与光标动画：\n\n' +
   Array.from({ length: 8 }, (_, i) => `${i + 1}. 第 ${i + 1} 条结论：模拟文字不断追加，列表会越来越长。`).join('\n') +
   '\n\n```ts\nconst done = true;\nconsole.log("流式结束");\n```\n\n以上。';
 
 export default function FlowDev() {
-  const [turns, setTurns] = useState<Turn[]>(mockTurns);
+  const [turns, setTurns] = useState<Turn[]>(() => [...mockTurns, PANEL_DEMO]);
   const [openSub, setOpenSub] = useState<{ turnId: string; toolUseId: string } | null>(null);
   const timers = useRef<number[]>([]);
   const toolSeq = useRef(0);
@@ -130,7 +164,30 @@ export default function FlowDev() {
   const onOpen = useCallback((turnId: string, toolUseId: string) => setOpenSub({ turnId, toolUseId }), []);
   const onClose = useCallback(() => setOpenSub(null), []);
 
+  // 本地文件预览：调试页没有真实会话，浮窗会显示「读取失败」的错误态（接真实后端的页面里才有完整效果）
+  const [preview, setPreview] = useState<{ path: string; line?: number; nonce: number } | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const files = useMemo<FilesApi>(
+    () => ({
+      cwd: DEV_CWD,
+      open: (req, el) => {
+        if (el && !opener.current) opener.current = el;
+        setPreview((p) => ({ ...req, nonce: (p?.nonce ?? 0) + 1 }));
+      },
+      reveal: (path) => console.info('[dev] reveal', path),
+      terminal: (path) => console.info('[dev] terminal', path),
+    }),
+    [],
+  );
+  const closePreview = useCallback((restoreFocus: boolean) => {
+    setPreview(null);
+    if (restoreFocus && opener.current?.isConnected) opener.current.focus();
+    opener.current = null;
+  }, []);
+
   return (
+    <FlowMetaContext.Provider value={DEV_FLOW_META}>
+    <FilesContext.Provider value={files}>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div style={{ display: 'flex', gap: 8, padding: 8, borderBottom: '1px solid var(--border)', flexWrap: 'wrap', alignItems: 'center' }}>
         <button onClick={simulate}>模拟完整一轮</button>
@@ -147,6 +204,9 @@ export default function FlowDev() {
         <ConversationView turns={turns} onOpenSubagent={onOpen} onReply={(quote, reply) => setLastReply({ quote, reply })} />
       </div>
       <SubagentOverlay run={run} onClose={onClose} />
+      {preview && <FilePreview session="dev" cwd={DEV_CWD} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />}
     </div>
+    </FilesContext.Provider>
+    </FlowMetaContext.Provider>
   );
 }

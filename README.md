@@ -51,7 +51,7 @@ npm test            # 后端与前端单测
 ### 1. 服务端：Tailscale 模式
 
 ```bash
-COSYEE_HOST=tailscale npm start      # 源码运行（PowerShell：$env:COSYEE_HOST='tailscale'; npm start）
+npm start      # 源码运行，默认就是 Tailscale 模式；只给本机用：COSYEE_HOST=127.0.0.1 npm start（PowerShell：$env:COSYEE_HOST='127.0.0.1'; npm start）
 ```
 
 不想拉源码时，用 npm 直接从 GitHub 装（需要 Node.js 24+ 和已登录的 Claude Code CLI）：
@@ -61,7 +61,7 @@ npm i -g github:cosyeezz/cosyee#server-dist
 # 本机没装 git 时用 tarball 地址，效果一样：
 # npm i -g https://codeload.github.com/cosyeezz/cosyee/tar.gz/refs/heads/server-dist
 
-cosyee-server --tailscale            # 不加参数则只监听 127.0.0.1；--port 改端口；--help 看用法
+cosyee-server                        # 默认 Tailscale 模式；--local 只监听 127.0.0.1；--port 改端口；--help 看用法
 ```
 
 更新：重新执行同一条 `npm i -g` 命令（`--prefer-online` 可跳过 npm 缓存）。`server-dist` 分支由 `.github/workflows/server-dist.yml` 在 main 每次改动服务端 / 前端后自动构建并覆盖推送，内容是打好的单文件 `server.mjs` + 前端静态文件，没有任何依赖和安装脚本。不直接装 main 是因为 npm 装 git 仓库时会先在本机装全部开发依赖（Electron、Vite、Tauri CLI…，几百 MB）再构建。

@@ -8,6 +8,8 @@ const PIN_MS = 900;
 export interface StickControls {
   /** 滚到底部并恢复贴底（即使平滑滚动过程中内容还在增长也会跟上） */
   pinToBottom: (behavior?: ScrollBehavior) => void;
+  /** 正在贴底时立刻同步滚到底（在 layout effect 里调用：内容刚提交、还没绘制，不等下一帧的 ResizeObserver） */
+  followIfStuck: () => void;
 }
 
 /**
@@ -23,13 +25,24 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
     const ct = contentRef.current;
     if (!sc || !ct) return;
 
+    let lastTop = sc.scrollTop;
     const toBottom = () => {
       sc.scrollTop = sc.scrollHeight;
+      lastTop = sc.scrollTop;
     };
     const onScroll = () => {
+      const top = sc.scrollTop;
+      const prev = lastTop;
+      lastTop = top;
       // 平滑滚动到底的过程中会连续触发 scroll，此时还没到底，不能因此脱离贴底
       if (Date.now() < pinUntil.current) return;
-      stick.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < THRESHOLD;
+      if (sc.scrollHeight - top - sc.clientHeight < THRESHOLD) {
+        stick.current = true;
+      } else if (top < prev) {
+        // 只有「向上」滚才脱离。流式输出时内容先于滚动事件增长，
+        // 此刻量到的「离底距离」很大，但那不是用户上滚，不能因此停止跟随
+        stick.current = false;
+      }
     };
     // 用户主动上滚：立即脱离贴底，避免与内容增长抢滚动条
     const release = () => {
@@ -71,5 +84,10 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
     [scrollRef],
   );
 
-  return { pinToBottom };
+  const followIfStuck = useCallback(() => {
+    const sc = scrollRef.current;
+    if (sc && stick.current) sc.scrollTop = sc.scrollHeight;
+  }, [scrollRef]);
+
+  return { pinToBottom, followIfStuck };
 }

@@ -19,6 +19,8 @@ import { isSafeId } from './paths.js';
 import { TAILSCALE_MODE, connectionAllowed, listenAddress, originAllowed, requestAuthorized } from './security.js';
 import { Sessions } from './sessions.js';
 import { Trash } from './trash.js';
+import { ToolStatsStore } from './toolStats.js';
+import { CompactStatsStore } from './compactStats.js';
 import { DotState } from './state.js';
 import { UsageProvider, fetchUsage } from './usage.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
@@ -99,6 +101,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   let notifySidebar: () => void = () => {};
   const pins = new Pins(store, { onExpire: () => notifySidebar() });
   const trash = new Trash(store, dots, pins);
+  const toolStats = new ToolStatsStore();
+  const compactStats = new CompactStatsStore();
   // 多账号：manager / sessions 与 accounts 互相需要，同样用闭包延后取
   let accounts: Accounts | null = null;
   sessions.setFlags({
@@ -136,11 +140,23 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.disabledTools = [...names];
         store.save();
       },
+      agents: () => store.state.disabledAgents,
+      setAgents: (names) => {
+        store.state.disabledAgents = [...names];
+        store.save();
+      },
       known: () => store.state.knownTools,
       setKnown: (names) => {
         const cur = store.state.knownTools;
         if (cur.length === names.length && cur.every((n, i) => n === names[i])) return;
         store.state.knownTools = [...names];
+        store.save();
+      },
+    },
+    compactWindow: {
+      get: () => store.state.compactWindow,
+      set: (w) => {
+        store.state.compactWindow = w;
         store.save();
       },
     },
@@ -227,6 +243,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     previews,
     pins,
     trash,
+    toolStats,
+    compactStats,
     spawner: opts.spawner,
     authToken: opts.authToken,
     host: bindHost,

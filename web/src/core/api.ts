@@ -1,7 +1,23 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  Account, AccountList, AccountLogin, AccountMode, Bootstrap, ClientMsg, ContextUsage, DeletedSession, PickedItem, PreviewInfo, ServerMsg, SessionConfig, SessionSummary, SkillMode, UsageInfo, Workspace,
+  Account, AccountList, AccountLogin, AccountMode, Bootstrap, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
+import { localPathHref } from '@cosyee/shared';
+
+/** 文件预览请求的目标：session + cwd 用于服务端确定授权范围，path 是会话里出现的路径（相对 / 绝对均可） */
+export interface FileTarget {
+  session: string;
+  cwd?: string;
+  path: string;
+  line?: number;
+}
+
+/** path 按「文件系统路径」转义成 href（% # ? 不被当成 URL 语法），#L12 行号作为 fragment 附在后面 */
+function fileQuery(t: FileTarget): string {
+  const q = new URLSearchParams({ session: t.session, path: localPathHref(t.path) + (t.line ? `#L${t.line}` : '') });
+  if (t.cwd) q.set('cwd', t.cwd);
+  return q.toString();
+}
 
 async function req<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -38,6 +54,8 @@ export const api = {
   bootstrap: () => req<Bootstrap>('GET', '/api/bootstrap'),
   workspaces: () => req<{ current: string | null; list: Workspace[] }>('GET', '/api/workspaces'),
   pickWorkspace: () => req<{ workspace: Workspace | null }>('POST', '/api/workspaces/pick'),
+  /** 远程连接：网页版选择窗口里选好的工作空间文件夹 */
+  openWorkspace: (path: string) => req<{ workspace: Workspace }>('POST', '/api/workspaces/open', { path }),
   setCurrentWorkspace: (path: string) => req<{ ok: true }>('POST', '/api/workspaces/current', { path }),
   /** 置于顶部 / 从列表移除 / 在文件管理器打开：都返回最新的工作空间列表（reveal 只返回 ok） */
   moveWorkspaceTop: (path: string) => req<{ current: string | null; list: Workspace[] }>('POST', '/api/workspaces/top', { path }),
@@ -51,8 +69,15 @@ export const api = {
   deleteSession: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/delete`, { cwd }),
   restoreSession: (id: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/restore`, {}),
   purgeSession: (id: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/purge`, {}),
+  /** 批量：都传界面上看到的那些 id */
+  deleteSessions: (cwd: string, ids: string[]) =>
+    req<{ deleted: number; skipped: number }>('POST', '/api/sessions/delete-many', { cwd, ids }),
+  restoreDeleted: (ids: string[]) => req<{ restored: number }>('POST', '/api/deleted/restore', { ids }),
+  purgeDeleted: (ids: string[]) =>
+    req<{ purged: number; failed: number; error: string | null }>('POST', '/api/deleted/purge', { ids }),
   sessions: (cwd: string) => req<SessionSummary[]>('GET', `/api/sessions?${q({ cwd })}`),
-  history: (id: string, cwd: string) => req<{ entries: unknown[] }>('GET', `/api/sessions/${id}/history?${q({ cwd })}`),
+  history: (id: string, cwd: string, since?: string) =>
+    req<{ version?: string; entries?: unknown[]; unchanged?: true }>('GET', `/api/sessions/${id}/history?${q(since ? { cwd, since } : { cwd })}`),
   subagent: (id: string, toolUseId: string, cwd: string) =>
     req<{ entries: unknown[] }>('GET', `/api/sessions/${id}/subagent/${toolUseId}?${q({ cwd })}`),
   rename: (id: string, cwd: string, title: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/rename`, { cwd, title }),
@@ -84,6 +109,9 @@ export const api = {
   setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
   setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
   pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
+  /** 远程连接的网页版选择窗口：列出服务端目录（path 为空 = 当前工作空间）/ 登记选好的路径 */
+  browse: (path?: string) => req<BrowseDir>('GET', `/api/browse${path ? `?${q({ path })}` : ''}`),
+  pickPaths: (paths: string[]) => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick/paths', { paths }),
   /** 粘贴的图片：原始字节上传，返回与「+」选出的文件同形的项（带预览令牌） */
   paste: async (blob: Blob): Promise<PickedItem> => {
     const res = await fetch('/api/pastes', { method: 'POST', headers: { 'content-type': blob.type || 'application/octet-stream' }, body: blob });
@@ -94,6 +122,13 @@ export const api = {
   previewInfo: (t: string) => req<PreviewInfo>('GET', `/api/preview/${t}/info`),
   /** 图片预览地址（<img src>） */
   previewRawUrl: (t: string) => `/api/preview/${t}/raw`,
+  /** 会话工作目录内的文件预览（文本 / 图片 / PDF / 目录）；工作目录之外服务端返回 403 */
+  filePreview: (t: FileTarget) => req<FilePreview>('GET', `/api/files/preview?${fileQuery(t)}`),
+  /** 图片 / PDF 的原始内容地址（<img src> / <iframe src>） */
+  fileRawUrl: (t: FileTarget) => `/api/files/raw?${fileQuery(t)}`,
+  /** 在文件管理器中显示（文件会被选中） / 在该路径所在目录打开终端 */
+  revealFile: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/reveal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
+  openTerminalAt: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/terminal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   context: (id: string) => req<ContextUsage | null>('GET', `/api/context/${id}`),
   /**
    * cwd：会话所在目录（可选；后端没有进程时据此定位会话，省去按 id 全局查找）。
@@ -105,9 +140,14 @@ export const api = {
   setSkillMode: (name: string, mode: SkillMode) => req<{ ok: true }>('POST', '/api/skills', { name, mode }),
   removeSkill: (name: string, session: string | null, cwd: string | null) =>
     req<{ ok: true; backup: string }>('POST', '/api/skills/remove', { name, session, cwd }),
+  /** 读磁盘上的 SKILL.md（技能面板兜底：实时的 /技能 输入拿不到注入正文）；cwd 用来找项目级 skill；找不到时抛错 */
+  getSkillContent: (name: string, cwd?: string) => req<SkillContent>('GET', `/api/skills/content?${q(cwd ? { name, cwd } : { name })}`),
   setSkillModes: (modes: Record<string, SkillMode>) => req<{ ok: true }>('POST', '/api/skills', { modes }),
   /** 启用 / 停用一个内置工具（全局保存）；返回当前的已停用名单 */
   setTool: (name: string, enabled: boolean) => req<{ ok: true; disabledTools: string[] }>('POST', '/api/tools', { name, enabled }),
+  setAgent: (name: string, enabled: boolean) => req<{ ok: true; disabledAgents: string[] }>('POST', '/api/agents', { name, enabled }),
+  /** 所有会话的工具累计调用次数（服务端增量扫描会话记录）；老服务端没有这个接口时抛错 */
+  getToolStats: () => req<ToolStats>('GET', '/api/tools/stats'),
   /** 开关 MCP 服务器（按项目写进 ~/.claude.json）；返回切换后的上下文 */
   toggleMcp: (id: string, server: string, enabled: boolean, cwd?: string, draft = false) =>
     req<ContextUsage | null>('POST', `/api/context/${id}/mcp`, { server, enabled, ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),

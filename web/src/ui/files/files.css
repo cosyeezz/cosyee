@@ -1,0 +1,57 @@
+/* 本地路径：操作按钮 / 路径行 / 会话里的文件链接。颜色与间距只用 tokens.css 变量。 */
+
+/* 操作按钮：悬停所在行 / 行内任一元素聚焦 / 刚复制完时可见；触屏常显 */
+.cz-pathact {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-pathact-host:hover .cz-pathact,
+.cz-pathact-host:focus-within .cz-pathact,
+.cz-pathact:focus-visible,
+.cz-pathact.is-copied { opacity: 1; }
+.cz-pathact:hover { background: var(--bg-hover); color: var(--text); }
+.cz-pathact:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-pathact.is-copied { color: var(--tk-ok, var(--accent)); }
+/* 触屏 / 粗指针：常显，点击热区 44px（用负外边距让整行高度不变） */
+@media (hover: none), (pointer: coarse) {
+  .cz-pathact { opacity: 1; width: 44px; height: 44px; margin: -11px 0; }
+}
+
+/* 带操作的路径行 */
+.cz-localpath { display: inline-flex; align-items: center; gap: var(--sp-1); min-width: 0; max-width: 100%; }
+.cz-localpath__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+/* 会话里的文件链接：和正文链接一样的强调色，带小文件图标 */
+.cz-filelink {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: inherit;
+}
+.cz-filelink:hover .cz-filelink__text { text-decoration: underline; }
+.cz-filelink:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-sm); }
+.cz-filelink__icon { vertical-align: -2px; margin-right: 3px; }
+.cz-filelink.is-static { color: inherit; cursor: default; }

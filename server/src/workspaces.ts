@@ -24,6 +24,13 @@ export interface PersistedState {
   disabledTools: string[];
   /** 最近一次 system/init 报告的内置工具名：探测进程收不到 init，服务重启后也要能列出工具 */
   knownTools: string[];
+  /** 被关闭的智能体名（全局）：以 Agent(名字) 并入 permissions.deny 下发 */
+  disabledAgents: string[];
+  /**
+   * 自动压缩窗口（全局，token 数）：经 --settings env.CLAUDE_CODE_AUTO_COMPACT_WINDOW 下发，运行中经 apply_flag_settings；
+   * null = 不覆盖（沿用 ~/.claude/settings.json 或 CLI 默认）
+   */
+  compactWindow: number | null;
   /**
    * 额外账号（默认账号 = 基础配置目录，不在列表里）；active 为 null 表示默认账号。
    * mode：switch = 切换模式（默认），parallel = 并行模式。
@@ -51,10 +58,24 @@ export const SKILL_NAME_RE = /^[A-Za-z0-9._:@+/-]{1,200}$/;
 /** 内置工具名（Bash / Read / WebFetch …）：字母数字下划线；mcp__ 工具不在此列 */
 export const TOOL_NAME_RE = /^(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
+/** 智能体名（Explore / my-reviewer / 插件:名字）：不能含括号、空白，拼成 Agent(名字) 规则才不会歧义 */
+export const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/;
+
+/** 自动压缩窗口的允许范围（触发点 = 窗口 - 33k，窗口太小会一直压缩） */
+export const COMPACT_WINDOW_MIN = 50_000;
+export const COMPACT_WINDOW_MAX = 1_000_000;
+
+/** 合法的压缩窗口原样返回（取整），否则 null */
+export function sanitizeCompactWindow(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const n = Math.round(v);
+  return n >= COMPACT_WINDOW_MIN && n <= COMPACT_WINDOW_MAX ? n : null;
+}
+
 const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
 
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, disabledTools: [], knownTools: [], accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, disabledTools: [], knownTools: [], disabledAgents: [], compactWindow: null, accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -111,11 +132,17 @@ function sanitize(raw: unknown): PersistedState {
       if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.disabledTools.includes(t)) s.disabledTools.push(t);
     }
   }
+  if (Array.isArray(o.disabledAgents)) {
+    for (const t of o.disabledAgents) {
+      if (typeof t === 'string' && AGENT_NAME_RE.test(t) && !s.disabledAgents.includes(t)) s.disabledAgents.push(t);
+    }
+  }
   if (Array.isArray(o.knownTools)) {
     for (const t of o.knownTools) {
       if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.knownTools.includes(t)) s.knownTools.push(t);
     }
   }
+  s.compactWindow = sanitizeCompactWindow(o.compactWindow);
   const acc = o.accounts as Record<string, unknown> | undefined;
   if (acc && typeof acc === 'object') {
     if (Array.isArray(acc.list)) {

@@ -52,6 +52,9 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
   return out;
 }
 
+/** 历史过滤规则变化时递增，让前端缓存的旧结果失效 */
+const HISTORY_FORMAT = 2;
+
 export interface LocatedSession {
   file: string;
   dir: string;
@@ -253,6 +256,25 @@ export class Sessions {
     const loc = await this.locate(id, cwd);
     if (!loc) throw new HttpError(404, '会话不存在');
     return this.filterFile(loc.file);
+  }
+
+  /**
+   * 带版本号的历史：版本号由文件大小 + 修改时间（+ 过滤格式版本）组成。
+   * since 与当前版本相同时不读文件，只回 unchanged，前端直接复用上次构建好的状态（切回刚看过的会话时省掉下载和重建）。
+   * 先取版本再读文件：读的过程中文件又追加了，下次版本对不上会重新拉，不会漏。
+   */
+  async historyVersioned(id: string, cwd: string, since?: string | null): Promise<{ version: string; entries?: Json[]; unchanged?: true }> {
+    const loc = await this.locate(id, cwd);
+    if (!loc) throw new HttpError(404, '会话不存在');
+    let st: fs.Stats;
+    try {
+      st = await fs.promises.stat(loc.file);
+    } catch {
+      throw new HttpError(404, '会话不存在');
+    }
+    const version = `${HISTORY_FORMAT}.${st.size}.${st.mtimeMs}`;
+    if (since && since === version) return { version, unchanged: true };
+    return { version, entries: await this.filterFile(loc.file) };
   }
 
   async subagent(id: string, toolUseId: string, cwd: string): Promise<Json[]> {

@@ -29,3 +29,26 @@ export function excludePinned(sessions: SessionSummary[], pinned: SessionSummary
   const ids = new Set(pinned.map((p) => p.id));
   return sessions.filter((s) => !ids.has(s.id));
 }
+
+export interface WorkspaceGroup {
+  path: string;
+  name: string;
+  sessions: SessionSummary[];
+}
+
+/**
+ * 按工作空间分组：先按工作空间列表的顺序，每个工作空间一组（没有会话的也保留，方便看到全部工作空间）；
+ * 会话所属的目录不在列表里（比如工作空间已被移除）时，另起一组放在最后，不让会话消失。组内顺序沿用传入顺序。
+ */
+export function groupByWorkspace(sessions: SessionSummary[], workspaces: Workspace[]): WorkspaceGroup[] {
+  const groups: WorkspaceGroup[] = workspaces.map((w) => ({ path: w.path, name: w.name, sessions: [] }));
+  for (const s of sessions) {
+    let g = groups.find((x) => samePath(x.path, s.cwd));
+    if (!g) {
+      g = { path: s.cwd, name: workspaceName(s.cwd, workspaces), sessions: [] };
+      groups.push(g);
+    }
+    g.sessions.push(s);
+  }
+  return groups;
+}

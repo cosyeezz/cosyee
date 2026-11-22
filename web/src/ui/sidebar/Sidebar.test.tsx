@@ -116,16 +116,15 @@ const s = (id: string, title: string, over: Partial<SessionSummary> = {}): Sessi
 function props(over: Partial<SidebarProps> = {}): SidebarProps {
   return {
     workspaces: [{ path: 'F:\\Cosyee', name: 'Cosyee' }, { path: 'D:\\axiom', name: 'axiom' }],
-    currentWorkspace: 'F:\\Cosyee',
     sessions: [s('a', 'Alpha'), s('b', 'Beta')],
     pinned: [],
     deleted: [],
     currentSessionId: null,
     account: null,
-    onNewSession: vi.fn(), onCollapse: vi.fn(), onSelectWorkspace: vi.fn(), onOpenFolder: vi.fn(),
-    onMoveWorkspaceTop: vi.fn(), onRemoveWorkspace: vi.fn(), onRevealWorkspace: vi.fn(),
+    onNewSession: vi.fn(), onCollapse: vi.fn(),
     onSelectSession: vi.fn(), onTogglePin: vi.fn(), onDeleteSession: vi.fn(),
     onRestoreSession: vi.fn(), onPurgeSession: vi.fn(),
+    onDeleteSessions: vi.fn(), onRestoreSessions: vi.fn(), onPurgeSessions: vi.fn(),
     ...over,
   };
 }
@@ -158,10 +157,107 @@ describe('Sidebar', () => {
     expect(document.querySelector('.cz-sidebar__pinned')).toBeNull();
   });
 
+  it('会话列表按工作空间分组：每个工作空间一组，组头显示名字', () => {
+    const sessions = [s('a', 'Alpha'), s('z', 'Zed', { cwd: 'D:\\axiom' })];
+    mount(<Sidebar {...props({ sessions })} />);
+    const groups = [...document.querySelectorAll('.cz-sidebar__group')];
+    expect(groups.map((g) => g.querySelector('.cz-sidebar__group-name')!.textContent)).toEqual(['Cosyee', 'axiom']);
+    expect(groups.map((g) => [...g.querySelectorAll('.cz-sidebar__row-title')].map((e) => e.textContent))).toEqual([['Alpha'], ['Zed']]);
+  });
+
+  it('点组头折叠 / 展开该组；搜索时所有有匹配的组都展开，没有匹配的组隐藏', () => {
+    const sessions = [s('a', 'Alpha'), s('z', 'Zed', { cwd: 'D:\\axiom' })];
+    mount(<Sidebar {...props({ sessions })} />);
+    click(document.querySelector('.cz-sidebar__group-head')!);
+    expect(listTitles()).toEqual(['Zed']);
+    click(document.querySelector('.cz-sidebar__group-head')!);
+    expect(listTitles()).toEqual(['Alpha', 'Zed']);
+
+    click(document.querySelector('.cz-sidebar__group-head')!); // 先折叠 Cosyee
+    click(byLabel('搜索')!);
+    typeInto(document.querySelector('input') as HTMLInputElement, 'alpha');
+    expect(listTitles()).toEqual(['Alpha']);
+    expect(document.querySelectorAll('.cz-sidebar__group').length).toBe(1);
+  });
+
+  it('侧栏里不再有工作空间选择器', () => {
+    mount(<Sidebar {...props()} />);
+    expect(document.querySelector('.cz-sidebar__ws')).toBeNull();
+  });
+
   it('运行中的会话：删除按钮禁用', () => {
     mount(<Sidebar {...props({ sessions: [s('a', 'Alpha', { dot: 'running' })] })} />);
-    const del = document.querySelector('.cz-sidebar__list .cz-sidebar__act--danger') as HTMLButtonElement;
+    const del = document.querySelector('.cz-sidebar__list [role="listitem"] .cz-sidebar__act--danger') as HTMLButtonElement;
     expect(del.disabled).toBe(true);
+    // 组里只有执行中的会话：组头的「删除全部」也禁用
+    expect((byLabel('删除此工作空间的全部会话') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('组头「删除全部会话」：气泡确认后只删这一组显示的、不在执行中的会话；双击不能跳过确认', () => {
+    const onDeleteSessions = vi.fn();
+    const sessions = [
+      s('a', 'Alpha'), s('b', 'Beta', { pinned: 'manual' }), s('r', 'Run', { dot: 'running' }),
+      s('z', 'Zed', { cwd: 'D:\\axiom' }),
+    ];
+    mount(<Sidebar {...props({ sessions, pinned: [sessions[1]!], onDeleteSessions })} />);
+    const btn = document.querySelector('.cz-sidebar__group [aria-label="删除此工作空间的全部会话"]')!;
+    click(btn);
+    click(btn);
+    dblclick(btn);
+    expect(onDeleteSessions).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(CONFIRM_DELAY_MS + 1); });
+    const pop = document.querySelector('.cz-sidebar__confirm')!;
+    expect(pop.textContent).toContain('删除「Cosyee」的全部 1 个会话？');
+    expect(pop.textContent).toContain('1 个正在执行的会话会跳过');
+    expect(pop.textContent).toContain('置顶的会话不受影响');
+    click(pop.querySelector('.cz-sidebar__confirm-btn--danger')!);
+    expect(onDeleteSessions).toHaveBeenCalledWith('F:\\Cosyee', ['a']);
+  });
+
+  it('搜索时组头的删除只针对匹配的会话', () => {
+    const onDeleteSessions = vi.fn();
+    mount(<Sidebar {...props({ sessions: [s('a', 'Alpha'), s('b', 'Beta')], onDeleteSessions })} />);
+    click(byLabel('搜索')!);
+    typeInto(document.querySelector('input') as HTMLInputElement, 'beta');
+    click(byLabel('删除此工作空间中匹配的会话')!);
+    act(() => { vi.advanceTimersByTime(CONFIRM_DELAY_MS + 1); });
+    expect(document.querySelector('.cz-sidebar__confirm')!.textContent).toContain('中匹配的 1 个会话');
+    click(document.querySelector('.cz-sidebar__confirm-btn--danger')!);
+    expect(onDeleteSessions).toHaveBeenCalledWith('F:\\Cosyee', ['b']);
+  });
+
+  it('已删除标题行：全部恢复 / 全部永久删除；展开搜索后只作用于匹配的；没有已删除时不显示', () => {
+    const onRestoreSessions = vi.fn();
+    const onPurgeSessions = vi.fn();
+    const deleted: DeletedSession[] = [
+      { id: 'd1', cwd: 'D:\\axiom', title: '旧会话', deletedAt: 2 },
+      { id: 'd2', cwd: 'F:\\Cosyee', title: '另一个', deletedAt: 1 },
+    ];
+    mount(<Sidebar {...props({ deleted, onRestoreSessions, onPurgeSessions })} />);
+    click(byLabel('全部恢复')!);
+    act(() => { vi.advanceTimersByTime(CONFIRM_DELAY_MS + 1); });
+    expect(document.querySelector('.cz-sidebar__confirm-btn--danger')).toBeNull(); // 恢复不是危险操作
+    click(document.querySelector('.cz-sidebar__confirm-btn--primary')!);
+    expect(onRestoreSessions).toHaveBeenCalledWith(['d1', 'd2']);
+
+    click(document.querySelector('.cz-sidebar__deleted-head')!);
+    click(byLabel('搜索已删除的会话')!);
+    typeInto(document.querySelector('.cz-sidebar__deleted input') as HTMLInputElement, '另一');
+    click(byLabel('永久删除匹配的会话')!);
+    act(() => { vi.advanceTimersByTime(CONFIRM_DELAY_MS + 1); });
+    expect(document.querySelector('.cz-sidebar__confirm')!.textContent).toContain('永久删除匹配的 1 个会话？');
+    click(document.querySelector('.cz-sidebar__confirm-btn--danger')!);
+    expect(onPurgeSessions).toHaveBeenCalledWith(['d2']);
+
+    // 收起时清空搜索词：再次作用于全部
+    click(document.querySelector('.cz-sidebar__deleted-head')!);
+    expect(byLabel('全部永久删除')).not.toBeNull();
+  });
+
+  it('没有已删除的会话时标题行不出现批量按钮', () => {
+    mount(<Sidebar {...props()} />);
+    expect(byLabel('全部恢复')).toBeNull();
+    expect(byLabel('全部永久删除')).toBeNull();
   });
 
   it('已删除区默认折叠，显示数量，点开后列出带工作空间名的行', () => {

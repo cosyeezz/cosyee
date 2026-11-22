@@ -16,7 +16,7 @@ const HOME: &str = "http://tauri.localhost/";
 const HOME: &str = "tauri://localhost/";
 
 /// 注入到每个页面（包括服务端页面）的外壳脚本：桌面端画一行自绘标题栏（菜单 / 当前服务器 / 窗口按钮），
-/// 手机端保留左边缘「回到服务器列表」小标签；两端都支持 Ctrl/⌘+Shift+L 回到服务器列表。
+/// 手机端按系统栏让位、返回手势回到服务器列表；两端都支持 Ctrl/⌘+Shift+L 回到服务器列表。
 /// 服务端页面只开放了窗口相关的权限（见 capabilities/remote.json），调不到本机服务等自定义命令。
 fn shell_script() -> String {
     let os = if cfg!(target_os = "macos") {

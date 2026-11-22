@@ -3,22 +3,27 @@ import fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type UsageInfo } from '@cosyee/shared';
+import { promisify } from 'node:util';
+import zlib from 'node:zlib';
+import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type UsageInfo } from '@cosyee/shared';
 import { type Accounts, RunningError } from './accounts/index.js';
+import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
+import { openRaw, previewFile, resolveForAction } from './files.js';
 import { gitBranch } from './git.js';
-import { isSafeId, normalizeDir, pathKey } from './paths.js';
+import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
+import { readSkillContent } from './skillsDisk.js';
 import { PASTE_LIMIT, PasteTypeError, savePaste } from './pastes.js';
 import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
 import type { Previews } from './preview.js';
-import { type Spawner, defaultSpawner, revealFolder } from './reveal.js';
+import { type Spawner, defaultSpawner, openTerminal, revealFolder, revealPath } from './reveal.js';
 import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAuthorized, tokenOk } from './security.js';
 import type { Sessions } from './sessions.js';
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
-import { HttpError, SKILL_NAME_RE, TOOL_NAME_RE } from './workspaces.js';
+import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, sanitizeCompactWindow } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
 
@@ -46,6 +51,10 @@ export interface HttpDeps {
   authToken?: string;
   /** 监听地址（决定 Host / Origin 白名单），默认 127.0.0.1 */
   host?: string;
+  /** 跨会话的工具累计调用次数；不传则 GET /api/tools/stats 返回 404 */
+  toolStats?: { get(): Promise<ToolStats> };
+  /** 跨会话的压缩效果统计；不传则 GET /api/compact/stats 返回 404 */
+  compactStats?: { get(): Promise<CompactStats> };
   /** POST /api/shutdown（只接受本机回环连接）时调用；不传则该接口 404。客户端用它停止后台运行的本地服务。 */
   onShutdown?: () => void;
 }
@@ -53,7 +62,10 @@ export interface HttpDeps {
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const s = JSON.stringify(body ?? null);
+  writeJson(res, status, JSON.stringify(body ?? null));
+}
+
+function writeJson(res: ServerResponse, status: number, s: string): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(s),
@@ -61,6 +73,27 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
     'x-content-type-options': 'nosniff',
   });
   res.end(s);
+}
+
+const gzip = promisify(zlib.gzip);
+/** 超过这个大小、且客户端不在本机时才压缩（本机回环压缩只会更慢） */
+const GZIP_MIN = 64 * 1024;
+
+/** 大响应（会话历史等）对远程客户端 gzip：几十 MB 的 JSON 走 Tailscale / 局域网时差别很大 */
+export async function sendJsonMaybeGzip(req: IncomingMessage, res: ServerResponse, status: number, body: unknown): Promise<void> {
+  const s = JSON.stringify(body ?? null);
+  const accepts = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
+  if (s.length < GZIP_MIN || !accepts || isLoopbackAddr(req.socket.remoteAddress)) return writeJson(res, status, s);
+  const z = await gzip(s, { level: 4 });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-encoding': 'gzip',
+    'content-length': z.length,
+    vary: 'accept-encoding',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(z);
 }
 
 /** Host 头必须是允许的主机名 + 本端口，防 DNS rebinding（监听非本机地址时见 security.allowedHostnames）。 */
@@ -104,6 +137,14 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
 function needCwd(v: unknown): string {
   if (typeof v !== 'string' || !v.trim()) throw new HttpError(400, '缺少 cwd');
   return normalizeDir(v);
+}
+
+/** 批量操作的会话 id 列表：非空字符串数组，每个都要合法，去重；上限防止误传超大数组 */
+function needIds(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length === 0) throw new HttpError(400, '缺少 ids');
+  if (v.length > 10000) throw new HttpError(400, 'ids 太多');
+  for (const id of v) if (typeof id !== 'string' || !isSafe(id)) throw new HttpError(400, '会话 id 不合法');
+  return [...new Set(v as string[])];
 }
 
 function needPath(body: Json): string {
@@ -207,7 +248,9 @@ export function createHandler(deps: HttpDeps) {
         homeDir: os.homedir(),
         supportsMixedPick: supportsMixed,
         defaults: deps.store.state.defaults ?? { model: 'sonnet', effort: 'medium' },
+        remote: !isLoopbackAddr(req.socket.remoteAddress),
       };
+      if (b.remote) b.supportsMixedPick = true; // 远程用网页版选择窗口，文件和文件夹可以一起选
       return sendJson(res, 200, b);
     }
 
@@ -225,10 +268,19 @@ export function createHandler(deps: HttpDeps) {
     if (method === 'GET' && p === '/api/workspaces') return sendJson(res, 200, deps.workspaces.list());
 
     if (method === 'POST' && p === '/api/workspaces/pick') {
+      onlyLocal(req);
       const items = await runPick(req, lock, { mode: 'folders', title: '选择工作空间文件夹' });
       const first = items.find((i) => i.kind === 'folder');
       if (!first) return sendJson(res, 200, { workspace: null });
       const ws = deps.workspaces.add(first.path);
+      deps.workspaces.setCurrent(ws.path);
+      return sendJson(res, 200, { workspace: ws });
+    }
+
+    // 网页版选择窗口选出的工作空间文件夹（远程连接）
+    if (method === 'POST' && p === '/api/workspaces/open') {
+      const dir = await statFolder((await readJson(req)).path);
+      const ws = deps.workspaces.add(dir);
       deps.workspaces.setCurrent(ws.path);
       return sendJson(res, 200, { workspace: ws });
     }
@@ -252,6 +304,7 @@ export function createHandler(deps: HttpDeps) {
     }
 
     if (method === 'POST' && p === '/api/workspaces/reveal') {
+      onlyLocal(req);
       const ws = deps.workspaces.find(needPath(await readJson(req)));
       if (!ws) throw new HttpError(404, '工作空间不在列表里');
       if (!revealFolder(ws.path, deps.spawner ?? defaultSpawner)) throw new HttpError(404, '文件夹不存在');
@@ -267,6 +320,30 @@ export function createHandler(deps: HttpDeps) {
     }
 
     if (method === 'GET' && p === '/api/deleted') return sendJson(res, 200, deps.trash.list());
+
+    // 批量操作都由前端给出明确的 id 列表（界面上看到的那些），服务端不自己扩大范围
+    // 工作空间分组的「删除全部会话」：只删该工作空间列表里确实存在、且未删除的会话；执行中的跳过
+    if (method === 'POST' && p === '/api/sessions/delete-many') {
+      const body = await readJson(req);
+      const cwd = needCwd(body.cwd);
+      const ids = new Set(needIds(body.ids));
+      const rows = (await deps.sessions.list(cwd)).filter((r) => ids.has(r.id));
+      const r = deps.trash.softDeleteMany(rows.map((s) => ({ id: s.id, cwd, title: s.title })));
+      if (r.deleted.length) deps.manager.notifySidebar();
+      return sendJson(res, 200, { deleted: r.deleted.length, skipped: r.skipped.length });
+    }
+
+    if (method === 'POST' && p === '/api/deleted/restore') {
+      const restored = deps.trash.restoreMany(needIds((await readJson(req)).ids));
+      if (restored.length) deps.manager.notifySidebar();
+      return sendJson(res, 200, { restored: restored.length });
+    }
+
+    if (method === 'POST' && p === '/api/deleted/purge') {
+      const r = await deps.trash.purgeMany(needIds((await readJson(req)).ids), (sid, cwd) => deps.sessions.locate(sid, cwd));
+      if (r.purged.length) deps.manager.notifySidebar();
+      return sendJson(res, 200, { purged: r.purged.length, failed: r.failed.length, error: r.failed[0]?.error ?? null });
+    }
 
     if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/(pin|unpin|delete|restore|purge)$/.exec(p))) {
       const id = decodeURIComponent(m[1]!);
@@ -293,12 +370,12 @@ export function createHandler(deps: HttpDeps) {
     if (method === 'GET' && p === '/api/sessions') return sendJson(res, 200, await deps.sessions.list(needCwd(q.get('cwd'))));
 
     if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/history$/.exec(p))) {
-      return sendJson(res, 200, { entries: await deps.sessions.history(decodeURIComponent(m[1]!), needCwd(q.get('cwd'))) });
+      return sendJsonMaybeGzip(req, res, 200, await deps.sessions.historyVersioned(decodeURIComponent(m[1]!), needCwd(q.get('cwd')), q.get('since')));
     }
 
     if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/subagent\/([^/]+)$/.exec(p))) {
       const entries = await deps.sessions.subagent(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!), needCwd(q.get('cwd')));
-      return sendJson(res, 200, { entries });
+      return sendJsonMaybeGzip(req, res, 200, { entries });
     }
 
     if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/rename$/.exec(p))) {
@@ -370,6 +447,45 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true, disabledTools });
     }
 
+    // 开启 / 关闭一个智能体（全局保存；经 permissions.deny 的 Agent(名字) 下发）
+    if (method === 'POST' && p === '/api/agents') {
+      const body = await readJson(req);
+      if (typeof body.name !== 'string' || !AGENT_NAME_RE.test(body.name)) throw new HttpError(400, '智能体名不合法');
+      if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
+      const disabledAgents = await deps.manager.setAgentEnabled(body.name, body.enabled);
+      return sendJson(res, 200, { ok: true, disabledAgents });
+    }
+
+    // 自动压缩窗口（全局；null = 不覆盖）。运行中的会话立即生效，新启动的会话经 --settings 带上
+    if (method === 'POST' && p === '/api/compact-window') {
+      const body = await readJson(req);
+      const w = body.window === null ? null : sanitizeCompactWindow(body.window);
+      if (body.window !== null && w === null) throw new HttpError(400, `窗口需在 ${COMPACT_WINDOW_MIN}–${COMPACT_WINDOW_MAX} token 之间`);
+      const window = await deps.manager.setCompactWindow(w);
+      return sendJson(res, 200, { ok: true, window });
+    }
+
+    // 跨会话的压缩效果统计（扫描主会话记录，文件没变的走缓存）
+    if (method === 'GET' && p === '/api/compact/stats' && deps.compactStats) {
+      return sendJson(res, 200, await deps.compactStats.get());
+    }
+
+    // 所有会话的工具累计调用次数（增量扫描会话记录）
+    if (method === 'GET' && p === '/api/tools/stats' && deps.toolStats) {
+      return sendJson(res, 200, await deps.toolStats.get());
+    }
+
+    // 读磁盘上的 SKILL.md（技能面板兜底）：只服务磁盘扫描到的 skill，名字不拼进路径
+    if (method === 'GET' && p === '/api/skills/content') {
+      const name = q.get('name') ?? '';
+      if (!SKILL_NAME_RE.test(name)) throw new HttpError(400, 'skill 名不合法');
+      const rawCwd = q.get('cwd');
+      const cwd = rawCwd && rawCwd.trim() ? normalizeDir(rawCwd) : null;
+      const content = readSkillContent(name, baseClaudeHome(), cwd);
+      if (!content) throw new HttpError(404, '找不到这个 skill');
+      return sendJson(res, 200, content);
+    }
+
     // 移除用户级 / 项目级 skill（目录移到 ~/.cosyee/removed-skills 备份，不直接删除）
     if (method === 'POST' && p === '/api/skills/remove') {
       const body = await readJson(req);
@@ -382,11 +498,21 @@ export function createHandler(deps: HttpDeps) {
     }
 
     if (method === 'POST' && p === '/api/pick') {
+      onlyLocal(req);
       const body = await readJson(req);
       const mode = parseMode(body.mode);
       const start = deps.workspaces.list().current ?? undefined;
       const items = await runPick(req, lock, { mode, title: '选择文件或文件夹', startDir: start });
       return sendJson(res, 200, { items: deps.previews.register(items), supportsMixed });
+    }
+
+    // 网页版选择窗口（远程连接时代替系统对话框）：列目录 / 登记选好的路径
+    if (method === 'GET' && p === '/api/browse') {
+      return sendJson(res, 200, await browseDir(q.get('path'), deps.workspaces.list().current ?? os.homedir()));
+    }
+    if (method === 'POST' && p === '/api/pick/paths') {
+      const items = await statPicked((await readJson(req)).paths);
+      return sendJson(res, 200, { items: deps.previews.register(items), supportsMixed: true });
     }
 
     // 粘贴图片：请求体就是图片原始字节（Content-Type: image/*），存盘后按「选出的文件」登记，前端当普通图片标签用
@@ -423,6 +549,51 @@ export function createHandler(deps: HttpDeps) {
       return;
     }
 
+    // 会话工作目录内的文件预览。cwd 由服务端按会话 id 解析（运行中的会话 → 会话记录头部），
+    // 客户端传的 cwd 只在它是已打开的工作空间时才当作兜底（新会话还没有记录时）；授权规则见 files.ts。
+    if (method === 'GET' && p === '/api/files/preview') {
+      const cwd = await sessionCwd(q.get('session'), q.get('cwd'));
+      return sendJson(res, 200, await previewFile(cwd, q.get('path')));
+    }
+
+    if (method === 'GET' && p === '/api/files/raw') {
+      const cwd = await sessionCwd(q.get('session'), q.get('cwd'));
+      const t = await openRaw(cwd, q.get('path'));
+      const headers: Record<string, string | number> = {
+        'content-type': t.type,
+        'content-length': t.size,
+        'cache-control': 'private, no-cache',
+        'x-content-type-options': 'nosniff',
+      };
+      if (t.svg) headers['content-security-policy'] = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:";
+      res.writeHead(200, headers);
+      // 句柄已按 O_NOFOLLOW + dev/ino 校验过；流结束 / 出错 / 客户端断开时由 autoClose 关闭
+      const stream = t.handle.createReadStream({ start: 0, end: Math.max(0, t.size - 1), autoClose: true });
+      if (t.size === 0) {
+        void t.handle.close();
+        res.end();
+        return;
+      }
+      stream.on('error', () => res.destroy());
+      res.on('close', () => stream.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    if (method === 'POST' && (p === '/api/files/reveal' || p === '/api/files/terminal')) {
+      onlyLocal(req);
+      const body = await readJson(req);
+      const cwd = await sessionCwd(body.session, body.cwd);
+      const target = await resolveForAction(cwd, body.path);
+      const spawner = deps.spawner ?? defaultSpawner;
+      if (p === '/api/files/reveal') {
+        if (!revealPath(target.abs, spawner)) throw new HttpError(404, '文件不存在');
+      } else if (!(await openTerminal(target.isDir ? target.abs : path.dirname(target.abs), spawner))) {
+        throw new HttpError(500, '无法打开终端');
+      }
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (method === 'GET' && (m = /^\/api\/context\/([^/]+)$/.exec(p))) {
       const id = decodeURIComponent(m[1]!);
       if (!isSafe(id)) throw new HttpError(400, '会话 id 不合法');
@@ -453,6 +624,27 @@ export function createHandler(deps: HttpDeps) {
     }
 
     throw new HttpError(404, '接口不存在');
+  }
+
+  /**
+   * 文件接口用的会话工作目录：只信服务端知道的（运行中的会话 → 会话记录头部里的 cwd）；
+   * 都没有时（新会话还没产生记录）才接受客户端给的 cwd，且它必须是已打开的工作空间。
+   */
+  async function sessionCwd(session: unknown, hint: unknown): Promise<string> {
+    if (typeof session !== 'string' || !isSafe(session)) throw new HttpError(400, '会话 id 不合法');
+    const known = deps.manager.knownCwd(session) ?? (await deps.sessions.findCwd(session));
+    if (known) return normalizeDir(known);
+    if (typeof hint === 'string' && hint.trim()) {
+      const key = pathKey(normalizeDir(hint));
+      const ws = deps.workspaces.list().list.find((w) => pathKey(normalizeDir(w.path)) === key);
+      if (ws) return normalizeDir(ws.path);
+    }
+    throw new HttpError(404, '找不到该会话的工作目录');
+  }
+
+  /** 在服务端桌面上弹窗口的操作只接受本机连接：远程设备看不到这些窗口（前端远程时也不显示这些按钮） */
+  function onlyLocal(req: IncomingMessage): void {
+    if (!isLoopbackAddr(req.socket.remoteAddress)) throw new HttpError(403, '远程连接不能在服务器桌面上打开窗口');
   }
 
   /**

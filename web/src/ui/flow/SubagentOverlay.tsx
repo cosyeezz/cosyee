@@ -1,7 +1,8 @@
 // 子代理浮层：右侧滑出的大面板，复用 TurnView 展示子代理自己的会话流。
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SubagentRun } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
+import { useMorph } from '../motion/morph';
 import { SUBAGENT_TITLE_CLASS, TurnView } from './TurnView';
 import { effortText, prettyModel } from './format';
 import './status.css';
@@ -22,24 +23,34 @@ export interface SubagentOverlayProps {
 function OverlayPanel({ run, onClose, sessionEffort }: { run: SubagentRun; onClose: () => void; sessionEffort?: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const [taskOpen, setTaskOpen] = useState(true);
   useStickToBottom(scrollRef, contentRef);
+  // 从被点击的子代理卡片原位展开，关闭时缩回那张卡片
+  const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true });
+  const close = useCallback(() => requestClose(onClose), [requestClose, onClose]);
 
   // Esc 关闭
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        close();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [close]);
 
   return (
-    <div className="cz-flow cz-flow__overlay" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="cz-flow__panel" role="dialog" aria-modal="true" aria-label={run.title}>
+    <div
+      ref={scrimRef}
+      className="cz-flow cz-flow__overlay"
+      role="presentation"
+      onMouseDown={(e) => e.target === e.currentTarget && close()}
+    >
+      <aside ref={panelRef} className="cz-flow__panel" role="dialog" aria-modal="true" aria-label={run.title}>
         <header className="cz-flow__panel-head">
           <Icon name={STATUS_ICON[run.status]} size={18} />
           <div className="cz-flow__panel-title">
@@ -52,7 +63,7 @@ function OverlayPanel({ run, onClose, sessionEffort }: { run: SubagentRun; onClo
                 .join(' · ')}
             </span>
           </div>
-          <button type="button" className="cz-flow__icon-btn" onClick={onClose} aria-label="关闭" title="关闭 (Esc)">
+          <button type="button" className="cz-flow__icon-btn" onClick={close} aria-label="关闭" title="关闭 (Esc)">
             <Icon name="close" size={16} />
           </button>
         </header>
