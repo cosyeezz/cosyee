@@ -130,6 +130,23 @@ export function parseUserText(text: string): { userText: string; attachments: At
   return { userText, attachments };
 }
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * parseUserText 的逆向：把正文里的占位名（file1 / img1 / folder1）换回 `@"<绝对路径>"`。
+ * 用于「复制」（粘到别处也是完整路径）和「分支」时把原文填回输入框（能解析回标签）。
+ * 匹配规则与 prepareUserMarkdown 一致：长标签在前（file10 不被 file1 抢走），两侧不能是字母数字下划线（不命中 myfile1）。
+ * 同名标签只认 attachments 里第一个（一条消息内标签本就不重名）。
+ */
+export function expandLabels(text: string, attachments: Attachment[]): string {
+  if (!attachments.length) return text;
+  const pathByLabel = new Map<string, string>();
+  for (const a of attachments) if (!pathByLabel.has(a.label)) pathByLabel.set(a.label, a.path);
+  const alt = [...pathByLabel.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join('|');
+  const re = new RegExp(`(?<![A-Za-z0-9_])(${alt})(?![A-Za-z0-9_])`, 'g');
+  return text.replace(re, (m) => mention(pathByLabel.get(m)!));
+}
+
 /**
  * 把消息文本里的 `@"路径"` 拆成片段（文字 / 标签），用于把撤回 / 回退的原文还原回输入框。
  * 识别规则与 parseUserText 相同；标签的 label 留空，由编辑区按出现顺序重新编号。没有引用时返回单个文本片段（空串返回 []）。

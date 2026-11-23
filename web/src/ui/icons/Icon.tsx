@@ -20,7 +20,7 @@ export type IconName =
   // 会话流滚动导航（回到上一个 / 下一个交付点）
   | 'arrow-up' | 'arrow-down'
   // 侧栏
-  | 'search' | 'pin' | 'trash' | 'restore' | 'folder-reveal' | 'pencil'
+  | 'search' | 'pin' | 'pin-on' | 'trash' | 'restore' | 'folder-reveal' | 'pencil'
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
   | 'thinking'
   // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
@@ -152,8 +152,20 @@ const SIMPLE: Record<string, JSX.Element> = {
       <path d="M10.4 10.4l3.1 3.1" />
     </>
   ),
-  // 置顶（上箭头顶到一条横线）与删除（垃圾桶）：竖向都是 y 2.5–14，视觉等高
-  pin: <path d="M3.5 2.5h9M8 14V6.2M4.8 9.2L8 6l3.2 3.2" />,
+  // 置顶（Lucide 图钉，24→16 缩放 ×.575）与删除（垃圾桶）：竖向都是 y 2.5–14，视觉等高
+  pin: (
+    <g transform="translate(1.1 1.35) scale(.575)" strokeWidth="2.43">
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </g>
+  ),
+  // 置顶（已开启）：实心填充的图钉
+  'pin-on': (
+    <g transform="translate(1.1 1.35) scale(.575)" strokeWidth="2.43">
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" fill="currentColor" />
+    </g>
+  ),
   trash: (
     <>
       <path d="M2.5 4.2h11M6 4.2V2.5h4v1.7" />

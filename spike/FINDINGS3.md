@@ -177,3 +177,15 @@ follow-up：`enqueue` → `dequeue` → 普通 `user` 条目（uuid 即我们的
 ## 9. 未实测
 
 `requeue_if_interrupted_within_ms`；lifecycle `discarded`/`refused`；interrupt 响应 `turn` / `put_back`；block 数组（含图片）的 echo；steering 在最后一次工具结果之后才到达时的行为；子代理并行时 `next` 并入哪一层；不带 `interrupt_if_running` 时运行中 rewind 是否被拒。
+
+## initialize 的 models（模型菜单数据源）— 2026-11-23，CLI 2.1.326，脚本 `models-probe.mjs`
+
+不发消息起 `claude -p --input-format stream-json …`，发 `control_request initialize`，约 0.6–0.7s 返回（不调模型、不耗额度）。`response.account` 含邮箱，只取 `models`。
+
+| 情形 | models |
+|---|---|
+| 订阅账号 | `default`（Default (recommended)）+ `opus/sonnet/fable/haiku`（displayName 带版本：Opus 5.5 …）+ 全名 9 个（`claude-fable-5-1`、`claude-haiku-4-5-20251001`、`claude-sonnet-5`、`claude-opus-5`、`claude-fable-5`、`claude-opus-4-8/4-7/4-6`、`claude-sonnet-4-6`） |
+| API 账号（第三方 Base URL，无映射） | 只有 `default` + 4 个别名；displayName 只是「Opus」「Sonnet」，版本在 description 开头：`Opus 5.5 · Best for … · $4/$20 per Mtok` |
+| API + `ANTHROPIC_DEFAULT_*_MODEL[_NAME]` | 映射过的别名：displayName = `_NAME`，没给就 = 模型 id；resolvedModel = 映射值（含 `[1m]`）；description `Custom Sonnet model (1M context)`；没映射的别名保持原样 |
+
+`supportedEffortLevels`：多数 5 档；`claude-opus-4-6` / `claude-sonnet-4-6` 无 xhigh；`claude-haiku-4-5-20251001` 没有该字段（不支持强度）；自定义映射的别名报 5 档。

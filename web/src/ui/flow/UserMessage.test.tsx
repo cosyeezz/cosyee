@@ -13,11 +13,11 @@ import { prepareUserMarkdown } from './userMarkdown';
 let root: Root | null = null;
 let host: HTMLElement | null = null;
 
-function render(text: string, attachments: Attachment[] = []) {
+function render(text: string, attachments: Attachment[] = [], onFork?: (stay: boolean) => void) {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() => root!.render(<UserMessage text={text} attachments={attachments} />));
+  act(() => root!.render(<UserMessage text={text} attachments={attachments} onFork={onFork} />));
   return host;
 }
 afterEach(() => {
@@ -117,6 +117,44 @@ describe('UserMessage Markdown', () => {
     const a = h.querySelector('a')!;
     expect(a.getAttribute('href')).toBe('https://example.com');
     expect(a.getAttribute('target')).toBe('_blank');
+  });
+});
+
+describe('UserMessage 气泡左侧的复制 / 分支', () => {
+  const click = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  const btns = (h: HTMLElement) => [...h.querySelectorAll<HTMLButtonElement>('.cz-flow__acts .cz-flow__icon-btn')];
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('不传 onFork 时只有复制按钮；传了则分支在复制之前', () => {
+    expect(btns(render('你好')).map((b) => b.getAttribute('aria-label'))).toEqual(['复制原文']);
+    expect(btns(render('你好', [], () => {})).map((b) => b.getAttribute('aria-label')))
+      .toEqual(['从这条消息之前分支', '复制原文']);
+  });
+
+  it('复制的是占位名还原后的原文（@"绝对路径"），复制后短暂提示已复制', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const h = render('改 file1', [att('file', 'file1', 'C:\\a b\\c.ts')]);
+    const copy = btns(h)[0]!;
+    click(copy);
+    await act(async () => { await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith('改 @"C:\\a b\\c.ts"');
+    expect(copy.getAttribute('title')).toBe('已复制');
+  });
+
+  it('分支按钮弹出两种去向，选中后带上 stay', () => {
+    const onFork = vi.fn();
+    const h = render('你好', [], onFork);
+    const rows = () => [...document.querySelectorAll('.cz-menu__row')];
+    click(btns(h)[0]!);
+    expect(rows().map((r) => r.querySelector('.cz-menu__label')?.textContent)).toEqual(['分支并切过去', '分支，留在当前会话']);
+    click(rows()[1]!);
+    expect(onFork).toHaveBeenCalledWith(true);
+    expect(rows()).toHaveLength(0); // 选完菜单关闭
+
+    click(btns(h)[0]!);
+    click(rows()[0]!);
+    expect(onFork).toHaveBeenLastCalledWith(false);
   });
 });
 

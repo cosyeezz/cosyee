@@ -71,6 +71,24 @@ describe('技能加载：实时 fixture', () => {
   });
 });
 
+describe('本地命令：标记 local', () => {
+  it('CLI 自己处理的命令（实时 / 历史都）标 local=true', () => {
+    const live = applyEvent(initState(), user('/model haiku'), 1);
+    expect(live.turns[0]).toMatchObject({ local: true, userText: '/model haiku' });
+    const hist = fromHistory([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-args></command-args>' } },
+    ]);
+    expect(hist.turns[0]).toMatchObject({ local: true });
+  });
+  it('技能与会产生模型回复的命令不标', () => {
+    let s = applyEvent(initState(), { type: 'system', subtype: 'init', skills: ['probe-skill'] }, 1);
+    s = applyEvent(s, user('/probe-skill beta'), 1);
+    s = applyEvent(s, user('/init'), 1);
+    s = applyEvent(s, user('普通消息'), 1);
+    expect(s.turns.map((t) => t.local)).toEqual([undefined, undefined, undefined]);
+  });
+});
+
 describe('技能加载：历史 fixture', () => {
   it('三轮；/技能 的正文条目建出 user 来源记录，带正文', () => {
     expect(hist.turns).toHaveLength(3);

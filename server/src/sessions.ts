@@ -1,4 +1,6 @@
-// 会话列表 / 历史 / 子代理 / 改名：读写 ~/.claude/projects 下的 jsonl（只读，唯一的写入是改名追加两行）。
+// 会话列表 / 历史 / 子代理 / 改名 / 分支：读 ~/.claude/projects 下的 jsonl。
+// 写入只有两处：改名往末尾追加两行；分支写出一份新的 <新id>.jsonl（源记录始终只读）。
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -6,7 +8,7 @@ import {
   type CostParts, type PinKind, type PriceTable, type RequestUsage, type SessionConfig, type SessionSummary, type SubagentCost,
   ZERO_COST, addCost, requestCost, uncachedCost,
 } from '@cosyee/shared';
-import { encodeCwdCandidates, isSafeId, projectsDir } from './paths.js';
+import { encodeCwdCandidates, isSafeId, isSessionUuid, projectsDir } from './paths.js';
 import type { DotState } from './state.js';
 import {
   HistoryFilter, type Json, type Scan, mergeScans, newScan, parseLine, pickLastActive, pickTitle, scanLines, splitLines,
@@ -15,6 +17,8 @@ import { HttpError } from './workspaces.js';
 
 const WINDOW = 64 * 1024;
 const CONCURRENCY = 16;
+/** 分支链最多往上追几层（防环、防无意义的深链） */
+const FORK_CHAIN_MAX = 20;
 
 interface CacheEntry {
   mtimeMs: number;
@@ -58,6 +62,13 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
 /** 历史过滤规则变化时递增，让前端缓存的旧结果失效 */
 const HISTORY_FORMAT = 2;
 
+/** 分支会话的标题：「分支 · 原标题」（原标题已经带前缀时不重复加） */
+const FORK_PREFIX = '分支 · ';
+function forkTitle(src: string): string {
+  const base = src.startsWith(FORK_PREFIX) ? src.slice(FORK_PREFIX.length) : src;
+  return (FORK_PREFIX + base).slice(0, 200);
+}
+
 export interface LocatedSession {
   file: string;
   dir: string;
@@ -67,6 +78,8 @@ export interface LocatedSession {
 export interface SessionFlags {
   isDeleted(id: string): boolean;
   pinKind(id: string): PinKind | null;
+  /** 分支会话的来源会话 id（子代理记录留在来源会话下，要顺着它去找）；不是分支返回 null */
+  forkSrcOf?(id: string): string | null;
   /** 并行模式下会话所属账号的显示名（其它情况返回 null / 不提供） */
   accountOf?(id: string): string | null;
   /** 会话最近一次使用的配置（发送 / 切换时记下）；没有记录返回 null */
@@ -280,37 +293,58 @@ export class Sessions {
     return { version, entries: await this.filterFile(loc.file) };
   }
 
+  /**
+   * 会话自身加上它的来源会话（分支链，最多 FORK_CHAIN_MAX 层）。
+   * 分支只复制主记录，分支点之前的子代理记录还在来源会话的目录下。
+   */
+  private forkChain(id: string): string[] {
+    const chain = [id];
+    for (let i = 0; i < FORK_CHAIN_MAX; i++) {
+      const src = this.flags?.forkSrcOf?.(chain[chain.length - 1]!);
+      if (!src || chain.includes(src)) break;
+      chain.push(src);
+    }
+    return chain;
+  }
+
   async subagent(id: string, toolUseId: string, cwd: string): Promise<Json[]> {
     if (!isSafeId(toolUseId)) throw new HttpError(400, 'toolUseId 不合法');
     const loc = await this.locate(id, cwd);
     if (!loc) throw new HttpError(404, '会话不存在');
-    const subDir = path.join(loc.dir, id, 'subagents');
+    // 分支会话与来源会话同属一个 projects 子目录，直接在 loc.dir 下按 id 取各自的 subagents
+    const chain = this.forkChain(id);
+    const subDirs = chain.map((sid) => path.join(loc.dir, sid, 'subagents'));
     let agentId: string | null = null;
 
     // 1) meta.json 里的 toolUseId
-    let names: string[] = [];
-    try {
-      names = await fs.promises.readdir(subDir);
-    } catch { /* 没有子代理目录 */ }
-    for (const n of names) {
-      const m = /^agent-(.+)\.meta\.json$/.exec(n);
-      if (!m) continue;
+    for (const subDir of subDirs) {
+      let names: string[] = [];
       try {
-        const meta = JSON.parse(await fs.promises.readFile(path.join(subDir, n), 'utf8')) as Json;
-        if (meta.toolUseId === toolUseId) {
-          agentId = m[1]!;
-          break;
-        }
-      } catch { /* 忽略坏文件 */ }
+        names = await fs.promises.readdir(subDir);
+      } catch { /* 没有子代理目录 */ }
+      for (const n of names) {
+        const m = /^agent-(.+)\.meta\.json$/.exec(n);
+        if (!m) continue;
+        try {
+          const meta = JSON.parse(await fs.promises.readFile(path.join(subDir, n), 'utf8')) as Json;
+          if (meta.toolUseId === toolUseId) {
+            agentId = m[1]!;
+            break;
+          }
+        } catch { /* 忽略坏文件 */ }
+      }
+      if (agentId) break;
     }
 
     // 2) 老会话没有 meta：在主会话里找这个 tool_use 的 tool_result.toolUseResult.agentId
     if (!agentId) agentId = await this.findAgentIdInMain(loc.file, toolUseId);
     if (!agentId || !isSafeId(agentId)) throw new HttpError(404, '找不到该子代理的记录');
 
-    const file = path.join(subDir, `agent-${agentId}.jsonl`);
-    if (!(await exists(file))) throw new HttpError(404, '找不到该子代理的记录');
-    return this.filterFile(file);
+    for (const subDir of subDirs) {
+      const file = path.join(subDir, `agent-${agentId}.jsonl`);
+      if (await exists(file)) return this.filterFile(file);
+    }
+    throw new HttpError(404, '找不到该子代理的记录');
   }
 
   /** 每个子代理的花费：逐个读 agent-<id>.jsonl 里的 assistant 请求用量，按价格表计价 */
@@ -410,6 +444,78 @@ export class Sessions {
       rl.close();
     }
     return null;
+  }
+
+  // ───────────── 分支（fork） ─────────────
+
+  /**
+   * 从某条用户消息「之前」分支出一个新会话：把源记录里这条消息之前的行写成一份新的 <新id>.jsonl，
+   * 每行的 sessionId 改成新 id（不改就会被 CLI 当作 stale_target）。源会话不受任何改动。
+   *
+   * 截断点取「最后一条对话消息（user / assistant / system）之后」：目标消息前面可能还跟着
+   * 只服务于它的附属行（attachment、last-prompt 等），一并丢掉，新文件的内容正好等于界面上看到的分支点之前。
+   * 返回新会话 id；新会话还会追加一个「分支 · 原标题」的标题，便于在侧栏区分。
+   */
+  async fork(id: string, cwd: string, targetId: string): Promise<{ sessionId: string }> {
+    if (!isSessionUuid(targetId)) throw new HttpError(400, '消息 id 不合法');
+    const loc = await this.locate(id, cwd);
+    if (!loc) throw new HttpError(404, '会话不存在');
+    const scan = await this.scan(id, cwd);
+
+    const newId = randomUUID();
+    const outFile = path.join(loc.dir, `${newId}.jsonl`);
+    const tmpFile = `${outFile}.tmp`;
+    const srcTag = `"sessionId":"${id}"`;
+    const newTag = `"sessionId":"${newId}"`;
+
+    const out = fs.createWriteStream(tmpFile, { encoding: 'utf8' });
+    const write = (s: string): Promise<void> =>
+      new Promise((resolve, reject) => {
+        out.write(s, (e) => (e ? reject(e) : resolve()));
+      });
+
+    let found = false;
+    let kept = 0;
+    /** 还没遇到下一条对话消息的附属行：遇到对话消息就跟着写出，到截断点则一起丢掉 */
+    let pending: string[] = [];
+    const rl = readline.createInterface({ input: fs.createReadStream(loc.file, { encoding: 'utf8' }), crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        if (!line) continue;
+        if (line.includes(targetId)) {
+          const e = parseLine(line);
+          if (e && e.type === 'user' && e.uuid === targetId) {
+            found = true;
+            break;
+          }
+        }
+        const type = /^\{"type":"([A-Za-z0-9_-]+)"/.exec(line)?.[1] ?? parseLine(line)?.type;
+        if (type === 'user' || type === 'assistant' || type === 'system') {
+          for (const p of pending) await write(p.split(srcTag).join(newTag) + '\n');
+          kept += pending.length;
+          pending = [];
+          await write(line.split(srcTag).join(newTag) + '\n');
+          kept++;
+        } else {
+          pending.push(line);
+        }
+      }
+    } finally {
+      rl.close();
+    }
+
+    const fail = async (err: HttpError): Promise<never> => {
+      out.destroy();
+      await fs.promises.rm(tmpFile, { force: true });
+      throw err;
+    };
+    if (!found) return fail(new HttpError(404, '在会话记录里找不到这条消息'));
+    if (kept === 0) return fail(new HttpError(400, '这已经是第一条消息，它之前没有可分支的内容'));
+
+    await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
+    await fs.promises.rename(tmpFile, outFile);
+    await this.appendTitle(newId, cwd, forkTitle(scan ? pickTitle(scan, id) : id));
+    return { sessionId: newId };
   }
 
   // ───────────── 改名（进程不在线时） ─────────────

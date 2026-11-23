@@ -85,7 +85,11 @@
   position: absolute;
   inset: 0;
   z-index: -1;
-  /* 与会话区同底色：不加颗粒、不加高光，只用主背景色盖住滚上来的内容并模糊 */
+  /* 与会话区同底色：不加颗粒、不加高光，只用主背景色盖住滚上来的内容并模糊。
+     底边往下多伸 14px 并渐隐，滚上来的文字是慢慢没入顶栏，而不是在一条硬边上被拦腰截断 */
+  bottom: -14px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 14px), transparent);
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
@@ -154,7 +158,8 @@
   background: var(--bg-sidebar);
   box-shadow: 0 0 0 1px var(--border), 0 18px 48px -8px var(--scrim);
   transition: transform var(--dur-drawer) var(--ease-drawer), visibility 0s linear 0s;
-  will-change: transform;
+  /* 不写 will-change: transform——它会让抽屉成为 position: fixed 子元素的包含块，
+     抽屉里按视口坐标定位的确认气泡就会错位并被裁掉。打开时 transform 为 none，滑动期间浏览器自己会提升图层。 */
 }
 .cz-shell--narrow .cz-shell__sidebar {
   left: 0;

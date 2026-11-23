@@ -553,6 +553,42 @@ describe('HTTP 接口', () => {
     expect((await post('/api/workspaces/reveal', {})).status).toBe(400);
   });
 
+  it('分支：新会话落到同一目录并记进 state，源记录一字不改', async () => {
+    const dir = path.join(tmp, 'claude', 'projects', encodeCwd(wsDir));
+    const srcFile = path.join(dir, `${A}.jsonl`);
+    const before = fs.readFileSync(srcFile);
+    const target = 'a1111111-0000-4000-8000-000000000004'; // 固定记录里的第 2 条用户消息
+
+    const r = await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: target });
+    expect(r.status).toBe(200);
+    const { sessionId } = (await r.json()) as { sessionId: string };
+    expect(isSessionUuid(sessionId)).toBe(true);
+
+    // 新记录只保留分支点之前的对话行（+ 追加的标题两行），源记录逐字节不变
+    expect(fs.readFileSync(srcFile)).toEqual(before);
+    const lines = fs.readFileSync(path.join(dir, `${sessionId}.jsonl`), 'utf8').trim().split('\n');
+    expect(lines.some((l) => l.includes(target))).toBe(false);
+    expect(lines.every((l) => !l.includes(`"sessionId":"${A}"`))).toBe(true);
+
+    // state 里登记了来源，侧栏能看到带「分支 ·」前缀的新会话
+    expect(srv.store.state.forks[sessionId]).toMatchObject({ cwd: wsDir, src: A });
+    expect(typeof srv.store.state.forks[sessionId]!.at).toBe('number');
+    const list = await get(`/api/sessions?cwd=${encodeURIComponent(wsDir)}`);
+    expect(list.find((s: { id: string }) => s.id === sessionId).title).toBe('分支 · 示例标题');
+
+    // 参数 / 目标校验
+    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir })).status).toBe(400);
+    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: 'nope' })).status).toBe(400);
+    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: '85e776ee-fc2e-4522-aecd-38504e5fa9f3' })).status).toBe(400);
+    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: '0'.repeat(8) + '-0000-4000-8000-000000000000' })).status).toBe(404);
+    expect((await post(`/api/sessions/${'9'.repeat(8)}-0000-4000-8000-000000000000/fork`, { cwd: wsDir, targetId: target })).status).toBe(404);
+    expect((await post(`/api/sessions/${encodeURIComponent('../x')}/fork`, { cwd: wsDir, targetId: target })).status).toBe(400);
+
+    // 清掉，免得影响后面的用例
+    fs.rmSync(path.join(dir, `${sessionId}.jsonl`));
+    delete srv.store.state.forks[sessionId];
+  });
+
   it('移到最前 / 移除', async () => {
     const extra = path.join(tmp, 'http-ws-2');
     fs.mkdirSync(extra, { recursive: true });

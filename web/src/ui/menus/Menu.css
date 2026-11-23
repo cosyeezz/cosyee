@@ -1,6 +1,9 @@
 .cz-menu {
   position: fixed;
   z-index: 1000;
+  /* 宽度按内容定，不随 left 位置被挤窄（否则贴右边时量到的宽度偏小，移过去后又变宽而出界） */
+  width: max-content;
+  max-width: calc(100vw - 16px);
   padding: var(--sp-1);
   background: var(--mat-pop);
   -webkit-backdrop-filter: var(--mat-blur);
@@ -12,7 +15,12 @@
   color: var(--text);
   user-select: none;
 }
+/* 没有挂在旁边的二级面板时才允许限高滚动（overflow 会把它裁掉）；限高值由 Menu.tsx 按可用空间算 */
+.cz-menu--scroll { overflow-y: auto; overscroll-behavior: contain; }
 .cz-menu--sub { position: absolute; z-index: 1001; }
+/* 钻入式二级菜单顶上的返回行 */
+.cz-menu__back { color: var(--text-2); }
+.cz-menu__back-icon { flex: none; transform: rotate(180deg); color: var(--text-3); }
 .cz-menu__wrap { position: relative; }
 .cz-menu__sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--border); }
 .cz-menu__text {

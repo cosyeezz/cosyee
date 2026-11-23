@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  Account, AccountList, AccountLogin, AccountMode, ApiAuthType, Bootstrap, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, SubagentCost, ToolStats, UsageInfo, Workspace,
+  Account, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -83,6 +83,9 @@ export const api = {
   /** 会话里各子代理的花费（服务端读子代理记录、按价格表算） */
   subagentCosts: (id: string, cwd: string) => req<{ items: SubagentCost[] }>('GET', `/api/sessions/${id}/subagent-costs?${q({ cwd })}`),
   rename: (id: string, cwd: string, title: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/rename`, { cwd, title }),
+  /** 分支：把 targetId 这条用户消息之前的记录复制成一个新会话（源会话不变），返回新会话 id */
+  forkSession: (id: string, cwd: string, targetId: string) =>
+    req<{ sessionId: string }>('POST', `/api/sessions/${id}/fork`, { cwd, targetId }),
   viewed: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/viewed`, { cwd }),
   git: (cwd: string) => req<{ branch: string | null }>('GET', `/api/git?${q({ cwd })}`),
   /** 额度：传会话 id 时取该会话所用账号的额度（并行模式下各会话账号可能不同） */
@@ -93,6 +96,15 @@ export const api = {
     if (account) p.account = account;
     const qs = q(p);
     return req<UsageInfo | null>('GET', `/api/usage${qs ? `?${qs}` : ''}`);
+  },
+  /** 账号实际可用的模型（CLI initialize 报告的）；拉不到为 null。不传 account / session = 当前账号 */
+  cliModels: (o: { session?: string | null; account?: string | null; refresh?: boolean } = {}) => {
+    const p: Record<string, string> = {};
+    if (o.refresh) p.refresh = '1';
+    if (o.session) p.session = o.session;
+    if (o.account) p.account = o.account;
+    const qs = q(p);
+    return req<CliModelList | null>('GET', `/api/models${qs ? `?${qs}` : ''}`);
   },
   /** 记住模型与思考强度（全局） */
   saveDefaults: (c: SessionConfig) => req<{ ok: true }>('POST', '/api/defaults', { model: c.model, effort: c.effort }),
@@ -110,9 +122,12 @@ export const api = {
   /** 切换模式 / 并行模式；回到切换模式时其它账号有执行中的会话抛 ApiError 409（data.running），force 强制停止 */
   setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
   setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
-  /** 添加（不带 id）或修改 API 账号；baseUrl 空 = 官方地址，修改时 apiKey 留空 = 不变 */
-  saveApiAccount: (o: { id?: string; label?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType }) =>
+  /** 添加（不带 id）或修改 API 账号；baseUrl 空 = 官方地址，修改时 apiKey 留空 = 不变，models 不传 = 不改映射 */
+  saveApiAccount: (o: { id?: string; label?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType; models?: ApiModelMap | null }) =>
     req<{ ok: true; id: string }>('POST', '/api/accounts/api', o),
+  /** 拉取服务商的模型列表（服务端代发）；apiKey 留空 = 用该账号已存的密钥 */
+  apiModelList: (o: { id?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType }) =>
+    req<ApiModelListing>('POST', '/api/accounts/api/models', o),
   pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
   /** 远程连接的网页版选择窗口：列出服务端目录（path 为空 = 当前工作空间）/ 登记选好的路径 */
   browse: (path?: string) => req<BrowseDir>('GET', `/api/browse${path ? `?${q({ path })}` : ''}`),

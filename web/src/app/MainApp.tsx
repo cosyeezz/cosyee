@@ -1,14 +1,15 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BUILTIN_PRICES,
-  type Account, type AccountList, type Attachment, type Bootstrap, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  BUILTIN_PRICES, hasModelMapping,
+  type Account, type AccountList, type Attachment, type Bootstrap, type CliModelList, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
   type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { resolveSessionConfig } from '../core/sessionConfig';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { uuid } from '../core/browser';
+import { expandLabels } from '../core/composer';
 import { rewindTo, subagentModelFromHistory, subagentTurnFromHistory } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
 import { Sidebar } from '../ui/sidebar/Sidebar';
@@ -17,6 +18,7 @@ import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import type { Billing } from '../ui/context/CostSection';
+import { isHiddenTurn } from '../ui/flow/format';
 import { scrollBehavior } from '../ui/flow/motion';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
@@ -272,11 +274,13 @@ export function MainApp() {
   // ───────────── 当前会话派生数据 ─────────────
 
   const turns = view?.conv.turns ?? [];
+  // 会话流里真正显示的轮：本地命令（/compact、/model 等）整轮不渲染，判断「空会话」也按这个数
+  const shownTurns = useMemo(() => turns.filter((t) => !isHiddenTurn(t)), [turns]);
   // 加载会话：骨架屏 → 骨架淡出、内容逐块浮现
   const skeleton = useFlowSkeleton(!!view?.loading);
   // 切换会话：新会话加载期间，旧对话留在原位淡出（不先闪成空白）；新内容到了再整体换上、逐块浮现
   const lastFlow = useRef<{ key: string; turns: typeof turns } | null>(null);
-  if (view && !view.loading && !view.loadError) lastFlow.current = turns.length > 0 ? { key: view.id, turns } : null;
+  if (view && !view.loading && !view.loadError) lastFlow.current = shownTurns.length > 0 ? { key: view.id, turns } : null;
   const heldFlow = view?.loading && motionOK() ? lastFlow.current : null;
   const meta = view?.conv.meta;
   if (meta?.slashCommands?.length) lastMeta.current.slash = meta.slashCommands;
@@ -324,10 +328,11 @@ export function MainApp() {
       .catch((e) => flash(`打开文件夹失败：${errText(e)}`));
   }, [flash, remote, askPaths]);
 
-  const selectSession = useCallback((id: string) => {
+  /** dirHint：列表里还没有这个会话时用它的工作目录（刚分支出来的会话，侧栏可能还没刷新到） */
+  const selectSession = useCallback((id: string, dirHint?: string) => {
     // 会话可能来自当前工作空间的列表，也可能来自「置顶」（任何工作空间）
     const hit = allSessions.find((s) => s.id === id) ?? pins.find((s) => s.id === id);
-    const dir = hit?.cwd ?? cwd;
+    const dir = hit?.cwd ?? dirHint ?? cwd;
     if (!dir) return;
     setSel({ id, cwd: dir, fresh: false });
     setOpenSub(null);
@@ -418,10 +423,13 @@ export function MainApp() {
     if (sel) socket.send({ t: 'queue.cancel', sessionId: sel.id, id });
   }, [sel]);
 
-  /** 双击 Esc 浮层里可回退的消息：有 userId 且不是 steering 的轮（CLI 的 rewind 列表不含插话） */
+  /**
+   * 双击 Esc 浮层里可回退的消息：有 userId 且不是 steering 的轮（CLI 的 rewind 列表不含插话）；
+   * 会话流里没显示的本地命令轮（/compact、/model 等）也不列出
+   */
   const rewindTargets = useMemo(
-    () => turns.filter((t) => t.userId && !t.steer).map((t) => ({ id: t.userId!, text: t.userText })),
-    [turns],
+    () => shownTurns.filter((t) => t.userId && !t.steer).map((t) => ({ id: t.userId!, text: t.userText })),
+    [shownTurns],
   );
   /** 进行中的 rewind 请求 id，用来对应 rewind.result */
   const rewindReq = useRef<string | null>(null);
@@ -488,6 +496,29 @@ export function MainApp() {
       .catch((e) => { flash(`改名失败：${errText(e)}`); reload(); });
   }, [sel, current, flash, loadSessions, loadPins, mapSessions]);
 
+  /**
+   * 从某条用户消息之前分支出新会话：服务端把源记录里这条消息之前的内容写成一份新记录（源会话一字不改）。
+   * stay=false 时切到新会话，并把这条消息的原文填回输入框（改一改再发，等于非破坏性的「回退」）；
+   * stay=true 时留在当前会话，新会话随侧栏刷新出现。
+   */
+  const onFork = useCallback((targetId: string, stay: boolean) => {
+    if (!sel || !selCwd) return;
+    const dir = selCwd;
+    const turn = shownTurns.find((t) => t.userId === targetId);
+    const prefill = turn ? expandLabels(turn.userText, turn.attachments) : '';
+    api.forkSession(sel.id, dir, targetId)
+      .then(({ sessionId }) => {
+        configs.current.set(sessionId, config); // 分支沿用当前会话此刻的模型 / 思考强度
+        if (stay) {
+          flash('已分支出新会话，见侧栏');
+          return;
+        }
+        selectSession(sessionId, dir);
+        composerRef.current?.restoreText(prefill, 'replace');
+      })
+      .catch((e) => flash(`分支失败：${errText(e)}`));
+  }, [sel, selCwd, shownTurns, config, selectSession, flash]);
+
   // ───────────── 上下文面板 ─────────────
 
   const refreshContext = useCallback(() => {
@@ -535,13 +566,45 @@ export function MainApp() {
   useEffect(() => {
     api.accounts().then(setAccounts).catch(() => setAccounts(null));
   }, [accountVersion]);
-  const billing = useMemo<Billing>(() => {
+  /** 会话用的账号：并行模式下是绑定的那个，否则是当前账号 */
+  const sessionAccount = useMemo(() => {
     const list = accounts?.list ?? [];
-    const acc = (current?.account ? list.find((a) => a.id === current.account) : undefined) ?? list.find((a) => a.active);
+    return (current?.account ? list.find((a) => a.id === current.account) : undefined) ?? list.find((a) => a.active);
+  }, [accounts, current?.account]);
+  const billing = useMemo<Billing>(() => {
+    const acc = sessionAccount;
     if (!acc?.api) return 'subscription';
     const base = acc.api.baseUrl.trim();
     return !base || /^https?:\/\/api\.anthropic\.com(\/|$)/i.test(base) ? 'api' : 'thirdParty';
-  }, [accounts, current?.account]);
+  }, [sessionAccount]);
+  /** 配了映射的 API 账号：模型菜单改用它的映射项（订阅账号与没配映射的 API 账号不变） */
+  const modelMap = useMemo(() => (hasModelMapping(sessionAccount?.api?.models) ? sessionAccount!.api!.models! : null), [sessionAccount]);
+  // 模型菜单：会话所用账号实际可用的模型（CLI 报告的）。按账号记住，切会话时不闪回内置表；拉不到 = null（菜单用内置表）
+  const modelAccount = sessionAccount?.id ?? null;
+  const modelLists = useRef(new Map<string, CliModelList | null>());
+  const [modelListTick, setModelListTick] = useState(0);
+  const storeModels = useCallback((account: string, r: CliModelList | null) => {
+    // 拉取失败不覆盖已有的
+    if (r || !modelLists.current.has(account)) modelLists.current.set(account, r);
+    setModelListTick((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    if (!modelAccount) return;
+    let alive = true;
+    api.cliModels({ account: modelAccount })
+      .then((r) => { if (alive) storeModels(modelAccount, r); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [modelAccount, accountVersion, storeModels]);
+  const modelList = useMemo(
+    () => (modelAccount ? modelLists.current.get(modelAccount)?.models ?? null : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [modelAccount, modelListTick],
+  );
+  const refreshModels = useCallback(async () => {
+    if (!modelAccount) return;
+    storeModels(modelAccount, await api.cliModels({ account: modelAccount, refresh: true }));
+  }, [modelAccount, storeModels]);
   // 点花费图的柱子：滚到会话流里的这一轮，并短暂高亮
   const jumpToTurn = useCallback((index: number) => {
     const t = view?.conv.turns[index];
@@ -882,7 +945,7 @@ export function MainApp() {
           />
         ) : view?.loading ? null : view?.loadError ? (
           <div className="cz-app__hint">加载会话失败：{view.loadError}</div>
-        ) : turns.length === 0 ? (
+        ) : shownTurns.length === 0 ? (
           <div className="cz-app__hint">{!sel || isDraft(sel) ? '新会话：输入消息开始' : ''}</div>
         ) : (
           <ConversationView
@@ -890,6 +953,7 @@ export function MainApp() {
             turns={turns}
             onOpenSubagent={onOpenSubagent}
             onReply={onReply}
+            onFork={onFork}
             sessionKey={sel?.id ?? null}
             reveal={skeleton.reveal}
           />
@@ -928,6 +992,9 @@ export function MainApp() {
           loadUsage={loadUsage}
           disabled={!!view?.loading}
           ultracodeAvailable={view?.applied?.ultracodeAvailable}
+          modelMap={modelMap}
+          modelList={modelList}
+          onRefreshModels={refreshModels}
           footLeft={showWorkspacePicker ? (
             // 只在新会话（还没发出第一条消息）时显示；会话开始后工作空间就固定了
             <WorkspaceMenu

@@ -149,6 +149,97 @@ describe('Sessions', () => {
   });
 });
 
+describe('fork', () => {
+  const SRC = 'dddddddd-0000-4000-8000-000000000004';
+  const U1 = '11111111-0000-4000-8000-0000000000a1';
+  const U2 = '11111111-0000-4000-8000-0000000000a2';
+  const U3 = '11111111-0000-4000-8000-0000000000a3';
+  const NL = String.fromCharCode(10);
+  let dir: string;
+  /** 两轮对话：每轮「user + 它的 attachment + assistant」，中间夹着元数据行 */
+  const lines = () => [
+    { type: 'session-owner', sessionId: SRC },
+    { type: 'user', uuid: U1, parentUuid: null, sessionId: SRC, cwd: CWD, message: { role: 'user', content: '第一问' } },
+    { type: 'attachment', uuid: 'att-1', parentUuid: U1, sessionId: SRC },
+    { type: 'assistant', uuid: 'asst-1', parentUuid: 'att-1', sessionId: SRC, message: { role: 'assistant', content: [] } },
+    { type: 'last-prompt', sessionId: SRC },
+    { type: 'attachment', uuid: 'att-2', parentUuid: 'asst-1', sessionId: SRC },
+    { type: 'atis-latch', sessionId: SRC },
+    { type: 'user', uuid: U2, parentUuid: 'att-2', sessionId: SRC, cwd: CWD, message: { role: 'user', content: '第二问' } },
+    { type: 'assistant', uuid: 'asst-2', parentUuid: U2, sessionId: SRC, message: { role: 'assistant', content: [] } },
+    { type: 'user', uuid: U3, parentUuid: 'asst-2', sessionId: SRC, cwd: CWD, message: { role: 'user', content: '第三问' } },
+    { type: 'assistant', uuid: 'asst-3', parentUuid: U3, sessionId: SRC, message: { role: 'assistant', content: [] } },
+    { type: 'custom-title', customTitle: '源标题', sessionId: SRC },
+    { type: 'tools-used', sessionId: SRC },
+  ];
+
+  beforeAll(() => {
+    dir = path.join(tmp, 'projects', encodeCwd(CWD));
+    fs.writeFileSync(path.join(dir, `${SRC}.jsonl`), lines().map((l) => JSON.stringify(l)).join(NL) + NL);
+  });
+
+  const read = (id: string) =>
+    fs.readFileSync(path.join(dir, `${id}.jsonl`), 'utf8').trim().split(NL).map((l) => JSON.parse(l));
+
+  it('保留目标消息之前的内容，丢掉只服务于它的附属行；sessionId 换成新 id', async () => {
+    const { sessionId } = await sessions.fork(SRC, CWD, U2);
+    const out = read(sessionId);
+    // 最后一条对话消息（asst-1）之后的附属行（last-prompt / att-2 / atis-latch）只服务于目标消息，一并丢掉；
+    // 末尾两行标题是分支自己追加的
+    expect(out.map((e) => e.type)).toEqual([
+      'session-owner', 'user', 'attachment', 'assistant', 'custom-title', 'agent-name',
+    ]);
+    expect(out.every((e) => e.sessionId === sessionId)).toBe(true);
+    expect(out.find((e) => e.type === 'user')!.uuid).toBe(U1);
+    expect(out.find((e) => e.type === 'custom-title')!.customTitle).toBe('分支 · 源标题');
+  });
+
+  it('源会话一字不改', async () => {
+    const before = fs.readFileSync(path.join(dir, `${SRC}.jsonl`), 'utf8');
+    await sessions.fork(SRC, CWD, U2);
+    expect(fs.readFileSync(path.join(dir, `${SRC}.jsonl`), 'utf8')).toBe(before);
+  });
+
+  it('分支出的会话能出现在列表里，标题是「分支 · 源标题」', async () => {
+    const { sessionId } = await sessions.fork(SRC, CWD, U2);
+    const row = (await sessions.list(CWD)).find((r) => r.id === sessionId);
+    expect(row?.title).toBe('分支 · 源标题');
+  });
+
+  it('再从分支里分支：标题不重复堆前缀', async () => {
+    const a = await sessions.fork(SRC, CWD, U3);
+    const b = await sessions.fork(a.sessionId, CWD, U2);
+    expect(read(b.sessionId).find((e) => e.type === 'custom-title')!.customTitle).toBe('分支 · 源标题');
+    expect(read(b.sessionId).filter((e) => e.type === 'user').map((e) => e.uuid)).toEqual([U1]);
+  });
+
+  it('第一条消息之前没有内容：400，且不留下残文件', async () => {
+    const before = fs.readdirSync(dir).length;
+    await expect(sessions.fork(SRC, CWD, U1)).rejects.toMatchObject({ status: 400 });
+    expect(fs.readdirSync(dir).length).toBe(before);
+  });
+
+  it('消息 id 不存在 404、格式不合法 400、会话不存在 404', async () => {
+    await expect(sessions.fork(SRC, CWD, '11111111-0000-4000-8000-0000000000ff')).rejects.toMatchObject({ status: 404 });
+    await expect(sessions.fork(SRC, CWD, 'not-a-uuid')).rejects.toMatchObject({ status: 400 });
+    await expect(sessions.fork('00000000-0000-4000-8000-0000000000ff', CWD, U1)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('分支点之前的子代理：顺着 forkSrcOf 到来源会话目录下找', async () => {
+    const { sessionId } = await sessions.fork(SRC, CWD, U2);
+    // 分支自己没有 subagents 目录
+    await expect(sessions.subagent(sessionId, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD)).rejects.toMatchObject({ status: 404 });
+    // 记上「分支 ← 来源」后，能找到来源会话里的子代理记录
+    const withFork = new Sessions(dots, {
+      isDeleted: () => false,
+      pinKind: () => null,
+      forkSrcOf: (id) => (id === sessionId ? SID : null),
+    });
+    const entries = await withFork.subagent(sessionId, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD);
+    expect(entries.length).toBeGreaterThan(0);
+  });
+});
+
 describe('account 辅助', () => {
   it('planLabel', () => {
     expect(planLabel('pro')).toBe('Pro');

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  guessKind, itemKind, labelChips, parseUserText, serialize, splitMentions, toAttachments, trimSegments, type Segment,
+  expandLabels, guessKind, itemKind, labelChips, parseUserText, serialize, splitMentions, toAttachments, trimSegments, type Segment,
 } from './composer';
 
 const chip = (kind: 'file' | 'img' | 'folder', path: string): Segment => ({ t: 'chip', kind, path, label: '' });
@@ -129,6 +129,33 @@ describe('往返', () => {
     // 文本：把标签占位名换回去应与「标签显示文本」一致
     const display = labelled.map((s) => (s.t === 'text' ? s.text : s.label)).join('');
     expect(r.userText).toBe(display);
+  });
+});
+
+describe('expandLabels', () => {
+  const att = (kind: 'file' | 'img' | 'folder', label: string, path: string) => ({ kind, label, path });
+
+  it('占位名换回 @"绝对路径"', () => {
+    const out = expandLabels('看 file1 和 img1', [att('file', 'file1', 'C:\\a b\\c.ts'), att('img', 'img1', '/x/图 1.png')]);
+    expect(out).toBe('看 @"C:\\a b\\c.ts" 和 @"/x/图 1.png"');
+  });
+
+  it('没有附件时原样返回；不命中 myfile1 这类相邻字母数字', () => {
+    expect(expandLabels('file1 照旧', [])).toBe('file1 照旧');
+    expect(expandLabels('myfile1 与 file1x 与 file1', [att('file', 'file1', '/a.ts')])).toBe('myfile1 与 file1x 与 @"/a.ts"');
+  });
+
+  it('长标签优先：file10 不被 file1 抢走', () => {
+    const out = expandLabels('file1 file10', [att('file', 'file1', '/a.ts'), att('file', 'file10', '/b.ts')]);
+    expect(out).toBe('@"/a.ts" @"/b.ts"');
+  });
+
+  it('是 parseUserText 的逆向：展开后再解析回到原文与附件', () => {
+    const atts = [att('file', 'file1', 'C:\\p q\\a.ts'), att('folder', 'folder1', 'D:\\项目\\资料'), att('img', 'img1', '/u/x.png')];
+    const body = '改 file1，看 folder1 里的 img1';
+    const back = parseUserText(expandLabels(body, atts));
+    expect(back.userText).toBe(body);
+    expect(back.attachments).toEqual(atts);
   });
 });
 

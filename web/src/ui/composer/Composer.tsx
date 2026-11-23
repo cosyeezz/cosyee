@@ -1,7 +1,7 @@
 // 输入框：大圆角长条，左「+」、中间 contenteditable（文字与标签混排）、右侧麦克风与发送 / 停止，下方模型菜单。
 // 编辑区的内部 DOM 完全由本组件命令式维护（React 不渲染其子节点），内容变化后统一走 afterChange()。
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
+import type { ApiModelMap, CliModel, PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
 import type { Attachment } from '@cosyee/shared';
 import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
 import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
@@ -50,6 +50,12 @@ export interface ComposerProps {
   loadUsage?: (refresh: boolean) => Promise<UsageInfo | null>;
   /** false 时模型菜单隐藏 Ultracode 开关 */
   ultracodeAvailable?: boolean;
+  /** 配了模型映射的 API 账号：模型菜单改用映射项 */
+  modelMap?: ApiModelMap | null;
+  /** CLI 报告的该账号实际可用模型；null = 模型菜单用内置表 */
+  modelList?: readonly CliModel[] | null;
+  /** 模型菜单里的「刷新模型列表」 */
+  onRefreshModels?: () => Promise<unknown>;
   /**
    * 选中回复带来的引用（可有多段），每段带着对它的回复：显示在输入框顶部（每段一行：引用 + 可编辑的回复），
    * 发送时按「引用 → 它的回复 → 下一段 …… → 正文」交错拼在消息开头
@@ -642,7 +648,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       {hint && <div className="cz-composer__hint" role="status">{hint}</div>}
       <div className="cz-composer__foot">
         {props.footLeft && <div className="cz-composer__foot-left">{props.footLeft}</div>}
-        <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} />
+        <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} modelMap={props.modelMap} modelList={props.modelList} onRefreshModels={props.onRefreshModels} />
         <ModeMenu mode={config.permissionMode ?? 'auto'} onChange={(m) => onConfigChange({ ...config, permissionMode: m })} disabled={disabled} />
         {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
       </div>

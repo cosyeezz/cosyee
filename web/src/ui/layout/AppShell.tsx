@@ -29,10 +29,13 @@ export function AppShell({
   const topRef = useRef<HTMLDivElement>(null);
   // 顶栏浮在主区上面（磨砂玻璃），主区按 --top-h 让出位置
   useCssHeight(centerRef, topRef, '--top-h');
+  // 整个可见高度（Android 壳里键盘弹起会跟着缩）：写在根上，抽屉和输入框里的弹层都按它限高，不钻出屏幕
+  const shellRef = useRef<HTMLDivElement>(null);
+  useCssHeight(shellRef, centerRef, '--center-h');
   const drawerOpen = narrow && (!sidebarCollapsed || !contextCollapsed);
   const cls = `cz-shell${narrow ? ' cz-shell--narrow' : ''}${sidebarCollapsed ? ' cz-shell--collapsed' : ''}${contextCollapsed ? ' cz-shell--ctx-collapsed' : ''}`;
   return (
-    <div className={cls}>
+    <div className={cls} ref={shellRef}>
       {/* 收起时宽度变 0 并隐藏内容（visibility 使其不可聚焦），内层保持固定宽度避免重排 */}
       <aside className="cz-shell__sidebar" aria-hidden={sidebarCollapsed}>
         <div className="cz-shell__sidebar-inner">{sidebar}</div>

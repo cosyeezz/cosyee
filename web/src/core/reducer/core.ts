@@ -3,7 +3,7 @@
 // 簿记只服务当前这一轮，开新轮时整体重置，所以克隆的开销不随会话长度增长。
 
 import type { SessionMeta, SkillLoad, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
-import { arr, isAgentName, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
+import { arr, isAgentName, isLocalCommand, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
 import { parseUserText } from '../composer';
 
 /** 一个内容块（流式 index 对应的块）当前落在哪里 */
@@ -156,6 +156,7 @@ export function makeTurn(index: number, text: string, at: number, extra?: { user
     id: `t${index}`,
     ...(extra?.userId ? { userId: extra.userId } : {}),
     ...(extra?.steer ? { steer: true } : {}),
+    ...(isLocalCommand(text) ? { local: true } : {}),
     userText,
     attachments,
     status: 'understanding',

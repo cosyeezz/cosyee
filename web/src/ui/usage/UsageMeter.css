@@ -29,6 +29,10 @@
   bottom: calc(100% + var(--sp-2));
   z-index: 900;
   width: min(520px, calc(100vw - 32px));
+  /* 矮屏（手机、键盘弹起）放不下时内部滚动，不钻出屏幕 */
+  max-height: calc(var(--center-h, 100dvh) - var(--composer-h, 120px) - var(--sp-4));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--sp-4);
   display: flex;
   flex-direction: column;

@@ -20,6 +20,11 @@ export interface PersistedState {
   skillOverrides: Record<string, SkillMode>;
   /** 每个会话最近一次使用的配置（模型 / 思考强度 / ultracode）：发送与切换配置时写入，刷新页面后据此还原 */
   sessionConfigs: Record<string, SessionConfig>;
+  /**
+   * 分支（fork）出来的会话 → 它的来源会话：新会话 id -> { cwd, src, at }。
+   * 分支只复制主记录，子代理记录仍在来源会话的 <src>/subagents/ 下，打开分支点之前的子代理面板要顺着这条链去找。
+   */
+  forks: Record<string, { cwd: string; src: string; at: number }>;
   /** 被关闭的内置工具名（全局）：启动会话时经 --settings permissions.deny 下发，运行中经 apply_flag_settings */
   disabledTools: string[];
   /** 最近一次 system/init 报告的内置工具名：探测进程收不到 init，服务重启后也要能列出工具 */
@@ -75,7 +80,7 @@ export function sanitizeCompactWindow(v: unknown): number | null {
 const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
 
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, disabledTools: [], knownTools: [], disabledAgents: [], compactWindow: null, accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], disabledAgents: [], compactWindow: null, accounts: { list: [], active: null, mode: 'switch', sessions: {} } };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -131,6 +136,10 @@ function sanitize(raw: unknown): PersistedState {
         ...(c.permissionMode === 'plan' ? { permissionMode: 'plan' as const } : {}), // 只认 plan / auto，auto 是缺省不存
       };
     }
+  }
+  for (const [id, e] of entries(o.forks)) {
+    if (!isSafeId(id) || !isSafeId(e.src) || e.src === id) continue;
+    s.forks[id] = { cwd: e.cwd as string, src: e.src, at: num(e.at, 0) };
   }
   if (Array.isArray(o.disabledTools)) {
     for (const t of o.disabledTools) {

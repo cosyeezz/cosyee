@@ -3,7 +3,7 @@
 // 密钥绝不下发前端，列表里只给 Base URL 与密钥末 4 位。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AccountApiInfo, ApiAuthType } from '@cosyee/shared';
+import { type AccountApiInfo, type ApiAuthType, type ApiModelMap, type ApiModelTarget, MODEL_ALIASES, type ModelAlias } from '@cosyee/shared';
 
 export const API_FILE = 'cosyee-api.json';
 export const OFFICIAL_HOST = 'api.anthropic.com';
@@ -14,6 +14,8 @@ export interface ApiConfig {
   apiKey: string;
   /** apiKey = ANTHROPIC_API_KEY（x-api-key 头）；authToken = ANTHROPIC_AUTH_TOKEN（Authorization: Bearer） */
   authType: ApiAuthType;
+  /** 模型映射；没配 = 不介入 */
+  models?: ApiModelMap;
 }
 
 /** 账号目录里的 API 配置；不是 API 账号（或读不到）返回 null */
@@ -22,10 +24,12 @@ export function readApiConfig(dir: string | null | undefined): ApiConfig | null 
   try {
     const j = JSON.parse(fs.readFileSync(path.join(dir, API_FILE), 'utf8')) as Record<string, unknown>;
     if (!j || typeof j !== 'object' || typeof j.apiKey !== 'string' || !j.apiKey) return null;
+    const models = normalizeModelMap(j.models);
     return {
       baseUrl: typeof j.baseUrl === 'string' ? j.baseUrl : '',
       apiKey: j.apiKey,
       authType: j.authType === 'authToken' ? 'authToken' : 'apiKey',
+      ...(models ? { models } : {}),
     };
   } catch {
     return null;
@@ -52,17 +56,128 @@ export function apiHost(baseUrl: string): string {
 
 /** 下发给前端的信息：不含密钥本身 */
 export function apiInfo(cfg: ApiConfig): AccountApiInfo {
-  return { baseUrl: cfg.baseUrl, authType: cfg.authType, keyHint: cfg.apiKey.length > 8 ? cfg.apiKey.slice(-4) : '' };
+  return {
+    baseUrl: cfg.baseUrl,
+    authType: cfg.authType,
+    keyHint: cfg.apiKey.length > 8 ? cfg.apiKey.slice(-4) : '',
+    ...(cfg.models ? { models: cfg.models } : {}),
+  };
 }
 
-const API_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL'];
+/** 模型 id：可见 ASCII，不含空白与引号（第三方的 provider/model、model:tag 都要放过） */
+const MODEL_ID_RE = /^[A-Za-z0-9._:/@+[\]-]{1,120}$/;
+const LABEL_MAX = 40;
+const EXTRA_MAX = 30;
 
-/** 把 API 配置写进子进程环境：先删掉外部环境里继承来的同名变量，避免混用 */
+function cleanModelId(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return s && MODEL_ID_RE.test(s) ? s : null;
+}
+
+function cleanTarget(v: unknown): ApiModelTarget | null {
+  if (typeof v === 'string') {
+    const id = cleanModelId(v);
+    return id ? { id } : null;
+  }
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const id = cleanModelId(o.id);
+  if (!id) return null;
+  const label = typeof o.label === 'string' ? o.label.replace(/[\r\n\t]+/g, ' ').trim().slice(0, LABEL_MAX) : '';
+  return { id, ...(label ? { label } : {}), ...(o.m1 === true ? { m1: true } : {}) };
+}
+
+/**
+ * 校验并规范模型映射。全部字段都可缺省；一项都没有时返回 null（= 不介入）。
+ * 非法的项直接丢掉，不抛错——映射只是转发用的字符串，宁可少一项也不要卡住保存。
+ */
+export function normalizeModelMap(v: unknown): ApiModelMap | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const out: ApiModelMap = {};
+
+  const rawAlias = o.alias && typeof o.alias === 'object' ? (o.alias as Record<string, unknown>) : null;
+  if (rawAlias) {
+    const alias: Partial<Record<ModelAlias, ApiModelTarget>> = {};
+    for (const a of MODEL_ALIASES) {
+      const t = cleanTarget(rawAlias[a]);
+      if (t) alias[a] = t;
+    }
+    if (Object.keys(alias).length) out.alias = alias;
+  }
+
+  const sub = cleanModelId(o.subagent);
+  if (sub) out.subagent = sub;
+  const fb = cleanModelId(o.fallback);
+  if (fb) out.fallback = fb;
+
+  if (Array.isArray(o.extra)) {
+    const seen = new Set<string>();
+    const extra: ApiModelTarget[] = [];
+    for (const e of o.extra) {
+      const t = cleanTarget(e);
+      if (!t || seen.has(t.id)) continue;
+      seen.add(t.id);
+      extra.push(t);
+      if (extra.length >= EXTRA_MAX) break;
+    }
+    if (extra.length) out.extra = extra;
+  }
+
+  return Object.keys(out).length ? out : null;
+}
+
+/** 别名 → CLI 的重映射环境变量（见 CLI 里的 Tb 表）。haiku 还会被 ANTHROPIC_SMALL_FAST_MODEL 抢先，一并清掉 */
+const ALIAS_ENV: Record<ModelAlias, string> = {
+  sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  fable: 'ANTHROPIC_DEFAULT_FABLE_MODEL',
+  haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+};
+
+const API_ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  // 模型相关：外部环境里继承来的一律清掉，只认本账号映射里写的
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION',
+  'ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+  ...Object.values(ALIAS_ENV),
+  ...Object.values(ALIAS_ENV).map((k) => `${k}_NAME`),
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+];
+
+/** 「声明支持 1M」的模型要带 [1m] 后缀（CLI 里 "claude-sonnet-5[1m]" = supports1m 的简写） */
+function envModelValue(t: ApiModelTarget): string {
+  return t.m1 ? `${t.id}[1m]` : t.id;
+}
+
+/**
+ * 把 API 配置写进子进程环境：先删掉外部环境里继承来的同名变量，避免混用。
+ * 有模型映射时再写 CLI 的别名重映射变量——菜单发出去的还是 sonnet / opus 这类别名，
+ * 由 CLI 自己换成实际模型，所以订阅账号那条路完全不受影响。
+ */
 export function applyApiEnv(env: NodeJS.ProcessEnv, cfg: ApiConfig): void {
   for (const k of Object.keys(env)) if (API_ENV_KEYS.includes(k.toUpperCase())) delete env[k];
   if (cfg.authType === 'authToken') env.ANTHROPIC_AUTH_TOKEN = cfg.apiKey;
   else env.ANTHROPIC_API_KEY = cfg.apiKey;
   if (cfg.baseUrl) env.ANTHROPIC_BASE_URL = cfg.baseUrl;
+
+  const m = cfg.models;
+  if (!m) return;
+  for (const a of MODEL_ALIASES) {
+    const t = m.alias?.[a];
+    if (!t?.id) continue;
+    env[ALIAS_ENV[a]] = envModelValue(t);
+    const label = t.label?.trim();
+    if (label) env[`${ALIAS_ENV[a]}_NAME`] = label;
+  }
+  if (m.subagent) env.CLAUDE_CODE_SUBAGENT_MODEL = m.subagent;
+  if (m.fallback) env.ANTHROPIC_DEFAULT_MODEL = m.fallback;
 }
 
 /** 校验并规范 Base URL：空 = 官方；只允许 http / https；去掉末尾的斜杠。不合法返回 null */

@@ -83,14 +83,19 @@ describe('TurnView 首行：进行中', () => {
     expect(v.host.querySelector('.cz-ss-tool')).not.toBeNull();
     expect(v.host.querySelector('.cz-ss-thinking')).toBeNull();
     expect(v.status().textContent).not.toContain('正在理解问题');
-    // 进行中：最近一段文字已在首行，下方不重复
+    // 执行中下方只放交付，过程文字不出现（它在状态行首行与展开区里）
     expect(v.host.querySelector('.cz-flow__answer')).toBeNull();
   });
 
-  it('进行中正在写 answer：首行跟随 answer，下方带流式样式', () => {
+  it('进行中正在写 answer：首行跟随 answer，下方仍不显示正文', () => {
     const v = mount({ ...base, answer: '最终结论如下\n细节' });
     expect(v.host.querySelector('.cz-st-tool')?.textContent).toBe('最终结论如下');
-    expect(v.host.querySelector('.cz-flow__answer.is-streaming')).not.toBeNull();
+    expect(v.host.querySelector('.cz-flow__answer')).toBeNull();
+  });
+
+  it('回合结束：交付文字出现在下方', () => {
+    const v = mount({ ...base, status: 'done', answer: '最终结论如下\n细节', endedAt: base.startedAt + 1000 });
+    expect(v.answer()).toContain('细节');
   });
 
   it('无步骤时状态行不可点击', () => {

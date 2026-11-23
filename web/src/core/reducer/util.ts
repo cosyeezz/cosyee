@@ -6,6 +6,29 @@ export const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== nu
 export const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 export const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
+/**
+ * CLI 自己处理完就结束、不会发给模型的内置命令（输入 `/名字` 后 transcript 里只跟着
+ * local-command-stdout 或 system 条目，没有 assistant 回复）。这类输入在会话流里不成为一轮。
+ * 只收录确认如此的内置命令：会产生模型回复的（/init、/review、/pr-comments、/security-review）
+ * 和自定义命令 / 技能都不在内——误收会让整轮消失，宁可漏收。
+ */
+const LOCAL_COMMANDS = new Set([
+  'add-dir', 'agents', 'bashes', 'clear', 'compact', 'config', 'context', 'cost', 'doctor',
+  'exit', 'export', 'fast', 'feedback', 'help', 'hooks', 'ide', 'install-github-app', 'login',
+  'logout', 'mcp', 'memory', 'migrate-installer', 'model', 'output-style', 'permissions', 'plan',
+  'plugin', 'plugins', 'privacy-settings', 'quit', 'release-notes', 'reload-plugins', 'resume',
+  'rewind', 'sandbox', 'status', 'statusline', 'terminal-setup', 'todos', 'upgrade', 'usage', 'vim',
+]);
+
+/**
+ * 用户输入是不是上面那类本地命令（`/名字` 可带参数）。
+ * 技能名与命令同名时由调用方先判技能（技能会留下加载记录，整轮不会被隐藏）。
+ */
+export function isLocalCommand(text: string): boolean {
+  const m = /^\/(\S+)/.exec(text.trim());
+  return m !== null && LOCAL_COMMANDS.has(m[1]!.toLowerCase());
+}
+
 /** 状态行文字的最大长度（UI 还会再按一行截断） */
 const STATUS_MAX = 80;
 const SUMMARY_MAX = 100;

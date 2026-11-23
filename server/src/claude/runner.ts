@@ -76,7 +76,8 @@ export interface RunnerInit {
 
 const EVENT_BUFFER_MAX = 100_000;
 const STDERR_TAIL_BYTES = 8 * 1024;
-const MODEL_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
+// 第三方兼容服务的模型名可能带 / : @ +（provider/model、model:tag），一并放过；仍然排除空白与引号
+const MODEL_RE = /^[A-Za-z0-9._:/@+[\]-]{1,120}$/;
 /** 思考显示模式：CLI 可选 summarized / omitted / highlights（highlights 仅 Anthropic 托管会话可用） */
 export const THINKING_DISPLAY = 'summarized';
 
@@ -126,7 +127,7 @@ export const PATH_PROMPT =
  * 主会话每轮都要重读整个上下文，大段工具输出留在子代理里能持续省钱。不论主会话用什么模型都追加。
  */
 export const DELEGATION_PROMPT =
-  'Delegation policy (pre-authorized by the user; no need to ask each time). You, the main session, own understanding, ' +
+  'Delegation policy: the main session owns understanding, ' +
   'design and every final judgment; delegate token-heavy legwork to subagents with model "sonnet". ' +
   '(1) Search / diagnosis: when locating something means sweeping many files, directories or naming conventions, use an ' +
   'Explore subagent. It only locates and gathers evidence, never concludes: each finding = file:line + a 5-10 line key ' +

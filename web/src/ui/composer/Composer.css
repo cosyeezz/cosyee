@@ -133,7 +133,8 @@
 }
 .cz-rewind__title,
 .cz-rewind__note { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
-.cz-rewind__list { max-height: 240px; overflow-y: auto; }
+/* 矮屏（手机横屏、键盘弹起）跟着可用高度缩：--center-h 是外壳高度，--composer-h 是输入框高度，再扣掉标题与说明 */
+.cz-rewind__list { max-height: min(240px, calc(var(--center-h, 100dvh) - var(--composer-h, 120px) - 88px)); overflow-y: auto; }
 .cz-rewind__item {
   padding: 6px var(--sp-3);
   border-radius: var(--r-sm);
@@ -173,7 +174,8 @@
   right: 0;
   bottom: calc(100% + var(--sp-2));
   z-index: 800;
-  max-height: 280px;
+  /* 不超出输入框上方的可用高度（矮屏上会越过顶栏，但不会钻出屏幕） */
+  max-height: min(280px, calc(var(--center-h, 100dvh) - var(--composer-h, 120px) - var(--sp-4)));
   overflow-y: auto;
   padding: var(--sp-1);
   background: var(--mat-pop);

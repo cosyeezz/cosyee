@@ -111,7 +111,9 @@
 .cz-ctx__item-pct { flex: none; font-variant-numeric: tabular-nums; text-align: right; }
 .cz-ctx__item-tokens { min-width: 44px; }
 .cz-ctx__item-pct { min-width: 46px; color: var(--text-3); }
-.cz-ctx__list--plain .cz-ctx__item { padding-left: var(--sp-1); }
+.cz-ctx__list--plain .cz-ctx__item { padding-left: 0; }
+/* 「空闲」的色块和面板底色几乎一样，补一圈发丝边让它看得见 */
+.cz-ctx__item.is-free .cz-ctx__swatch { box-shadow: inset 0 0 0 1px var(--border-strong); }
 
 /* 小节 */
 .cz-ctx__section { display: flex; flex-direction: column; gap: var(--sp-1); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
@@ -415,9 +417,9 @@
 
 /* 缓存命中率走势（手写 SVG，只用面板 tokens） */
 .cz-ctx__cache { display: flex; flex-direction: column; gap: var(--sp-1); }
-.cz-ctx__cache-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.cz-ctx__cache-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--sp-2); min-width: 0; }
 .cz-ctx__cache-now { font-size: 22px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; color: var(--text); }
-.cz-ctx__cache-sub { color: var(--text-3); font-size: var(--fs-xs); }
+.cz-ctx__cache-sub { color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }
 .cz-ctx__cache-plot { position: relative; }
 .cz-ctx__cache-svg,
 .cz-ctx__ctx-svg,
@@ -460,7 +462,7 @@
 .cz-ctx__ctx-bar.is-hover { fill: var(--accent); }
 .cz-ctx__ctx-bar.is-jump.is-hover { fill: color-mix(in srgb, var(--warn) 75%, var(--text)); }
 .cz-ctx__ctx-bar.is-sel { fill: var(--text); }
-.cz-ctx__grow-top { margin-left: auto; }
+.cz-ctx__grow-top { flex: none; margin-left: auto; white-space: nowrap; }
 .cz-ctx__grow {
   display: flex;
   flex-direction: column;

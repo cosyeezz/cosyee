@@ -10,13 +10,14 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AccountEntry, AccountList, AccountLogin, AccountMode } from '@cosyee/shared';
+import type { AccountEntry, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing } from '@cosyee/shared';
 import { nameFromOauth, planLabel, readClaudeJson } from '../account.js';
 import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
-import { type ApiConfig, apiHost, apiInfo, normalizeApiKey, normalizeBaseUrl, readApiConfig, writeApiConfig } from './api-config.js';
+import { type ApiConfig, apiHost, apiInfo, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
 import { ensureLinks, unlinkShared } from './links.js';
+import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
 
 export const DEFAULT_ID = 'default';
@@ -357,10 +358,34 @@ export class Accounts {
   }
 
   /**
+   * 拉取服务商的模型列表（映射表的下拉用）。密钥由服务端带上：
+   * 传了 apiKey 就用它（添加账号时还没存盘），否则用该账号已存的密钥。
+   */
+  async modelList(opts: { id?: unknown; baseUrl?: unknown; apiKey?: unknown; authType?: unknown }): Promise<ApiModelListing> {
+    const baseUrl = normalizeBaseUrl(opts.baseUrl);
+    if (baseUrl === null) throw new HttpError(400, 'Base URL 不合法：需要以 http:// 或 https:// 开头，不能带查询参数');
+    const given = typeof opts.apiKey === 'string' && opts.apiKey.trim() !== '' ? normalizeApiKey(opts.apiKey) : null;
+    let apiKey = given;
+    let authType: ApiAuthType = opts.authType === 'authToken' ? 'authToken' : 'apiKey';
+    if (!apiKey) {
+      if (typeof opts.id !== 'string') throw new HttpError(400, '请填写 API Key');
+      const cfg = readApiConfig(this.dirFor(opts.id));
+      if (!cfg) throw new HttpError(400, '该账号不是 API 账号');
+      apiKey = cfg.apiKey;
+      if (opts.authType === undefined) authType = cfg.authType;
+    }
+    try {
+      return await fetchModelList({ baseUrl, apiKey, authType });
+    } catch (e) {
+      throw new HttpError(502, `拉取模型列表失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
    * 添加（不传 id）或修改 API 账号。baseUrl 空 = 官方地址；修改时 apiKey 留空 = 沿用原来的。
    * 修改时该账号有执行中的会话就拒绝；空闲的进程先停掉（它们的环境变量还是旧配置），下次启动用新配置。
    */
-  saveApi(opts: { id?: unknown; label?: unknown; baseUrl?: unknown; apiKey?: unknown; authType?: unknown }): Promise<string> {
+  saveApi(opts: { id?: unknown; label?: unknown; baseUrl?: unknown; apiKey?: unknown; authType?: unknown; models?: unknown }): Promise<string> {
     return this.serial(async () => {
       const baseUrl = normalizeBaseUrl(opts.baseUrl);
       if (baseUrl === null) throw new HttpError(400, 'Base URL 不合法：需要以 http:// 或 https:// 开头，不能带查询参数');
@@ -368,6 +393,8 @@ export class Accounts {
       const keyGiven = typeof opts.apiKey === 'string' && opts.apiKey.trim() !== '';
       const apiKey = keyGiven ? normalizeApiKey(opts.apiKey) : null;
       if (keyGiven && !apiKey) throw new HttpError(400, 'API Key 不合法（不能含空格或非 ASCII 字符）');
+      // 没传 models = 沿用原来的（改 Key 时前端可以不带映射）；传了就整体替换
+      const models = opts.models === undefined ? undefined : normalizeModelMap(opts.models);
 
       if (opts.id !== undefined && opts.id !== null) {
         if (typeof opts.id !== 'string') throw new HttpError(400, 'id 不合法');
@@ -379,7 +406,8 @@ export class Accounts {
         const running = this.deps.running(a.id);
         if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再修改`);
         if ((this.deps.processes?.(a.id) ?? 0) > 0) await this.deps.stop((x) => x === a.id);
-        writeApiConfig(a.dir, { baseUrl, authType, apiKey: apiKey ?? old.apiKey });
+        const keep = opts.models === undefined ? old.models : models;
+        writeApiConfig(a.dir, { baseUrl, authType, apiKey: apiKey ?? old.apiKey, ...(keep ? { models: keep } : {}) });
         if (opts.label !== undefined) a.label = cleanLabel(opts.label);
         this.deps.store.save();
         this.names = null;
@@ -396,7 +424,7 @@ export class Accounts {
       let id = newId();
       while (this.find(id) || fs.existsSync(path.join(accountsRoot(), id))) id = newId();
       const dir = path.join(accountsRoot(), id);
-      const cfg: ApiConfig = { baseUrl, apiKey, authType };
+      const cfg: ApiConfig = { baseUrl, apiKey, authType, ...(models ? { models } : {}) };
       try {
         if (ensureLinks(baseClaudeHome(), dir).includes('projects')) throw new Error('无法在账号目录里创建共享链接');
         writeApiConfig(dir, cfg);

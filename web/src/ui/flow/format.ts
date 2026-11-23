@@ -191,22 +191,34 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
 }
 
 /**
- * 状态行下方的模型文字：只显示模型说的话，新的一段替换上一段。
- * 进行中：只给正在写的 answer（最近一段文字已在首行显示，不再重复）；
- * 结束后折叠时 = answer，没有则取 steps 里最后一段文字；展开时展开区已按时间列出所有步骤（含文字），这里只给 answer，避免重复。
+ * 状态行下方的交付文字。这里只放「交付」，不放执行过程：
+ * 执行中一律为空——一段文字是过程叙述还是最终交付，只有回合结束才能回头确认（最后一段才是交付），
+ * 边写边显示的话，后面一旦跟了工具调用就得撤掉，那段话会一闪而逝。过程由状态行（单行）与展开区承载。
+ * 回合结束后：折叠 = answer，没有则 steps 里最后一段文字；展开时展开区已列出所有步骤，只给 answer，避免重复。
  */
-export function getLiveText(
-  turn: Pick<Turn, 'answer' | 'steps'>,
-  expanded: boolean,
-  active = false,
-): { text: string; isAnswer: boolean } {
-  if (turn.answer) return { text: turn.answer, isAnswer: true };
-  if (expanded || active) return { text: '', isAnswer: false };
+export function getLiveText(turn: Pick<Turn, 'answer' | 'steps' | 'status'>, expanded: boolean): string {
+  if (isTurnActive(turn)) return '';
+  if (turn.answer) return turn.answer;
+  if (expanded) return '';
   for (let i = turn.steps.length - 1; i >= 0; i--) {
     const s = turn.steps[i]!;
-    if (s.kind === 'text' && s.text.trim()) return { text: s.text, isAnswer: false };
+    if (s.kind === 'text' && s.text.trim()) return s.text;
   }
-  return { text: '', isAnswer: false };
+  return '';
+}
+
+/**
+ * 整轮不渲染：CLI 自己处理的本地命令（/compact、/model 等，见 reducer 的 isLocalCommand），
+ * 且确认没有产生任何模型内容。带内容的一律照常显示——命令名单万一收错，这一轮也不会凭空消失。
+ */
+export function isHiddenTurn(turn: Pick<Turn, 'local' | 'steps' | 'answer' | 'subagents' | 'skills'>): boolean {
+  return (
+    turn.local === true &&
+    turn.steps.length === 0 &&
+    turn.answer === '' &&
+    turn.subagents.length === 0 &&
+    (turn.skills ?? []).length === 0
+  );
 }
 
 /** 回合是否仍在进行 */

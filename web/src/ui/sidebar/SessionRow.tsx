@@ -44,7 +44,7 @@ export function SessionRow({ session: s, active, now, workspaceLabel, onSelect, 
       </button>
       <div className="cz-sidebar__actions">
         <ActionButton
-          icon="pin"
+          icon={pinned ? 'pin-on' : 'pin'}
           label={pinned ? '取消置顶' : '置顶'}
           on={pinned}
           onClick={() => onTogglePin(s)}

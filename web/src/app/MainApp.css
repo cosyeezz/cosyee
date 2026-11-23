@@ -36,7 +36,9 @@
 }
 .cz-app__composer {
   position: absolute;
-  z-index: 4;
+  /* 高于顶栏（6）：输入框往上弹出的斜杠命令 / 用量面板 / 工作区菜单在矮屏上会越过顶栏，不能被它盖住；
+     低于窄屏抽屉的遮罩（20） */
+  z-index: 7;
   left: 0;
   right: 0;
   bottom: 0;

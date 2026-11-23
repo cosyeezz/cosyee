@@ -12,6 +12,7 @@ import {
   formatStamp,
   getLiveText,
   getStatusLine,
+  isHiddenTurn,
   latestTextLine,
   plainFirstLine,
   shortReason,
@@ -212,18 +213,39 @@ describe('getLiveText', () => {
     { kind: 'text' as const, text: '第二段' },
     { kind: 'tool' as const, id: 'b', name: 'Read', input: {}, summary: 'x' },
   ];
-  it('折叠：answer 优先，否则最后一段文字', () => {
-    expect(getLiveText({ answer: '正在写', steps }, false)).toEqual({ text: '正在写', isAnswer: true });
-    expect(getLiveText({ answer: '', steps }, false)).toEqual({ text: '第二段', isAnswer: false });
-    expect(getLiveText({ answer: '', steps: [] }, false).text).toBe('');
+  const done = { status: 'done' as const };
+  it('执行中：一律为空（过程不占交付区，正在写的 answer 也不显示）', () => {
+    expect(getLiveText({ answer: '', steps, status: 'running' }, false)).toBe('');
+    expect(getLiveText({ answer: '正在写', steps, status: 'running' }, false)).toBe('');
+    expect(getLiveText({ answer: '正在写', steps, status: 'understanding' }, false)).toBe('');
   });
-  it('进行中：只给正在写的 answer（最近一段文字已在首行显示）', () => {
-    expect(getLiveText({ answer: '', steps }, false, true).text).toBe('');
-    expect(getLiveText({ answer: '正在写', steps }, false, true)).toEqual({ text: '正在写', isAnswer: true });
+  it('结束后折叠：answer 优先，否则最后一段文字', () => {
+    expect(getLiveText({ answer: '最终答复', steps, ...done }, false)).toBe('最终答复');
+    expect(getLiveText({ answer: '', steps, ...done }, false)).toBe('第二段');
+    expect(getLiveText({ answer: '', steps: [], ...done }, false)).toBe('');
   });
-  it('展开：只给 answer，避免与展开区重复', () => {
-    expect(getLiveText({ answer: '', steps }, true).text).toBe('');
-    expect(getLiveText({ answer: '最终答复', steps }, true)).toEqual({ text: '最终答复', isAnswer: true });
+  it('结束后展开：只给 answer，避免与展开区重复', () => {
+    expect(getLiveText({ answer: '', steps, ...done }, true)).toBe('');
+    expect(getLiveText({ answer: '最终答复', steps, ...done }, true)).toBe('最终答复');
+  });
+  it('中断 / 出错：已写出的部分仍然显示', () => {
+    expect(getLiveText({ answer: '写到一半', steps, status: 'interrupted' }, false)).toBe('写到一半');
+    expect(getLiveText({ answer: '', steps, status: 'error' }, false)).toBe('第二段');
+  });
+});
+
+describe('isHiddenTurn', () => {
+  const local = { ...baseTurn, local: true as const, status: 'done' as const };
+  it('本地命令且没有任何模型内容 → 整轮不渲染', () => {
+    expect(isHiddenTurn(local)).toBe(true);
+  });
+  it('普通一轮照常渲染', () => {
+    expect(isHiddenTurn(baseTurn)).toBe(false);
+  });
+  it('本地命令意外产生了内容 → 仍然渲染（命令名单收错时不让整轮消失）', () => {
+    expect(isHiddenTurn({ ...local, answer: '文字' })).toBe(false);
+    expect(isHiddenTurn({ ...local, steps: [{ kind: 'text', text: 'x' }] })).toBe(false);
+    expect(isHiddenTurn({ ...local, skills: [{ id: 'k', name: 's', source: 'user', status: 'loaded', afterStep: 0 }] })).toBe(false);
   });
 });
 

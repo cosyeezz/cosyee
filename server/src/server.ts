@@ -24,6 +24,7 @@ import { ToolStatsStore } from './toolStats.js';
 import { CompactStatsStore } from './compactStats.js';
 import { DotState } from './state.js';
 import { UsageProvider, fetchUsage } from './usage.js';
+import { CliModelsDisk, CliModelsProvider, fetchCliModels, type FetchedModels } from './cliModels.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
 
 /** state.json 里最多保留多少个会话的配置记录（超出丢最久没用的） */
@@ -57,6 +58,10 @@ export interface StartOptions {
   onShutdown?: () => void;
   /** 价格表来源（测试替换）；默认定期从官方页面更新，缓存放在 state.json 同目录的 pricing.json */
   pricing?: { table(): PriceTable; start?(): void; stop?(): void };
+  /** 模型列表的拉取（测试替换，默认起一个 claude 进程发 initialize） */
+  fetchCliModels?: (dir: string | null) => Promise<FetchedModels | null>;
+  /** false = 模型列表不落盘（测试用） */
+  cliModels?: false;
 }
 
 export interface RunningServer {
@@ -112,6 +117,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     isDeleted: (id) => trash.isDeleted(id),
     pinKind: (id) => pins.kind(id),
     configOf: (id) => store.state.sessionConfigs[id] ?? null,
+    forkSrcOf: (id) => store.state.forks[id]?.src ?? null,
     // 并行模式下会话列表标出账号：正在运行的进程用的账号优先，否则看绑定
     accountOf: (id) => {
       if (!accounts || accounts.mode() !== 'parallel') return null;
@@ -188,11 +194,19 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       prepare: (id) => accounts?.prepare(id),
       bind: (sid, id) => accounts?.bind(sid, id),
     },
+    forks: {
+      set: (sessionId, cwd, src) => {
+        store.state.forks[sessionId] = { cwd, src, at: Date.now() };
+        store.save();
+      },
+    },
   });
   notifySidebar = () => manager.notifySidebar();
   // 账号信息与额度按账号分开缓存（并行模式下每个会话看它自己账号的）
   const accountInfos = new Map<string, AccountProvider>();
   const usages = new Map<string, UsageProvider>();
+  const modelLists = new Map<string, CliModelsProvider>();
+  const modelsDisk = new CliModelsDisk(opts.cliModels === false ? null : path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'cli-models.json'));
   const providerFor = <T>(map: Map<string, T>, make: (dir: string | null) => T, id: string, dir: string | null): T => {
     let p = map.get(id);
     if (!p) map.set(id, (p = make(dir)));
@@ -222,6 +236,21 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), a.id, a.dir).get(refresh);
     },
   };
+  // 模型菜单：账号实际可用的模型。与额度不同，API 账号也要（别名重映射会体现在里面）
+  const cliModels = {
+    get: (refresh: boolean, session?: string | null, accountId?: string | null) => {
+      let a: { id: string; dir: string | null };
+      if (accountId) {
+        const dir = accounts?.dirFor(accountId) ?? (accountId === DEFAULT_ID ? null : undefined);
+        if (dir === undefined) throw new HttpError(404, '账号不存在');
+        a = { id: accountId, dir };
+      } else {
+        a = session && isSafeId(session) && accounts ? accounts.resolve(session) : activeAccount();
+      }
+      const fetcher = opts.fetchCliModels ?? fetchCliModels;
+      return providerFor(modelLists, (d) => new CliModelsProvider({ id: a.id, fetcher: () => fetcher(d), disk: modelsDisk }), a.id, a.dir).get(refresh);
+    },
+  };
   accounts = new Accounts({
     store,
     running: (id) => manager.runningCount(id),
@@ -233,6 +262,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         usages.get(e.reset)?.reset();
         accountInfos.delete(e.reset);
         usages.delete(e.reset);
+        // 凭据 / API 配置 / 映射变了：模型表要重拉（provider 还没建过也要清掉落盘的）
+        (modelLists.get(e.reset) ?? new CliModelsProvider({ id: e.reset, fetcher: async () => null, disk: modelsDisk })).reset();
+        modelLists.delete(e.reset);
       }
       if (e.notify === 'reload') manager.notifyAccount(true);
       else if (e.notify === 'refresh') manager.notifyAccount(false);
@@ -254,6 +286,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     account,
     accounts,
     usage,
+    cliModels,
     store,
     previews,
     pins,

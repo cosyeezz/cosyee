@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icons/Icon';
+import { viewportBounds } from '../layout/viewport';
 import './Menu.css';
 
 export interface MenuItem {
@@ -52,32 +53,67 @@ const selectable = (es: MenuEntry[]): MenuItem[] => es.filter(isItem).filter((i)
 
 export function Menu({ anchor, items, onClose, placement = 'top', align = 'start', minWidth = 220, hotkeys }: MenuProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight?: number } | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const [subKey, setSubKey] = useState<string | null>(null);
   const [subActive, setSubActive] = useState<string | null>(null);
   const [level, setLevel] = useState<0 | 1>(0);
+  // 窄屏（手机）：两栏并排放不下，二级菜单改成「钻入」——在同一个面板里替换成子项，顶上一行返回
+  const [drill, setDrill] = useState(() => isDrill(minWidth));
+  const subItem = subKey ? (items.find((i) => isItem(i) && i.key === subKey) as MenuItem | undefined) : undefined;
+  const drilled = drill && !!subItem?.submenu;
+  // 没有绝对定位的二级面板时，面板本身可以限高滚动（overflow 会裁掉挂在旁边的二级面板）
+  const scrollable = drill || !items.some((i) => isItem(i) && i.submenu);
 
   // 用 ref 保存最新状态，让 document 级监听器不必反复重绑
   const st = useRef({ items, active, subKey, subActive, level, hotkeys, onClose });
   st.current = { items, active, subKey, subActive, level, hotkeys, onClose };
 
-  // 定位：首次渲染后测量面板尺寸
-  useLayoutEffect(() => {
+  // 定位：渲染后测量面板尺寸；上下都放不下时选空间大的一侧并限高
+  const place = useCallback(() => {
     const panel = panelRef.current;
     if (!anchor || !panel) return;
+    const vb = viewportBounds();
+    const m = 8;
     const a = anchor.getBoundingClientRect();
     const w = panel.offsetWidth;
-    const h = panel.offsetHeight;
+    const h = panel.scrollHeight + (panel.offsetHeight - panel.clientHeight);
     const gap = 6;
-    const fitsTop = a.top - gap - h >= 8;
-    const fitsBottom = a.bottom + gap + h <= window.innerHeight - 8;
-    const useTop = placement === 'top' ? fitsTop || !fitsBottom : !fitsBottom && fitsTop;
-    const top = useTop ? Math.max(8, a.top - gap - h) : a.bottom + gap;
+    const roomTop = a.top - gap - (vb.top + m);
+    const roomBottom = vb.bottom - m - (a.bottom + gap);
+    const fitsTop = h <= roomTop;
+    const fitsBottom = h <= roomBottom;
+    const useTop = fitsTop || fitsBottom
+      ? (placement === 'top' ? fitsTop || !fitsBottom : !fitsBottom && fitsTop)
+      : roomTop >= roomBottom;
+    const room = Math.max(80, useTop ? roomTop : roomBottom);
+    const maxHeight = scrollable && h > room ? room : undefined;
+    const hh = maxHeight ?? h;
+    const top = useTop ? Math.max(vb.top + m, a.top - gap - hh) : a.bottom + gap;
     let left = align === 'end' ? a.right - w : a.left;
-    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
-    setPos({ left, top });
-  }, [anchor, placement, align, items]);
+    left = Math.max(vb.left + m, Math.min(left, vb.right - w - m));
+    setPos({ left, top, maxHeight });
+  }, [anchor, placement, align, scrollable]);
+
+  // scrollHeight 是内容的完整高度，不受当前限高影响，内容变少时也能缩回
+  useLayoutEffect(place, [place, items, drilled]);
+
+  // 旋转屏幕、键盘弹起 / 收起：重新判断钻入模式并重新定位
+  useEffect(() => {
+    const on = () => {
+      setDrill(isDrill(minWidth));
+      place();
+    };
+    const vv = window.visualViewport;
+    window.addEventListener('resize', on);
+    vv?.addEventListener('resize', on);
+    vv?.addEventListener('scroll', on);
+    return () => {
+      window.removeEventListener('resize', on);
+      vv?.removeEventListener('resize', on);
+      vv?.removeEventListener('scroll', on);
+    };
+  }, [place, minWidth]);
 
   // 点外面关闭
   useEffect(() => {
@@ -143,19 +179,52 @@ export function Menu({ anchor, items, onClose, placement = 'top', align = 'start
     return () => document.removeEventListener('keydown', onKey, true);
   }, [activate]);
 
+  const back = () => { setLevel(0); setSubKey(null); setSubActive(null); };
+  const subRows = (list: MenuEntry[]) =>
+    list.map((s) => {
+      if (s.kind === 'sep') return <div key={s.key} className="cz-menu__sep" role="separator" />;
+      if (s.kind === 'text') return <div key={s.key} className="cz-menu__text">{s.text}</div>;
+      return (
+        <div
+          key={s.key}
+          className="cz-menu__wrap"
+          onMouseEnter={() => { if (!s.disabled) { setSubActive(s.key); setLevel(1); } }}
+        >
+          <Row item={s} active={subActive === s.key} onClick={() => activate(s)} />
+        </div>
+      );
+    });
+
   return createPortal(
     <div
       ref={panelRef}
-      className="cz-menu"
+      className={`cz-menu${scrollable ? ' cz-menu--scroll' : ''}`}
       data-cz-menu=""
       role="menu"
-      style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, minWidth, visibility: pos ? 'visible' : 'hidden' }}
+      style={{
+        left: pos?.left ?? 0,
+        top: pos?.top ?? 0,
+        maxHeight: pos?.maxHeight,
+        minWidth: drill ? Math.min(minWidth, window.innerWidth - 16) : minWidth,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
       onMouseDown={(e) => e.preventDefault()}
     >
-      {items.map((e) => {
+      {drilled && subItem?.submenu ? (
+        <>
+          <div className="cz-menu__wrap">
+            <div className="cz-menu__row cz-menu__back" role="menuitem" onClick={(ev) => { ev.stopPropagation(); back(); }}>
+              <Icon name="chevron-right" size={14} className="cz-menu__back-icon" />
+              <span className="cz-menu__main"><span className="cz-menu__label">{subItem.label}</span></span>
+            </div>
+          </div>
+          <div className="cz-menu__sep" role="separator" />
+          {subRows(subItem.submenu)}
+        </>
+      ) : items.map((e) => {
         if (e.kind === 'sep') return <div key={e.key} className="cz-menu__sep" role="separator" />;
         if (e.kind === 'text') return <div key={e.key} className="cz-menu__text">{e.text}</div>;
-        const open = subKey === e.key && !!e.submenu;
+        const open = !drill && subKey === e.key && !!e.submenu;
         return (
           <div
             key={e.key}
@@ -164,33 +233,24 @@ export function Menu({ anchor, items, onClose, placement = 'top', align = 'start
               if (e.disabled) return;
               setActive(e.key);
               setLevel(0);
+              // 钻入模式下只有点击才进子级：触屏点按会先合成 mouseenter，不能让它抢先切换
+              if (drill) return;
               if (e.submenu) { setSubKey(e.key); setSubActive(null); } else setSubKey(null);
             }}
           >
             <Row item={e} active={active === e.key} onClick={() => activate(e)} />
-            {open && e.submenu && (
-              <SubPanel minWidth={minWidth}>
-                {e.submenu.map((s) => {
-                  if (s.kind === 'sep') return <div key={s.key} className="cz-menu__sep" role="separator" />;
-                  if (s.kind === 'text') return <div key={s.key} className="cz-menu__text">{s.text}</div>;
-                  return (
-                    <div
-                      key={s.key}
-                      className="cz-menu__wrap"
-                      onMouseEnter={() => { if (!s.disabled) { setSubActive(s.key); setLevel(1); } }}
-                    >
-                      <Row item={s} active={subActive === s.key} onClick={() => activate(s)} />
-                    </div>
-                  );
-                })}
-              </SubPanel>
-            )}
+            {open && e.submenu && <SubPanel minWidth={minWidth}>{subRows(e.submenu)}</SubPanel>}
           </div>
         );
       })}
     </div>,
     document.body,
   );
+}
+
+/** 视口放不下「主菜单 + 二级菜单」并排时改为钻入式 */
+function isDrill(minWidth: number): boolean {
+  return typeof window !== 'undefined' && window.innerWidth < minWidth * 2 + 40;
 }
 
 function Row({ item, active, onClick }: { item: MenuItem; active: boolean; onClick: () => void }) {

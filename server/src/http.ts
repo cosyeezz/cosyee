@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo } from '@cosyee/shared';
+import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList } from '@cosyee/shared';
 import { type Accounts, RunningError } from './accounts/index.js';
 import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
@@ -41,6 +41,8 @@ export interface HttpDeps {
   accounts?: Accounts;
   /** 额度：传 session 时取该会话所用账号的额度，否则取当前账号的 */
   usage: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<UsageInfo | null> };
+  /** CLI 报告的可用模型（模型菜单用）；账号解析同 usage。不传 = 返回 null（旧测试） */
+  cliModels?: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<CliModelList | null> };
   store: StateStore;
   previews: Previews;
   pins: Pins;
@@ -236,8 +238,15 @@ export function createHandler(deps: HttpDeps) {
     }
     if (method === 'POST' && p === '/api/accounts/api') {
       const body = await readJson(req);
-      const id = await accounts.saveApi({ id: body.id, label: body.label, baseUrl: body.baseUrl, apiKey: body.apiKey, authType: body.authType });
+      const id = await accounts.saveApi({
+        id: body.id, label: body.label, baseUrl: body.baseUrl, apiKey: body.apiKey, authType: body.authType, models: body.models,
+      });
       return sendJson(res, 200, { ok: true, id });
+    }
+    if (method === 'POST' && p === '/api/accounts/api/models') {
+      const body = await readJson(req);
+      const r = await accounts.modelList({ id: body.id, baseUrl: body.baseUrl, apiKey: body.apiKey, authType: body.authType });
+      return sendJson(res, 200, r);
     }
     throw new HttpError(404, '未找到');
   }
@@ -400,6 +409,14 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/fork$/.exec(p))) {
+      const body = await readJson(req);
+      const id = decodeURIComponent(m[1]!);
+      if (!isSafe(id)) throw new HttpError(400, '会话 id 不合法');
+      if (typeof body.targetId !== 'string') throw new HttpError(400, 'targetId 不合法');
+      return sendJson(res, 200, await deps.manager.fork(id, needCwd(body.cwd), body.targetId));
+    }
+
     if (method === 'POST' && (m = /^\/api\/sessions\/([^/]+)\/viewed$/.exec(p))) {
       const body = await readJson(req);
       const id = decodeURIComponent(m[1]!);
@@ -415,6 +432,9 @@ export function createHandler(deps: HttpDeps) {
     if (p === '/api/accounts' || p.startsWith('/api/accounts/')) return accountRoutes(req, res, method, p);
 
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
+    if (method === 'GET' && p === '/api/models') {
+      return sendJson(res, 200, (await deps.cliModels?.get(q.get('refresh') === '1', q.get('session'), q.get('account'))) ?? null);
+    }
 
     if (method === 'POST' && p === '/api/defaults') {
       const body = await readJson(req);

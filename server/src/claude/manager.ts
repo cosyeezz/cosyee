@@ -33,6 +33,12 @@ export interface ManagerOptions {
   accounts?: SessionAccounts;
   /** 每个会话最近一次使用的配置（模型 / 强度）的存取；不传则不记录（旧测试） */
   configs?: SessionConfigStore;
+  /** 分支关系（新会话 ← 来源会话）的记录；不传则不记录（旧测试），分支仍可用，只是分支点之前的子代理面板打不开 */
+  forks?: ForkStore;
+}
+
+export interface ForkStore {
+  set(sessionId: string, cwd: string, src: string): void;
 }
 
 export interface SessionConfigStore {
@@ -107,6 +113,7 @@ export class Manager {
   private readonly compactWindow?: CompactWindowStore;
   private readonly accounts?: SessionAccounts;
   private readonly configs?: SessionConfigStore;
+  private readonly forks?: ForkStore;
   /** 会话最近一次 system/init 的 skills（带插件前缀），另按 cwd 存一份给探测进程（探测进程不发消息，收不到 init） */
   private initSkills = new Map<string, string[]>();
   private initSkillsByCwd = new Map<string, string[]>();
@@ -128,6 +135,7 @@ export class Manager {
     this.compactWindow = opts.compactWindow;
     this.accounts = opts.accounts;
     this.configs = opts.configs;
+    this.forks = opts.forks;
     this.autoTitle = new AutoTitle({
       hasTitle: async (id, cwd) => {
         const s = await this.sessions.scan(id, cwd);
@@ -903,6 +911,20 @@ export class Manager {
 
   viewed(id: string, cwd: string): void {
     if (this.dots.viewed(id)) this.changed(normalizeDir(cwd));
+  }
+
+  // ───────────── 分支（fork） ─────────────
+
+  /**
+   * 从某条用户消息之前分支出一个新会话（只复制记录文件，不启动进程；源会话与它的进程都不受影响）。
+   * 记下「新会话 ← 来源会话」，分支点之前的子代理记录仍在来源会话目录下，打开它们时顺着这条链找。
+   */
+  async fork(id: string, cwd: string, targetId: string): Promise<{ sessionId: string }> {
+    const dir = normalizeDir(cwd);
+    const res = await this.sessions.fork(id, dir, targetId);
+    this.forks?.set(res.sessionId, dir, id);
+    this.changed(dir);
+    return res;
   }
 
   // ───────────── 关闭 ─────────────

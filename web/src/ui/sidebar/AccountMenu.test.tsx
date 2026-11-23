@@ -159,7 +159,8 @@ describe('AccountMenu', () => {
     el.dispatchEvent(new Event('input', { bubbles: true }));
   });
   const dlgBtn = (text: string) =>
-    [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === text) as HTMLButtonElement;
+    // 取最后一个：模型映射表里也有个「添加」（加自定义模型），底部提交按钮在它后面
+    [...document.querySelectorAll('[role="dialog"] button')].reverse().find((b) => b.textContent === text) as HTMLButtonElement;
   const apiEntry = entry({
     id: 'a2', label: '代理', name: '代理', plan: 'API', active: false, isDefault: false,
     api: { baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', keyHint: '3456' },
@@ -184,7 +185,8 @@ describe('AccountMenu', () => {
     click([...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'API Key')!);
     await flush();
     const dlg = document.querySelector('[role="dialog"]')!;
-    const inputs = dlg.querySelectorAll('input');
+    // 主字段：备注名 / Base URL / API Key（模型映射表里的输入框都带 cz-mmap__input，排除掉）
+    const inputs = dlg.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
     expect(inputs.length).toBe(3);
     expect(dlgBtn('添加').disabled).toBe(true); // 没填密钥
     type(inputs[1], 'https://gw.example.com/');
@@ -193,7 +195,7 @@ describe('AccountMenu', () => {
     click(dlgBtn('添加'));
     await flush();
     expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
-      label: '', baseUrl: 'https://gw.example.com/', apiKey: 'sk-test-123456789', authType: 'authToken',
+      label: '', baseUrl: 'https://gw.example.com/', apiKey: 'sk-test-123456789', authType: 'authToken', models: null,
     });
     expect(document.body.textContent).toContain('已添加');
     expect(button('切换到该账号')).toBeDefined();
@@ -213,13 +215,14 @@ describe('AccountMenu', () => {
     const dlg = document.querySelector('[role="dialog"]')!;
     expect(dlg.textContent).toContain('修改 API 账号：代理');
     expect(dlg.querySelector('[role="radiogroup"][aria-label="添加方式"]')).toBeNull();
-    const inputs = dlg.querySelectorAll('input');
+    const inputs = dlg.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
     expect(inputs[1].value).toBe('https://proxy.example.com/v1');
     expect(inputs[2].placeholder).toContain('…3456');
     click(dlgBtn('保存'));
     await flush();
+    // 该账号没配映射，映射表也没动过 → models: null（显式清空，服务端规范化后仍是「没有映射」）
     expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
-      id: 'a2', label: '代理', baseUrl: 'https://proxy.example.com/v1', authType: 'authToken',
+      id: 'a2', label: '代理', baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', models: null,
     });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });

@@ -80,6 +80,66 @@ export interface AccountApiInfo {
   authType: ApiAuthType;
   /** 密钥末 4 位，用于辨认；密钥太短时为空 */
   keyHint: string;
+  /** 模型映射；没配置时不存在（= 不介入，别名原样发给服务商） */
+  models?: ApiModelMap;
+}
+
+/** 可重映射的模型别名：CLI 用 ANTHROPIC_DEFAULT_<别名>_MODEL 把它换成实际请求的模型 */
+export const MODEL_ALIASES = ['sonnet', 'opus', 'fable', 'haiku'] as const;
+export type ModelAlias = (typeof MODEL_ALIASES)[number];
+
+/** 映射表里的一项：别名或自定义条目指向的实际模型 */
+export interface ApiModelTarget {
+  /** 实际发给服务商的模型 id */
+  id: string;
+  /** 菜单里显示的名字；空 = 用 id */
+  label?: string;
+  /** 声明该模型支持 100 万 token 上下文 */
+  m1?: boolean;
+}
+
+/**
+ * API 账号的模型映射。四个别名走 CLI 原生的别名重映射（环境变量），
+ * extra 里的条目直接作为 --model 的值发出去。整个对象缺省 = 不介入。
+ */
+export interface ApiModelMap {
+  /** 别名 → 实际模型；某个别名没配 = 该别名不重映射，也不进菜单 */
+  alias?: Partial<Record<ModelAlias, ApiModelTarget>>;
+  /** 子代理用的模型（不进菜单） */
+  subagent?: string;
+  /** 兜底：映射表以外的模型名落到这里 */
+  fallback?: string;
+  /** 自由添加的条目，进菜单的「自定义模型」子菜单 */
+  extra?: ApiModelTarget[];
+}
+
+/** 服务端探测到的模型列表（供映射表的下拉用） */
+export interface ApiModelListing {
+  /** 实际请求成功的端点 */
+  url: string;
+  /** 模型 id；按服务商返回的顺序 */
+  models: string[];
+}
+
+/**
+ * CLI 报告的可用模型（initialize 控制请求的 models，按账号拉取）。模型菜单以它为准，拉不到时退回内置表。
+ * 订阅账号：别名 + 若干全名；API 账号：只有别名（映射过的别名 displayName 已是映射名）。
+ */
+export interface CliModel {
+  /** 传给 --model / set_model 的值 */
+  value: string;
+  /** 实际模型（别名解析后；映射过的别名是映射值，可能带 [1m]） */
+  resolvedModel?: string;
+  displayName: string;
+  description?: string;
+  /** 支持的思考强度；不存在 = 不支持强度 */
+  efforts?: Effort[];
+}
+
+export interface CliModelList {
+  models: CliModel[];
+  /** 拉取时间（ms） */
+  at: number;
 }
 
 /** 多账号模式：switch = 同一时间只有一个账号生效（切换时停止所有会话）；parallel = 每个会话绑定自己的账号，多个账号同时生效 */

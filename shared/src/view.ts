@@ -106,6 +106,11 @@ export interface Turn {
   userId?: string;
   /** 这条用户消息是 steering（并入上一轮执行的插话）。CLI 的 rewind 选择列表不含它们 */
   steer?: boolean;
+  /**
+   * 这一轮是 CLI 自己处理的本地命令（/compact、/model 等），不会产生模型回复。
+   * 仍然建一轮（后续事件落在它上面，不污染上一轮），但确认没有任何模型内容时整轮不渲染（见 web 的 isHiddenTurn）。
+   */
+  local?: boolean;
   /** 用户消息正文（标签处为占位名，例如「比较 file1 和 folder1」） */
   userText: string;
   attachments: Attachment[];

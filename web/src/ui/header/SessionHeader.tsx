@@ -92,19 +92,22 @@ export function SessionHeader({ title, cwd, branch, onRename }: SessionHeaderPro
         )}
       </div>
 
-      <div className="cz-header__meta cz-pathact-host" title={cwd}>
-        <Icon name="folder" size={14} />
-        <span className="cz-header__meta-text">{cwd}</span>
-        <PathActions path={cwd} copyClassName="cz-header__copy" copyLabel="复制工作目录" />
-      </div>
-
-      {branch !== null && (
-        <div className="cz-header__meta" title={branch}>
-          <Icon name="branch" size={14} />
-          <span className="cz-header__meta-text">{branch}</span>
-          <CopyButton text={branch} label="复制分支名" className="cz-header__copy" />
+      {/* 分支与工作目录并排在标题下方一行（三行叠放太占高度）。分支短、放前面；工作目录放最后，
+          它悬停才出现的几个操作按钮落在行尾，不会在两项之间留出一大段空白 */}
+      <div className="cz-header__metas">
+        {branch !== null && (
+          <div className="cz-header__meta" title={branch}>
+            <Icon name="branch" size={14} />
+            <span className="cz-header__meta-text">{branch}</span>
+            <CopyButton text={branch} label="复制分支名" className="cz-header__copy" />
+          </div>
+        )}
+        <div className="cz-header__meta cz-pathact-host" title={cwd}>
+          <Icon name="folder" size={14} />
+          <span className="cz-header__meta-text">{cwd}</span>
+          <PathActions path={cwd} copyClassName="cz-header__copy" copyLabel="复制工作目录" />
         </div>
-      )}
+      </div>
     </div>
   );
 }

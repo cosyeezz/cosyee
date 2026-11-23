@@ -38,7 +38,14 @@
   outline: none;
 }
 
+.cz-header__metas {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
 .cz-header__meta {
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
@@ -47,6 +54,8 @@
   font-size: var(--fs-sm);
   line-height: 1.5;
 }
+/* 分支名一般很短，空间不够时优先让工作目录省略 */
+.cz-header__metas > .cz-header__meta:not(.cz-pathact-host) { flex-shrink: 0; max-width: 40%; }
 .cz-header__meta-text {
   min-width: 0;
   overflow: hidden;

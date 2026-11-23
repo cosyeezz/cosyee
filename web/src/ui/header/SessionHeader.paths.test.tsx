@@ -41,7 +41,7 @@ describe('SessionHeader 工作目录的路径操作', () => {
   it('有 FilesContext：复制 / 在文件管理器中显示 / 在此处打开终端，各是带 aria-label 的 button', () => {
     const files: FilesApi = { cwd: CWD, open: vi.fn(), reveal: vi.fn(), terminal: vi.fn() };
     const el = mount(files);
-    const row = el.querySelector('.cz-header__meta')!;
+    const row = el.querySelector('.cz-header__meta.cz-pathact-host')!;
     const buttons = Array.from(row.querySelectorAll<HTMLButtonElement>('button'));
     expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['复制工作目录', '在文件管理器中显示', '在此处打开终端']);
     for (const b of buttons) expect(b.tabIndex).toBe(0);
@@ -71,6 +71,6 @@ describe('SessionHeader 工作目录的路径操作', () => {
 
   it('工作目录行带完整路径 tooltip', () => {
     const el = mount(null);
-    expect(el.querySelector('.cz-header__meta')!.getAttribute('title')).toBe(CWD);
+    expect(el.querySelector('.cz-header__meta.cz-pathact-host')!.getAttribute('title')).toBe(CWD);
   });
 });

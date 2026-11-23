@@ -1,7 +1,9 @@
 // 会话流：滚动容器 + 每轮（用户气泡 + TurnView），新内容到底时自动贴底。
-import { memo, useCallback, useLayoutEffect, useRef, type CSSProperties } from 'react';
+// 本地命令（/compact、/model 等 CLI 自己处理、不产生模型回复的输入）整轮不渲染，见 isHiddenTurn。
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import type { Turn } from '@cosyee/shared';
 import { canAnimate } from '../motion/reduced';
+import { isHiddenTurn } from './format';
 import { setFlowZoom, useFlowZoomControls } from './flowZoom';
 import { ScrollNav } from './ScrollNav';
 import { SelectionToolbar } from './SelectionToolbar';
@@ -21,6 +23,8 @@ export interface ConversationViewProps {
   sessionKey?: string | null;
   /** 挂载时为 true：从加载骨架过渡过来，视口里的内容自上而下逐块浮现（只在挂载那一刻读取） */
   reveal?: boolean;
+  /** 用户气泡的「分支」：targetId 是这条用户消息的 id，stay=true 表示分支完留在当前会话。不传则不显示分支按钮 */
+  onFork?: (targetId: string, stay: boolean) => void;
 }
 
 /** 逐块浮现：每块间隔 60ms，淡入并上移 8px */
@@ -51,20 +55,24 @@ const TurnItem = memo(function TurnItem({
   turn,
   onOpenSubagent,
   isSubagentView,
+  onFork,
 }: {
   turn: Turn;
   onOpenSubagent: (turnId: string, toolUseId: string) => void;
   isSubagentView?: boolean;
+  onFork?: (stay: boolean) => void;
 }) {
   return (
     <section className="cz-flow__item" data-turn-id={turn.id}>
-      {!isSubagentView && <UserMessage text={turn.userText} attachments={turn.attachments} />}
+      {!isSubagentView && <UserMessage text={turn.userText} attachments={turn.attachments} onFork={onFork} />}
       <TurnView turn={turn} onOpenSubagent={onOpenSubagent} isSubagentView={isSubagentView} />
     </section>
   );
 });
 
-export function ConversationView({ turns, onOpenSubagent, isSubagentView, onReply, sessionKey, reveal = false }: ConversationViewProps) {
+export function ConversationView({ turns: allTurns, onOpenSubagent, isSubagentView, onReply, sessionKey, reveal = false, onFork }: ConversationViewProps) {
+  // 本地命令轮不渲染；轮的下标仍按原数组计（压缩标记 / 花费图的跳转用的是 turn.id）
+  const turns = useMemo(() => allTurns.filter((t) => !isHiddenTurn(t)), [allTurns]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { pinToBottom, followIfStuck } = useStickToBottom(scrollRef, contentRef);
@@ -97,6 +105,23 @@ export function ConversationView({ turns, onOpenSubagent, isSubagentView, onRepl
   replyRef.current = onReply;
   const stableReply = useCallback((quote: string, reply: string) => replyRef.current?.(quote, reply), []);
 
+  // 每轮一个固定引用的分支回调（TurnItem 按引用比较，内联箭头函数会让所有轮重渲染）。
+  // 可分支的轮：有 userId、不是插话（插话不是独立的一问）、也不是第一轮（它之前没有内容，服务端会拒）
+  const forkRef = useRef(onFork);
+  forkRef.current = onFork;
+  const firstId = allTurns[0]?.id;
+  const canFork = !!onFork && !isSubagentView;
+  const forkCbs = useMemo(() => {
+    const m = new Map<string, (stay: boolean) => void>();
+    if (!canFork) return m;
+    for (const t of turns) {
+      if (!t.userId || t.steer || t.id === firstId) continue;
+      const target = t.userId;
+      m.set(t.id, (stay: boolean) => forkRef.current?.(target, stay));
+    }
+    return m;
+  }, [turns, firstId, canFork]);
+
   const wrapRef = useRef<HTMLDivElement>(null);
   const { zoom, hint } = useFlowZoomControls(wrapRef, scrollRef, contentRef);
 
@@ -116,7 +141,7 @@ export function ConversationView({ turns, onOpenSubagent, isSubagentView, onRepl
         {onReply && <SelectionToolbar scrollRef={scrollRef} resetKey={sessionKey} onReply={stableReply} />}
         <div className="cz-flow__column" ref={contentRef}>
           {turns.map((t) => (
-            <TurnItem key={t.id} turn={t} onOpenSubagent={stableOpen} isSubagentView={isSubagentView} />
+            <TurnItem key={t.id} turn={t} onOpenSubagent={stableOpen} isSubagentView={isSubagentView} onFork={forkCbs.get(t.id)} />
           ))}
         </div>
       </div>

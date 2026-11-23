@@ -21,8 +21,8 @@ function mount(branch: string | null = BRANCH) {
   const copies = () => Array.from(host!.querySelectorAll<HTMLButtonElement>('.cz-header__copy'));
   return {
     copies,
-    cwdBtn: () => copies()[0]!,
-    branchBtn: () => copies()[1]!,
+    cwdBtn: () => copies()[copies().length - 1]!,
+    branchBtn: () => copies()[0]!,
     click: async (b: HTMLButtonElement) => {
       await act(async () => {
         b.click();

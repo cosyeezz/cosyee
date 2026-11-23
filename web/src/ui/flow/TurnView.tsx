@@ -4,6 +4,7 @@
 //   有输出 → 神经脉冲 + 最近一段文本或「委派子代理：…」（单行省略号）；
 //   结束 → 完成 / 中断 / 出错图标 + 「已完成 · 14:32 · 共 N 步 · 用时 18 秒」。
 // 整行可点击展开；展开后状态行吸顶，点击吸顶的行收起并滚回原位。工具行只在展开区出现。
+// 状态行下方只放交付：执行中不显示任何正文（过程全部在状态行与展开区里），回合结束才出现最终答复（见 getLiveText）。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SubagentRun, Turn } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
@@ -197,9 +198,8 @@ export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagen
     rowRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
   }, [open]);
 
-  // 进行中：最近一段文字已在首行显示，下方只给正在写的 answer；
-  // 结束后折叠：answer 或最后一段文字；展开：只给 answer（其余文字已在展开区里）
-  const live = getLiveText(turn, open, active);
+  // 交付文字：执行中为空，回合结束才出现（见 getLiveText）
+  const delivered = getLiveText(turn, open);
 
   return (
     <div ref={rootRef} className={`cz-flow__turn is-${turn.status}`}>
@@ -219,12 +219,7 @@ export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagen
       {turn.skills && turn.skills.length > 0 && <SkillPanel skills={turn.skills} active={active} />}
       <McpPanel steps={turn.steps} active={active} />
 
-      {live.text && (
-        <Markdown
-          text={live.text}
-          className={`cz-flow__answer${active && live.isAnswer ? ' is-streaming' : ''}`}
-        />
-      )}
+      {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
     </div>
   );
 });

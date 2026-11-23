@@ -117,6 +117,7 @@ export class Trash {
     const st = this.store.state;
     delete st.deleted[id];
     delete st.unread[id];
+    delete st.forks[id];
     this.pins.clear(id);
     this.store.save();
   }

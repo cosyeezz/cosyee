@@ -2,9 +2,10 @@
 // 密钥只提交给本机服务端、存在该账号的私有配置目录里，之后不会再下发回来（修改时留空 = 不变）。
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountApiInfo, ApiAuthType } from '@cosyee/shared';
+import type { AccountApiInfo, ApiAuthType, ApiModelMap } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { useMorph } from '../motion/morph';
+import { ModelMapTable } from './ModelMapTable';
 
 export type AddKind = 'login' | 'api';
 
@@ -68,12 +69,36 @@ export function ApiAccountDialog({ edit, onClose, onDone, onSwitch, onUseLogin, 
   /** 添加成功后的账号 id */
   const [added, setAdded] = useState<string | null>(null);
   const firstRef = useRef<HTMLInputElement>(null);
+  // 模型映射：全部留空时保存成 null（= 不介入）
+  const [models, setModels] = useState<ApiModelMap>(edit?.api.models ?? {});
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [fetchHint, setFetchHint] = useState<string | null>(null);
 
   useEffect(() => {
     firstRef.current?.focus();
   }, []);
 
   const canSave = !busy && (!!edit || !!apiKey.trim());
+
+  const fetchModels = async () => {
+    setFetching(true);
+    setFetchHint(null);
+    try {
+      const r = await api.apiModelList({
+        id: edit?.id,
+        baseUrl: baseUrl.trim(),
+        apiKey: apiKey.trim() || undefined,
+        authType,
+      });
+      setModelOptions(r.models);
+      setFetchHint(`从 ${r.url} 拉到 ${r.models.length} 个模型。`);
+    } catch (e) {
+      setFetchHint(msg(e));
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const save = async () => {
     if (!canSave) return;
@@ -86,6 +111,8 @@ export function ApiAccountDialog({ edit, onClose, onDone, onSwitch, onUseLogin, 
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim() || undefined,
         authType,
+        // 映射表是这个对话框里的唯一来源：一项都没填就显式清掉原来的映射
+        models: Object.keys(models).length ? models : null,
       });
       onDone(r.id);
       if (edit) close();
@@ -181,6 +208,14 @@ export function ApiAccountDialog({ edit, onClose, onDone, onSwitch, onUseLogin, 
           </div>
           <span>{AUTH_OPTIONS.find((o) => o.type === authType)!.tip}</span>
         </div>
+        <ModelMapTable
+          value={models}
+          onChange={setModels}
+          options={modelOptions}
+          onFetch={() => void fetchModels()}
+          fetching={fetching}
+          hint={fetchHint}
+        />
       </>
     );
     buttons = (
@@ -195,7 +230,13 @@ export function ApiAccountDialog({ edit, onClose, onDone, onSwitch, onUseLogin, 
 
   return createPortal(
     <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim">
-      <div ref={panelRef} className="cz-acct-dlg cz-modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        ref={panelRef}
+        className={`cz-acct-dlg cz-modal${added ? '' : ' cz-acct-dlg--wide'}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <div className="cz-acct-dlg__title">{title}</div>
         {body}
         {error && <p className="cz-acct-dlg__text cz-acct-dlg__text--error">{error}</p>}

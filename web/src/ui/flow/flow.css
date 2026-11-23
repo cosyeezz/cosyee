@@ -102,7 +102,27 @@
 .cz-flow__user {
   display: flex;
   justify-content: flex-end;
+  align-items: flex-start;
+  gap: var(--sp-1);
 }
+/* 气泡左侧的复制 / 分支：平时不占视线，悬停这一轮或键盘聚焦时浮出 */
+.cz-flow__acts {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* 与气泡首行文字对齐（气泡上内边距 + 半行高 - 按钮半高） */
+  margin-top: calc(var(--sp-2) + 0.5 * var(--lh) * 1em - 13px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.cz-flow__user:hover .cz-flow__acts,
+.cz-flow__user:focus-within .cz-flow__acts,
+.cz-flow__acts:has(.is-open) {
+  opacity: 1;
+  pointer-events: auto;
+}
+:root[data-motion="reduce"] .cz-flow__acts { transition: none; }
 .cz-flow__bubble {
   max-width: 85%;
   padding: var(--sp-2) var(--sp-4);
@@ -480,6 +500,7 @@
   cursor: pointer;
 }
 .cz-flow__icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+.cz-flow__icon-btn.is-open { background: var(--bg-hover); color: var(--text); }
 
 /* ---------- Markdown ---------- */
 .cz-flow__md { font-size: var(--fs-md); line-height: var(--lh); overflow-wrap: anywhere; min-width: 0; }
@@ -492,7 +513,12 @@
 .cz-flow__md h2 { font-size: var(--fs-lg); }
 .cz-flow__md h3, .cz-flow__md h4 { font-size: var(--fs-md); }
 .cz-flow__md ul, .cz-flow__md ol { margin: 0 0 var(--sp-3); padding-left: var(--sp-5); }
-.cz-flow__md li { margin: 2px 0; }
+.cz-flow__md li { margin: 4px 0; }
+.cz-flow__md li::marker { color: var(--text-3); }
+/* 嵌套列表与列表项里的段落不再各自带下边距：否则带子列表的项后面会多出一截空白，列表节奏忽松忽紧 */
+.cz-flow__md li > :is(ul, ol) { margin: 2px 0 0; }
+.cz-flow__md li > p { margin: 0; }
+.cz-flow__md li > p + :is(p, ul, ol, pre, blockquote) { margin-top: var(--sp-1); }
 .cz-flow__md strong { color: var(--cz-flow-strong); font-weight: 600; }
 .cz-flow__md a { color: var(--accent); text-decoration: none; }
 .cz-flow__md a:hover { text-decoration: underline; }
@@ -510,21 +536,6 @@
 .cz-flow__md table { border-collapse: collapse; font-size: var(--fs-sm); }
 .cz-flow__md th, .cz-flow__md td { padding: 6px var(--sp-3); border: 1px solid var(--border); text-align: left; }
 .cz-flow__md th { background: var(--bg-elev); font-weight: 600; }
-
-/* 流式光标：接在最后一个段落 / 列表项末尾 */
-.cz-flow__answer.is-streaming > :is(p, h1, h2, h3, h4):last-child::after,
-.cz-flow__answer.is-streaming > :is(ul, ol):last-child > li:last-child::after {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 1.05em;
-  margin-left: 3px;
-  vertical-align: text-bottom;
-  background: var(--text-2);
-  border-radius: 1px;
-  animation: cz-flow-blink 1s steps(1) infinite;
-}
-@keyframes cz-flow-blink { 50% { opacity: 0; } }
 
 /* 代码块 */
 .cz-flow__code {

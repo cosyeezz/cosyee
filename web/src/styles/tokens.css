@@ -23,8 +23,11 @@
   --r-lg: 14px;
   --r-xl: 20px;
 
-  --sidebar-w: 280px;
-  --context-w: 300px;
+  /* 左右栏各占总宽的 1/5（中间会话流 3/5），下限 240px 保证栏内文字不挤，
+     上限 360px 免得超宽屏上两侧被拉成大片空白 */
+  --side-w: clamp(240px, 20vw, 360px);
+  --sidebar-w: var(--side-w);
+  --context-w: var(--side-w);
   /* 窄屏抽屉的宽度（另外不超过屏宽的 86% / 90%） */
   --sidebar-w-narrow: 320px;
   --context-w-narrow: 340px;
@@ -136,9 +139,10 @@
   transition: background-color 280ms ease, border-color 280ms ease, color 280ms ease, fill 280ms ease, box-shadow 280ms ease !important;
 }
 
-/* 磨砂颗粒：极淡的噪点，让半透明层有「磨砂」的质感而不是一块平涂的半透明色 */
+/* 磨砂颗粒：极淡的噪点，让半透明层有「磨砂」的质感而不是一块平涂的半透明色。
+ * 噪点透明度压到 .45：满幅时深色输入框上像一层砂纸，颗粒感盖过了玻璃感 */
 :root {
-  --mat-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --mat-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .45 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 *,

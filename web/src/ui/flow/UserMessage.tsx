@@ -1,4 +1,5 @@
 // 用户消息气泡：正文按 Markdown 渲染；占位名（file1 / img1 / folder1）渲染成内联标签。
+// 气泡左侧悬停浮出两个按钮：复制原文、从这条消息之前分支出新会话。
 import { memo, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -8,9 +9,11 @@ import type { Attachment, PreviewInfo } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { parseQuotes } from '../../core/quote';
 import { api } from '../../core/api';
+import { expandLabels } from '../../core/composer';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
-import { CodeBlock, nodeText } from './Markdown';
+import { Menu } from '../menus/Menu';
+import { CodeBlock, copyText, nodeText } from './Markdown';
 import { attachmentIndex, prepareUserMarkdown } from './userMarkdown';
 import './flow.css';
 import './userMessage.css';
@@ -140,12 +143,72 @@ function buildComponents(attachments: Attachment[]): Components {
   };
 }
 
+/** 复制：复制成功后图标短暂变成对勾 */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="cz-flow__icon-btn"
+      title={copied ? '已复制' : '复制原文'}
+      aria-label={copied ? '已复制' : '复制原文'}
+      onClick={() => {
+        void (async () => {
+          if (!(await copyText(text))) return;
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        })();
+      }}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={14} />
+    </button>
+  );
+}
+
+/** 分支：菜单里两种去向 —— 切到新会话，或留在当前会话（新会话只出现在侧栏） */
+function ForkButton({ onFork }: { onFork: (stay: boolean) => void }) {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const close = useCallback(() => setAnchor(null), []);
+  return (
+    <>
+      <button
+        type="button"
+        className={`cz-flow__icon-btn${anchor ? ' is-open' : ''}`}
+        title="从这条消息之前分支"
+        aria-label="从这条消息之前分支"
+        aria-expanded={anchor != null}
+        onClick={(e) => {
+          const el = e.currentTarget;
+          setAnchor((a) => (a ? null : el));
+        }}
+      >
+        <Icon name="branch" size={14} />
+      </button>
+      {anchor && (
+        <Menu
+          anchor={anchor}
+          align="start"
+          minWidth={240}
+          onClose={close}
+          items={[
+            { key: 'go', label: '分支并切过去', note: '这条消息的原文填回输入框', onSelect: () => onFork(false) },
+            { key: 'stay', label: '分支，留在当前会话', note: '新会话只出现在侧栏', onSelect: () => onFork(true) },
+          ]}
+        />
+      )}
+    </>
+  );
+}
+
 export const UserMessage = memo(function UserMessage({
   text,
   attachments,
+  onFork,
 }: {
   text: string;
   attachments: Attachment[];
+  /** 可分支时才传：stay=true 表示分支完留在当前会话 */
+  onFork?: (stay: boolean) => void;
 }) {
   // 选中回复的消息（`> ` 引用开头，可有多段）：按段渲染「引用 + 紧跟其后的回复」；回复 / 正文照常还原路径标签
   const parts = useMemo(() => parseQuotes(text), [text]);
@@ -161,8 +224,14 @@ export const UserMessage = memo(function UserMessage({
       </div>
     );
   };
+  // 复制 / 分支预填用的原文：占位名换回 @"绝对路径"，粘到别处可读，填回输入框能解析成标签
+  const raw = useMemo(() => expandLabels(text, attachments), [text, attachments]);
   return (
     <div className="cz-flow__user">
+      <div className="cz-flow__acts">
+        {onFork && <ForkButton onFork={onFork} />}
+        <CopyButton text={raw} />
+      </div>
       <div className="cz-flow__bubble cz-spot">
         {parts
           ? parts.map((p, i) => (
