@@ -119,6 +119,15 @@ describe('toContextUsage', () => {
     expect(by('skill-creator')).toMatchObject({ mode: 'off', tokens: null });
   });
 
+  it('skills：init 还没到时（null）不推定已删除，保留 cosyeeOverrides 里的 on 状态 skill', () => {
+    const r = toContextUsage({ skills: { skillFrontmatter: [] } }, 1, {
+      initSkills: null,
+      cosyeeOverrides: { ghost: 'on' as SkillMode },
+    });
+    expect(r.skills.map((s) => s.name)).toContain('ghost');
+    expect(r.skills.find((s) => s.name === 'ghost')).toMatchObject({ mode: 'on', tokens: null });
+  });
+
   it('mcpServers：以 mcp_status 为准，工具 token 按规范化名匹配', () => {
     const r = toContextUsage(
       {

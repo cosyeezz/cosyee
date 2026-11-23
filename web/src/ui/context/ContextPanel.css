@@ -139,16 +139,15 @@
 /* 关闭 / 手动 / 停用的行整体变淡 */
 .cz-ctx__item.is-off { color: var(--text-3); }
 
-/* Skills：名字完整显示（允许换行），右侧是「状态图标 + 下拉」单个按钮 */
-.cz-ctx__skill { flex-wrap: wrap; align-items: flex-start; padding-top: 2px; padding-bottom: 2px; }
+/* Skills：名字单行省略（悬浮 tooltip 显示完整名 + 说明），右侧是「状态图标 + 下拉」 */
+.cz-ctx__skill { gap: var(--sp-1); padding-top: 2px; padding-bottom: 2px; }
 .cz-ctx__skill-name {
-  overflow: visible;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  min-width: 56px;
   line-height: 20px;
 }
-.cz-ctx__skill .cz-ctx__item-tokens { line-height: 20px; }
+.cz-ctx__skill .cz-ctx__tool-calls { min-width: 22px; }
+.cz-ctx__skill .cz-ctx__tool-total { min-width: 28px; }
+.cz-ctx__skill .cz-ctx__item-tokens { min-width: 34px; }
 .cz-ctx__mode {
   flex: none;
   display: inline-flex;

@@ -79,7 +79,8 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
     if (seen.has(n)) continue;
     const f = findFm(n);
     // 设成「开」却既不在 init 也不在 frontmatter：多半已被删掉，不再列出
-    if (!f && modeOf(n) === 'on') continue;
+    // 但 init 数据还没到（initSkills 为 null）时不能下此结论，保留以免误漏
+    if (!f && modeOf(n) === 'on' && extra.initSkills !== null) continue;
     push(n, f);
   }
   fm.forEach((f, k) => {
