@@ -527,12 +527,12 @@
 .cz-sidebar__menu--up {
   top: auto;
   bottom: calc(100% + var(--sp-1));
-  /* 至少 280px，侧栏窄时名字不至于太挤 */
-  right: auto;
-  width: max(100%, 280px);
+  /* left: 0 + right: 0（来自基础 .cz-sidebar__menu）撑满侧栏宽度，
+     不用固定 280px——否则侧栏窄时菜单被 overflow: hidden 裁掉右侧 */
+  right: 0;
 }
-/* 手机抽屉只有 min(320px, 86%) 宽：菜单不能比抽屉还宽，否则右侧被裁 */
-.cz-shell--narrow .cz-sidebar__menu--up { width: max(100%, min(280px, calc(86vw - 24px))); }
+/* 手机抽屉：同上，撑满抽屉宽度 */
+.cz-shell--narrow .cz-sidebar__menu--up { right: 0; }
 /* 矮屏跟着缩：扣掉账户栏、模式 / 主题开关和顶部留白 */
 .cz-sidebar__menu--up .cz-sidebar__menu-list { max-height: min(420px, calc(var(--center-h, 100dvh) - 300px)); }
 .cz-sidebar__menu--up .cz-sidebar__menu-main:disabled { cursor: default; opacity: .7; }

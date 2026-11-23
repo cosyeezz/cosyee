@@ -13,6 +13,8 @@ export interface ChipPreviewProps {
   /** 直接给出标签数据（会话流里的附件标签没有 data- 属性）；不给则从 anchor 的 dataset 读 */
   chip?: ChipData;
   onClose: () => void;
+  /** 从编辑区移除该标签（编辑区里的标签才有） */
+  onRemove?: () => void;
   previewInfo: (token: string) => Promise<PreviewInfo>;
   previewRawUrl: (token: string) => string;
 }
@@ -41,7 +43,7 @@ function place(anchor: HTMLElement): Place {
   return { left, top: r.bottom + gap, maxHeight: Math.max(spaceBelow, 80) };
 }
 
-export function ChipPreview({ anchor, chip: chipProp, onClose, previewInfo, previewRawUrl }: ChipPreviewProps) {
+export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, previewInfo, previewRawUrl }: ChipPreviewProps) {
   const chip = chipProp ?? readChip(anchor);
   const token = chip.token;
   const isImage = chip.kind === 'img';
@@ -118,6 +120,12 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, previewInfo, prev
         <span className="cz-preview__path">{path}</span>
       </div>
       {meta.length > 0 && <div className="cz-preview__meta">{meta.join(' · ')}</div>}
+      {onRemove && (
+        <button type="button" className="cz-preview__remove" onClick={() => { onRemove(); onClose(); }}>
+          <Icon name="trash" size={14} />
+          <span>移除</span>
+        </button>
+      )}
     </div>
   );
 }

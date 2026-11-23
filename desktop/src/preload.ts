@@ -7,4 +7,8 @@ contextBridge.exposeInMainWorld('cosyeeDesktop', {
   openSettings: (): void => {
     void ipcRenderer.invoke('desktop:open-settings');
   },
+  /** 用 Electron 原生对话框选文件/文件夹（代替服务端的 osascript） */
+  pick: (mode: string, title: string, startDir: string): Promise<string[]> => {
+    return ipcRenderer.invoke('desktop:pick', mode, title, startDir);
+  },
 });

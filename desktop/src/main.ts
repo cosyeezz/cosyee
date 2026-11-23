@@ -569,6 +569,19 @@ function registerIpc(): void {
     const url = e.senderFrame?.url ?? '';
     if (win && e.sender === win.webContents && isOwnUrl(url)) openSettings();
   });
+  // 用 Electron 原生对话框选文件 / 文件夹（代替服务端的 osascript：utility process 里弹不到前台）
+  ipcMain.handle('desktop:pick', async (e, mode: unknown, title: unknown, startDir: unknown): Promise<string[]> => {
+    if (!win || e.sender !== win.webContents) return [];
+    const props: Electron.OpenDialogOptions['properties'] = ['multiSelections'];
+    const m = typeof mode === 'string' ? mode : 'mixed';
+    if (m === 'folders') props.push('openDirectory');
+    else if (m === 'files') props.push('openFile');
+    else { props.push('openFile', 'openDirectory'); }
+    const opts: Electron.OpenDialogOptions = { properties: props, title: typeof title === 'string' ? title : undefined };
+    if (typeof startDir === 'string' && startDir) opts.defaultPath = startDir;
+    const r = await dialog.showOpenDialog(win, opts);
+    return r.filePaths;
+  });
   ipcMain.handle('settings:get', async (e) => {
     if (!fromSettings(e)) return null;
     return { host: cfg.host, port: cfg.port, running: await runningCount() };

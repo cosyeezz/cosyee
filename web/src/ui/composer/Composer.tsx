@@ -653,7 +653,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
       </div>
       {preview && (
-        <ChipPreview anchor={preview} onClose={closePreview} previewInfo={previewInfo} previewRawUrl={previewRawUrl} />
+        <ChipPreview
+          anchor={preview}
+          onClose={closePreview}
+          onRemove={() => {
+            const ed = editorRef.current;
+            if (ed && preview.parentNode === ed) {
+              preview.remove();
+              afterChange();
+            }
+          }}
+          previewInfo={previewInfo}
+          previewRawUrl={previewRawUrl}
+        />
       )}
     </div>
   );

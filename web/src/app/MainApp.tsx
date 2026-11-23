@@ -75,8 +75,12 @@ export function MainApp() {
     setWebPick(null);
     done?.(paths);
   }, []);
-  /** 输入框「+」：本机 → 系统对话框；远程 → 网页版选择窗口 */
+  /** 输入框「+」：桌面版 → Electron 原生对话框；本机浏览器 → 服务端弹对话框；远程 → 网页版选择窗口 */
   const pickFiles = useCallback<typeof api.pick>(async (mode) => {
+    if (window.cosyeeDesktop?.pick) {
+      const paths = await window.cosyeeDesktop.pick(mode ?? 'mixed', '选择文件或文件夹', '');
+      return paths.length ? api.pickPaths(paths) : { items: [], supportsMixed: true };
+    }
     if (!remote) return api.pick(mode);
     const paths = await askPaths('mixed', '添加文件或文件夹');
     return paths.length ? api.pickPaths(paths) : { items: [], supportsMixed: true };
@@ -311,7 +315,11 @@ export function MainApp() {
   }, [flash]);
 
   const openFolder = useCallback(() => {
-    const picked: Promise<{ workspace: Workspace | null }> = remote
+    const picked: Promise<{ workspace: Workspace | null }> = window.cosyeeDesktop?.pick
+      ? window.cosyeeDesktop.pick('folders', '选择工作空间文件夹', '').then(
+          ([dir]): Promise<{ workspace: Workspace | null }> | { workspace: null } =>
+            dir ? api.openWorkspace(dir) : { workspace: null })
+      : remote
       ? askPaths('folder', '打开文件夹').then(([dir]): Promise<{ workspace: Workspace | null }> | { workspace: null } =>
           dir ? api.openWorkspace(dir) : { workspace: null })
       : api.pickWorkspace();
