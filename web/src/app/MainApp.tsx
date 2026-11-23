@@ -87,6 +87,7 @@ export function MainApp() {
   }, [remote, askPaths]);
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [wsConnected, setWsConnected] = useState(true);
   const [wsState, setWsState] = useState<{ current: string | null; list: Workspace[] }>({ current: null, list: [] });
   /** 各工作空间的会话（侧栏按工作空间分组显示，所以每个工作空间都要读）；键见 pathKey */
   const [sessionMap, setSessionMap] = useState<Record<string, SessionSummary[]>>({});
@@ -274,6 +275,9 @@ export function MainApp() {
 
   // 断线重连（后端重启、电脑休眠唤醒等）：断线期间错过的列表变化全部重读
   useEffect(() => socket.onReconnect(refreshSidebar), [refreshSidebar]);
+
+  // WebSocket 连接状态（断线时在界面上提示，避免消息默默排队、用户以为发不了）
+  useEffect(() => socket.onConnChange(setWsConnected), []);
 
   // ───────────── 当前会话派生数据 ─────────────
 
@@ -969,6 +973,7 @@ export function MainApp() {
         {/* 骨架固定在这个位置渲染：加载中 → 淡出是同一个元素，不会重新挂载闪一下 */}
         {skeleton.phase !== 'off' && <FlowSkeleton leaving={skeleton.phase === 'leaving'} />}
       </div>
+      {!wsConnected && <div className="cz-app__notice cz-app__notice--warn" role="status">连接已断开，正在重连…</div>}
       {notice && <div className="cz-app__notice" role="status">{notice}</div>}
       <div className="cz-app__composer" ref={composerWrapRef}>
         {/* 一直挂着：空了以后自己先播完退场再消失 */}

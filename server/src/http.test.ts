@@ -15,6 +15,7 @@ let srv: RunningServer;
 let base: string;
 let prevEnv: string | undefined;
 let prevHome: string | undefined;
+let prevHost: string | undefined;
 
 beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cosyee-http-'));
@@ -27,6 +28,8 @@ beforeAll(async () => {
   process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'claude');
   prevHome = process.env.COSYEE_HOME;
   process.env.COSYEE_HOME = path.join(tmp, 'home');
+  prevHost = process.env.COSYEE_HOST;
+  delete process.env.COSYEE_HOST;
   srv = await startServer({ port: 0, webDist: web, stateFile: path.join(tmp, 'state.json') });
   base = `http://127.0.0.1:${srv.port}`;
 });
@@ -37,6 +40,8 @@ afterAll(async () => {
   else process.env.CLAUDE_CONFIG_DIR = prevEnv;
   if (prevHome === undefined) delete process.env.COSYEE_HOME;
   else process.env.COSYEE_HOME = prevHome;
+  if (prevHost === undefined) delete process.env.COSYEE_HOST;
+  else process.env.COSYEE_HOST = prevHost;
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

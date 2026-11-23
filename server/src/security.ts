@@ -92,7 +92,9 @@ export function listenAddress(bindHost: string): string {
 export function allowedHostnames(bindHost: string = '127.0.0.1', ifaces?: NodeJS.Dict<os.NetworkInterfaceInfo[]>): string[] {
   const names = ['127.0.0.1', 'localhost'];
   if (bindHost === TAILSCALE_MODE) {
-    names.push(...tailscaleAddrs(ifaces).map((a) => (a.includes(':') ? `[${a}]` : a)), os.hostname().toLowerCase());
+    const hn = os.hostname().toLowerCase();
+    // macOS 的 os.hostname() 带 .local 后缀，但 Tailscale MagicDNS 用不带后缀的短名；两个都要认
+    names.push(...tailscaleAddrs(ifaces).map((a) => (a.includes(':') ? `[${a}]` : a)), hn, hn.replace(/\.local$/, ''));
   } else if (bindHost === '0.0.0.0') names.push(...localIPv4s(ifaces));
   else if (bindHost !== '127.0.0.1' && bindHost !== 'localhost') names.push(bindHost);
   return [...new Set(names)];

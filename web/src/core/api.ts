@@ -192,6 +192,7 @@ export class Socket {
   private retry = 0;
   private openListeners = new Set<() => void>();
   private opened = false;
+  private connListeners = new Set<(connected: boolean) => void>();
 
   connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -204,6 +205,7 @@ export class Socket {
       // 断线期间的广播（sessions.changed / sidebar.changed）都丢了：重连后通知上层重新拉取
       if (this.opened) for (const l of this.openListeners) l();
       this.opened = true;
+      for (const l of this.connListeners) l(true);
     };
     ws.onmessage = (ev) => {
       let m: ServerMsg;
@@ -212,6 +214,7 @@ export class Socket {
     };
     ws.onclose = () => {
       this.ws = null;
+      for (const l of this.connListeners) l(false);
       const delay = Math.min(5000, 300 * 2 ** this.retry++);
       setTimeout(() => this.connect(), delay);
     };
@@ -234,6 +237,12 @@ export class Socket {
   onReconnect(l: () => void) {
     this.openListeners.add(l);
     return () => { this.openListeners.delete(l); };
+  }
+
+  /** 连接状态变化回调（connected = true / false） */
+  onConnChange(l: (connected: boolean) => void) {
+    this.connListeners.add(l);
+    return () => { this.connListeners.delete(l); };
   }
 }
 

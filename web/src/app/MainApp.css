@@ -89,6 +89,10 @@
   box-shadow: var(--mat-hi), 0 4px 16px var(--scrim);
   z-index: 5;
 }
+.cz-app__notice--warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
 .cz-app__fatal {
   height: 100%;
   display: grid;

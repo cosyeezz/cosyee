@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     const ips = tailscaleAddrs().filter((a) => !a.includes(':'));
     if (ips.length === 0) console.warn('提示：还没检测到 Tailscale 网卡（Tailscale 没启动或没登录）。启动后无需重启本服务，直接用 Tailscale 地址访问即可。');
     for (const ip of ips) console.log(`Cosyee（Tailscale）: http://${ip}:${srv.port}/`);
-    console.log(`Cosyee（MagicDNS）: http://${os.hostname().toLowerCase()}:${srv.port}/`);
+    console.log(`Cosyee（MagicDNS）: http://${os.hostname().toLowerCase().replace(/\.local$/, '')}:${srv.port}/`);
     console.log('只接受本机和 tailnet 内设备的连接，不需要令牌。');
   } else if (bindHost !== '127.0.0.1') {
     console.log(`Cosyee: http://${bindHost === '0.0.0.0' ? '<本机局域网 IP>' : bindHost}:${srv.port}/`);

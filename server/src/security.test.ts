@@ -137,6 +137,9 @@ describe('Tailscale 模式', () => {
     const ip = tailscaleAddrs().find((a) => !a.includes(':'));
     if (ip) expect(hostAllowed(`${ip}:7878`, 7878, TAILSCALE_MODE)).toBe(true);
     expect(hostAllowed(`${os.hostname()}:7878`, 7878, TAILSCALE_MODE)).toBe(true);
+    // macOS 的 os.hostname() 带 .local 后缀；MagicDNS 用不带后缀的短名也要通过
+    const short = os.hostname().replace(/\.local$/, '');
+    expect(hostAllowed(`${short}:7878`, 7878, TAILSCALE_MODE)).toBe(true);
     expect(hostAllowed('127.0.0.1:7878', 7878, TAILSCALE_MODE)).toBe(true);
     expect(hostAllowed('pc.tail1234.ts.net:7878', 7878, TAILSCALE_MODE)).toBe(true);
     expect(hostAllowed('pc.tail1234.ts.net', 7878, TAILSCALE_MODE)).toBe(true); // tailscale serve 反代
