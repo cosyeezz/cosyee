@@ -480,7 +480,7 @@ function CompactWindowRow({
           />
           <span className="cz-ctx__cw-unit">k</span>
           <button type="button" className="cz-ctx__link" onClick={commit}>保存</button>
-          <button type="button" className="cz-ctx__link" onClick={() => finish(null)} disabled={value === null} title="不覆盖，沿用 ~/.claude/settings.json 或 CLI 默认">
+          <button type="button" className="cz-ctx__link" onClick={() => finish(null)} disabled={value === null} title="不覆盖，窗口与自动压缩开关都沿用 ~/.claude/settings.json 或 CLI 默认">
             默认
           </button>
           <button type="button" className="cz-ctx__link" onClick={() => setEditing(false)}>取消</button>
@@ -488,7 +488,7 @@ function CompactWindowRow({
         <p className={`cz-ctx__note${invalid ? ' is-error' : ''}`}>
           {invalid
             ? `需在 ${WINDOW_MIN_K}–${WINDOW_MAX_K}k 之间（留空 = 默认）`
-            : '上下文达到「窗口 − 约 33k」时自动压缩。对所有会话生效，运行中的会话立即生效。'}
+            : '保存后自动开启自动压缩，上下文达到「窗口 − 约 33k」时触发。对所有会话生效，运行中的会话立即生效。'}
         </p>
       </div>
     );
@@ -498,6 +498,7 @@ function CompactWindowRow({
     '自动压缩窗口：上下文达到「窗口 − 约 33k」时自动压缩',
     threshold !== undefined && `当前触发点 ${formatTokens(threshold)}`,
     value === null && '未覆盖，沿用 ~/.claude/settings.json 或 CLI 默认',
+    value === null && until === null && '设置窗口会同时开启自动压缩',
     onChange && '点击修改（对所有会话生效）',
   ].filter(Boolean).join('\n');
   return (

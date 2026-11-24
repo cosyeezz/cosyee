@@ -522,7 +522,7 @@ export class Manager {
    */
   private compactFlagSettings(): Record<string, unknown> {
     const w = this.compactWindow?.get() ?? null;
-    return w ? { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(w) } } : {};
+    return w ? { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(w) }, autoCompactEnabled: true } : {};
   }
 
   /**
@@ -809,18 +809,22 @@ export class Manager {
    * 设置自动压缩窗口（null = 不覆盖）：先存下来（新启动的进程经 --settings env 带上），再下发给所有运行中的进程。
    * 实测（claude 2.x）：运行中 apply_flag_settings 的 env 立即生效，get_context_usage 的 autoCompactThreshold 随之变为 窗口 - 33k；
    * 之后再下发 effortLevel / permissions 等其它顶层键不会冲掉它（按顶层键合并）。
+   * 设了窗口就同时打开自动压缩（autoCompactEnabled: true 盖过用户 settings.json 的 false，实测启动与运行中都生效）；
+   * 恢复默认时 autoCompactEnabled 下发 null，回到用户设置。
    * 恢复默认时下发空 env：进程里已经写入的环境变量未必撤销，重启进程后才确定回到默认。
    */
   async setCompactWindow(window: number | null): Promise<number | null> {
     if (!this.compactWindow) throw new HttpError(500, '未启用压缩窗口设置');
     if (this.compactWindow.get() === window) return window;
     this.compactWindow.set(window);
-    const env = window ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) } : {};
+    const settings = window
+      ? { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) }, autoCompactEnabled: true }
+      : { env: {}, autoCompactEnabled: null };
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {
         try {
-          await r.request('apply_flag_settings', { settings: { env } });
+          await r.request('apply_flag_settings', { settings });
         } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
         if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
       }),
