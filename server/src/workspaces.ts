@@ -50,6 +50,8 @@ export interface PersistedState {
   agyAccounts: { list: StoredAccount[]; active: string | null };
   /** 会话因错误停止的记录（自动重试 / 显示错误原因），按 sessionId 索引 */
   stops: Record<string, StopInfo>;
+  /** 执行中的轮次，服务关闭/崩溃后启动时据此补记中断 */
+  inflight: Record<string, { cwd: string; at: number }>;
 }
 
 export interface StoredAccount {
@@ -123,7 +125,7 @@ const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
 const IDENTITY_HASH_RE = /^[0-9a-f]{64}$/;
 
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], disabledAgents: [], nativeAgents: true, compactWindow: null, agentModels: structuredClone(DEFAULT_AGENT_MODELS), accounts: { list: [], active: null, mode: 'switch', sessions: {} }, agyAccounts: { list: [], active: null }, stops: {} };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], disabledAgents: [], nativeAgents: true, compactWindow: null, agentModels: structuredClone(DEFAULT_AGENT_MODELS), accounts: { list: [], active: null, mode: 'switch', sessions: {} }, agyAccounts: { list: [], active: null }, stops: {}, inflight: {} };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -264,17 +266,22 @@ function sanitize(raw: unknown): PersistedState {
       s.stops[sid] = info;
     }
   }
-  // 已删除的会话不可能同时置顶，也不再保留停止重试记录
+  for (const [id, e] of entries(o.inflight)) {
+    if (!isSafeId(id)) continue;
+    s.inflight[id] = { cwd: e.cwd as string, at: num(e.at, 0) };
+  }
+  // 已删除的会话不可能同时置顶，也不再保留停止重试记录与执行中标记
   for (const id of Object.keys(s.deleted)) {
     delete s.pinned[id];
     delete s.autoPinned[id];
     delete s.stops[id];
+    delete s.inflight[id];
   }
   return s;
 }
 
 const EFFORT_IDS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const STOP_KINDS: StopKind[] = ['rate_limit', 'transient', 'fatal'];
+const STOP_KINDS: StopKind[] = ['rate_limit', 'transient', 'fatal', 'interrupted'];
 const STOP_STATES: StopState[] = ['waiting', 'retrying', 'gave_up', 'stopped'];
 
 export function workspaceName(p: string): string {

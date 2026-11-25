@@ -53,6 +53,37 @@ export class DotState {
     return true;
   }
 
+  /** 标记会话为未读（蓝点）。 */
+  markUnread(id: string): void {
+    if (this.store.state.unread[id]) return;
+    this.store.state.unread[id] = true;
+    this.store.save();
+  }
+
+  /** 标记会话正在执行中（落盘，用于服务关闭/崩溃重启后补记中断）；已存在则不重复写盘。 */
+  markInflight(id: string, cwd: string): void {
+    if (this.store.state.inflight[id]) return;
+    this.store.state.inflight[id] = { cwd, at: Date.now() };
+    this.store.save();
+  }
+
+  /** 清除执行中标记；不存在则不写盘。 */
+  clearInflight(id: string): void {
+    if (!this.store.state.inflight[id]) return;
+    delete this.store.state.inflight[id];
+    this.store.save();
+  }
+
+  /** 取出全部残留的执行中记录并清空（只写一次盘）。 */
+  takeInflight(): { id: string; cwd: string }[] {
+    const entries = Object.entries(this.store.state.inflight);
+    if (!entries.length) return [];
+    const list = entries.map(([id, e]) => ({ id, cwd: e.cwd }));
+    this.store.state.inflight = {};
+    this.store.save();
+    return list;
+  }
+
   hasBackground(id: string): boolean {
     const entry = this.background.get(id);
     return !!entry && ((entry.claude ?? 0) > 0 || (entry.delegate ?? 0) > 0);

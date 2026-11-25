@@ -867,11 +867,12 @@ export type ClientMsg =
 /**
  * 会话因错误停止的记录（服务端落盘，切换会话 / 重启后仍在）。
  * rate_limit：额度用尽，到 retryAt（额度重置时间之后）自动重试；transient：过载 / 5xx / 网络 / 进程异常退出，按退避自动重试；
- * fatal：安全拦截、未登录、上下文过长等，不自动重试，只用于显示原因。
- * state：waiting = 等待自动重试；retrying = 已发出重试消息、这一轮在执行；gave_up = 多次自动重试仍失败；stopped = 用户取消或 fatal。
+ * fatal：安全拦截、未登录、上下文过长等，不自动重试，只用于显示原因；
+ * interrupted：一轮执行中服务被关闭 / 重启 / 崩溃，启动时补记，state = stopped，只提供手动重试。
+ * state：waiting = 等待自动重试；retrying = 已发出重试消息、这一轮在执行；gave_up = 多次自动重试仍失败；stopped = 用户取消、fatal 或 interrupted。
  * 用户自己发消息 / 回退 / 删除会话、或重试成功后记录清除。
  */
-export type StopKind = 'rate_limit' | 'transient' | 'fatal';
+export type StopKind = 'rate_limit' | 'transient' | 'fatal' | 'interrupted';
 export type StopState = 'waiting' | 'retrying' | 'gave_up' | 'stopped';
 export interface StopInfo {
   kind: StopKind;

@@ -114,4 +114,52 @@ describe('StopNotice', () => {
     await mount({ stop, onRetryNow: vi.fn(), onRetryCancel: vi.fn() });
     expect(host!.innerHTML).toBe('');
   });
+
+  it('stopped（interrupted）：显示重启中断文案与「重试」按钮，点击触发 onRetryNow', async () => {
+    const onRetryNow = vi.fn();
+    const stop: StopInfo = {
+      kind: 'interrupted',
+      reason: '服务重启，这一轮没有执行完',
+      attempts: 0,
+      state: 'stopped',
+      at: Date.now(),
+    };
+
+    await mount({ stop, onRetryNow, onRetryCancel: vi.fn() });
+    expect(host!.querySelector('.cz-flow__stop.is-stopped.is-interrupted')).not.toBeNull();
+    expect(host!.querySelector('.cz-flow__stop-text')?.textContent).toBe('服务重启，这一轮没有执行完');
+    const btns = buttons();
+    expect(btns.map((b) => b.textContent)).toEqual(['重试']);
+    await click(btns[0]);
+    expect(onRetryNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('stopped（interrupted 无 reason）：兜底显示默认重启中断文案', async () => {
+    const stop: StopInfo = {
+      kind: 'interrupted',
+      reason: '   ',
+      attempts: 0,
+      state: 'stopped',
+      at: Date.now(),
+    };
+
+    await mount({ stop, onRetryNow: vi.fn() });
+    expect(host!.querySelector('.cz-flow__stop-text')?.textContent).toBe('服务重启，这一轮没有执行完');
+  });
+
+  it('waiting（interrupted）：沿用 transient 的异常中断自动重试文案', async () => {
+    const now = new Date(2026, 10, 24, 14, 0).getTime();
+    const retryAt = new Date(2026, 10, 24, 14, 5).getTime();
+    const stop: StopInfo = {
+      kind: 'interrupted',
+      reason: '服务重启',
+      retryAt,
+      attempts: 0,
+      state: 'waiting',
+      at: now,
+    };
+
+    await mount({ stop, onRetryNow: vi.fn(), onRetryCancel: vi.fn(), now });
+    expect(host!.textContent).toContain('请求异常中断 · 14:05 自动重试（第 1 次）');
+  });
 });

@@ -4,7 +4,7 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { StopInfo, Turn } from '@cosyee/shared';
 import { canAnimate } from '../motion/reduced';
-import { isHiddenTurn } from './format';
+import { isHiddenTurn, isTurnActive } from './format';
 import { groupSteered, type TurnGroup } from './mergeSteer';
 import { setFlowZoom, useFlowZoomControls } from './flowZoom';
 import { ScrollNav } from './ScrollNav';
@@ -27,7 +27,7 @@ export interface ConversationViewProps {
   onFork?: (targetId: string, stay: boolean) => void;
   /** 渲染在内容列末尾的附加区域（不传则不渲染） */
   footer?: ReactNode;
-  /** 会话因错误停止与自动重试状态（仅在最后一轮 status === 'error' 时展示） */
+  /** 会话因错误 / 服务重启停止与自动重试状态 */
   stop?: StopInfo | null;
   /** 立即重试一次 */
   onRetryNow?: () => void;
@@ -74,16 +74,21 @@ const TurnItem = memo(function TurnItem({
   onRetryCancel?: () => void;
 }) {
   const { parts, turn } = group;
+  const active = isTurnActive(turn);
+  const isRestartInterrupted = stop?.kind === 'interrupted';
+  const displayTurn = useMemo<Turn>(
+    () => (isRestartInterrupted && turn.status === 'done' ? { ...turn, status: 'interrupted', reason: '服务重启中断' } : turn),
+    [turn, isRestartInterrupted],
+  );
+  const showStop = !!stop && !active && (turn.status === 'error' || isRestartInterrupted);
   return (
     // 合并的组带上全部轮 id：花费图按原来的轮跳转，用 ~= 匹配
     <section className="cz-flow__item" data-turn-id={parts.map((p) => p.id).join(' ')}>
       {parts.map((p, i) => (
         <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={i === 0 ? onFork : undefined} />
       ))}
-      <TurnView turn={turn} />
-      {stop && turn.status === 'error' && (
-        <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />
-      )}
+      <TurnView turn={displayTurn} />
+      {showStop && <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />}
     </section>
   );
 });

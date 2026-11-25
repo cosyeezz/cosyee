@@ -548,4 +548,167 @@ describe('Manager 错误停止与自动重试', () => {
 
     await m.shutdown(100);
   });
+
+  it('服务重启恢复：执行中会话补记 interrupted 并标未读，inflight 清空', async () => {
+    const file = path.join(dir, 'state.json');
+    const store1 = new StateStore(file);
+    const dots1 = new DotState(store1);
+    const stops1 = new StopStore(store1);
+    const sessions = { findCwd: async () => null } as any;
+    const m1 = new Manager({ dots: dots1, sessions, stops: stops1, retryPollMs: 60_000 });
+    const runner1 = (m1 as any).createRunner(SID, dir, false, cfg, true);
+    (m1 as any).runners.set(SID, runner1);
+
+    // 进入执行中 → 写入 inflight
+    runner1.hooks.onStatus('running');
+    expect(store1.state.inflight[SID]?.cwd).toBe(dir);
+    await store1.idle();
+    (m1 as any).runners.delete(SID);
+    await m1.shutdown(100);
+
+    // 用同一 state.json 模拟服务重启
+    const T_BOOT = 1_700_000_050_000;
+    const store2 = new StateStore(file);
+    const dots2 = new DotState(store2);
+    const stops2 = new StopStore(store2, { now: () => T_BOOT });
+    const m2 = new Manager({ dots: dots2, sessions, stops: stops2, retryPollMs: 60_000, now: () => T_BOOT });
+
+    expect(stops2.get(SID)).toEqual({
+      kind: 'interrupted',
+      reason: '服务重启，这一轮没有执行完',
+      attempts: 0,
+      state: 'stopped',
+      at: T_BOOT,
+    });
+    expect(dots2.dot(SID)).toBe('unread');
+    expect(m2.knownCwd(SID)).toBe(dir);
+    expect(store2.state.inflight).toEqual({});
+
+    await store2.idle();
+    await m2.shutdown(100);
+  });
+
+  it('服务重启恢复：已有 retrying 记录时保持 waiting 不被 interrupted 覆盖，同时标未读', async () => {
+    const file = path.join(dir, 'state.json');
+    const store1 = new StateStore(file);
+    const dots1 = new DotState(store1);
+    const stops1 = new StopStore(store1);
+    stops1.set(SID, { kind: 'transient', reason: '529 overloaded', attempts: 1, state: 'retrying', at: 1000 });
+    dots1.markInflight(SID, dir);
+    await store1.idle();
+
+    const T_BOOT = 20_000;
+    const store2 = new StateStore(file);
+    const dots2 = new DotState(store2);
+    const stops2 = new StopStore(store2, { now: () => T_BOOT });
+    const m2 = new Manager({ dots: dots2, sessions: { findCwd: async () => null } as any, stops: stops2, retryPollMs: 60_000, now: () => T_BOOT });
+
+    expect(stops2.get(SID)).toEqual({
+      kind: 'transient',
+      reason: '529 overloaded',
+      attempts: 1,
+      state: 'waiting',
+      retryAt: T_BOOT + RECOVER_RETRY_DELAY_MS,
+      at: 1000,
+    });
+    expect(dots2.dot(SID)).toBe('unread');
+    expect(store2.state.inflight).toEqual({});
+
+    await store2.idle();
+    await m2.shutdown(100);
+  });
+
+  it('正常结束（idle，非 shuttingDown）清除 inflight，重启后无中断记录', async () => {
+    const file = path.join(dir, 'state.json');
+    const store1 = new StateStore(file);
+    const dots1 = new DotState(store1);
+    const stops1 = new StopStore(store1);
+    const sessions = { findCwd: async () => null } as any;
+    const m1 = new Manager({ dots: dots1, sessions, stops: stops1, retryPollMs: 60_000 });
+    const runner1 = (m1 as any).createRunner(SID, dir, false, cfg, true);
+    (m1 as any).runners.set(SID, runner1);
+
+    runner1.hooks.onStatus('running');
+    expect(store1.state.inflight[SID]).toBeDefined();
+    runner1.hooks.onStatus('idle');
+    expect(store1.state.inflight[SID]).toBeUndefined();
+    await store1.idle();
+    (m1 as any).runners.delete(SID);
+    await m1.shutdown(100);
+
+    const store2 = new StateStore(file);
+    const dots2 = new DotState(store2);
+    const stops2 = new StopStore(store2);
+    const m2 = new Manager({ dots: dots2, sessions, stops: stops2, retryPollMs: 60_000 });
+
+    expect(stops2.get(SID)).toBeNull();
+    expect(dots2.dot(SID)).toBeNull();
+    await m2.shutdown(100);
+  });
+
+  it('shuttingDown 期间或被替换旧 runner 变 idle 不清除 inflight 标记', async () => {
+    const file = path.join(dir, 'state.json');
+    const store = new StateStore(file);
+    const dots = new DotState(store);
+    const stops = new StopStore(store);
+    const m = new Manager({ dots, sessions: { findCwd: async () => null } as any, stops, retryPollMs: 60_000 });
+    const anyM = m as any;
+    const oldRunner = anyM.createRunner(SID, dir, false, cfg, true);
+    const newRunner = anyM.createRunner(SID, dir, false, cfg, true);
+
+    anyM.runners.set(SID, oldRunner);
+    oldRunner.hooks.onStatus('running');
+    expect(store.state.inflight[SID]).toBeDefined();
+
+    // 被新 runner 替换后，旧 runner 变 idle 不清标记
+    anyM.runners.set(SID, newRunner);
+    oldRunner.hooks.onStatus('idle');
+    expect(store.state.inflight[SID]).toBeDefined();
+
+    // shuttingDown=true 时当前 runner 变 idle 不清标记
+    anyM.shuttingDown = true;
+    newRunner.hooks.onStatus('idle');
+    expect(store.state.inflight[SID]).toBeDefined();
+    anyM.shuttingDown = false;
+
+    await store.idle();
+    anyM.runners.delete(SID);
+    await m.shutdown(100);
+  });
+
+  it('retryPromptText(interrupted) 返回重试文案，workspaces sanitize 保留 interrupted 与 inflight', () => {
+    const prompt = retryPromptText('interrupted');
+    expect(prompt).toContain('服务重启');
+    expect(prompt).toContain('重试');
+
+    const file = path.join(dir, 'state.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        stops: {
+          [SID]: { kind: 'interrupted', reason: '服务重启，这一轮没有执行完', attempts: 0, state: 'stopped', at: 1234 },
+        },
+        inflight: {
+          [SID]: { cwd: dir, at: 5678 },
+          [SID2]: { cwd: dir, at: 9999 },
+          '../bad': { cwd: dir, at: 1 },
+        },
+        deleted: {
+          [SID2]: { cwd: dir, title: 'deleted', deletedAt: 100 },
+        },
+      }),
+      'utf8',
+    );
+    const store = new StateStore(file);
+    expect(store.state.stops[SID]).toEqual({
+      kind: 'interrupted',
+      reason: '服务重启，这一轮没有执行完',
+      attempts: 0,
+      state: 'stopped',
+      at: 1234,
+    });
+    expect(store.state.inflight).toEqual({
+      [SID]: { cwd: dir, at: 5678 },
+    });
+  });
 });

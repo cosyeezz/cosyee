@@ -40,13 +40,13 @@ export const StopNotice = memo(function StopNotice({ stop, onRetryNow, onRetryCa
     text = reasonLine ? `多次自动重试失败 · ${reasonLine}` : '多次自动重试失败';
     title = rawReason || text;
   } else {
-    // stopped（fatal 或用户取消自动重试）
-    text = reasonLine || '已停止自动重试';
+    // stopped（fatal、interrupted 或用户取消自动重试）
+    text = reasonLine || (stop.kind === 'interrupted' ? '服务重启，这一轮没有执行完' : '已停止自动重试');
     title = rawReason || text;
   }
 
   return (
-    <div className={`cz-flow__stop is-${stop.state}`} role="status">
+    <div className={`cz-flow__stop is-${stop.state}${stop.kind === 'interrupted' ? ' is-interrupted' : ''}`} role="status">
       <span className="cz-flow__stop-dot" aria-hidden />
       <span className="cz-flow__stop-text" title={title}>
         {text}

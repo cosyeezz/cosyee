@@ -128,6 +128,8 @@ export function retryPromptText(kind: StopKind): string {
       return '【自动重试】上一次请求因网络或服务异常中断。请从中断处继续，不要重复已完成的步骤。';
     case 'fatal':
       return '【重试】上一次请求出错中断，请从中断处继续，不要重复已完成的步骤。';
+    case 'interrupted':
+      return '【重试】上一次请求因服务重启中断，请从中断处继续，不要重复已完成的步骤。';
   }
 }
 
@@ -263,6 +265,7 @@ export class Manager {
       this.unsubStops = this.stops.onChange((id, info) => this.emit(id, { t: 'stop', sessionId: id, info }));
       this.startRetryPoller();
     }
+    this.recoverInterrupted();
   }
 
   // ───────────── 连接与订阅 ─────────────
@@ -777,6 +780,12 @@ export class Manager {
         },
         onStatus: (status, error) => {
           const running = status === 'running' || status === 'starting';
+          const other = this.runners.get(id);
+          const replaced = !!other && other !== runner;
+          if (!replaced) {
+            if (running) this.dots.markInflight(id, cwd);
+            else if (!this.shuttingDown) this.dots.clearInflight(id);
+          }
           const wasDot = this.dots.setRunning(id, running);
           // 开始执行 → 自动置顶；停止 → 从此刻起计 30 分钟
           const pinChanged = this.pins?.onRunning(id, cwd, running) ?? false;
@@ -1314,6 +1323,24 @@ export class Manager {
   }
 
   // ───────────── 错误停止与自动重试 ─────────────
+
+  /** 服务重启后，把上次关闭/崩溃时尚在执行中的会话补记为中断并标未读 */
+  private recoverInterrupted(): void {
+    if (!this.dots?.takeInflight) return;
+    for (const { id, cwd } of this.dots.takeInflight()) {
+      this.cwdOf.set(id, cwd);
+      if (this.stops && !this.stops.get(id)) {
+        this.stops.set(id, {
+          kind: 'interrupted',
+          reason: '服务重启，这一轮没有执行完',
+          attempts: 0,
+          state: 'stopped',
+          at: this.now(),
+        });
+      }
+      this.dots.markUnread(id);
+    }
+  }
 
   /** Runner 报告本轮因错误停止或进程异常退出：按规则记录并安排自动重试 */
   private onRunnerStopped(id: string, ev: RunnerStopInfo): void {
