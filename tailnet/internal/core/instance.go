@@ -8,12 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tailscale.com/ipn"
@@ -25,9 +28,16 @@ import (
 )
 
 const (
-	socksUsername = "cosyee"
-	loginTimeout  = 15 * time.Second
+	socksUsername              = "cosyee"
+	loginTimeout               = 15 * time.Second
+	loginStatusFallbackTimeout = 2 * time.Second
+	androidNetPollInterval     = 5 * time.Second
 )
+
+// networkEventInjector is optionally implemented by backends that can notify netmon of link changes.
+type networkEventInjector interface {
+	InjectNetworkEvent()
+}
 
 // Config holds startup options for a cosyee-tailnet instance.
 type Config struct {
@@ -85,6 +95,12 @@ type Instance struct {
 	socksLn   net.Listener
 	httpSrv   *http.Server
 
+	fatalMu  sync.RWMutex
+	fatalErr error
+
+	stopping   atomic.Bool
+	pollCancel context.CancelFunc
+
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
@@ -107,6 +123,10 @@ func (r ReadyMessage) JSON() string {
 
 // Start initializes logging, tsnet, the control HTTP server, and the SOCKS5 proxy.
 func Start(cfg Config) (*Instance, ReadyMessage, error) {
+	return startWithListen(cfg, net.Listen)
+}
+
+func startWithListen(cfg Config, listen func(network, address string) (net.Listener, error)) (*Instance, ReadyMessage, error) {
 	// Always disable logtail upload before touching any tailscale package.
 	_ = os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
 	// Register bionic getifaddrs on Android 11+ before netmon starts.
@@ -117,7 +137,35 @@ func Start(cfg Config) (*Instance, ReadyMessage, error) {
 		ver = version.Version
 	}
 
-	logWriter, err := NewRotatingWriter(cfg.LogFile, defaultMaxLogBytes)
+	var (
+		started        bool
+		logWriter      *RotatingWriter
+		backend        Backend
+		backendStarted bool
+		controlLn      net.Listener
+		socksLn        net.Listener
+	)
+	defer func() {
+		if started {
+			return
+		}
+		if socksLn != nil {
+			_ = socksLn.Close()
+		}
+		if controlLn != nil {
+			_ = controlLn.Close()
+		}
+		if backendStarted && backend != nil {
+			_ = backend.Close()
+		}
+		if logWriter != nil {
+			log.SetOutput(io.Discard)
+			_ = logWriter.Close()
+		}
+	}()
+
+	var err error
+	logWriter, err = NewRotatingWriter(cfg.LogFile, defaultMaxLogBytes)
 	if err != nil {
 		return nil, ReadyMessage{}, fmt.Errorf("open log file: %w", err)
 	}
@@ -127,39 +175,32 @@ func Start(cfg Config) (*Instance, ReadyMessage, error) {
 
 	token, err := generateToken()
 	if err != nil {
-		_ = logWriter.Close()
 		return nil, ReadyMessage{}, fmt.Errorf("generate token: %w", err)
 	}
 
 	if cfg.StateDir != "" {
 		if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
-			_ = logWriter.Close()
 			return nil, ReadyMessage{}, fmt.Errorf("create state dir: %w", err)
 		}
 	}
 
-	backend := cfg.Backend
+	backend = cfg.Backend
 	if backend == nil {
 		backend = newTSNetBackend(cfg.StateDir, cfg.Hostname, logWriter.Logf)
 	}
 
 	if err := backend.Start(); err != nil {
-		_ = logWriter.Close()
 		return nil, ReadyMessage{}, fmt.Errorf("start tsnet: %w", err)
 	}
+	backendStarted = true
 
-	controlLn, err := net.Listen("tcp", "127.0.0.1:0")
+	controlLn, err = listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		_ = backend.Close()
-		_ = logWriter.Close()
 		return nil, ReadyMessage{}, fmt.Errorf("listen control: %w", err)
 	}
 
-	socksLn, err := net.Listen("tcp", "127.0.0.1:0")
+	socksLn, err = listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		_ = controlLn.Close()
-		_ = backend.Close()
-		_ = logWriter.Close()
 		return nil, ReadyMessage{}, fmt.Errorf("listen socks5: %w", err)
 	}
 
@@ -183,7 +224,14 @@ func Start(cfg Config) (*Instance, ReadyMessage, error) {
 		Logf:     logWriter.Logf,
 		Username: socksUsername,
 		Password: token,
-		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		Dialer: func(ctx context.Context, network, addr string) (conn net.Conn, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					inst.logWriter.Logf("panic in socks5 dialer (%s %s): %v\n%s", network, addr, r, debug.Stack())
+					conn = nil
+					err = fmt.Errorf("socks5 dialer panic: %v", r)
+				}
+			}()
 			if !strings.HasPrefix(network, "tcp") {
 				return nil, fmt.Errorf("unsupported network %q: only TCP CONNECT is allowed", network)
 			}
@@ -191,19 +239,67 @@ func Start(cfg Config) (*Instance, ReadyMessage, error) {
 		},
 	}
 
+	// Ownership of listeners, backend, and logWriter now transfers to inst.Stop().
+	started = true
+
 	inst.wg.Add(2)
 	go func() {
 		defer inst.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				err := fmt.Errorf("control server panic: %v", r)
+				inst.setFatalError(err)
+				inst.logWriter.Logf("%v\n%s", err, debug.Stack())
+				_ = controlLn.Close()
+				_ = socksLn.Close()
+			}
+		}()
 		if err := inst.httpSrv.Serve(controlLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if !inst.stopping.Load() {
+				inst.setFatalError(fmt.Errorf("control server stopped: %w", err))
+			}
 			inst.logWriter.Logf("control server stopped: %v", err)
 		}
 	}()
 	go func() {
 		defer inst.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				err := fmt.Errorf("socks5 server panic: %v", r)
+				inst.setFatalError(err)
+				inst.logWriter.Logf("%v\n%s", err, debug.Stack())
+				_ = socksLn.Close()
+			}
+		}()
 		if err := socksSrv.Serve(socksLn); err != nil && !errors.Is(err, net.ErrClosed) {
+			if !inst.stopping.Load() {
+				inst.setFatalError(fmt.Errorf("socks5 server stopped: %w", err))
+			}
 			inst.logWriter.Logf("socks5 server stopped: %v", err)
 		}
 	}()
+
+	// Android uses netmon's 10-minute pollingMon; run a lightweight 5s snapshot poller to speed up
+	// Wi-Fi/cellular transitions while keeping desktop platforms untouched.
+	if netif.HasChangePoller() {
+		if injector, ok := backend.(networkEventInjector); ok {
+			pollCtx, pollCancel := context.WithCancel(context.Background())
+			inst.pollCancel = pollCancel
+			inst.wg.Add(1)
+			go func() {
+				defer inst.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						inst.logWriter.Logf("panic in android net poller: %v\n%s", r, debug.Stack())
+					}
+				}()
+				netif.PollChanges(pollCtx, androidNetPollInterval, netif.PollSnapshot, func() {
+					inst.logWriter.Logf("network interfaces changed, injecting netmon event")
+					injector.InjectNetworkEvent()
+				}, inst.logWriter.Logf)
+			}()
+		}
+	}
 
 	inst.logWriter.Logf("cosyee-tailnet %s ready: control=%s socks=%s hostname=%s", ver, inst.controlAddr, inst.socksAddr, cfg.Hostname)
 
@@ -217,10 +313,32 @@ func Start(cfg Config) (*Instance, ReadyMessage, error) {
 	return inst, ready, nil
 }
 
+func (i *Instance) setFatalError(err error) {
+	if err == nil || i.stopping.Load() {
+		return
+	}
+	i.fatalMu.Lock()
+	if i.fatalErr == nil {
+		i.fatalErr = err
+	}
+	i.fatalMu.Unlock()
+}
+
+func (i *Instance) getFatalError() error {
+	i.fatalMu.RLock()
+	err := i.fatalErr
+	i.fatalMu.RUnlock()
+	return err
+}
+
 // Stop gracefully shuts down the HTTP server, SOCKS5 proxy, tsnet backend, and log file.
 func (i *Instance) Stop() error {
 	var firstErr error
 	i.stopOnce.Do(func() {
+		i.stopping.Store(true)
+		if i.pollCancel != nil {
+			i.pollCancel()
+		}
 		if i.logWriter != nil {
 			i.logWriter.Logf("stopping cosyee-tailnet")
 		}
@@ -240,6 +358,8 @@ func (i *Instance) Stop() error {
 				firstErr = err
 			}
 		}
+		// Detach Go's default logger before closing the rotating file so late writes do not hit it.
+		log.SetOutput(io.Discard)
 		if i.logWriter != nil {
 			if err := i.logWriter.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -285,6 +405,16 @@ func (i *Instance) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if fatalErr := i.getFatalError(); fatalErr != nil {
+		errStr := fatalErr.Error()
+		writeJSON(w, http.StatusOK, StatusResponse{
+			Version: i.version,
+			State:   "Error",
+			Error:   &errStr,
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -303,6 +433,14 @@ func (i *Instance) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func buildStatusResponse(ver string, st *ipnstate.Status) StatusResponse {
+	if st == nil {
+		msg := "empty status from tailscale backend"
+		return StatusResponse{
+			Version: ver,
+			State:   "Error",
+			Error:   &msg,
+		}
+	}
 	resp := StatusResponse{
 		Version: ver,
 		State:   mapBackendState(st.BackendState),
@@ -392,7 +530,10 @@ func (i *Instance) handleLogin(w http.ResponseWriter, r *http.Request) {
 		n, err := watcher.Next()
 		if err != nil {
 			// Before failing on timeout, check whether Status already has an AuthURL.
-			if st, stErr := i.backend.Status(context.Background()); stErr == nil && st.AuthURL != "" {
+			fallbackCtx, fallbackCancel := context.WithTimeout(context.Background(), loginStatusFallbackTimeout)
+			st, stErr := i.backend.Status(fallbackCtx)
+			fallbackCancel()
+			if stErr == nil && st != nil && st.AuthURL != "" {
 				writeJSON(w, http.StatusOK, map[string]string{"authURL": st.AuthURL})
 				return
 			}

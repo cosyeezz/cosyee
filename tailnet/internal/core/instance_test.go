@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,11 +57,13 @@ type mockBackend struct {
 	mu           sync.Mutex
 	status       *ipnstate.Status
 	statusErr    error
+	statusFn     func(ctx context.Context) (*ipnstate.Status, error)
 	logoutCalled bool
 	dialedAddrs  []string
 	dialFn       func(ctx context.Context, network, address string) (net.Conn, error)
 	authURLToHit string
 	watcher      *mockWatcher
+	closeWatcher bool
 }
 
 func (m *mockBackend) Start() error { return nil }
@@ -78,15 +82,26 @@ func (m *mockBackend) Dial(ctx context.Context, network, address string) (net.Co
 
 func (m *mockBackend) Status(ctx context.Context) (*ipnstate.Status, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.status, m.statusErr
+	fn := m.statusFn
+	st := m.status
+	err := m.statusErr
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx)
+	}
+	return st, err
 }
 
 func (m *mockBackend) StartLoginInteractive(ctx context.Context) error {
 	m.mu.Lock()
 	w := m.watcher
 	u := m.authURLToHit
+	closeNow := m.closeWatcher
 	m.mu.Unlock()
+	if closeNow && w != nil {
+		_ = w.Close()
+		return nil
+	}
 	if w != nil && u != "" {
 		urlCopy := u
 		w.ch <- ipn.Notify{BrowseToURL: &urlCopy}
@@ -460,5 +475,278 @@ func TestRotatingWriter(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath + ".1"); err != nil {
 		t.Fatalf("expected rotated backup log.1: %v", err)
+	}
+}
+
+func TestRotatingWriterDoesNotReopenAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tailnet.log")
+	w, err := NewRotatingWriter(logPath, 1024)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+
+	w.Logf("before close")
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := os.Remove(logPath); err != nil {
+		t.Fatalf("remove log file: %v", err)
+	}
+
+	if _, err := w.Write([]byte("after close\n")); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("expected os.ErrClosed on Write after Close, got %v", err)
+	}
+	w.Logf("logf after close should be ignored without reopening")
+
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("expected log file not to be reopened after Close, stat err=%v", err)
+	}
+}
+
+func TestStopResetsLogOutputToDiscard(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "tailnet.log")
+	mb := &mockBackend{status: &ipnstate.Status{BackendState: "Running"}}
+
+	inst, _, err := Start(Config{
+		Backend: mb,
+		LogFile: logPath,
+		Version: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if err := inst.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	if log.Writer() != io.Discard {
+		t.Fatalf("expected standard log output to be reset to io.Discard after Stop")
+	}
+	if err := os.Remove(logPath); err != nil {
+		t.Fatalf("remove log file: %v", err)
+	}
+	log.Println("message after Stop must be discarded")
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("expected log file not to be recreated by standard logger after Stop, stat err=%v", err)
+	}
+}
+
+func TestBuildStatusResponseNil(t *testing.T) {
+	resp := buildStatusResponse("1.0.0", nil)
+	if resp.State != "Error" || resp.Error == nil || *resp.Error == "" {
+		t.Fatalf("expected Error status for nil ipnstate.Status, got %+v", resp)
+	}
+
+	mb := &mockBackend{status: nil}
+	inst, ready, err := Start(Config{
+		Backend: mb,
+		Version: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer inst.Stop()
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ready.Control+"/status", nil)
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	httpResp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("GET /status with nil status: %v", err)
+	}
+	defer httpResp.Body.Close()
+
+	var got StatusResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode /status: %v", err)
+	}
+	if got.State != "Error" || got.Error == nil || *got.Error == "" {
+		t.Fatalf("expected Error response for nil backend status, got %+v", got)
+	}
+}
+
+func TestSOCKS5DialerPanicRecovered(t *testing.T) {
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen echo: %v", err)
+	}
+	defer echoLn.Close()
+	go func() {
+		for {
+			c, err := echoLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+
+	var attempts atomic.Int32
+	mb := &mockBackend{
+		status: &ipnstate.Status{BackendState: "Running"},
+		dialFn: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if attempts.Add(1) == 1 {
+				panic("simulated dial panic")
+			}
+			return net.Dial("tcp", echoLn.Addr().String())
+		},
+	}
+
+	inst, ready, err := Start(Config{
+		Backend: mb,
+		Version: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer inst.Stop()
+
+	doConnect := func() (byte, net.Conn) {
+		conn, err := net.DialTimeout("tcp", ready.Socks, 3*time.Second)
+		if err != nil {
+			t.Fatalf("dial socks: %v", err)
+		}
+		var greetResp [2]byte
+		_, _ = conn.Write([]byte{0x05, 0x01, 0x02})
+		if _, err := io.ReadFull(conn, greetResp[:]); err != nil || greetResp[1] != 0x02 {
+			t.Fatalf("greeting failed: %x (err=%v)", greetResp, err)
+		}
+		var authResp [2]byte
+		_, _ = conn.Write(buildSOCKS5Auth("cosyee", ready.Token))
+		if _, err := io.ReadFull(conn, authResp[:]); err != nil || authResp[1] != 0x00 {
+			t.Fatalf("auth failed: %x (err=%v)", authResp, err)
+		}
+		host := "peer.demo.ts.net"
+		req := make([]byte, 0, 7+len(host))
+		req = append(req, 0x05, 0x01, 0x00, 0x03, byte(len(host)))
+		req = append(req, host...)
+		var portBuf [2]byte
+		binary.BigEndian.PutUint16(portBuf[:], 8080)
+		req = append(req, portBuf[:]...)
+		_, _ = conn.Write(req)
+
+		var hdr [4]byte
+		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+			t.Fatalf("read connect reply: %v", err)
+		}
+		return hdr[1], conn
+	}
+
+	// First request panics in Backend.Dial -> recovered into SOCKS5 error reply (non-zero).
+	replyCode, conn1 := doConnect()
+	conn1.Close()
+	if replyCode == 0x00 {
+		t.Fatalf("expected non-zero SOCKS5 reply code on dialer panic, got 0x00")
+	}
+
+	// Second request should still succeed cleanly.
+	replyCode, conn2 := doConnect()
+	defer conn2.Close()
+	if replyCode != 0x00 {
+		t.Fatalf("expected SOCKS5 CONNECT success after prior dialer panic, got reply 0x%02x", replyCode)
+	}
+}
+
+type panicAcceptListener struct {
+	addr net.Addr
+}
+
+func (p *panicAcceptListener) Accept() (net.Conn, error) {
+	panic("simulated socks listener panic")
+}
+func (p *panicAcceptListener) Close() error   { return nil }
+func (p *panicAcceptListener) Addr() net.Addr { return p.addr }
+
+func TestSOCKS5ServerGoroutinePanicMarksInstanceError(t *testing.T) {
+	mb := &mockBackend{
+		status: &ipnstate.Status{BackendState: "Running"},
+	}
+
+	var listenCalls atomic.Int32
+	inst, ready, err := startWithListen(Config{
+		Backend: mb,
+		Version: "1.0.0",
+	}, func(network, address string) (net.Listener, error) {
+		if listenCalls.Add(1) == 1 {
+			return net.Listen(network, address)
+		}
+		return &panicAcceptListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}}, nil
+	})
+	if err != nil {
+		t.Fatalf("startWithListen failed: %v", err)
+	}
+	defer inst.Stop()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+ready.Control+"/status", nil)
+		req.Header.Set("Authorization", "Bearer "+ready.Token)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET /status: %v", err)
+		}
+		var st StatusResponse
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode /status: %v", err)
+		}
+		resp.Body.Close()
+
+		if st.State == "Error" && st.Error != nil && strings.Contains(*st.Error, "simulated socks listener panic") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected /status to report Error after socks5 goroutine panic, got %+v", st)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+func TestHandleLoginFallbackHasTimeoutAndHandlesNilStatus(t *testing.T) {
+	var (
+		hasDeadline bool
+		remaining   time.Duration
+	)
+	mb := &mockBackend{
+		closeWatcher: true,
+		statusFn: func(ctx context.Context) (*ipnstate.Status, error) {
+			if dl, ok := ctx.Deadline(); ok {
+				hasDeadline = true
+				remaining = time.Until(dl)
+			}
+			return nil, nil
+		},
+	}
+
+	inst, ready, err := Start(Config{
+		Backend: mb,
+		Version: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer inst.Stop()
+
+	req, _ := http.NewRequest(http.MethodPost, "http://"+ready.Control+"/login", nil)
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST /login: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 GatewayTimeout, got %d", resp.StatusCode)
+	}
+	if !hasDeadline {
+		t.Fatalf("expected fallback Status call to have a timeout deadline")
+	}
+	if remaining <= 0 || remaining > 3*time.Second {
+		t.Fatalf("expected ~2s fallback timeout, got remaining=%v", remaining)
 	}
 }

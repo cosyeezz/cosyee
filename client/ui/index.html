@@ -328,23 +328,23 @@
   .checks dd.bad { color: var(--warn); }
   .checks dd.wait { color: var(--text-3); }
   .checks dd.wait svg, .checks dd:not(.ok):not(.bad) svg { display: none; }
-  .local-addr { margin: 10px 0 14px; font: 12px/1.5 var(--font-mono); color: var(--text-3); }
+  .local-addr { margin: 10px 0 14px; font: 12px/1.5 var(--font-mono); color: var(--text-3); overflow-wrap: anywhere; }
   .local-addr a { color: var(--accent); text-decoration: none; }
   .local-addr a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .divider { height: 1px; background: var(--border); margin: 14px 0 2px; }
-  #local-msg, .local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; margin: 0 0 12px; }
+  #local-msg, .local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 12px; }
   #local-msg:empty, .local-msg:empty { display: none; }
   #local-msg.error, .local-msg.error { color: var(--danger); }
   #local-log, .local-log {
     display: none; margin: 0 0 14px; max-height: 200px; overflow: auto; padding: 10px 12px;
     background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: var(--r-md);
-    font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap;
+    font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere;
   }
   #local-log.show, .local-log.show { display: block; }
   .sub-card .local-msg { margin: 12px 0 0; }
   .sub-card .local-log { margin: 12px 0 0; }
   /* 组件卡片：标题行 = 名字 + 版本一行字，右边「检查更新」，不是最新才出现「更新」 */
-  .local-head .t b { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .local-head .t b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
   .pill.sm { height: 20px; padding: 0 8px; gap: 6px; font-size: 11px; }
   .pill.sm i { width: 6px; height: 6px; }
   .local-head .t small.ver { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -359,7 +359,8 @@
   @starting-style { .comp-acts .btn { opacity: 0; transform: scale(.96); } }
   .svc-actions { margin-top: 14px; }
   .checks.two { grid-template-columns: repeat(2, 1fr); }
-  .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; }
+  .t-desc { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
+  .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
   .sub-hint:empty { display: none; }
   .sub-hint.error { color: var(--danger); }
   .sub-hint.warn { color: var(--warn); }
@@ -422,7 +423,7 @@
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 
   @media (max-width: 520px) {
-    .checks { grid-template-columns: 1fr; }
+    .checks, .checks.two { grid-template-columns: 1fr; }
     .local-head { flex-wrap: wrap; }
     .comp-acts { flex: 1 1 100%; }
     .head { margin-bottom: 24px; }
@@ -517,6 +518,7 @@
           <button type="button" class="btn primary" id="t-install-btn" hidden><svg class="i"><use href="#i-down"/></svg><span>安装</span></button>
         </div>
       </div>
+      <p class="t-desc" id="t-desc" hidden>随客户端内置，仅用于本客户端连接服务端，默认关闭。</p>
       <dl class="checks two" id="t-checks">
         <div><dt>设备</dt><dd id="t-self" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
         <div><dt>IP</dt><dd id="t-ip" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
@@ -534,6 +536,7 @@
         <a id="t-auth-link" href="#" target="_blank" rel="noopener noreferrer"></a>
       </div>
       <div class="actions" id="t-actions">
+        <button type="button" class="btn primary" id="t-enable-btn" hidden><svg class="i"><use href="#i-play"/></svg>启用</button>
         <button type="button" class="btn primary" id="t-login-btn" hidden><svg class="i"><use href="#i-login"/></svg>登录</button>
         <button type="button" class="btn" id="t-logout-btn" hidden><svg class="i"><use href="#i-logout"/></svg>退出登录</button>
         <button type="button" class="btn" id="t-restart-btn" hidden><svg class="i"><use href="#i-refresh"/></svg>重启组件</button>
@@ -1626,15 +1629,17 @@
   var compPanels = [claudePanel, kiroPanel, agyPanel, browserPanel];
   var subCards = [kiroCard];
 
-  // ───── 内置 Tailscale 组件（桌面和手机共用，不依赖本机服务端） ─────
+  // ───── 内置 Tailscale（桌面为可选组件，Android 随客户端内置；不依赖本机服务端） ─────
+  var isAndroid = document.documentElement.hasAttribute('data-cosyee-insets') || /Android/i.test(navigator.userAgent);
   var tEverLoaded = false;
   var tAuthUrl = '';
   var tPollTimer = null;
   var tCopyTimer = null;
 
+  function tIsBundled(st) { return st ? !!st.bundled : isAndroid; }
   function fmtVer(v) {
     if (!v) return '';
-    return /^[vV]/.test(v) ? v : 'v' + v;
+    return /^\d/.test(v) ? 'v' + v : String(v);
   }
   function isNewerVer(latest, current) {
     if (!latest || !current) return false;
@@ -1681,7 +1686,7 @@
   function tNeedsPoll(st) {
     if (!st || !st.supported) return false;
     if (st.busy) return true;
-    if (!st.installed || !st.enabled) return false;
+    if (!(st.bundled || st.installed) || !st.enabled) return false;
     return st.state === 'Starting' || st.state === 'NeedsLogin' || st.state === 'NeedsMachineAuth';
   }
   function tSyncPoll(st) {
@@ -1708,32 +1713,37 @@
     confirmIds: { box: 't-confirm', text: 't-confirm-text', ok: 't-confirm-ok', cancel: 't-confirm-cancel' },
     statusCmd: 'tailnet_status',
     logCmd: 'tailnet_log',
-    unsupportedText: '当前客户端版本不支持内置 Tailscale 组件。',
+    unsupportedText: '当前客户端版本不支持内置 Tailscale。',
     isJobRunning: function (st) { return !!(st && st.busy); },
     onStatus: function (c, st) {
       tEverLoaded = true;
       $('components').hidden = false;
       var hadAuth = !!tAuthUrl;
       if (st.authURL) tAuthUrl = st.authURL;
-      if (!st.installed || !st.enabled || st.state === 'Running') {
+      if (!(st.bundled || st.installed) || !st.enabled || st.state === 'Running') {
         tAuthUrl = '';
         if (hadAuth && st.state === 'Running') c.msg('');
       }
       if (c.confirm) {
-        if (!st.installed) c.confirm = null;
+        if (!(st.bundled || st.installed)) c.confirm = null;
+        else if (st.bundled && c.confirm.action === 'uninstall') c.confirm = null;
         else if (c.confirm.action === 'logout' && (!st.enabled || (st.state !== 'Running' && st.state !== 'NeedsMachineAuth'))) c.confirm = null;
       }
       tSyncPoll(st);
     },
     renderOfflineControls: function () {
-      tVer('…');
+      var bundled = tIsBundled(tailnetCard.st);
+      $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
+      $('t-desc').hidden = !bundled;
+      tVer(bundled ? '内置' : '…');
       $('t-net').hidden = true;
       $('t-restart-banner').hidden = true;
       $('t-auth').hidden = true;
       $('t-toggle-wrap').hidden = true;
       $('t-confirm-opt').hidden = true;
       $('t-install-btn').hidden = true;
-      $('t-check-btn').hidden = false;
+      $('t-check-btn').hidden = bundled;
+      $('t-enable-btn').hidden = true;
       $('t-login-btn').hidden = true;
       $('t-logout-btn').hidden = true;
       $('t-restart-btn').hidden = true;
@@ -1744,11 +1754,12 @@
     renderOnline: function (c) {
       var st = c.st;
       var supported = st.supported !== false;
-      var installed = !!st.installed;
+      var bundled = !!st.bundled;
+      var installed = bundled || !!st.installed;
       var enabled = !!st.enabled;
       var state = st.state || '';
       var busy = c.busy || !!st.busy;
-      var updateAvail = installed && isNewerVer(st.latest, st.installed);
+      var updateAvail = !bundled && installed && isNewerVer(st.latest, st.installed);
       var selfInfo = st.self && typeof st.self === 'object' ? st.self : null;
       var selfName = selfInfo && selfInfo.name ? selfInfo.name : '';
       var ipv4 = selfInfo ? firstIpv4(selfInfo.ips) : '';
@@ -1758,12 +1769,18 @@
       var isNeedsLogin = installed && enabled && state === 'NeedsLogin';
       var isNeedsAuth = installed && enabled && state === 'NeedsMachineAuth';
       var isErrorState = installed && enabled && (state === 'Error' || hasError);
+      var hasAccount = typeof st.loggedIn === 'boolean'
+        ? st.loggedIn
+        : !!(selfName || ipv4 || st.tailnet);
 
+      $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
+      $('t-desc').hidden = !bundled;
       $('t-checks').hidden = !(supported && installed);
       if (!supported) {
         tVer('当前平台不支持', 'warn');
       } else {
-        if (!installed) tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
+        if (bundled) tVer(st.installed ? fmtVer(st.installed) : '内置');
+        else if (!installed) tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
         else if (updateAvail) tVer(fmtVer(st.installed) + ' → ' + fmtVer(st.latest), 'up');
         else if (st.latest) tVer(fmtVer(st.installed) + ' · 已是最新', 'ok');
         else tVer(fmtVer(st.installed));
@@ -1811,7 +1828,7 @@
         pill.className = 'pill';
         pill.querySelector('span').textContent = '未安装';
       } else if (!enabled) {
-        pill.className = 'pill';
+        pill.className = 'pill' + (bundled && hasError ? ' bad' : '');
         pill.querySelector('span').textContent = '已停用';
       } else if (isRunning) {
         pill.className = 'pill ok';
@@ -1835,10 +1852,10 @@
 
       $('tailnet-card').classList.toggle('busy', !!busy);
 
-      $('t-restart-banner').hidden = !st.needsRestart;
+      $('t-restart-banner').hidden = bundled || !st.needsRestart;
       $('t-relaunch-btn').disabled = busy;
 
-      var authUrl = (installed && enabled && !isRunning) ? (st.authURL || tAuthUrl) : '';
+      var authUrl = (installed && (enabled || (bundled && !!tAuthUrl)) && !isRunning) ? (st.authURL || tAuthUrl) : '';
       var authBox = $('t-auth');
       if (authUrl) {
         var link = $('t-auth-link');
@@ -1850,12 +1867,16 @@
       }
 
       var ibtn = $('t-install-btn');
-      ibtn.hidden = !(supported && (!installed || updateAvail));
+      ibtn.hidden = bundled || !(supported && (!installed || updateAvail));
       ibtn.querySelector('span').textContent = installed ? '更新' : '安装';
       ibtn.disabled = busy;
 
+      var enableBtn = $('t-enable-btn');
+      enableBtn.hidden = !(bundled && supported && !enabled && hasAccount);
+      enableBtn.disabled = busy;
+
       var loginBtn = $('t-login-btn');
-      loginBtn.hidden = !(supported && isNeedsLogin);
+      loginBtn.hidden = !(supported && (isNeedsLogin || (bundled && !enabled && !hasAccount)));
       loginBtn.disabled = busy;
 
       var logoutBtn = $('t-logout-btn');
@@ -1868,7 +1889,7 @@
       restartBtn.disabled = busy;
 
       var checkBtn = $('t-check-btn');
-      checkBtn.hidden = !(supported && installed);
+      checkBtn.hidden = bundled || !(supported && installed);
       checkBtn.disabled = busy;
 
       var logBtn = $('t-log-btn');
@@ -1876,7 +1897,7 @@
       logBtn.disabled = false;
 
       var uninstBtn = $('t-uninstall-btn');
-      uninstBtn.hidden = !(supported && installed);
+      uninstBtn.hidden = bundled || !(supported && installed);
       uninstBtn.disabled = busy;
 
       $('t-toggle-wrap').hidden = !(supported && installed);
@@ -1916,7 +1937,30 @@
     spotlight($('claude-card'), 0);
     spotlight($('browser-card'), 0);
 
+    if (isAndroid) {
+      $('h-components').textContent = '内置 Tailscale';
+      $('t-desc').hidden = false;
+      $('t-check-btn').hidden = true;
+      $('t-install-btn').hidden = true;
+      $('t-uninstall-btn').hidden = true;
+    }
+
+    function tSetEnabled(next) {
+      tailnetCard.runAction(next ? '启用' : '停用', function () {
+        return invoke('tailnet_set_enabled', { enabled: next });
+      }, {
+        clearConfirm: true,
+        onResult: function (c, res) {
+          if (res && !res.enabled) tAuthUrl = '';
+          var bundled = !!(c.st && c.st.bundled);
+          c.msg((res && res.enabled ? '已启用' : '已停用') + (!bundled && res && res.needsRestart ? '，重启客户端后生效。' : '。'));
+          c.refresh();
+        },
+      });
+    }
+
     $('t-install-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       var label = tailnetCard.st && tailnetCard.st.installed ? '更新' : '安装';
       tailnetCard.runAction(label, function () { return invoke('tailnet_install'); }, {
         startMsg: label + '中…',
@@ -1931,6 +1975,7 @@
       });
     };
     $('t-check-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       tailnetCard.runAction('检查更新', function () { return invoke('tailnet_check'); }, {
         startMsg: '正在检查更新…',
         onResult: function (c, res) {
@@ -1941,13 +1986,14 @@
         },
       });
     };
+    $('t-enable-btn').onclick = function () { tSetEnabled(true); };
     $('t-login-btn').onclick = function () {
       tailnetCard.runAction('登录', function () { return invoke('tailnet_login'); }, {
         startMsg: '正在获取登录链接…',
         clearConfirm: true,
         onResult: function (c, res) {
-          if (res && res.authURL) tAuthUrl = res.authURL;
-          c.msg('已打开登录页面；如未自动打开，请复制下方链接。');
+          tAuthUrl = (res && res.authURL) || '';
+          c.msg(tAuthUrl ? '已打开登录页面；如未自动打开，请复制下方链接。' : '已启用，无需重新登录。');
           c.render();
           c.refresh();
         },
@@ -1978,6 +2024,7 @@
       });
     };
     $('t-uninstall-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       $('t-keep-state').checked = true;
       tailnetCard.confirm = {
         action: 'uninstall',
@@ -1996,6 +2043,7 @@
           onResult: function (c) { tAuthUrl = ''; c.msg('已退出登录。'); c.refresh(); },
         });
       } else if (act === 'uninstall') {
+        if (tailnetCard.st && tailnetCard.st.bundled) return;
         var keepState = $('t-keep-state').checked;
         tailnetCard.runAction('卸载', function () { return invoke('tailnet_uninstall', { keepState: keepState }); }, {
           clearConfirm: true,
@@ -2010,19 +2058,7 @@
       }
     };
     $('t-confirm-cancel').onclick = function () { tailnetCard.confirm = null; tailnetCard.render(); };
-    $('t-enabled').onchange = function () {
-      var next = $('t-enabled').checked;
-      tailnetCard.runAction(next ? '启用' : '停用', function () {
-        return invoke('tailnet_set_enabled', { enabled: next });
-      }, {
-        clearConfirm: true,
-        onResult: function (c, res) {
-          if (res && !res.enabled) tAuthUrl = '';
-          c.msg((res && res.enabled ? '已启用' : '已停用') + (res && res.needsRestart ? '，重启客户端后生效。' : '。'));
-          c.refresh();
-        },
-      });
-    };
+    $('t-enabled').onchange = function () { tSetEnabled($('t-enabled').checked); };
     $('t-relaunch-btn').onclick = function () {
       tailnetCard.runAction('重启客户端', function () { return invoke('app_relaunch'); }, {
         startMsg: '正在重启客户端…',

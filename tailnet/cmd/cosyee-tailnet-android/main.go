@@ -8,27 +8,20 @@ package main
 import "C"
 
 import (
-	"sync"
+	"fmt"
 	"unsafe"
 
 	"github.com/cosyeezz/cosyee/tailnet/internal/core"
 	"github.com/cosyeezz/cosyee/tailnet/internal/version"
 )
 
-var (
-	mu       sync.Mutex
-	instance *core.Instance
-)
-
 //export CosyeeTailnetStart
-func CosyeeTailnetStart(stateDir *C.char, hostname *C.char, logFile *C.char) *C.char {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if instance != nil {
-		_ = instance.Stop()
-		instance = nil
-	}
+func CosyeeTailnetStart(stateDir *C.char, hostname *C.char, logFile *C.char) (ret *C.char) {
+	defer func() {
+		if r := recover(); r != nil {
+			ret = C.CString(core.FormatErrorJSON(fmt.Errorf("panic in CosyeeTailnetStart: %v", r)))
+		}
+	}()
 
 	cfg := core.Config{
 		StateDir: goString(stateDir),
@@ -36,32 +29,35 @@ func CosyeeTailnetStart(stateDir *C.char, hostname *C.char, logFile *C.char) *C.
 		LogFile:  goString(logFile),
 	}
 
-	inst, ready, err := core.Start(cfg)
-	if err != nil {
-		return C.CString(core.FormatErrorJSON(err))
-	}
-	instance = inst
-	return C.CString(ready.JSON())
+	return C.CString(startTailnet(cfg))
 }
 
 //export CosyeeTailnetStop
 func CosyeeTailnetStop() {
-	mu.Lock()
-	defer mu.Unlock()
+	defer func() {
+		_ = recover()
+	}()
 
-	if instance != nil {
-		_ = instance.Stop()
-		instance = nil
-	}
+	stopTailnet()
 }
 
 //export CosyeeTailnetVersion
-func CosyeeTailnetVersion() *C.char {
+func CosyeeTailnetVersion() (ret *C.char) {
+	defer func() {
+		if r := recover(); r != nil {
+			ret = nil
+		}
+	}()
+
 	return C.CString(version.Version)
 }
 
 //export CosyeeTailnetFree
 func CosyeeTailnetFree(p *C.char) {
+	defer func() {
+		_ = recover()
+	}()
+
 	if p != nil {
 		C.free(unsafe.Pointer(p))
 	}
@@ -73,5 +69,3 @@ func goString(p *C.char) string {
 	}
 	return C.GoString(p)
 }
-
-func main() {}

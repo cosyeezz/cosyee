@@ -18,6 +18,7 @@ type RotatingWriter struct {
 	maxBytes int64
 	file     *os.File
 	size     int64
+	closed   bool
 }
 
 // NewRotatingWriter opens (or creates) the log file at path and rotates when exceeding maxBytes.
@@ -80,6 +81,9 @@ func (w *RotatingWriter) rotateLocked() error {
 func (w *RotatingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closed {
+		return 0, os.ErrClosed
+	}
 	if w.path == "" {
 		return len(p), nil
 	}
@@ -111,6 +115,7 @@ func (w *RotatingWriter) Logf(format string, args ...any) {
 func (w *RotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.closed = true
 	if w.file == nil {
 		return nil
 	}

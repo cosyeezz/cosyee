@@ -1,7 +1,8 @@
 // 组件生命周期管理与控制接口客户端：
 // - 桌面（Windows / macOS）：以 sidecar 子进程运行，stdin 管道保持打开（父进程退出→EOF→组件优雅退出），
 //   读取 stdout 第一行 ready/error JSON，意外退出后按退避自动重启（滑动 60 秒窗口最多 5 次）。
-// - Android：用 libloading 加载 .so（加载前设只读 0o444），通过 FFI 调 CosyeeTailnetStart/Stop/Free。
+// - Android：.so 随 APK 打进 jniLibs/arm64-v8a/libcosyee_tailnet.so，用 libloading 按库名加载，
+//   通过 FFI 调 CosyeeTailnetStart/Stop/Free。
 // - 控制接口：HTTP 请求 127.0.0.1:P1，带 Authorization: Bearer <token> 和 Host: 127.0.0.1:P1。
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -14,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 use super::proxy::SharedSocksState;
 
+#[cfg(not(target_os = "android"))]
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const MAX_RESTARTS_PER_MIN: usize = 5;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +78,7 @@ pub struct RunningInfo {
     pub control: String,
     pub socks: String,
     pub token: String,
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub bin_file: String,
 }
 
@@ -108,11 +112,13 @@ pub fn default_hostname() -> String {
 }
 
 /// 滑动 60 秒窗口重启限频器：最多允许 5 次/分钟，返回本次退避时长。
+#[cfg_attr(target_os = "android", allow(dead_code))]
 #[derive(Default)]
 pub struct RestartLimiter {
     recent: VecDeque<Instant>,
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 impl RestartLimiter {
     pub fn try_record(&mut self, now: Instant) -> Option<Duration> {
         let cutoff = now.checked_sub(Duration::from_secs(60));
@@ -261,6 +267,7 @@ pub struct ComponentRunner {
     inner: Arc<Mutex<RunnerState>>,
     socks_state: SharedSocksState,
     log_cb: Arc<dyn Fn(String) + Send + Sync>,
+    state_cb: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 struct RunnerState {
@@ -268,6 +275,7 @@ struct RunnerState {
     stopping: bool,
     info: Option<RunningInfo>,
     last_error: Option<String>,
+    #[cfg(not(target_os = "android"))]
     limiter: RestartLimiter,
     #[cfg(not(target_os = "android"))]
     child_stdin: Option<std::process::ChildStdin>,
@@ -275,18 +283,21 @@ struct RunnerState {
     child_pid: Option<u32>,
     #[cfg(target_os = "android")]
     loaded_version: Option<String>,
-    #[cfg(target_os = "android")]
-    loaded_file: Option<String>,
 }
 
 impl ComponentRunner {
-    pub fn new(socks_state: SharedSocksState, log_cb: Arc<dyn Fn(String) + Send + Sync>) -> Self {
+    pub fn new(
+        socks_state: SharedSocksState,
+        log_cb: Arc<dyn Fn(String) + Send + Sync>,
+        state_cb: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(RunnerState {
                 generation: 0,
                 stopping: false,
                 info: None,
                 last_error: None,
+                #[cfg(not(target_os = "android"))]
                 limiter: RestartLimiter::default(),
                 #[cfg(not(target_os = "android"))]
                 child_stdin: None,
@@ -294,11 +305,10 @@ impl ComponentRunner {
                 child_pid: None,
                 #[cfg(target_os = "android")]
                 loaded_version: None,
-                #[cfg(target_os = "android")]
-                loaded_file: None,
             })),
             socks_state,
             log_cb,
+            state_cb,
         }
     }
 
@@ -310,31 +320,33 @@ impl ComponentRunner {
         self.inner.lock().ok().and_then(|g| g.last_error.clone())
     }
 
-    /// 返回当前正在占用的组件文件名（清理旧版本时跳过它）。
+    /// 返回当前正在占用的组件文件名（桌面清理旧版本时跳过它）。
+    #[cfg(not(target_os = "android"))]
     pub fn active_file(&self) -> Option<String> {
         let g = self.inner.lock().ok()?;
-        #[cfg(target_os = "android")]
-        if let Some(f) = &g.loaded_file {
-            return Some(f.clone());
-        }
         g.info.as_ref().map(|i| i.bin_file.clone())
     }
 
-    /// Android 上检查内存中已加载的库版本是否落后于磁盘上新安装的版本。
-    pub fn android_library_outdated(&self, installed_version: Option<&str>) -> bool {
-        #[cfg(target_os = "android")]
-        {
-            if let Ok(g) = self.inner.lock() {
-                if let (Some(loaded), Some(inst)) = (g.loaded_version.as_deref(), installed_version) {
-                    return loaded != inst;
-                }
-            }
-        }
-        let _ = installed_version;
-        false
+    /// Android 上返回已加载内置库上报的版本号。
+    #[cfg(target_os = "android")]
+    pub fn loaded_version(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.loaded_version.clone())
     }
 
-    /// 启动组件（先停止旧实例）。
+    /// 判断指定代次的组件实例是否仍在正常运行（供 Android 崩溃保护 10 秒稳定性校验使用）。
+    #[cfg(target_os = "android")]
+    pub fn is_generation_active(&self, gen: u64) -> bool {
+        self.inner
+            .lock()
+            .map(|g| g.generation == gen && !g.stopping && g.info.is_some())
+            .unwrap_or(false)
+    }
+
+    /// 桌面端启动组件（先停止旧实例）。
+    #[cfg(not(target_os = "android"))]
     pub fn start(
         &self,
         bin_path: PathBuf,
@@ -351,6 +363,7 @@ impl ComponentRunner {
         self.start_internal(bin_path, bin_file, state_dir, log_file)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn start_internal(
         &self,
         bin_path: PathBuf,
@@ -360,39 +373,53 @@ impl ComponentRunner {
     ) -> Result<RunningInfo, String> {
         let _ = std::fs::create_dir_all(&state_dir);
         let hostname = default_hostname();
+        self.start_desktop(bin_path, bin_file, state_dir, log_file, hostname)
+    }
 
-        #[cfg(not(target_os = "android"))]
-        {
-            self.start_desktop(bin_path, bin_file, state_dir, log_file, hostname)
-        }
-        #[cfg(target_os = "android")]
-        {
-            self.start_android(bin_path, bin_file, state_dir, log_file, hostname)
-        }
+    /// Android 端启动内置组件库（先停止旧实例），返回运行信息与代次号。
+    #[cfg(target_os = "android")]
+    pub fn start_bundled(
+        &self,
+        state_dir: PathBuf,
+        log_file: PathBuf,
+    ) -> Result<(RunningInfo, u64), String> {
+        self.stop();
+        let expected_gen = {
+            let mut g = self.inner.lock().map_err(|_| "内部锁异常".to_string())?;
+            g.generation = g.generation.wrapping_add(1);
+            g.stopping = false;
+            g.last_error = None;
+            g.generation
+        };
+        let _ = std::fs::create_dir_all(&state_dir);
+        let hostname = default_hostname();
+        self.start_android(expected_gen, state_dir, log_file, hostname)
     }
 
     /// 停止组件并清除代理路由状态。
+    /// 注意：先在 inner 锁内更新状态并释放锁，再调用可能阻塞的 Go Stop，避免阻塞状态查询。
     pub fn stop(&self) {
-        let mut g = match self.inner.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        g.stopping = true;
-        g.generation = g.generation.wrapping_add(1);
-        g.info = None;
-
-        #[cfg(not(target_os = "android"))]
         {
-            // 关闭 stdin 管道，组件读到 EOF 会立即优雅退出
-            g.child_stdin = None;
-            g.child_pid = None;
+            let mut g = match self.inner.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            g.stopping = true;
+            g.generation = g.generation.wrapping_add(1);
+            g.info = None;
+
+            #[cfg(not(target_os = "android"))]
+            {
+                // 关闭 stdin 管道，组件读到 EOF 会立即优雅退出
+                g.child_stdin = None;
+                g.child_pid = None;
+            }
         }
+        sync_socks_state(&self.socks_state, None, false);
         #[cfg(target_os = "android")]
         {
             android_ffi::stop_if_loaded();
         }
-        drop(g);
-        sync_socks_state(&self.socks_state, None, false);
     }
 
     #[cfg(not(target_os = "android"))]
@@ -539,6 +566,7 @@ impl ComponentRunner {
         let inner = self.inner.clone();
         let socks_state = self.socks_state.clone();
         let log_cb = self.log_cb.clone();
+        let state_cb = self.state_cb.clone();
         std::thread::spawn(move || {
             let status = child.wait();
             let should_restart = {
@@ -584,6 +612,7 @@ impl ComponentRunner {
                     inner: inner.clone(),
                     socks_state: socks_state.clone(),
                     log_cb: log_cb.clone(),
+                    state_cb: state_cb.clone(),
                 };
                 if let Err(e) = runner.start_internal(bin_path, bin_file, state_dir, log_file) {
                     log_cb(format!("自动重启组件失败：{e}"));
@@ -597,73 +626,110 @@ impl ComponentRunner {
     #[cfg(target_os = "android")]
     fn start_android(
         &self,
-        bin_path: PathBuf,
-        bin_file: String,
+        expected_gen: u64,
         state_dir: PathBuf,
         log_file: PathBuf,
         hostname: String,
-    ) -> Result<RunningInfo, String> {
-        if !bin_path.exists() {
-            return Err(format!("找不到组件库文件：{}", bin_path.display()));
-        }
+    ) -> Result<(RunningInfo, u64), String> {
+        (self.log_cb)(format!("加载内置组件库：{}", android_ffi::BUNDLED_LIB_NAME));
 
-        // Android 14+ 要求动态加载文件为只读
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o444));
-        }
+        // 持 FFI 锁串行化 start/stop；锁顺序严格为 FFI_LOCK -> inner，不会死锁。
+        let info = android_ffi::with_ffi_lock(|ffi| -> Result<RunningInfo, String> {
+            // 真正调 Go Start 前先检查是否已被 stop 或新一代 start 取代
+            if self.is_cancelled(expected_gen) {
+                return Err("组件启动已被取消".into());
+            }
 
-        (self.log_cb)(format!("加载组件库：{}", bin_file));
-        let json_str = android_ffi::load_and_start(&bin_path, &state_dir, &hostname, &log_file)?;
-        let msg: ReadyMessage = serde_json::from_str(json_str.trim())
-            .map_err(|e| format!("组件返回格式无效：{e}"))?;
-
-        let info = match msg {
-            ReadyMessage::Ready {
-                version,
-                control,
-                socks,
-                token,
-            } => RunningInfo {
-                version,
-                control,
-                socks,
-                token,
-                bin_file: bin_file.clone(),
-            },
-            ReadyMessage::Error { error } => {
-                if let Ok(mut g) = self.inner.lock() {
-                    g.last_error = Some(error.clone());
+            let json_str = match ffi.load_and_start(&state_dir, &hostname, &log_file) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.record_error_if_active(expected_gen, e.clone());
+                    return Err(e);
                 }
-                return Err(format!("组件启动失败：{error}"));
-            }
-        };
+            };
 
-        let gen = {
-            let mut g = self.inner.lock().map_err(|_| "内部锁异常".to_string())?;
-            g.generation = g.generation.wrapping_add(1);
-            g.info = Some(info.clone());
-            g.last_error = None;
-            if g.loaded_version.is_none() {
-                g.loaded_version = Some(info.version.clone());
-                g.loaded_file = Some(bin_file);
+            let msg: ReadyMessage = match serde_json::from_str(json_str.trim()) {
+                Ok(m) => m,
+                Err(e) => {
+                    let err = format!("组件返回格式无效：{e}");
+                    self.record_error_if_active(expected_gen, err.clone());
+                    ffi.stop_if_loaded();
+                    return Err(err);
+                }
+            };
+
+            let info = match msg {
+                ReadyMessage::Ready {
+                    version,
+                    control,
+                    socks,
+                    token,
+                } => RunningInfo {
+                    version,
+                    control,
+                    socks,
+                    token,
+                    bin_file: android_ffi::BUNDLED_LIB_NAME.to_string(),
+                },
+                ReadyMessage::Error { error } => {
+                    self.record_error_if_active(expected_gen, error.clone());
+                    return Err(format!("组件启动失败：{error}"));
+                }
+            };
+
+            // 写回运行态前校验 generation / stopping：已被 stop 的启动不得写回 info，并立刻停掉刚启动的实例
+            let committed = {
+                let mut g = self.inner.lock().map_err(|_| "内部锁异常".to_string())?;
+                if g.generation != expected_gen || g.stopping {
+                    false
+                } else {
+                    g.info = Some(info.clone());
+                    g.last_error = None;
+                    if g.loaded_version.is_none() {
+                        g.loaded_version = Some(info.version.clone());
+                    }
+                    true
+                }
+            };
+
+            if !committed {
+                ffi.stop_if_loaded();
+                return Err("组件启动已被取消".into());
             }
-            g.generation
-        };
+
+            Ok(info)
+        })?;
 
         (self.log_cb)(format!(
             "组件已就绪（v{}，control={}，socks={}）",
             info.version, info.control, info.socks
         ));
-        self.spawn_status_poller(gen, info.clone());
-        Ok(info)
+        self.spawn_status_poller(expected_gen, info.clone());
+        Ok((info, expected_gen))
+    }
+
+    #[cfg(target_os = "android")]
+    fn is_cancelled(&self, expected_gen: u64) -> bool {
+        self.inner
+            .lock()
+            .map(|g| g.generation != expected_gen || g.stopping)
+            .unwrap_or(true)
+    }
+
+    #[cfg(target_os = "android")]
+    fn record_error_if_active(&self, expected_gen: u64, err: String) {
+        if let Ok(mut g) = self.inner.lock() {
+            if g.generation == expected_gen && !g.stopping {
+                g.last_error = Some(err);
+            }
+        }
     }
 
     /// 启动后定期向控制接口同步 state，让代理能及时感知 Running / NeedsLogin 变化。
     fn spawn_status_poller(&self, gen: u64, info: RunningInfo) {
         let inner = self.inner.clone();
         let socks_state = self.socks_state.clone();
+        let state_cb = self.state_cb.clone();
         std::thread::spawn(move || {
             // 前 10 次每 1 秒轮询一次（快速感知登录完成），之后每 5 秒同步一次
             for i in 0u64.. {
@@ -676,6 +742,7 @@ impl ComponentRunner {
                 }
                 if let Ok(st) = fetch_control_status(&info) {
                     sync_socks_state(&socks_state, Some(&info), st.state == "Running");
+                    state_cb(&st.state);
                 }
                 let sleep_secs = if i < 10 { 1 } else { 5 };
                 std::thread::sleep(Duration::from_secs(sleep_secs));
@@ -689,9 +756,11 @@ mod android_ffi {
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::path::Path;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
 
     use libloading::{Library, Symbol};
+
+    pub const BUNDLED_LIB_NAME: &str = "libcosyee_tailnet.so";
 
     type StartFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> *mut c_char;
     type StopFn = unsafe extern "C" fn();
@@ -709,17 +778,69 @@ mod android_ffi {
     unsafe impl Sync for LoadedLib {}
 
     static LIB: OnceLock<LoadedLib> = OnceLock::new();
+    /// 保证整个进程只 dlopen 一次的互斥锁
+    static LOAD_LOCK: Mutex<()> = Mutex::new(());
+    /// 串行化所有 Go Start/Stop FFI 调用的互斥锁（与 ComponentRunner::inner 锁顺序：FFI_LOCK -> inner）
+    static FFI_LOCK: Mutex<()> = Mutex::new(());
 
-    fn ensure_loaded(path: &Path) -> Result<&'static LoadedLib, String> {
+    /// 已持有 FFI_LOCK 的操作令牌，用于在同一个锁临界区内完成 start + 取消回滚 stop。
+    pub struct FfiSession(());
+
+    impl FfiSession {
+        pub fn load_and_start(
+            &self,
+            state_dir: &Path,
+            hostname: &str,
+            log_file: &Path,
+        ) -> Result<String, String> {
+            let lib = ensure_loaded()?;
+            let c_state = CString::new(state_dir.to_string_lossy().as_bytes())
+                .map_err(|_| "stateDir 路径包含空字节".to_string())?;
+            let c_host = CString::new(hostname).map_err(|_| "hostname 包含空字节".to_string())?;
+            let c_log = CString::new(log_file.to_string_lossy().as_bytes())
+                .map_err(|_| "logFile 路径包含空字节".to_string())?;
+
+            unsafe {
+                let ptr = (lib.start)(c_state.as_ptr(), c_host.as_ptr(), c_log.as_ptr());
+                if ptr.is_null() {
+                    return Err("CosyeeTailnetStart 返回空指针".into());
+                }
+                let out = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+                (lib.free)(ptr);
+                Ok(out)
+            }
+        }
+
+        pub fn stop_if_loaded(&self) {
+            if let Some(lib) = LIB.get() {
+                unsafe {
+                    (lib.stop)();
+                }
+            }
+        }
+    }
+
+    pub fn with_ffi_lock<T>(f: impl FnOnce(&FfiSession) -> Result<T, String>) -> Result<T, String> {
+        let _guard = FFI_LOCK
+            .lock()
+            .map_err(|_| "组件 FFI 锁异常".to_string())?;
+        let session = FfiSession(());
+        f(&session)
+    }
+
+    fn ensure_loaded() -> Result<&'static LoadedLib, String> {
+        if let Some(l) = LIB.get() {
+            return Ok(l);
+        }
+        let _load_guard = LOAD_LOCK
+            .lock()
+            .map_err(|_| "组件加载锁异常".to_string())?;
         if let Some(l) = LIB.get() {
             return Ok(l);
         }
         let loaded = unsafe {
-            let lib = Library::new(path).map_err(|e| {
-                format!(
-                    "无法加载组件库（Android 10+ 系统 SELinux 可能限制从应用数据目录 dlopen）：{e}"
-                )
-            })?;
+            let lib = Library::new(BUNDLED_LIB_NAME)
+                .map_err(|e| format!("无法加载内置组件库 {BUNDLED_LIB_NAME}：{e}"))?;
             let start: Symbol<StartFn> = lib
                 .get(b"CosyeeTailnetStart\0")
                 .map_err(|e| format!("组件库缺少 CosyeeTailnetStart：{e}"))?;
@@ -740,31 +861,10 @@ mod android_ffi {
         Ok(LIB.get().unwrap())
     }
 
-    pub fn load_and_start(
-        path: &Path,
-        state_dir: &Path,
-        hostname: &str,
-        log_file: &Path,
-    ) -> Result<String, String> {
-        let lib = ensure_loaded(path)?;
-        let c_state = CString::new(state_dir.to_string_lossy().as_bytes())
-            .map_err(|_| "stateDir 路径包含空字节".to_string())?;
-        let c_host = CString::new(hostname).map_err(|_| "hostname 包含空字节".to_string())?;
-        let c_log = CString::new(log_file.to_string_lossy().as_bytes())
-            .map_err(|_| "logFile 路径包含空字节".to_string())?;
-
-        unsafe {
-            let ptr = (lib.start)(c_state.as_ptr(), c_host.as_ptr(), c_log.as_ptr());
-            if ptr.is_null() {
-                return Err("CosyeeTailnetStart 返回空指针".into());
-            }
-            let out = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-            (lib.free)(ptr);
-            Ok(out)
-        }
-    }
-
     pub fn stop_if_loaded() {
+        let Ok(_guard) = FFI_LOCK.lock() else {
+            return;
+        };
         if let Some(lib) = LIB.get() {
             unsafe {
                 (lib.stop)();
@@ -954,7 +1054,11 @@ mod tests {
         let proxy_addr = super::super::proxy::start_http_proxy(socks_state.clone())
             .await
             .unwrap();
-        let runner = ComponentRunner::new(socks_state.clone(), Arc::new(|_| {}));
+        let runner = ComponentRunner::new(
+            socks_state.clone(),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+        );
 
         let info = runner
             .start(
@@ -1017,7 +1121,11 @@ mod tests {
         let log_file = tmp_dir.join("tailnet.log");
 
         let socks_state = Arc::new(RwLock::new(super::super::proxy::SocksEndpoint::default()));
-        let runner = ComponentRunner::new(socks_state.clone(), Arc::new(|_| {}));
+        let runner = ComponentRunner::new(
+            socks_state.clone(),
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+        );
 
         // 1. 启动真实 Go sidecar 并读 ready JSON
         let info = runner

@@ -95,3 +95,17 @@ func (b *tsnetBackend) WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt)
 	}
 	return b.lc.WatchIPNBus(ctx, mask)
 }
+
+// InjectNetworkEvent triggers tsnet's underlying netmon.Monitor to re-evaluate network state.
+func (b *tsnetBackend) InjectNetworkEvent() {
+	if b.srv == nil {
+		return
+	}
+	sys := b.srv.Sys()
+	if sys == nil {
+		return
+	}
+	if mon, ok := sys.NetMon.GetOK(); ok && mon != nil {
+		mon.InjectEvent()
+	}
+}

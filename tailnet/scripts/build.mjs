@@ -124,6 +124,7 @@ function buildMacosUniversal(opts, version) {
 function buildAndroidArm64(opts, version) {
   const cc = findAndroidCC(opts.androidApi);
   const out = path.join(opts.outDir, `libcosyee_tailnet_${version}_android_arm64.so`);
+  const androidLdflags = `${ldflags(version)} -extldflags '-Wl,-soname,libcosyee_tailnet.so -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'`;
   run(
     opts.goBin,
     [
@@ -131,7 +132,7 @@ function buildAndroidArm64(opts, version) {
       '-buildmode=c-shared',
       '-trimpath',
       '-ldflags',
-      ldflags(version),
+      androidLdflags,
       '-o',
       out,
       './cmd/cosyee-tailnet-android',

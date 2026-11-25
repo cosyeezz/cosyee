@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+#[cfg(not(target_os = "android"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -19,21 +20,176 @@ use tauri_plugin_opener::OpenerExt;
 use component::{ComponentRunner, SelfNode};
 use proxy::{SharedSocksState, SocksEndpoint};
 
+#[cfg(not(target_os = "android"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CurrentMeta {
     version: String,
     file: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 struct SettingsMeta {
+    #[serde(default)]
     enabled: bool,
+    #[serde(default, rename = "loggedIn")]
+    logged_in: bool,
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Default)]
 struct CheckCache {
     latest: Option<String>,
     checked_at: Option<u64>,
+}
+
+const CRASH_GUARD_FILE: &str = "starting.json";
+const CRASH_GUARD_THRESHOLD: u32 = 2;
+#[cfg(target_os = "android")]
+const CRASH_GUARD_STABLE_SECS: u64 = 10;
+#[cfg(target_os = "android")]
+const CRASH_AUTO_DISABLE_MSG: &str =
+    "内置 Tailscale 上次启动时崩溃，已自动停用；可在此重新启用";
+#[cfg(target_os = "android")]
+const PROXY_UNSUPPORTED_MSG: &str =
+    "当前系统 WebView 不支持代理覆写（PROXY_OVERRIDE），无法启用内置 Tailscale 代理；请更新 Android System WebView";
+
+fn settings_file_path(install_dir: &Path) -> PathBuf {
+    install_dir.join("settings.json")
+}
+
+/// 在 settings_lock 保护下读取 settings.json（兼容仅含 enabled 的旧文件）。
+fn read_settings_locked(install_dir: &Path, lock: &Mutex<()>) -> SettingsMeta {
+    let _g = lock.lock();
+    fs::read_to_string(settings_file_path(install_dir))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 在 settings_lock 保护下执行读-改-写：
+/// - 若 `force_write_if_missing` 为 false 且字段未变化，则不写盘；
+/// - 保证 enabled 与 loggedIn 并发更新时不会互相覆盖。
+/// 返回 `(更新后的配置, 是否执行了写盘)`。
+fn update_settings_locked(
+    install_dir: &Path,
+    lock: &Mutex<()>,
+    force_write_if_missing: bool,
+    mutate: impl FnOnce(&mut SettingsMeta),
+) -> Result<(SettingsMeta, bool), String> {
+    let _g = lock.lock().map_err(|_| "设置锁异常".to_string())?;
+    let path = settings_file_path(install_dir);
+    let existed = path.exists();
+    let old: SettingsMeta = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut next = old.clone();
+    mutate(&mut next);
+    if next == old && (existed || !force_write_if_missing) {
+        return Ok((next, false));
+    }
+    fs::create_dir_all(install_dir)
+        .map_err(|e| format!("无法创建目录 {}：{e}", install_dir.display()))?;
+    let data = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
+    atomic_write(&path, data.as_bytes())?;
+    Ok((next, true))
+}
+
+/// 根据组件状态同步持久化 loggedIn（Running -> true，NeedsLogin -> false；只在变化时写盘）。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn sync_logged_in_for_state(install_dir: &Path, lock: &Mutex<()>, state: &str) {
+    let target = match state {
+        "Running" => Some(true),
+        "NeedsLogin" => Some(false),
+        _ => None,
+    };
+    if let Some(val) = target {
+        let _ = update_settings_locked(install_dir, lock, false, |s| s.logged_in = val);
+    }
+}
+
+/// Android 登录前等待状态稳定时的判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+enum LoginWaitOutcome {
+    KeepWaiting,
+    NoLoginNeeded,
+    NeedLogin,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn classify_login_wait_state(state: &str) -> LoginWaitOutcome {
+    match state {
+        "" | "NoState" | "Starting" => LoginWaitOutcome::KeepWaiting,
+        "Running" | "NeedsMachineAuth" => LoginWaitOutcome::NoLoginNeeded,
+        _ => LoginWaitOutcome::NeedLogin,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CrashGuardMeta {
+    count: u32,
+}
+
+/// 读取崩溃保护标记中的连续未稳定启动次数（文件不存在或损坏时返回 0）。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn read_crash_guard(install_dir: &Path) -> u32 {
+    let path = install_dir.join(CRASH_GUARD_FILE);
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<CrashGuardMeta>(&s).ok())
+        .map(|m| m.count)
+        .unwrap_or(0)
+}
+
+/// 记录一次启动尝试（在 dlopen + Start 之前调用），返回递增后的连续次数。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn record_crash_guard_attempt(install_dir: &Path) -> Result<u32, String> {
+    fs::create_dir_all(install_dir)
+        .map_err(|e| format!("无法创建目录 {}：{e}", install_dir.display()))?;
+    let next = read_crash_guard(install_dir).saturating_add(1);
+    let data = serde_json::to_string_pretty(&CrashGuardMeta { count: next })
+        .map_err(|e| e.to_string())?;
+    atomic_write(&install_dir.join(CRASH_GUARD_FILE), data.as_bytes())?;
+    Ok(next)
+}
+
+/// 删除崩溃保护标记（组件稳定运行 10 秒后、正常停止/停用或正常返回错误时调用）。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn clear_crash_guard(install_dir: &Path) {
+    let _ = fs::remove_file(install_dir.join(CRASH_GUARD_FILE));
+}
+
+/// 判断启动期是否应因连续崩溃自动停用（连续次数 >= 2）。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn should_auto_disable_on_startup(install_dir: &Path) -> bool {
+    read_crash_guard(install_dir) >= CRASH_GUARD_THRESHOLD
+}
+
+/// 清理 Android 旧版可选组件方式遗留的 current.json 与 install_dir 下的旧 libcosyee_tailnet_*.so（及 .part），
+/// 保留 state/（登录状态）、settings.json、tailnet.log、starting.json 等文件。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn cleanup_legacy_android_files(install_dir: &Path) {
+    let _ = fs::remove_file(install_dir.join("current.json"));
+    let Ok(entries) = fs::read_dir(install_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let is_legacy = (name.starts_with("libcosyee_tailnet_") && name.ends_with(".so"))
+            || name.ends_with(".part");
+        if !is_legacy {
+            continue;
+        }
+        manifest::make_writable_if_needed(&path);
+        let _ = fs::remove_file(&path);
+    }
 }
 
 /// 统一日志缓冲：包含客户端操作日志，以及增量追读 tailnet.log 的新行。
@@ -90,9 +246,17 @@ impl LogStore {
 
 pub struct TailnetManager {
     install_dir: PathBuf,
+    settings_lock: Arc<Mutex<()>>,
     socks_state: SharedSocksState,
     proxy_addr: RwLock<Option<SocketAddr>>,
+    #[cfg(target_os = "android")]
+    proxy_start_lock: Mutex<()>,
+    #[cfg(target_os = "android")]
+    proxy_applied: AtomicBool,
+    #[cfg(target_os = "android")]
+    extra_error: Mutex<Option<String>>,
     runner: ComponentRunner,
+    #[cfg(not(target_os = "android"))]
     check_cache: Mutex<CheckCache>,
     logs: Arc<Mutex<LogStore>>,
     busy: AtomicBool,
@@ -179,9 +343,21 @@ fn macos_major_version() -> Option<u32> {
 
 impl TailnetManager {
     fn new(install_dir: PathBuf) -> Self {
+        let settings_lock = Arc::new(Mutex::new(()));
         let socks_state: SharedSocksState = Arc::new(RwLock::new(SocksEndpoint::default()));
         let logs = Arc::new(Mutex::new(LogStore::new()));
         let logs_cb = logs.clone();
+        #[cfg(target_os = "android")]
+        let state_cb: Arc<dyn Fn(&str) + Send + Sync> = {
+            let dir = install_dir.clone();
+            let lock = settings_lock.clone();
+            Arc::new(move |state: &str| {
+                sync_logged_in_for_state(&dir, &lock, state);
+            })
+        };
+        #[cfg(not(target_os = "android"))]
+        let state_cb: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
+
         let runner = ComponentRunner::new(
             socks_state.clone(),
             Arc::new(move |line| {
@@ -189,12 +365,21 @@ impl TailnetManager {
                     l.push(line);
                 }
             }),
+            state_cb,
         );
         Self {
             install_dir,
+            settings_lock,
             socks_state,
             proxy_addr: RwLock::new(None),
+            #[cfg(target_os = "android")]
+            proxy_start_lock: Mutex::new(()),
+            #[cfg(target_os = "android")]
+            proxy_applied: AtomicBool::new(false),
+            #[cfg(target_os = "android")]
+            extra_error: Mutex::new(None),
             runner,
+            #[cfg(not(target_os = "android"))]
             check_cache: Mutex::new(CheckCache::default()),
             logs,
             busy: AtomicBool::new(false),
@@ -207,12 +392,14 @@ impl TailnetManager {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     fn current_path(&self) -> PathBuf {
         self.install_dir.join("current.json")
     }
 
+    #[cfg(not(target_os = "android"))]
     fn settings_path(&self) -> PathBuf {
-        self.install_dir.join("settings.json")
+        settings_file_path(&self.install_dir)
     }
 
     fn state_dir(&self) -> PathBuf {
@@ -223,6 +410,7 @@ impl TailnetManager {
         self.install_dir.join("tailnet.log")
     }
 
+    #[cfg(not(target_os = "android"))]
     fn read_current(&self) -> Option<CurrentMeta> {
         let text = fs::read_to_string(self.current_path()).ok()?;
         let meta: CurrentMeta = serde_json::from_str(&text).ok()?;
@@ -233,6 +421,7 @@ impl TailnetManager {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     fn write_current(&self, meta: &CurrentMeta) -> Result<(), String> {
         fs::create_dir_all(&self.install_dir)
             .map_err(|e| format!("无法创建目录 {}：{e}", self.install_dir.display()))?;
@@ -241,23 +430,63 @@ impl TailnetManager {
     }
 
     fn read_settings(&self) -> SettingsMeta {
-        fs::read_to_string(self.settings_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        read_settings_locked(&self.install_dir, &self.settings_lock)
     }
 
-    fn write_settings(&self, meta: &SettingsMeta) -> Result<(), String> {
-        fs::create_dir_all(&self.install_dir)
-            .map_err(|e| format!("无法创建目录 {}：{e}", self.install_dir.display()))?;
-        let data = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
-        atomic_write(&self.settings_path(), data.as_bytes())
+    fn set_enabled_setting(&self, enabled: bool) -> Result<(), String> {
+        update_settings_locked(&self.install_dir, &self.settings_lock, true, |s| {
+            s.enabled = enabled;
+        })
+        .map(|_| ())
+    }
+
+    #[cfg(target_os = "android")]
+    fn set_logged_in_setting(&self, logged_in: bool) {
+        let _ = update_settings_locked(&self.install_dir, &self.settings_lock, false, |s| {
+            s.logged_in = logged_in;
+        });
     }
 
     pub fn proxy_addr(&self) -> Option<SocketAddr> {
         self.proxy_addr.read().ok().and_then(|g| *g)
     }
 
+    #[cfg(target_os = "android")]
+    fn set_extra_error(&self, err: Option<String>) {
+        if let Ok(mut g) = self.extra_error.lock() {
+            *g = err;
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn extra_error(&self) -> Option<String> {
+        self.extra_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 确保本地 HTTP 代理已启动（幂等，重复调用不会新开监听）。
+    #[cfg(target_os = "android")]
+    fn ensure_proxy_started(&self) -> Result<tauri::Url, String> {
+        let _guard = self
+            .proxy_start_lock
+            .lock()
+            .map_err(|_| "代理锁异常".to_string())?;
+        if let Some(addr) = self.proxy_addr() {
+            return format!("http://{addr}")
+                .parse()
+                .map_err(|e| format!("代理地址无效：{e}"));
+        }
+        let socks_state = self.socks_state.clone();
+        let addr = tauri::async_runtime::block_on(proxy::start_http_proxy(socks_state))?;
+        if let Ok(mut g) = self.proxy_addr.write() {
+            *g = Some(addr);
+        }
+        self.log(format!("本地代理已就绪：http://{addr}"));
+        format!("http://{addr}")
+            .parse()
+            .map_err(|e| format!("代理地址无效：{e}"))
+    }
+
+    #[cfg(not(target_os = "android"))]
     fn start_component_if_installed(&self) -> Result<(), String> {
         let cur = self
             .read_current()
@@ -295,11 +524,60 @@ fn take_busy(mgr: &Arc<TailnetManager>) -> Result<BusyGuard, String> {
     Ok(BusyGuard(mgr.clone()))
 }
 
+#[cfg(not(target_os = "android"))]
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(target_os = "android")]
+fn bundled_version(runner: &ComponentRunner) -> String {
+    if let Some(v) = option_env!("COSYEE_TAILNET_VERSION") {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(v) = runner.loaded_version() {
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    "内置".to_string()
+}
+
+/// Android 侧：启动内置组件库并维护崩溃保护标记（启动前写 starting.json，就绪稳定 10 秒后删除；
+/// 正常返回错误也删除）。`reset_guard` 为 true 表示用户手动启用/登录/重启，先清旧计数重新计数。
+#[cfg(target_os = "android")]
+fn start_android_with_guard(
+    mgr: &Arc<TailnetManager>,
+    reset_guard: bool,
+) -> Result<component::RunningInfo, String> {
+    if reset_guard {
+        clear_crash_guard(&mgr.install_dir);
+        mgr.set_extra_error(None);
+    }
+    if let Err(e) = record_crash_guard_attempt(&mgr.install_dir) {
+        mgr.log(format!("写入崩溃保护标记失败：{e}"));
+    }
+    match mgr.runner.start_bundled(mgr.state_dir(), mgr.log_file_path()) {
+        Ok((info, gen)) => {
+            let mgr_bg = mgr.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(CRASH_GUARD_STABLE_SECS));
+                if mgr_bg.runner.is_generation_active(gen) {
+                    clear_crash_guard(&mgr_bg.install_dir);
+                }
+            });
+            Ok(info)
+        }
+        Err(e) => {
+            clear_crash_guard(&mgr.install_dir);
+            Err(e)
+        }
+    }
 }
 
 /// 在 Tauri `setup` 中调用：初始化管理器；如果当前平台支持且组件已安装并启用，
@@ -313,41 +591,86 @@ pub fn init_on_startup<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<tauri::
     let mgr = Arc::new(TailnetManager::new(install_dir));
     let _ = MANAGER.set(mgr.clone());
 
-    let (platform_key, _) = platform_support();
-    platform_key?;
+    #[cfg(target_os = "android")]
+    {
+        // 清理以前可选组件方式遗留的 current.json 和旧 .so，保留 state/、settings.json、日志
+        cleanup_legacy_android_files(&mgr.install_dir);
 
-    let installed = mgr.read_current();
-    let settings = mgr.read_settings();
-    if installed.is_none() || !settings.enabled {
-        return None;
-    }
+        let (platform_key, _) = platform_support();
+        platform_key?;
 
-    // 先在 Tokio runtime 上绑定本地 HTTP 代理端口，立刻返回给 WebView 使用
-    let socks_state = mgr.socks_state.clone();
-    let addr = match tauri::async_runtime::block_on(proxy::start_http_proxy(socks_state)) {
-        Ok(a) => a,
-        Err(e) => {
-            mgr.log(format!("启动本地代理失败：{e}"));
+        let settings = mgr.read_settings();
+        if !settings.enabled {
             return None;
         }
-    };
-    if let Ok(mut g) = mgr.proxy_addr.write() {
-        *g = Some(addr);
-    }
-    mgr.log(format!("本地代理已就绪：http://{addr}"));
 
-    // 组件异步启动，不阻塞主窗口显示
-    let mgr_bg = mgr.clone();
-    std::thread::spawn(move || {
-        if let Err(e) = mgr_bg.start_component_if_installed() {
-            mgr_bg.log(format!("启动组件失败：{e}"));
+        // 连续 2 次启动阶段未稳定退出：自动停用并提示用户，避免启动即闪退死循环
+        if should_auto_disable_on_startup(&mgr.install_dir) {
+            let _ = mgr.set_enabled_setting(false);
+            clear_crash_guard(&mgr.install_dir);
+            mgr.set_extra_error(Some(CRASH_AUTO_DISABLE_MSG.to_string()));
+            mgr.log(CRASH_AUTO_DISABLE_MSG);
+            return None;
         }
-    });
 
-    format!("http://{addr}").parse().ok()
+        let proxy_url = match mgr.ensure_proxy_started() {
+            Ok(u) => u,
+            Err(e) => {
+                mgr.log(format!("启动本地代理失败：{e}"));
+                return None;
+            }
+        };
+
+        // 组件异步启动，不阻塞主窗口显示（不重置崩溃计数，保留上次残留次数）
+        let mgr_bg = mgr.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = start_android_with_guard(&mgr_bg, false) {
+                mgr_bg.log(format!("启动内置组件失败：{e}"));
+            }
+        });
+
+        Some(proxy_url)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let (platform_key, _) = platform_support();
+        platform_key?;
+
+        let installed = mgr.read_current();
+        let settings = mgr.read_settings();
+        if installed.is_none() || !settings.enabled {
+            return None;
+        }
+
+        // 先在 Tokio runtime 上绑定本地 HTTP 代理端口，立刻返回给 WebView 使用
+        let socks_state = mgr.socks_state.clone();
+        let addr = match tauri::async_runtime::block_on(proxy::start_http_proxy(socks_state)) {
+            Ok(a) => a,
+            Err(e) => {
+                mgr.log(format!("启动本地代理失败：{e}"));
+                return None;
+            }
+        };
+        if let Ok(mut g) = mgr.proxy_addr.write() {
+            *g = Some(addr);
+        }
+        mgr.log(format!("本地代理已就绪：http://{addr}"));
+
+        // 组件异步启动，不阻塞主窗口显示
+        let mgr_bg = mgr.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = mgr_bg.start_component_if_installed() {
+                mgr_bg.log(format!("启动组件失败：{e}"));
+            }
+        });
+
+        format!("http://{addr}").parse().ok()
+    }
 }
 
 /// 返回本次启动时生效的本地代理 URL（供 `main` 窗口和 Windows 上的 `kiro-admin` 窗口保持参数一致）。
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn proxy_url() -> Option<tauri::Url> {
     let mgr = MANAGER.get()?;
     let addr = mgr.proxy_addr()?;
@@ -357,7 +680,12 @@ pub fn proxy_url() -> Option<tauri::Url> {
 /// 探测 host:port 是否可达：代理开启时按相同分流规则决定走 SOCKS5 还是直连；未开启时纯直连。
 pub async fn probe_tcp(host: &str, port: u16) -> bool {
     if let Some(mgr) = MANAGER.get() {
-        if mgr.proxy_addr().is_some() {
+        #[cfg(target_os = "android")]
+        let proxy_on = mgr.proxy_addr().is_some() && mgr.proxy_applied.load(Ordering::SeqCst);
+        #[cfg(not(target_os = "android"))]
+        let proxy_on = mgr.proxy_addr().is_some();
+
+        if proxy_on {
             return proxy::probe_target(&mgr.socks_state, host, port).await;
         }
     }
@@ -376,6 +704,16 @@ pub async fn probe_tcp(host: &str, port: u16) -> bool {
     .unwrap_or(false)
 }
 
+/// Android 侧：检查并清除 JNIEnv 上未处理的 Java 异常，绝不能带着异常返回 Java 侧。
+#[cfg(target_os = "android")]
+fn clear_jni_exception(env: &mut jni::JNIEnv) -> bool {
+    let had = env.exception_check().unwrap_or(false);
+    if had {
+        let _ = env.exception_clear();
+    }
+    had
+}
+
 /// Android 侧：通过 JNI 调用 MainActivity.setTailnetProxy 设置 WebView 代理。
 #[cfg(target_os = "android")]
 pub fn apply_android_proxy<R: tauri::Runtime>(
@@ -383,18 +721,116 @@ pub fn apply_android_proxy<R: tauri::Runtime>(
     proxy_url: &tauri::Url,
 ) {
     let url_str = proxy_url.to_string();
-    let _ = window.with_webview(move |wv| {
+    let mgr = MANAGER.get().cloned();
+    let res = window.with_webview(move |wv| {
         wv.jni_handle().exec(move |env, activity, _webview| {
-            if let Ok(jurl) = env.new_string(&url_str) {
-                let _ = env.call_method(
+            if activity.is_null() {
+                if let Some(m) = &mgr {
+                    m.proxy_applied.store(false, Ordering::SeqCst);
+                    m.log("设置 Android WebView 代理失败：Activity 尚未就绪");
+                }
+                return;
+            }
+            let jurl = match env.new_string(&url_str) {
+                Ok(s) => s,
+                Err(e) => {
+                    clear_jni_exception(env);
+                    if let Some(m) = &mgr {
+                        m.proxy_applied.store(false, Ordering::SeqCst);
+                        let msg = format!("设置 Android WebView 代理失败（创建字符串）：{e}");
+                        m.log(msg.clone());
+                        m.set_extra_error(Some(msg));
+                    }
+                    return;
+                }
+            };
+            let call_res = env
+                .call_method(
                     activity,
                     "setTailnetProxy",
                     "(Ljava/lang/String;)Z",
                     &[jni::objects::JValue::Object(&jurl)],
-                );
+                )
+                .and_then(|v| v.z());
+            let had_exc = clear_jni_exception(env);
+            match call_res {
+                Ok(true) if !had_exc => {
+                    if let Some(m) = &mgr {
+                        m.proxy_applied.store(true, Ordering::SeqCst);
+                        m.set_extra_error(None);
+                        m.log(format!("已应用 Android WebView 代理：{url_str}"));
+                    }
+                }
+                Ok(false) => {
+                    if let Some(m) = &mgr {
+                        m.proxy_applied.store(false, Ordering::SeqCst);
+                        m.log(PROXY_UNSUPPORTED_MSG);
+                        m.set_extra_error(Some(PROXY_UNSUPPORTED_MSG.to_string()));
+                    }
+                }
+                Ok(true) => {
+                    if let Some(m) = &mgr {
+                        m.proxy_applied.store(false, Ordering::SeqCst);
+                        let msg = "设置 Android WebView 代理时发生 Java 异常".to_string();
+                        m.log(msg.clone());
+                        m.set_extra_error(Some(msg));
+                    }
+                }
+                Err(e) => {
+                    if let Some(m) = &mgr {
+                        m.proxy_applied.store(false, Ordering::SeqCst);
+                        let msg = format!("设置 Android WebView 代理失败（JNI）：{e}");
+                        m.log(msg.clone());
+                        m.set_extra_error(Some(msg));
+                    }
+                }
             }
         });
     });
+    if let Err(e) = res {
+        if let Some(m) = MANAGER.get() {
+            m.proxy_applied.store(false, Ordering::SeqCst);
+            m.log(format!("投递设置 Android WebView 代理任务失败：{e}"));
+        }
+    }
+}
+
+/// Android 侧：通过 JNI 调用 MainActivity.clearTailnetProxy 清除 WebView 代理覆写。
+#[cfg(target_os = "android")]
+pub fn clear_android_proxy<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let mgr = MANAGER.get().cloned();
+    if let Some(m) = &mgr {
+        m.proxy_applied.store(false, Ordering::SeqCst);
+        m.set_extra_error(None);
+    }
+    let res = window.with_webview(move |wv| {
+        wv.jni_handle().exec(move |env, activity, _webview| {
+            if activity.is_null() {
+                if let Some(m) = &mgr {
+                    m.log("清除 Android WebView 代理失败：Activity 尚未就绪");
+                }
+                return;
+            }
+            let call_res = env.call_method(activity, "clearTailnetProxy", "()V", &[]);
+            let had_exc = clear_jni_exception(env);
+            if let Err(e) = call_res {
+                if let Some(m) = &mgr {
+                    m.log(format!("清除 Android WebView 代理失败（JNI）：{e}"));
+                }
+            } else if had_exc {
+                if let Some(m) = &mgr {
+                    m.log("清除 Android WebView 代理时发生 Java 异常");
+                }
+            } else if let Some(m) = &mgr {
+                m.log("已清除 Android WebView 代理");
+            }
+        });
+    });
+    if let Err(e) = res {
+        if let Some(m) = MANAGER.get() {
+            m.log(format!("投递清除 Android WebView 代理任务失败：{e}"));
+        }
+    }
 }
 
 // ───────────────────── Tauri 命令（严格按 CONTRACT.md） ─────────────────────
@@ -404,8 +840,11 @@ pub struct TailnetStatusResp {
     pub supported: bool,
     #[serde(rename = "unsupportedReason")]
     pub unsupported_reason: Option<String>,
+    pub bundled: bool,
     pub installed: Option<String>,
     pub enabled: bool,
+    #[serde(rename = "loggedIn")]
+    pub logged_in: bool,
     pub running: bool,
     pub state: Option<String>,
     #[serde(rename = "authURL")]
@@ -469,12 +908,29 @@ pub async fn tailnet_status() -> Result<TailnetStatusResp, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (platform_key, unsupported_reason) = platform_support();
         let supported = platform_key.is_some();
-        let current = mgr.read_current();
-        let installed = current.as_ref().map(|c| c.version.clone());
+        let bundled = cfg!(target_os = "android");
+
+        #[cfg(target_os = "android")]
+        let installed = if supported {
+            Some(bundled_version(&mgr.runner))
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "android"))]
+        let installed = mgr.read_current().map(|c| c.version);
+
         let enabled = mgr.read_settings().enabled;
+
+        #[cfg(target_os = "android")]
+        let proxy_active = mgr.proxy_addr().is_some() && mgr.proxy_applied.load(Ordering::SeqCst);
+        #[cfg(not(target_os = "android"))]
         let proxy_active = mgr.proxy_addr().is_some();
+
         let busy = mgr.busy.load(Ordering::SeqCst);
 
+        #[cfg(target_os = "android")]
+        let (latest, checked_at) = (None, None);
+        #[cfg(not(target_os = "android"))]
         let (latest, checked_at) = mgr
             .check_cache
             .lock()
@@ -494,6 +950,8 @@ pub async fn tailnet_status() -> Result<TailnetStatusResp, String> {
                 Ok(cs) => {
                     running = true;
                     component::sync_socks_state(&mgr.socks_state, Some(&info), cs.state == "Running");
+                    #[cfg(target_os = "android")]
+                    sync_logged_in_for_state(&mgr.install_dir, &mgr.settings_lock, &cs.state);
                     state = Some(cs.state);
                     auth_url = cs.auth_url;
                     self_node = cs.self_node;
@@ -508,14 +966,28 @@ pub async fn tailnet_status() -> Result<TailnetStatusResp, String> {
             }
         }
 
-        let needs_restart = (installed.is_some() && enabled && !proxy_active)
-            || mgr.runner.android_library_outdated(installed.as_deref());
+        #[cfg(target_os = "android")]
+        let logged_in = mgr.read_settings().logged_in;
+        #[cfg(not(target_os = "android"))]
+        let logged_in = state.as_deref() == Some("Running");
+
+        #[cfg(target_os = "android")]
+        if error.is_none() {
+            error = mgr.extra_error();
+        }
+
+        #[cfg(target_os = "android")]
+        let needs_restart = false;
+        #[cfg(not(target_os = "android"))]
+        let needs_restart = installed.is_some() && enabled && !proxy_active;
 
         TailnetStatusResp {
             supported,
             unsupported_reason,
+            bundled,
             installed,
             enabled,
+            logged_in,
             running,
             state,
             auth_url,
@@ -535,169 +1007,230 @@ pub async fn tailnet_status() -> Result<TailnetStatusResp, String> {
 
 #[tauri::command]
 pub async fn tailnet_check() -> Result<TailnetCheckResp, String> {
-    let mgr = manager()?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let (platform_key, reason) = platform_support();
-        let platform_key = platform_key
-            .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
+    #[cfg(target_os = "android")]
+    {
+        Err("内置 Tailscale 随客户端更新，无需安装".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mgr = manager()?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let (platform_key, reason) = platform_support();
+            let platform_key = platform_key
+                .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
 
-        let m = manifest::fetch_verified_manifest()?;
-        if !m.assets.contains_key(platform_key) {
-            return Err(format!("最新版本 {} 未包含当前平台（{platform_key}）资产", m.version));
-        }
+            let m = manifest::fetch_verified_manifest()?;
+            if !m.assets.contains_key(platform_key) {
+                return Err(format!("最新版本 {} 未包含当前平台（{platform_key}）资产", m.version));
+            }
 
-        let current = mgr.read_current().map(|c| c.version);
-        let update_available = match &current {
-            Some(cur) => manifest::is_newer_version(&m.version, cur),
-            None => true,
-        };
+            let current = mgr.read_current().map(|c| c.version);
+            let update_available = match &current {
+                Some(cur) => manifest::is_newer_version(&m.version, cur),
+                None => true,
+            };
 
-        if let Ok(mut c) = mgr.check_cache.lock() {
-            c.latest = Some(m.version.clone());
-            c.checked_at = Some(now_millis());
-        }
+            if let Ok(mut c) = mgr.check_cache.lock() {
+                c.latest = Some(m.version.clone());
+                c.checked_at = Some(now_millis());
+            }
 
-        Ok(TailnetCheckResp {
-            latest: m.version,
-            current,
-            update_available,
+            Ok(TailnetCheckResp {
+                latest: m.version,
+                current,
+                update_available,
+            })
         })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
+    }
 }
 
 #[tauri::command]
 pub async fn tailnet_install() -> Result<TailnetInstallResp, String> {
-    let mgr = manager()?;
-    let guard = take_busy(&mgr)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _g = guard;
-        let (platform_key, reason) = platform_support();
-        let platform_key = platform_key
-            .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
+    #[cfg(target_os = "android")]
+    {
+        Err("内置 Tailscale 随客户端更新，无需安装".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mgr = manager()?;
+        let guard = take_busy(&mgr)?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let _g = guard;
+            let (platform_key, reason) = platform_support();
+            let platform_key = platform_key
+                .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
 
-        mgr.log("正在获取并校验组件清单（Ed25519）...");
-        let m = manifest::fetch_verified_manifest()?;
-        let asset = m
-            .assets
-            .get(platform_key)
-            .ok_or_else(|| format!("manifest 中缺少当前平台（{platform_key}）的组件"))?;
+            mgr.log("正在获取并校验组件清单（Ed25519）...");
+            let m = manifest::fetch_verified_manifest()?;
+            let asset = m
+                .assets
+                .get(platform_key)
+                .ok_or_else(|| format!("manifest 中缺少当前平台（{platform_key}）的组件"))?;
 
-        let mgr_log = mgr.clone();
-        let installed_file = manifest::download_and_install_asset(
-            &mgr.install_dir,
-            platform_key,
-            &m.version,
-            asset,
-            move |line| mgr_log.log(line),
-        )?;
+            let mgr_log = mgr.clone();
+            let installed_file = manifest::download_and_install_asset(
+                &mgr.install_dir,
+                platform_key,
+                &m.version,
+                asset,
+                move |line| mgr_log.log(line),
+            )?;
 
-        mgr.write_current(&CurrentMeta {
-            version: m.version.clone(),
-            file: installed_file.clone(),
-        })?;
+            mgr.write_current(&CurrentMeta {
+                version: m.version.clone(),
+                file: installed_file.clone(),
+            })?;
 
-        // 首次安装默认启用（见 CONTRACT.md）
-        if !mgr.settings_path().exists() {
-            mgr.write_settings(&SettingsMeta { enabled: true })?;
-        }
-        let enabled = mgr.read_settings().enabled;
+            // 首次安装默认启用（见 CONTRACT.md）
+            if !mgr.settings_path().exists() {
+                mgr.set_enabled_setting(true)?;
+            }
+            let enabled = mgr.read_settings().enabled;
 
-        if let Ok(mut c) = mgr.check_cache.lock() {
-            c.latest = Some(m.version.clone());
-            c.checked_at = Some(now_millis());
-        }
+            if let Ok(mut c) = mgr.check_cache.lock() {
+                c.latest = Some(m.version.clone());
+                c.checked_at = Some(now_millis());
+            }
 
-        let proxy_active = mgr.proxy_addr().is_some();
-        let mut needs_restart = enabled && !proxy_active;
+            let proxy_active = mgr.proxy_addr().is_some();
+            let needs_restart = enabled && !proxy_active;
 
-        // 如果代理已开且已启用，桌面端可以直接切换到新版本；Android 若已加载旧库则需重启 App
-        if proxy_active && enabled {
-            if mgr.runner.android_library_outdated(Some(&m.version)) {
-                needs_restart = true;
-                mgr.log("新版本组件已就绪，重启客户端后生效");
-            } else {
+            // 如果代理已开且已启用，桌面端直接切换到新版本
+            if proxy_active && enabled {
                 mgr.log("正在重启组件以启用新版本...");
                 if let Err(e) = mgr.start_component_if_installed() {
                     mgr.log(format!("重启新版本组件失败：{e}"));
                 }
             }
-        }
 
-        // 清理旧版本文件（跳过当前文件和仍在运行的旧库文件）
-        let active_file = mgr.runner.active_file();
-        let mut keep: Vec<&str> = vec![installed_file.as_str()];
-        if let Some(af) = active_file.as_deref() {
-            keep.push(af);
-        }
-        manifest::cleanup_old_versions(&mgr.install_dir, &keep);
+            // 清理旧版本文件（跳过当前文件和仍在运行的旧文件）
+            let active_file = mgr.runner.active_file();
+            let mut keep: Vec<&str> = vec![installed_file.as_str()];
+            if let Some(af) = active_file.as_deref() {
+                keep.push(af);
+            }
+            manifest::cleanup_old_versions(&mgr.install_dir, &keep);
 
-        mgr.log(format!("安装完成：cosyee-tailnet {}", m.version));
-        Ok(TailnetInstallResp {
-            version: m.version,
-            needs_restart,
+            mgr.log(format!("安装完成：cosyee-tailnet {}", m.version));
+            Ok(TailnetInstallResp {
+                version: m.version,
+                needs_restart,
+            })
         })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
+    }
 }
 
 #[tauri::command]
 pub async fn tailnet_uninstall(keep_state: bool) -> Result<OkResp, String> {
-    let mgr = manager()?;
-    let guard = take_busy(&mgr)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let _g = guard;
-        mgr.log("正在卸载内置 Tailscale 组件...");
-        mgr.runner.stop();
+    #[cfg(target_os = "android")]
+    {
+        let _ = keep_state;
+        Err("内置 Tailscale 随客户端更新，无需安装".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mgr = manager()?;
+        let guard = take_busy(&mgr)?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let _g = guard;
+            mgr.log("正在卸载内置 Tailscale 组件...");
+            mgr.runner.stop();
 
-        let _ = fs::remove_file(mgr.current_path());
-        let _ = fs::remove_file(mgr.settings_path());
-        manifest::cleanup_old_versions(&mgr.install_dir, &[]);
+            let _ = fs::remove_file(mgr.current_path());
+            let _ = fs::remove_file(mgr.settings_path());
+            manifest::cleanup_old_versions(&mgr.install_dir, &[]);
 
-        if !keep_state {
-            let state = mgr.state_dir();
-            if state.exists() {
-                let _ = fs::remove_dir_all(&state);
+            if !keep_state {
+                let state = mgr.state_dir();
+                if state.exists() {
+                    let _ = fs::remove_dir_all(&state);
+                }
+                mgr.log("已清除 Tailscale 登录状态");
             }
-            mgr.log("已清除 Tailscale 登录状态");
-        }
-        mgr.log("卸载完成");
-        Ok(OkResp { ok: true })
-    })
-    .await
-    .map_err(|e| e.to_string())?
+            mgr.log("卸载完成");
+            Ok(OkResp { ok: true })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
 }
 
 #[tauri::command]
-pub async fn tailnet_set_enabled(enabled: bool) -> Result<SetEnabledResp, String> {
+pub async fn tailnet_set_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<SetEnabledResp, String> {
     let mgr = manager()?;
     let guard = take_busy(&mgr)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _g = guard;
-        mgr.write_settings(&SettingsMeta { enabled })?;
-        let installed = mgr.read_current();
-        let proxy_active = mgr.proxy_addr().is_some();
 
-        if !enabled {
-            mgr.runner.stop();
-            mgr.log("已停用内置 Tailscale 组件");
-        } else if installed.is_some() && proxy_active {
-            if let Err(e) = mgr.start_component_if_installed() {
-                mgr.log(format!("启用后启动组件失败：{e}"));
+        #[cfg(target_os = "android")]
+        {
+            if enabled {
+                let (platform_key, reason) = platform_support();
+                if platform_key.is_none() {
+                    return Err(reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()));
+                }
             }
+
+            mgr.set_enabled_setting(enabled)?;
+
+            if !enabled {
+                mgr.runner.stop();
+                clear_crash_guard(&mgr.install_dir);
+                if let Some(w) = app.get_webview_window("main") {
+                    clear_android_proxy(&w);
+                } else {
+                    mgr.proxy_applied.store(false, Ordering::SeqCst);
+                    mgr.set_extra_error(None);
+                }
+                mgr.log("已停用内置 Tailscale");
+            } else {
+                let proxy_url = mgr.ensure_proxy_started()?;
+                if let Some(w) = app.get_webview_window("main") {
+                    apply_android_proxy(&w, &proxy_url);
+                }
+                if mgr.runner.running_info().is_none() {
+                    if let Err(e) = start_android_with_guard(&mgr, true) {
+                        mgr.log(format!("启用后启动组件失败：{e}"));
+                    }
+                }
+            }
+
+            Ok(SetEnabledResp {
+                enabled,
+                needs_restart: false,
+            })
         }
 
-        let needs_restart = (installed.is_some() && enabled && !proxy_active)
-            || mgr
-                .runner
-                .android_library_outdated(installed.as_ref().map(|c| c.version.as_str()));
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = app;
+            mgr.set_enabled_setting(enabled)?;
+            let installed = mgr.read_current();
+            let proxy_active = mgr.proxy_addr().is_some();
 
-        Ok(SetEnabledResp {
-            enabled,
-            needs_restart,
-        })
+            if !enabled {
+                mgr.runner.stop();
+                mgr.log("已停用内置 Tailscale 组件");
+            } else if installed.is_some() && proxy_active {
+                if let Err(e) = mgr.start_component_if_installed() {
+                    mgr.log(format!("启用后启动组件失败：{e}"));
+                }
+            }
+
+            let needs_restart = installed.is_some() && enabled && !proxy_active;
+
+            Ok(SetEnabledResp {
+                enabled,
+                needs_restart,
+            })
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -706,29 +1239,109 @@ pub async fn tailnet_set_enabled(enabled: bool) -> Result<SetEnabledResp, String
 #[tauri::command]
 pub async fn tailnet_login(app: tauri::AppHandle) -> Result<TailnetLoginResp, String> {
     let mgr = manager()?;
-    let auth_url = tauri::async_runtime::spawn_blocking(move || {
+
+    #[cfg(target_os = "android")]
+    let auth_url = {
+        let guard = take_busy(&mgr)?;
+        let app_bg = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // 仅在启用与启动组件阶段持有 busy 互斥锁，启动完成后立即释放，避免等待登录期间长期占用
+            let info = {
+                let _g = guard;
+                let (platform_key, reason) = platform_support();
+                if platform_key.is_none() {
+                    return Err(reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()));
+                }
+                if !mgr.read_settings().enabled {
+                    mgr.set_enabled_setting(true)?;
+                }
+                let proxy_url = mgr.ensure_proxy_started()?;
+                if !mgr.proxy_applied.load(Ordering::SeqCst) {
+                    if let Some(w) = app_bg.get_webview_window("main") {
+                        apply_android_proxy(&w, &proxy_url);
+                    }
+                }
+                match mgr.runner.running_info() {
+                    Some(i) => i,
+                    None => start_android_with_guard(&mgr, true)?,
+                }
+            };
+
+            // 启动后先等待状态离开 NoState / Starting（最多约 10 秒），避免已有登录状态时重复触发登录
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if mgr.runner.running_info().is_none() {
+                    return Err("组件已停止".into());
+                }
+                if let Ok(cs) = component::fetch_control_status(&info) {
+                    component::sync_socks_state(&mgr.socks_state, Some(&info), cs.state == "Running");
+                    sync_logged_in_for_state(&mgr.install_dir, &mgr.settings_lock, &cs.state);
+                    match classify_login_wait_state(&cs.state) {
+                        LoginWaitOutcome::NoLoginNeeded => {
+                            return Ok::<String, String>(String::new());
+                        }
+                        LoginWaitOutcome::NeedLogin => break,
+                        LoginWaitOutcome::KeepWaiting => {}
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+
+            if mgr.runner.running_info().is_none() {
+                return Err("组件已停止".into());
+            }
+            let url = component::trigger_login(&info)?;
+            if !url.starts_with("https://") {
+                return Err("组件返回的登录链接不是 https 地址，已拒绝打开".into());
+            }
+            Ok::<String, String>(url)
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
+
+    #[cfg(not(target_os = "android"))]
+    let auth_url = {
         let info = match mgr.runner.running_info() {
             Some(i) => i,
             None => {
-                mgr.start_component_if_installed()?;
-                mgr.runner
-                    .running_info()
-                    .ok_or_else(|| "组件未能进入运行状态".to_string())?
+                let guard = take_busy(&mgr)?;
+                let mgr_start = mgr.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _g = guard;
+                    if let Some(i) = mgr_start.runner.running_info() {
+                        return Ok::<_, String>(i);
+                    }
+                    mgr_start.start_component_if_installed()?;
+                    mgr_start
+                        .runner
+                        .running_info()
+                        .ok_or_else(|| "组件未能进入运行状态".to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())??
             }
         };
-        let url = component::trigger_login(&info)?;
-        if !url.starts_with("https://") {
-            return Err("组件返回的登录链接不是 https 地址，已拒绝打开".into());
-        }
-        Ok::<String, String>(url)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+        tauri::async_runtime::spawn_blocking(move || {
+            let url = component::trigger_login(&info)?;
+            if !url.starts_with("https://") {
+                return Err("组件返回的登录链接不是 https 地址，已拒绝打开".into());
+            }
+            Ok::<String, String>(url)
+        })
+        .await
+        .map_err(|e| e.to_string())??
+    };
 
-    // 用系统浏览器打开登录链接（桌面 + Android 均支持）
-    if let Err(e) = app.opener().open_url(&auth_url, None::<&str>) {
-        if let Ok(mgr) = manager() {
-            mgr.log(format!("打开系统浏览器失败（请手动访问链接）：{e}"));
+    // 仅当返回了登录链接时用系统浏览器打开（桌面 + Android 均支持；Android 已登录/待审批返回空串时不打开）
+    if !auth_url.is_empty() {
+        if let Err(e) = app.opener().open_url(&auth_url, None::<&str>) {
+            if let Ok(mgr) = manager() {
+                mgr.log(format!("打开系统浏览器失败（请手动访问链接）：{e}"));
+            }
         }
     }
 
@@ -745,6 +1358,8 @@ pub async fn tailnet_logout() -> Result<OkResp, String> {
             .ok_or_else(|| "组件未运行".to_string())?;
         component::trigger_logout(&info)?;
         component::sync_socks_state(&mgr.socks_state, Some(&info), false);
+        #[cfg(target_os = "android")]
+        mgr.set_logged_in_setting(false);
         mgr.log("已登出 Tailscale 账号");
         Ok(OkResp { ok: true })
     })
@@ -753,13 +1368,31 @@ pub async fn tailnet_logout() -> Result<OkResp, String> {
 }
 
 #[tauri::command]
-pub async fn tailnet_restart() -> Result<OkResp, String> {
+pub async fn tailnet_restart(app: tauri::AppHandle) -> Result<OkResp, String> {
     let mgr = manager()?;
     let guard = take_busy(&mgr)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _g = guard;
         mgr.log("正在重启内置 Tailscale 组件...");
-        mgr.start_component_if_installed()?;
+        #[cfg(target_os = "android")]
+        {
+            let (platform_key, reason) = platform_support();
+            if platform_key.is_none() {
+                return Err(reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()));
+            }
+            let proxy_url = mgr.ensure_proxy_started()?;
+            if !mgr.proxy_applied.load(Ordering::SeqCst) {
+                if let Some(w) = app.get_webview_window("main") {
+                    apply_android_proxy(&w, &proxy_url);
+                }
+            }
+            start_android_with_guard(&mgr, true)?;
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = app;
+            mgr.start_component_if_installed()?;
+        }
         Ok(OkResp { ok: true })
     })
     .await
@@ -781,9 +1414,14 @@ pub fn tailnet_log(from: usize) -> Result<TailnetLogResp, String> {
 }
 
 #[tauri::command]
-pub fn app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
     if let Ok(mgr) = manager() {
-        mgr.runner.stop();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            mgr.runner.stop();
+            #[cfg(target_os = "android")]
+            clear_crash_guard(&mgr.install_dir);
+        })
+        .await;
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -791,15 +1429,177 @@ pub fn app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
     }
     #[cfg(target_os = "android")]
     {
+        let mgr = MANAGER.get().cloned();
         if let Some(w) = app.get_webview_window("main") {
-            let _ = w.with_webview(|wv| {
-                wv.jni_handle().exec(|env, activity, _webview| {
-                    let _ = env.call_method(activity, "relaunchApp", "()V", &[]);
+            w.with_webview(move |wv| {
+                wv.jni_handle().exec(move |env, activity, _webview| {
+                    if activity.is_null() {
+                        if let Some(m) = &mgr {
+                            m.log("重启应用失败：Activity 尚未就绪");
+                        }
+                        return;
+                    }
+                    let call_res = env.call_method(activity, "relaunchApp", "()V", &[]);
+                    let had_exc = clear_jni_exception(env);
+                    if let Err(e) = call_res {
+                        if let Some(m) = &mgr {
+                            m.log(format!("重启应用失败（JNI）：{e}"));
+                        }
+                    } else if had_exc {
+                        if let Some(m) = &mgr {
+                            m.log("重启应用时发生 Java 异常");
+                        }
+                    }
                 });
-            });
+            })
+            .map_err(|e| {
+                let msg = format!("投递重启应用任务失败：{e}");
+                if let Some(m) = MANAGER.get() {
+                    m.log(msg.clone());
+                }
+                msg
+            })?;
             Ok(())
         } else {
             Err("找不到主窗口，无法重启应用".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    fn make_temp_dir(label: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cosyee-tailnet-test-{label}-{}-{n}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn crash_guard_lifecycle_and_threshold() {
+        let dir = make_temp_dir("crash-guard");
+
+        // 初始无标记
+        assert_eq!(read_crash_guard(&dir), 0);
+        assert!(!should_auto_disable_on_startup(&dir));
+
+        // 第一次启动未稳定留下 count = 1，不自动停用
+        assert_eq!(record_crash_guard_attempt(&dir).unwrap(), 1);
+        assert_eq!(read_crash_guard(&dir), 1);
+        assert!(!should_auto_disable_on_startup(&dir));
+
+        // 第二次启动再次崩溃留下 count = 2，下次启动触发自动停用
+        assert_eq!(record_crash_guard_attempt(&dir).unwrap(), 2);
+        assert_eq!(read_crash_guard(&dir), 2);
+        assert!(should_auto_disable_on_startup(&dir));
+
+        // 清除后归零，手动重新启用从 1 开始计数
+        clear_crash_guard(&dir);
+        assert_eq!(read_crash_guard(&dir), 0);
+        assert!(!should_auto_disable_on_startup(&dir));
+        assert_eq!(record_crash_guard_attempt(&dir).unwrap(), 1);
+
+        // 损坏的 JSON 安全降级为 0
+        fs::write(dir.join(CRASH_GUARD_FILE), b"{broken").unwrap();
+        assert_eq!(read_crash_guard(&dir), 0);
+        assert!(!should_auto_disable_on_startup(&dir));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_legacy_android_files_preserves_state_and_settings() {
+        let dir = make_temp_dir("legacy-cleanup");
+        fs::create_dir_all(dir.join("state")).unwrap();
+        fs::write(dir.join("state").join("tailscaled.state"), b"keep").unwrap();
+        fs::write(dir.join("settings.json"), br#"{"enabled":true}"#).unwrap();
+        fs::write(dir.join("tailnet.log"), b"log line\n").unwrap();
+        fs::write(dir.join(CRASH_GUARD_FILE), br#"{"count":1}"#).unwrap();
+        fs::write(dir.join("current.json"), br#"{"version":"1.0.0","file":"x.so"}"#).unwrap();
+        fs::write(dir.join("libcosyee_tailnet_1.0.0_android_arm64.so"), b"elf").unwrap();
+        fs::write(dir.join(".libcosyee_tailnet_1.0.0_android_arm64.so.part"), b"tmp").unwrap();
+
+        cleanup_legacy_android_files(&dir);
+
+        assert!(!dir.join("current.json").exists());
+        assert!(!dir.join("libcosyee_tailnet_1.0.0_android_arm64.so").exists());
+        assert!(!dir.join(".libcosyee_tailnet_1.0.0_android_arm64.so.part").exists());
+        assert!(dir.join("state").join("tailscaled.state").exists());
+        assert!(dir.join("settings.json").exists());
+        assert!(dir.join("tailnet.log").exists());
+        assert!(dir.join(CRASH_GUARD_FILE).exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_meta_compat_and_locked_updates() {
+        let dir = make_temp_dir("settings-meta");
+        let lock = Mutex::new(());
+
+        // 1. 兼容只有 enabled 字段的旧 settings.json（loggedIn 默认为 false）
+        fs::write(settings_file_path(&dir), br#"{"enabled":true}"#).unwrap();
+        let meta = read_settings_locked(&dir, &lock);
+        assert!(meta.enabled);
+        assert!(!meta.logged_in);
+
+        // 2. 更新 loggedIn 时不能覆盖 enabled，且值变化时才写盘
+        let (after_login, wrote) =
+            update_settings_locked(&dir, &lock, false, |s| s.logged_in = true).unwrap();
+        assert!(wrote);
+        assert!(after_login.enabled);
+        assert!(after_login.logged_in);
+
+        // 再次设置为相同值：不写盘
+        let (same, wrote_again) =
+            update_settings_locked(&dir, &lock, false, |s| s.logged_in = true).unwrap();
+        assert!(!wrote_again);
+        assert!(same.enabled);
+        assert!(same.logged_in);
+
+        // 3. 更新 enabled=false 时保留 loggedIn=true
+        let (after_disable, wrote_disable) =
+            update_settings_locked(&dir, &lock, true, |s| s.enabled = false).unwrap();
+        assert!(wrote_disable);
+        assert!(!after_disable.enabled);
+        assert!(after_disable.logged_in);
+
+        // 4. sync_logged_in_for_state：Starting 不变、NeedsLogin 置 false、Running 置 true
+        sync_logged_in_for_state(&dir, &lock, "Starting");
+        assert!(read_settings_locked(&dir, &lock).logged_in);
+
+        sync_logged_in_for_state(&dir, &lock, "NeedsLogin");
+        let after_needs_login = read_settings_locked(&dir, &lock);
+        assert!(!after_needs_login.enabled);
+        assert!(!after_needs_login.logged_in);
+
+        sync_logged_in_for_state(&dir, &lock, "Running");
+        let after_running = read_settings_locked(&dir, &lock);
+        assert!(!after_running.enabled);
+        assert!(after_running.logged_in);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn login_wait_state_classification() {
+        assert_eq!(classify_login_wait_state(""), LoginWaitOutcome::KeepWaiting);
+        assert_eq!(classify_login_wait_state("NoState"), LoginWaitOutcome::KeepWaiting);
+        assert_eq!(classify_login_wait_state("Starting"), LoginWaitOutcome::KeepWaiting);
+        assert_eq!(classify_login_wait_state("Running"), LoginWaitOutcome::NoLoginNeeded);
+        assert_eq!(
+            classify_login_wait_state("NeedsMachineAuth"),
+            LoginWaitOutcome::NoLoginNeeded
+        );
+        assert_eq!(classify_login_wait_state("NeedsLogin"), LoginWaitOutcome::NeedLogin);
+        assert_eq!(classify_login_wait_state("Stopped"), LoginWaitOutcome::NeedLogin);
     }
 }
