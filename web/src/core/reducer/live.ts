@@ -31,7 +31,7 @@ import {
   type Draft,
 } from './core';
 import { arr, isObj, str, textOf } from './util';
-import { resolveRun } from './resume';
+import { delegateEnded, resolveRun } from './resume';
 import { applyDelegateNotification } from './delegate';
 import { recordCache, recordCacheDelta, recordCompact } from './cacheHit';
 
@@ -184,9 +184,11 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
     return meta === s.meta ? s : { ...s, meta };
   }
   if (type !== 'message_start' && type !== 'content_block_start' && type !== 'content_block_delta' && type !== 'content_block_stop') return s;
+  const scope = scopeOf(e);
+  // 委派停止 / 超时后，服务端还会补发没关的文本块的结束事件：只是收尾，不是续跑，不能让它回到运行中
+  if (type === 'content_block_stop' && scope !== '' && delegateEnded(s, scope)) return s;
   const d = openDraft(s, now);
   if (!d) return s;
-  const scope = scopeOf(e);
   if (scope !== '' && !resolveRun(s, d, { toolUseId: scope })) return s;
 
   if (type === 'message_start') {

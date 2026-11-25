@@ -130,6 +130,33 @@ describe('后台委派：主轮结束后的进度', () => {
     expect(s.turns[0]!.status).toBe('done');
   });
 
+  it('停止 / 超时后才到的收尾事件（文本块结束、工具「已中断」）不让已结束的委派回到运行中', () => {
+    const stream = (event: unknown) => ({ type: 'stream_event', parent_tool_use_id: D, api_message_id: 'agy-t1', event });
+    const running = play([
+      user('x'), call(),
+      stream({ type: 'message_start', message: { id: 'agy-t1', model: 'gemini' } }),
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '等脚本跑完' } }),
+    ]);
+    expect(runOf(running).status).toBe('running');
+    const closers = [
+      stream({ type: 'content_block_stop', index: 0 }),
+      { type: 'user', parent_tool_use_id: D, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'agy_x', content: '已中断', is_error: true }] } },
+    ];
+    // 前台调用超时：先到工具结果（出错），再到收尾事件
+    const timedOut = play([result('timed out after 3600s', D, true)], running);
+    expect(runOf(play(closers, timedOut))).toMatchObject({ status: 'error', turn: { status: 'error' } });
+    expect(runOf(play(closers, timedOut)).background).toBeUndefined();
+    // 先到任务快照（已停止），再到收尾事件；主轮已进入下一轮也一样
+    const stopped = applyDelegates(timedOut, [job({ state: 'stopped', background: false, endedAt: 5 })], NOW);
+    expect(runOf(play(closers, stopped)).status).toBe('done');
+    const next = play([done, user('下一句')], stopped);
+    expect(play(closers, next).turns[1]!.subagents).toEqual([]);
+    expect(runOf(play(closers, next), 0).status).toBe('done');
+    // 真正的续跑（有新内容）仍然回到运行中
+    expect(runOf(play([...closers, stream({ type: 'message_start', message: { id: 'agy-t2' } })], stopped))).toMatchObject({ status: 'running', background: true });
+  });
+
   it('完成通知触发的 CLI 自启动轮：照常重开主轮（现有路径），后台委派不影响收尾', () => {
     const s = play(
       [{ type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'm-n' } } }, { type: 'assistant', parent_tool_use_id: null, message: { id: 'm-n', role: 'assistant', content: [{ type: 'text', text: '后台那边做完了' }] } }, done],

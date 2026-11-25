@@ -56,3 +56,12 @@ export function resolveRun(s: ConvState, d: Draft, k: RunKey): SubagentRun | und
   }
   return run;
 }
+
+/** 该委派最近一份运行（从新到旧）是否已经结束 */
+export function delegateEnded(s: ConvState, toolUseId: string): boolean {
+  for (let i = s.turns.length - 1; i >= 0; i--) {
+    const run = find(s.turns[i]!.subagents, { toolUseId }, false);
+    if (run) return run.delegate === true && run.status !== 'running';
+  }
+  return false;
+}
