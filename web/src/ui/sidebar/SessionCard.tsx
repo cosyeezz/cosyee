@@ -114,7 +114,7 @@ export interface SessionCardController {
 // 跟踪最近一次输入方式，区分键盘 Tab 聚焦和鼠标点击聚焦
 let lastInputWasPointer = false;
 let modalityBound = false;
-function ensureModalityListeners() {
+export function ensureModalityListeners() {
   if (modalityBound || typeof document === 'undefined') return;
   modalityBound = true;
   document.addEventListener('pointerdown', () => { lastInputWasPointer = true; }, true);
@@ -122,7 +122,7 @@ function ensureModalityListeners() {
   document.addEventListener('keydown', () => { lastInputWasPointer = false; }, true);
 }
 
-function isKeyboardFocus(el: HTMLElement): boolean {
+export function isKeyboardFocus(el: HTMLElement): boolean {
   if (lastInputWasPointer) return false;
   try {
     return el.matches(':focus-visible');
@@ -378,7 +378,7 @@ export function SessionCardProvider({ workspaces = [], placement, loadDetail, ch
   );
 }
 
-interface CardPos {
+export interface CardPos {
   x: number;
   y: number;
   side: ResolvedSide;
@@ -389,7 +389,7 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(v, max));
 }
 
-function computePosition(
+export function computePosition(
   anchor: HTMLElement,
   cardW: number,
   cardH: number,

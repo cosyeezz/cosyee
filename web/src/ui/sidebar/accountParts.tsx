@@ -89,11 +89,11 @@ export function claudeUsable(a: AccountEntry, now: number): boolean {
   return !(claudeKind(a) === 'claude' && a.loginExpiresAt != null && a.loginExpiresAt <= now);
 }
 
-/** 账号头像：名字首字母 + 由名字算出的渐变底色；没登录是虚线空圈 */
-export function Avatar({ title, loggedIn, size = 'sm' }: { title: string; loggedIn: boolean; size?: 'sm' | 'md' }) {
+/** 左下角账户栏的头像：名字首字母 + 由名字算出的渐变底色；没登录是虚线空圈 */
+export function Avatar({ title, loggedIn }: { title: string; loggedIn: boolean }) {
   return (
     <span
-      className={`cz-sidebar__avatar cz-sidebar__avatar--${size}${loggedIn ? '' : ' cz-sidebar__avatar--empty'}`}
+      className={`cz-sidebar__avatar cz-sidebar__avatar--md${loggedIn ? '' : ' cz-sidebar__avatar--empty'}`}
       style={loggedIn ? ({ '--av': avatarColor(title) } as CSSProperties) : undefined}
       aria-hidden="true"
     >
@@ -103,10 +103,10 @@ export function Avatar({ title, loggedIn, size = 'sm' }: { title: string; logged
 }
 
 /** 名字后面的套餐小标签 */
-export function PlanChip({ plan }: { plan: string | null | undefined }) {
+export function PlanChip({ plan, tip = true }: { plan: string | null | undefined; tip?: boolean }) {
   const chip = planChip(plan);
   if (!chip) return null;
-  return <span className="cz-acct-chip" title={plan ?? undefined}>{chip}</span>;
+  return <span className="cz-acct-chip" title={tip ? plan ?? undefined : undefined}>{chip}</span>;
 }
 
 /** 选中账号的标记：实心小圆里一个勾 */

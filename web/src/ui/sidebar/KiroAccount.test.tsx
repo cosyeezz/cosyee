@@ -385,10 +385,10 @@ describe('AccountMenu Kiro 集成', () => {
         '/api/kiro/balance?account=k2',
       ]);
 
-      // 弹层：Kiro 行没有套餐标签，一条「本月」进度条，用量放在悬停提示
+      // 弹层：Kiro 行没有套餐标签，一条「本月」进度条，用量放在进度条的读屏说明
       const pick = pickOf('Kiro 主号')!;
       expect(pick.querySelector('.cz-acct-chip')).toBeNull();
-      expect(pick.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('120 / 500');
+      expect(pick.querySelector('[role="progressbar"]')?.getAttribute('aria-valuetext')).toContain('120 / 500');
       expect(document.querySelector('.cz-kiro-eng')).toBeNull();
 
       click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);

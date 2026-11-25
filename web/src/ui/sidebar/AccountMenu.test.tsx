@@ -147,7 +147,10 @@ describe('AccountMenu 弹层', () => {
     expect(rows[1].querySelector('.cz-sidebar__acct-check')).toBeNull();
     // Kiro 账号不再重复显示「Kiro」套餐标签；API 账号没有额度，只占一行
     expect(rows[3].querySelector('.cz-acct-chip')).toBeNull();
-    expect(rows[2].classList.contains('is-single')).toBe(true);
+    expect(rows[2].querySelector('.cz-acctq-brief')).toBeNull();
+    // 账号行没有头像，图标在组名前
+    expect(menu()!.querySelector('.cz-sidebar__avatar')).toBeNull();
+    expect([...menu()!.querySelectorAll('.cz-acct-pick-grp [data-brand]')].map((e) => e.getAttribute('data-brand'))).toEqual(['claude', 'api', 'kiro']);
     const text = menu()!.textContent!;
     expect(text).not.toContain('需要登录');
     expect(text).not.toContain('工作'); // 备注名等副标题不进弹层
@@ -181,7 +184,7 @@ describe('AccountMenu 弹层', () => {
     const brief = row0.querySelector('.cz-acctq-brief')!;
     expect(brief.textContent).toBe('5h32%');
     expect(brief.classList.contains('is-normal')).toBe(true);
-    expect(brief.getAttribute('title')).toBe('5h 32% · 2小时14分后重置');
+    expect(brief.querySelector('[role="progressbar"]')?.getAttribute('aria-valuetext')).toBe('5h 32% · 2小时14分后重置');
     const bars = row0.querySelectorAll('[role="progressbar"]');
     expect(bars.length).toBe(1);
     expect(bars[0].getAttribute('aria-valuenow')).toBe('32');
@@ -207,10 +210,10 @@ describe('AccountMenu 弹层', () => {
     };
     try {
       await openMenu();
-      expect(document.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('10分钟后重置');
+      expect(document.querySelector('.cz-acctq-brief [role="progressbar"]')?.getAttribute('aria-valuetext')).toContain('10分钟后重置');
 
       await act(async () => { vi.advanceTimersByTime(60_000); });
-      expect(document.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('9分钟后重置');
+      expect(document.querySelector('.cz-acctq-brief [role="progressbar"]')?.getAttribute('aria-valuetext')).toContain('9分钟后重置');
 
       const beforeClose = clearSpy.mock.calls.length;
       click(document.querySelector('[aria-label="账户菜单"]')!);
@@ -661,11 +664,10 @@ describe('Antigravity 多账号', () => {
     const row = pickOf('me@example.com')!;
     const chip = row.querySelector('.cz-acct-chip');
     expect(chip?.textContent).toBe('Pro');
-    expect(chip?.getAttribute('title')).toBe('Google AI Pro');
     const brief = row.querySelector('.cz-acctq-brief')!;
     expect(brief.classList.contains('is-critical')).toBe(true);
     expect(brief.textContent).toBe('5h100%');
-    expect(brief.getAttribute('title')).toMatch(/^Claude · GPT 5h 100% · /);
+    expect(brief.querySelector('[role="progressbar"]')?.getAttribute('aria-valuetext')).toMatch(/^Claude · GPT 5h 100% · /);
     expect(row.querySelector('[role="progressbar"]')?.getAttribute('aria-label')).toBe('Claude · GPT 5h已用');
 
     click(button('管理账号')!);
@@ -1116,5 +1118,79 @@ describe('深链 ?add=kiro', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('账号悬浮详情卡', () => {
+  const pointer = (el: Element, type: 'pointerover' | 'pointerout', pointerType = 'mouse') => act(() => {
+    const ev = new MouseEvent(type, { bubbles: true });
+    Object.defineProperty(ev, 'pointerType', { value: pointerType });
+    el.dispatchEvent(ev);
+  });
+  const card = () => document.querySelector<HTMLElement>('.cz-acard');
+  const wait = (ms: number) => act(async () => { vi.advanceTimersByTime(ms); });
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    routes = {
+      'GET /api/accounts': () => ({ body: list([
+        entry({ loginExpiresAt: now + 3 * 86_400_000 }),
+        entry({ id: 'p', label: 'RS', name: null, plan: null, active: false, isDefault: false, api: {
+          baseUrl: 'https://relay.example.com/v1', authType: 'authToken', keyHint: 'abcd',
+          models: { alias: { opus: { id: 'glm-4.6', label: 'GLM 4.6' } } },
+        } }),
+      ]) }),
+      'GET /api/usage?account=default': () => ({ body: { at: now, limits: [
+        { kind: 'session', percent: 32, severity: 'normal', resetsAt: now + 3_600_000 },
+        { kind: 'weekly', percent: 61, severity: 'normal', resetsAt: now + 86_400_000 },
+      ] } }),
+    };
+    await openMenu();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('停留后显示全部额度和登录信息；换到另一个账号内容跟着换；移开后关闭', async () => {
+    pointer(pickOf('cosyeey')!, 'pointerover');
+    await wait(300);
+    expect(card()).toBeNull();
+    await wait(150);
+    expect(card()!.textContent).toContain('本周');
+    expect(card()!.textContent).toContain('3 天后失效');
+    expect(pickOf('cosyeey')!.getAttribute('aria-describedby')).toBe(card()!.id);
+
+    pointer(pickOf('cosyeey')!, 'pointerout');
+    pointer(pickOf('RS')!, 'pointerover');
+    await wait(100);
+    const text = card()!.textContent!;
+    expect(text).toContain('https://relay.example.com/v1');
+    expect(text).toContain('•••• abcd');
+    expect(text).toContain('opus → GLM 4.6（glm-4.6）');
+
+    pointer(pickOf('RS')!, 'pointerout');
+    // 宽限期内移进卡片不关
+    await wait(100);
+    pointer(card()!, 'pointerover');
+    await wait(400);
+    expect(card()).not.toBeNull();
+    pointer(card()!, 'pointerout');
+    await wait(400);
+    expect(card()).toBeNull();
+  });
+
+  it('触屏不弹；Esc 先关卡片、弹层还在；弹层关闭时一起关', async () => {
+    pointer(pickOf('cosyeey')!, 'pointerover', 'touch');
+    await wait(600);
+    expect(card()).toBeNull();
+    pointer(pickOf('cosyeey')!, 'pointerover');
+    await wait(450);
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(card()).toBeNull();
+    expect(menu()).not.toBeNull();
+    pointer(pickOf('cosyeey')!, 'pointerover');
+    await wait(450);
+    expect(card()).not.toBeNull();
+    click(document.querySelector('[aria-label="账户菜单"]')!);
+    expect(card()).toBeNull();
   });
 });

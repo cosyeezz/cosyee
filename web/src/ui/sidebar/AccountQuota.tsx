@@ -1,5 +1,5 @@
 // 账号的额度显示。所有额度先换成统一的「窗口」（名称、百分比、颜色、重置时间），再按两种样式画：
-// - QuotaBrief：账号弹层里每个账号一行「5h ━━━ 94%」，只显示最先重置的那个窗口，详情放悬停提示；
+// - QuotaBrief：账号弹层里每个账号一行「5h ━━━ 94%」，只显示最先重置的那个窗口，全部额度在悬浮详情卡（AccountCard）里；
 // - QuotaLines：管理面板卡片里的全部窗口，一条一行「5h ━━━ 71% 2小时30分后重置」，Antigravity 按模型组分段。
 // 名称统一：Claude 的会话窗口和 Antigravity 的 5 小时窗口都叫「5h」，周额度叫「本周」，Kiro 的月度额度叫「本月」。
 // 颜色阈值沿用输入框里的额度面板（severity：normal / warning / critical → 主题色 / 警告色 / 危险色）。
@@ -79,13 +79,13 @@ export function nearestWindow(ws: QuotaWindow[]): QuotaWindow | null {
   return best;
 }
 
-/** 悬停提示 / 读屏用的完整说明：「Claude · GPT 5h 63% · 1小时30分后重置」 */
+/** 读屏用的完整说明：「Claude · GPT 5h 63% · 1小时30分后重置」 */
 export function windowTip(w: QuotaWindow, now?: number): string {
   const r = resetShort(w.resetsAt, now);
   return `${w.group ? `${w.group} ` : ''}${w.label} ${w.value ?? `${w.percent}%`}${r ? ` · ${r}` : ''}`;
 }
 
-function Bar({ percent, label }: { percent: number; label: string }) {
+function Bar({ percent, label, text }: { percent: number; label: string; text?: string }) {
   const p = Math.max(0, Math.min(100, percent));
   return (
     <span
@@ -95,6 +95,7 @@ function Bar({ percent, label }: { percent: number; label: string }) {
       aria-valuenow={p}
       aria-valuemin={0}
       aria-valuemax={100}
+      aria-valuetext={text}
     >
       <span className="cz-acctq__fill" style={{ '--p': p / 100 } as CSSProperties} />
     </span>
@@ -105,11 +106,10 @@ function Bar({ percent, label }: { percent: number; label: string }) {
 export function QuotaBrief({ win, loading, now }: { win: QuotaWindow | null; loading?: boolean; now?: number }) {
   if (loading) return <span className="cz-acctq-brief cz-acctq-brief--loading" aria-hidden="true" data-testid="quota-skeleton" />;
   if (!win) return null;
-  const tip = windowTip(win, now);
   return (
-    <span className={`cz-acctq-brief cz-acctq__line is-${win.severity}`} title={tip}>
+    <span className={`cz-acctq-brief cz-acctq__line is-${win.severity}`}>
       <span className="cz-acctq__name">{win.label}</span>
-      <Bar percent={win.percent} label={`${win.group ? `${win.group} ` : ''}${win.label}已用`} />
+      <Bar percent={win.percent} label={`${win.group ? `${win.group} ` : ''}${win.label}已用`} text={windowTip(win, now)} />
       <span className="cz-acctq__pct">{win.percent}%</span>
     </span>
   );

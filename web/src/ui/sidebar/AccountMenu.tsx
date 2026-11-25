@@ -1,6 +1,7 @@
 // 左下角账户栏 + 账号弹层（向上弹出）。弹层只负责切换和展示：
 // - 顶部是模式切换（切换模式 / 并行模式，说明在悬停提示里）；
-// - 已登录的账号按 Claude 订阅 / API / Kiro / Antigravity 分组，每个账号一行名字 + 一条最先重置的额度「5h ━━━ 94%」；
+// - 已登录的账号按 Claude 订阅 / API / Kiro / Antigravity 分组（组名前是各家官方图标），每个账号一行名字 + 一条最先重置的额度「5h ━━━ 94%」，
+//   悬停显示详情卡（AccountCard）；
 //   没登录、登录已失效的账号不在这里出现，到「管理账号」里重新登录；
 // - 底部是「管理账号」（AccountManager：全部账号的卡片、添加、编辑、改名、移除、清理重复、kiro.rs 引擎）、外观。
 // Claude 类账号：切换模式下换账号整页刷新（有执行中的会话时可强制切换）；并行模式只换新会话用的账号，不刷新。
@@ -10,7 +11,9 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import type { Account, AccountApiInfo, AccountEntry, AccountList, AccountLogin, AgyAccountEntry, AgyAccountList } from '@cosyee/shared';
 import { leavingProps, usePresence } from '../motion/usePresence';
 import { api, ApiError } from '../../core/api';
+import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
+import { AccountCardLayer, AgyCardBody, ClaudeCardBody, useAccountCard } from './AccountCard';
 import { AccountDialog } from './AccountDialog';
 import { AgyAccountDialog } from './AgyAccountDialog';
 import { ApiAccountDialog } from './ApiAccountDialog';
@@ -66,9 +69,9 @@ const GROUPS: { kind: ClaudeKind | 'agy'; title: string; tip: string }[] = [
   { kind: 'agy', title: 'Antigravity', tip: '委派任务用的账号：新的委派使用选中的账号，已有的委派继续用原来的账号' },
 ];
 
-/** 弹层里的一个账号：头像、名字 + 套餐、选中勾 / 切换中，下面一条最近额度 */
+/** 弹层里的一个账号：名字 + 套餐、选中勾 / 切换中，下面一条最近额度 */
 function PickRow({
-  title, plan, active, busy, disabled, quota, onPick,
+  title, plan, active, busy, disabled, quota, card, onPick,
 }: {
   title: string;
   plan?: string | null;
@@ -76,20 +79,22 @@ function PickRow({
   busy: boolean;
   disabled: boolean;
   quota: ReactNode;
+  /** 悬浮详情卡的事件绑定 */
+  card: ReturnType<ReturnType<typeof useAccountCard>['bind']>;
   onPick: () => void;
 }) {
   return (
     <button
       type="button"
-      className={`cz-acct-pick${active ? ' is-active' : ''}${quota ? '' : ' is-single'}`}
+      className={`cz-acct-pick${active ? ' is-active' : ''}`}
       aria-current={active ? 'true' : undefined}
       disabled={disabled}
+      {...card}
       onClick={onPick}
     >
-      <Avatar title={title} loggedIn />
       <span className="cz-acct-pick__name">
-        <b title={title}>{title}</b>
-        <PlanChip plan={plan} />
+        <b>{title}</b>
+        <PlanChip plan={plan} tip={false} />
       </span>
       {busy ? <span className="cz-sidebar__acct-tag">切换中…</span> : active ? <ActiveMark /> : <span />}
       {quota}
@@ -116,6 +121,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   // 关闭时留着播完退场（.cz-pop），退场途中再打开会从当前状态接回去
   const { mounted, leaving } = usePresence(open, menuRef);
   const shown = open || manage;
+  const card = useAccountCard(open && !manage && !dialog);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -392,6 +398,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
               busy={agySwitching === a.id}
               disabled={agySwitching !== null && agySwitching !== a.id}
               quota={win ? <QuotaBrief win={win} now={now} /> : null}
+              card={card.bind(`g:${a.id}`)}
               onPick={() => pickAgy(a)}
             />
           );
@@ -411,11 +418,19 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
             busy={switching === a.id}
             disabled={switching !== null && switching !== a.id}
             quota={claudeBrief(a, g.kind as ClaudeKind)}
+            card={card.bind(`c:${a.id}`)}
             onPick={() => pick(a)}
           />
         )),
     };
   }).filter((x) => x.rows.length > 0);
+
+  // 悬浮详情卡的内容：从最新列表里取，额度读回来后跟着更新；账号不在了就不显示
+  const cardClaude = list.find((a) => `c:${a.id}` === card.hover.key);
+  const cardAgy = usableAgy.find((a) => `g:${a.id}` === card.hover.key);
+  const cardBody = cardClaude ? (
+    <ClaudeCardBody a={cardClaude} quota={quotas[cardClaude.id]} balance={kiroBalances[cardClaude.id]} parallel={parallel} now={now} />
+  ) : cardAgy ? <AgyCardBody a={cardAgy} now={now} /> : null;
 
   return (
     <div className="cz-sidebar__account-wrap" ref={wrapRef}>
@@ -429,7 +444,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
       >
         {account ? (
           <>
-            <Avatar title={account.name} loggedIn size="md" />
+            <Avatar title={account.name} loggedIn />
             <span className="cz-sidebar__account-text">
               <span className="cz-sidebar__account-name">{account.name}</span>
               {account.plan && <span className="cz-sidebar__account-plan">{account.plan}</span>}
@@ -437,7 +452,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
           </>
         ) : (
           <>
-            <Avatar title="" loggedIn={false} size="md" />
+            <Avatar title="" loggedIn={false} />
             <span className="cz-sidebar__account-text cz-sidebar__account-text--muted">未登录</span>
           </>
         )}
@@ -460,7 +475,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
             {data === null && !error && <div className="cz-acct-pick-empty">正在读取…</div>}
             {groupRows.map(({ g, rows }) => (
               <div key={g.kind} className="cz-acct-pick-sec" role="group" aria-label={g.title}>
-                <div className="cz-acct-pick-grp" title={g.tip}>{g.title}</div>
+                <div className="cz-acct-pick-grp" title={g.tip}><BrandIcon kind={g.kind} size={13} />{g.title}</div>
                 {rows}
               </div>
             ))}
@@ -483,6 +498,8 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
           <ThemeSwitch />
         </div>
       )}
+
+      <AccountCardLayer ctrl={card}>{cardBody}</AccountCardLayer>
 
       {manage && (
         <AccountManager

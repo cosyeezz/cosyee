@@ -6,13 +6,14 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, AgyAccountList, KiroStatus } from '@cosyee/shared';
 import { api } from '../../core/api';
+import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
 import { useMorph } from '../motion/morph';
 import { loginExpiry, subscriptionEstimate } from '../usage/format';
 import { ConfirmActionButton } from './ActionButtons';
 import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
 import {
-  agyRemoveBlock, agyTitle, apiHost, apiMapNote, Avatar, claudeKind, claudeRemoveBlock, claudeUsable,
+  agyRemoveBlock, agyTitle, apiHost, apiMapNote, claudeKind, claudeRemoveBlock, claudeUsable,
   DuplicateNote, entryTitle, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { useDismiss } from './useDismiss';
@@ -110,8 +111,6 @@ interface CardProps {
   title: string;
   plan?: string | null;
   sub?: string;
-  /** 头像用实心（已登录） */
-  avatarOn: boolean;
   active: boolean;
   /** 不能直接使用（没登录 / 登录已失效） */
   off: boolean;
@@ -123,11 +122,10 @@ interface CardProps {
   children: ReactNode;
 }
 
-function Card({ title, plan, sub, avatarOn, active, off, badge, meta, quota, editing, children }: CardProps) {
+function Card({ title, plan, sub, active, off, badge, meta, quota, editing, children }: CardProps) {
   return (
     <div className={`cz-acct-card${active ? ' is-active' : ''}${off ? ' is-off' : ''}`} aria-current={active ? 'true' : undefined}>
       <div className="cz-acct-card__top">
-        <Avatar title={title} loggedIn={avatarOn} />
         {editing ?? (
           <div className="cz-acct-card__head">
             <div className="cz-acct-card__name">
@@ -285,7 +283,6 @@ export function AccountManager(p: AccountManagerProps) {
         title={title}
         plan={kind === 'kiro' && planChip(a.plan)?.toLowerCase() === 'kiro' ? null : a.plan}
         sub={sub}
-        avatarOn={a.loggedIn}
         active={a.active}
         off={!usable}
         badge={badge}
@@ -346,7 +343,6 @@ export function AccountManager(p: AccountManagerProps) {
         title={title}
         plan={a.plan}
         sub={sub}
-        avatarOn={!off}
         active={a.active}
         off={off}
         badge={badge}
@@ -405,7 +401,7 @@ export function AccountManager(p: AccountManagerProps) {
             return (
               <section key={s.kind} className="cz-acct-mgr__sec" aria-label={s.title}>
                 <div className="cz-acct-mgr__sec-head">
-                  <h3>{s.title}</h3>
+                  <h3><BrandIcon kind={s.kind} size={15} />{s.title}</h3>
                   {agyData.installed && <span className="cz-acct-mgr__count">{rows.length}</span>}
                   <span className="cz-acct-mgr__tip" title={s.tip}>{agyData.installed ? s.tip : '没有安装 Antigravity CLI'}</span>
                   {agyData.installed && (
@@ -426,7 +422,7 @@ export function AccountManager(p: AccountManagerProps) {
           return (
             <section key={s.kind} className="cz-acct-mgr__sec" aria-label={s.title}>
               <div className="cz-acct-mgr__sec-head">
-                <h3>{s.title}</h3>
+                <h3><BrandIcon kind={s.kind} size={15} />{s.title}</h3>
                 <span className="cz-acct-mgr__count">{rows.length}</span>
                 <span className="cz-acct-mgr__tip" title={s.tip}>{s.tip}</span>
                 <button type="button" className="cz-acct-mgr__add" onClick={() => p.onAdd(s.dialog)}>

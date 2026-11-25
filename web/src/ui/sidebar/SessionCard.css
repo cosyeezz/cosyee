@@ -269,6 +269,16 @@
   color: var(--text-3);
 }
 
+/* ───── 账号悬浮详情卡（AccountCard.tsx）：外壳同上，只补账号特有的几处 ───── */
+.cz-acard .cz-acct-chip { display: inline-block; margin-left: 6px; vertical-align: 2px; }
+.cz-acard__dot { background: var(--accent); }
+.cz-acard__group { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); }
+.cz-acard__line { display: block; }
+.cz-acard .cz-acctq-lines { font-size: 11px; }
+.cz-acard .cz-acctq__hint { margin-top: 0; }
+.cz-acard .cz-scard__fact-v.is-warn { color: var(--warn); }
+.cz-acard .cz-scard__fact-v.is-danger { color: var(--danger); }
+
 /* ───── 减少动效 ───── */
 :root[data-motion="reduce"] :is(.cz-scard-pos, .cz-scard, .cz-scard__scroll, .cz-scard__content, .cz-scard__skel, .cz-scard__stagger) {
   transition: none !important;

@@ -584,7 +584,6 @@
   margin: 6px 6px;
   background: linear-gradient(90deg, transparent, var(--border) 14%, var(--border) 86%, transparent);
 }
-.cz-sidebar__avatar--sm { width: 26px; height: 26px; font-size: var(--fs-xs); }
 
 /* 套餐小标签 */
 .cz-acct-chip {
@@ -1093,16 +1092,16 @@
 .cz-acct-menu .cz-sidebar__menu-list { max-height: min(460px, calc(var(--center-h, 100dvh) - 300px)); }
 .cz-acct-pick-empty { padding: 6px 7px; font-size: 11px; color: var(--text-3); }
 .cz-acct-pick-sec { display: flex; flex-direction: column; }
-.cz-acct-pick-grp { padding: 6px 7px 1px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); cursor: default; }
+.cz-acct-pick-grp { display: flex; align-items: center; gap: 6px; padding: 6px 7px 1px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); cursor: default; }
 .cz-acct-pick-sec:first-child > .cz-acct-pick-grp { padding-top: 3px; }
 .cz-acct-pick {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 7px;
   row-gap: 1px;
   align-items: center;
   width: 100%;
-  padding: 4px 7px;
+  padding: 4px 7px 4px 26px; /* 左边缩进到和组名（图标之后）对齐 */
   border: 0;
   border-radius: var(--r-sm);
   background: none;
@@ -1116,10 +1115,8 @@
 .cz-acct-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cz-acct-pick:disabled { cursor: default; opacity: .6; }
 .cz-acct-pick.is-active { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.cz-acct-pick > .cz-sidebar__avatar { grid-row: 1 / span 2; width: 22px; height: 22px; font-size: 10.5px; }
-.cz-acct-pick.is-single > .cz-sidebar__avatar { grid-row: 1; }
 .cz-acct-pick__name { display: flex; align-items: center; gap: 5px; min-width: 0; line-height: 1.3; }
-.cz-acct-pick__name > b { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-acct-pick__name > b { min-width: 0; font-weight: 500; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-acct-pick .cz-sidebar__acct-check { width: 14px; height: 14px; }
 .cz-acct-pick .cz-sidebar__acct-tag { font-size: 10.5px; }
 .cz-acct-pick .cz-acct-chip, .cz-acct-card .cz-acct-chip { height: 14px; padding: 0 4px; border-radius: 4px; font-size: 9.5px; line-height: 14px; }
@@ -1129,7 +1126,7 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 /* 最近额度一行「5h ━━━ 94%」：名称、进度条、百分比三列，和名字左端对齐 */
-.cz-acctq-brief { grid-column: 2 / -1; min-width: 0; font-size: 10.5px; line-height: 1.25; color: var(--text-3); }
+.cz-acctq-brief { grid-column: 1 / -1; min-width: 0; font-size: 10.5px; line-height: 1.25; color: var(--text-3); }
 .cz-acctq-brief.cz-acctq__line { grid-template-columns: 2.2em minmax(16px, 1fr) 2.8em; column-gap: 6px; }
 .cz-acctq-brief--loading {
   display: block;
@@ -1194,7 +1191,7 @@
 .cz-acct-mgr__x:hover { background: var(--bg-hover); color: var(--text); }
 .cz-acct-mgr__sec { margin-top: 10px; }
 .cz-acct-mgr__sec-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
-.cz-acct-mgr__sec-head > h3 { margin: 0; font-size: 12px; font-weight: 600; }
+.cz-acct-mgr__sec-head > h3 { display: flex; flex: none; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; }
 .cz-acct-mgr__count { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .cz-acct-mgr__tip { flex: 1; min-width: 0; font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-acct-mgr__add {
@@ -1250,7 +1247,7 @@
 .cz-acct-dup__line > span:first-child { flex: 1; min-width: 0; }
 .cz-kiro-eng__note { color: var(--text-3); }
 
-/* 账号卡片：头像 | 名字 + 套餐 / 副标题 | 状态标签，下面依次是日期、全部额度、操作按钮 */
+/* 账号卡片：名字 + 套餐 / 副标题 | 状态标签，下面依次是日期、全部额度、操作按钮 */
 .cz-acct-card {
   display: flex;
   flex-direction: column;
@@ -1266,11 +1263,10 @@
   background: color-mix(in srgb, var(--accent) 6%, var(--mat-card));
 }
 .cz-acct-card.is-off { opacity: .8; }
-.cz-acct-card__top { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 7px; align-items: center; }
-.cz-acct-card__top > .cz-sidebar__avatar { width: 24px; height: 24px; font-size: 11px; }
+.cz-acct-card__top { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 7px; align-items: center; }
 .cz-acct-card__head { min-width: 0; }
 .cz-acct-card__name { display: flex; align-items: center; gap: 5px; min-width: 0; line-height: 1.3; }
-.cz-acct-card__name > b { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-acct-card__name > b { min-width: 0; font-weight: 600; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-acct-card__sub { font-size: 11px; line-height: 1.3; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-acct-card__badge {
   padding: 0 6px;
@@ -1288,7 +1284,7 @@
 .cz-acct-card__meta > .is-danger { color: var(--danger); }
 .cz-acct-card__acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
 .cz-acct-card__acts .cz-sidebar__confirm-wrap { display: inline-flex; }
-.cz-acct-card__edit { grid-column: 2 / -1; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cz-acct-card__edit { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; min-width: 0; }
 .cz-acct-card__input {
   flex: 1 1 0;
   min-width: 0;
