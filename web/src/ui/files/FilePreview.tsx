@@ -1,5 +1,5 @@
 // 本地文件预览浮窗：非模态的悬浮窗口（不遮挡、不替换右侧上下文栏），Esc / 点击窗口外关闭，可最大化。
-// 内容由服务端 /api/files/preview 返回（只能预览会话工作目录内的文件）；这里只负责展示，不做编辑 / 保存。
+// 内容由服务端 /api/files/preview 返回（只能预览会话工作目录内、或会话中提到过的文件）；这里只负责展示，不做编辑 / 保存。
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';

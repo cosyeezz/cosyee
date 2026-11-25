@@ -672,7 +672,8 @@
 /* ---------- 子代理浮层 ---------- */
 .cz-flow__overlay {
   position: fixed;
-  inset: 0;
+  /* fixed 不受 html 的 padding 影响：避开桌面客户端标题栏（titlebar.js）与手机壳的系统栏，否则面板头部被压在下面 */
+  inset: calc(var(--cosyee-titlebar-h, 0px) + var(--cosyee-inset-top, 0px)) 0 var(--cosyee-inset-bottom, 0px);
   z-index: 100;
   display: flex;
   justify-content: flex-end;

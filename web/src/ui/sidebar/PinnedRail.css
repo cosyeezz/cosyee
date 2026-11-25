@@ -1,0 +1,163 @@
+/* 侧栏收起时的置顶浮层（PinnedRail.tsx）。
+ * 挂在 .cz-app__main 里：它的顶边就是顶栏下沿，--composer-h 是输入框高度，浮层只占两者之间。 */
+.cz-prail {
+  /* 平时的宽度：只占会话流左侧的留白（内容列 --content-max 居中、左内边距 16px），
+     块的右边离正文至少 8px。留白太窄时缩到最窄：有状态的块只剩状态点，没状态的块顶格露出标题前两个字，悬停的那一块再展开 */
+  --prail-w: clamp(48px, calc((100% - var(--content-max)) / 2 + 4px), 228px);
+  position: absolute;
+  z-index: 5; /* 低于顶栏（6）和输入框（7） */
+  top: var(--sp-2);
+  left: var(--sp-2);
+  width: var(--prail-w);
+  max-height: calc(100% - var(--composer-h, 120px) - var(--sp-4));
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size; /* 宽度很窄时藏标题 */
+  interpolate-size: allow-keywords; /* 悬停展开到「标题实际长度」时也能有过渡（不支持的浏览器直接跳到目标宽度） */
+  /* 入场：等侧栏收起的宽度动画走完一半再滑出 */
+  transition: opacity 220ms var(--ease-out) 80ms, transform 220ms var(--ease-out) 80ms;
+}
+/* 入场：从左侧淡入滑出 */
+@starting-style {
+  .cz-prail { opacity: 0; transform: translateX(-8px); }
+}
+.cz-prail.is-leaving {
+  opacity: 0;
+  transform: translateX(-6px);
+  transition-duration: 120ms;
+  transition-delay: 0s;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+  pointer-events: none;
+}
+
+/* 列表比浮层宽：平时的宽度之外，右边多出一段 padding 留给悬停展开的那一块（滚动容器只在 padding 外沿裁剪）。
+   这两个百分比都相对浮层（平时宽度）。多出的那段透明区域不接收鼠标，下面的会话流照常能点、能选字 */
+.cz-prail__list {
+  width: max(100%, 280px);
+  padding-right: calc(max(100%, 280px) - 100%);
+  pointer-events: none;
+  position: relative; /* 液态胶囊以它为参照 */
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none; /* 块之间有缝，滚动条夹在旁边不好看；滚轮照常可用 */
+  padding-top: var(--sp-1); /* 给块的阴影留位置，不被滚动容器裁掉 */
+  padding-bottom: var(--sp-1);
+  padding-left: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.cz-prail__list::-webkit-scrollbar { display: none; }
+
+/* 每个会话一个独立的磨砂小块 */
+.cz-prail__row {
+  position: relative;
+  z-index: 1; /* 盖在胶囊上面 */
+  flex: none;
+  width: 100%;
+  height: 30px;
+  pointer-events: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi), 0 2px 8px -4px var(--scrim);
+  color: var(--text-2);
+  animation: cz-prail-row-in 260ms var(--ease-out) backwards;
+  animation-delay: calc(120ms + var(--i, 0) * 30ms);
+  /* 收回稍等一下，鼠标擦过边缘时不会来回抖 */
+  transition: width 200ms var(--ease-out) 90ms;
+}
+/* 块之间的缝也算在块上：鼠标从一块移到下一块不会中途离开再进来 */
+.cz-prail__row::before {
+  content: "";
+  position: absolute;
+  z-index: -1; /* 垫在按钮下面，不挡点击 */
+  inset: -3px -1px;
+}
+/* 只有悬停（或键盘聚焦）的那一块展开到标题的实际长度（最长 272px，再长就省略），可以盖到会话流上；其他块保持原宽度 */
+.cz-prail__row:is(:hover, :has(:focus-visible)) {
+  width: max-content;
+  min-width: 100%;
+  max-width: 272px;
+  transition-delay: 0s;
+}
+@keyframes cz-prail-row-in {
+  from { opacity: 0; transform: translateX(-6px); }
+}
+.cz-prail__row:hover { background: var(--bg-hover); color: var(--text); }
+.cz-prail__row.is-active { background: var(--bg-active); color: var(--text); }
+/* 有胶囊时选中块由胶囊来画：块本身透明，胶囊自带磨砂底。
+   胶囊只量平时的宽度，选中块被悬停展开时改回自己画底色 */
+.cz-prail__list:has(> .cz-capsule.is-on) .cz-prail__row.is-active:not(:hover, :has(:focus-visible)) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.cz-prail__list > .cz-capsule {
+  background: var(--glass-sheen), var(--glass-fill), var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+}
+
+.cz-prail__btn {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) 0 6px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cz-prail__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 悬停的那一块字号放大 1.12 倍：改字号而不是 transform，块的宽度（max-content）会把放大后的标题算进去 */
+.cz-prail__btn { overflow: hidden; transition: font-size 160ms var(--ease-out); }
+.cz-prail__row:hover .cz-prail__btn { font-size: calc(var(--fs-sm) * 1.12); }
+.cz-prail__mag {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.cz-prail__dot-slot {
+  flex: none;
+  width: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cz-prail__dot { width: 7px; height: 7px; border-radius: 50%; }
+.cz-prail__dot--running { background: var(--dot-running); }
+.cz-prail__dot--unread { background: var(--dot-unread); }
+.cz-prail__title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 120ms var(--ease-out);
+}
+@container (max-width: 72px) {
+  /* 有状态点的块只留点；没状态的块顶格显示标题开头（至少两个字），不加省略号 */
+  .cz-prail__row:not(:hover, :has(:focus-visible)):has(.cz-prail__dot) .cz-prail__title { opacity: 0; }
+  .cz-prail__row:not(:hover, :has(:focus-visible)) .cz-prail__title { text-overflow: clip; }
+}
+
+:root[data-motion="reduce"] :is(.cz-prail, .cz-prail__row, .cz-prail__btn, .cz-prail__title) { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.cz-prail, .cz-prail__row, .cz-prail__btn, .cz-prail__title) { transition: none; animation: none; }
+}

@@ -14,6 +14,11 @@ import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
+import { createAgyAdapter } from './components/agy.js';
+import { createClaudeAdapter } from './components/claude.js';
+import { createKiroAdapter } from './components/kiro.js';
+import { createServerAdapter } from './components/server.js';
+import { ComponentUpdater } from './components/updater.js';
 import { createHandler, hostAllowed } from './http.js';
 import { KiroService } from './kiro/index.js';
 import { Pins } from './pins.js';
@@ -280,7 +285,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   };
   // 模型菜单：账号实际可用的模型。与额度不同，API 账号也要（别名重映射会体现在里面）
   const cliModels = {
-    get: (refresh: boolean, session?: string | null, accountId?: string | null) => {
+    get: async (refresh: boolean, session?: string | null, accountId?: string | null) => {
       let a: { id: string; dir: string | null };
       if (accountId) {
         const dir = accounts?.dirFor(accountId) ?? (accountId === DEFAULT_ID ? null : undefined);
@@ -289,6 +294,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       } else {
         a = session && isSafeId(session) && accounts ? accounts.resolve(session) : activeAccount();
       }
+      // Kiro 账号：刷新时先从内置服务重新拉模型并写回映射（会触发账号重置），再取模型表；拉取失败保留旧映射
+      if (refresh && accounts?.isKiro(a.id)) await kiro?.refreshModels(a.id).catch(() => false);
       const fetcher = opts.fetchCliModels ?? fetchCliModels;
       return providerFor(modelLists, (d) => new CliModelsProvider({ id: a.id, fetcher: () => fetcher(d), disk: modelsDisk }), a.id, a.dir).get(refresh);
     },
@@ -299,7 +306,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     processes: (id) => manager.processCount(id),
     stop: (match) => (match ? manager.stopAccounts(match, 5000) : manager.resetAll(5000)),
     kiroProxyState: (dir) => kiro?.proxy.stateOf(dir) ?? { proxy: 'stopped', error: null },
-    stopKiroProxy: (dir) => kiro?.proxy.stop(dir) ?? Promise.resolve(),
+    removeKiroAccount: (id, dir) => kiro?.removeAccount(id, dir) ?? Promise.resolve(),
     onChanged: (e) => {
       if (e.reset) {
         accountInfos.get(e.reset)?.reset();
@@ -325,10 +332,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       commitNew: (id, dir, label) => accounts!.commitNewKiro(id, dir, label),
       commitRelogin: (id, label) => accounts!.commitReloginKiro(id, label),
       discardDir: (dir) => accounts!.discardKiroDir(dir),
+      modelsChanged: (id) => accounts!.kiroModelsChanged(id),
     },
   });
   kiro.init();
-  setBeforeClaudeEnv((dir) => kiro?.proxy.ensure(dir));
+  setBeforeClaudeEnv(() => kiro?.proxy.ensure());
   const onExitKiro = () => kiro?.disposeSync();
   process.once('exit', onExitKiro);
   agyAccounts = new AgyAccounts({
@@ -342,6 +350,22 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const previews = new Previews();
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
+
+  // 本机组件版本与自动更新。服务端自己：源码运行（没有打包注入的版本）或桌面版（带访问令牌）只显示不更新
+  const components = new ComponentUpdater({
+    home: () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome()),
+    adapters: [
+      createClaudeAdapter({ claudePath: opts.claudePath, running: () => manager.runningCount() }),
+      createKiroAdapter(kiro),
+      createAgyAdapter(agyCli),
+      createServerAdapter({
+        version: opts.version ?? readVersion(),
+        custom: opts.version === undefined || opts.authToken !== undefined,
+        running: () => manager.runningCount(),
+      }),
+    ],
+  });
+  components.start();
 
   let actualPort = wantPort;
   const speech = new Speech();
@@ -357,6 +381,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     accounts,
     agyAccounts,
     agyCli,
+    components,
     kiro,
     usage,
     cliModels,
@@ -463,6 +488,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       accounts?.dispose();
       agyAccounts?.dispose();
       agyCli.dispose();
+      components.stop();
       setBeforeClaudeEnv(null);
       process.off('exit', onExitKiro);
       await kiro?.dispose();

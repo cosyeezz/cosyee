@@ -12,6 +12,8 @@ export interface AppShellProps {
   context: ReactNode;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  /** 侧栏收起时顶部左侧的新建会话按钮（在展开按钮左边）；不传就不显示 */
+  onNewSession?: () => void;
   /** 右侧上下文栏收起（收起按钮在面板里，展开按钮在顶部右侧） */
   contextCollapsed?: boolean;
   onToggleContext?: () => void;
@@ -22,7 +24,7 @@ export interface AppShellProps {
 }
 
 export function AppShell({
-  sidebar, header, main, context, sidebarCollapsed, onToggleSidebar, contextCollapsed = false, onToggleContext,
+  sidebar, header, main, context, sidebarCollapsed, onToggleSidebar, onNewSession, contextCollapsed = false, onToggleContext,
   narrow = false, onDismiss,
 }: AppShellProps) {
   const centerRef = useRef<HTMLDivElement>(null);
@@ -44,15 +46,28 @@ export function AppShell({
       <div className="cz-shell__center" ref={centerRef}>
         <div className="cz-shell__top" ref={topRef}>
           {sidebarCollapsed && (
-            <button
-              type="button"
-              className="cz-shell__expand"
-              onClick={onToggleSidebar}
-              title="展开侧栏"
-              aria-label="展开侧栏"
-            >
-              <Icon name="sidebar-expand" size={18} />
-            </button>
+            <div className="cz-shell__lead">
+              {onNewSession && (
+                <button
+                  type="button"
+                  className="cz-shell__expand"
+                  onClick={onNewSession}
+                  title="新建会话"
+                  aria-label="新建会话"
+                >
+                  <Icon name="new-chat" size={18} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="cz-shell__expand"
+                onClick={onToggleSidebar}
+                title="展开侧栏"
+                aria-label="展开侧栏"
+              >
+                <Icon name="sidebar-expand" size={18} />
+              </button>
+            </div>
           )}
           <div className="cz-shell__header">{header}</div>
           {contextCollapsed && onToggleContext && (

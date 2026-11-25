@@ -1,0 +1,104 @@
+/* 上下文栏收起时的图表浮层（ChartRail.tsx）。
+ * 挂在 .cz-app__main 里（它是 cz-main 尺寸容器）：顶边就是顶栏下沿，--composer-h 是输入框高度，浮层只占两者之间。 */
+.cz-crail {
+  position: absolute;
+  z-index: 5; /* 低于顶栏（6）和输入框（7） */
+  top: var(--sp-2);
+  right: var(--sp-2);
+  /* 只占会话流右侧的留白（内容列 --content-max 居中、右内边距 16px），离正文至少 16px；再宽也只到 300px。
+     不到 104px 时不显示（见下面的容器查询），退场途中留白变窄也按 104px 排，块不会被挤变形。
+     窄于 280px 时图跟着缩小，悬停 / 聚焦的那一块朝左展开到 280px 看细节（盖在会话流上） */
+  width: clamp(104px, calc((100% - var(--content-max)) / 2 - var(--sp-2)), 300px);
+  align-items: flex-end; /* 列表比浮层宽时朝左伸出去 */
+  max-height: calc(100% - var(--composer-h, 120px) - var(--sp-4));
+  display: flex;
+  flex-direction: column;
+  pointer-events: none; /* 块之间的空隙不挡会话流 */
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+/* 留白不够（浮层会窄于 104px）就不显示：820px 内容列 + 两侧各 (104 + 8) px。
+ * 容器查询里不能用 var()，数值跟着 tokens.css 的 --content-max（820px）走。
+ * 退场中的不受它管：展开上下文栏时会话流随即变窄，不能让浮层直接消失，要播完退场 */
+@container cz-main (max-width: 1044px) {
+  .cz-crail:not(.is-leaving) { display: none; }
+}
+
+/* 收起上下文栏 → 浮层入场：等上下文栏的宽度动画（--dur）走完，会话流不再变宽，
+ * 各块再从右侧（上下文栏原来的位置）依次滑入，像是从栏里飘出来 */
+.cz-crail__card {
+  transform-origin: right center;
+  --enter-delay: calc(var(--dur) - 40ms + var(--i, 0) * 45ms);
+  transition:
+    opacity 320ms var(--ease-out) var(--enter-delay),
+    transform 320ms var(--ease-out) var(--enter-delay),
+    width var(--dur) var(--ease-out) 0s;
+}
+@starting-style {
+  .cz-crail__card { opacity: 0; transform: translateX(24px) scale(.97); }
+}
+/* 展开上下文栏 → 浮层退场：各块一起朝右（上下文栏那边）收进去、淡出 */
+.cz-crail.is-leaving .cz-crail__card {
+  opacity: 0;
+  transform: translateX(20px) scale(.97);
+  transition-duration: 160ms, 160ms, 0s;
+  transition-delay: 0s;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+}
+/* usePresence 等的是浮层自己的 opacity 过渡结束 */
+.cz-crail { transition: opacity 160ms linear; }
+.cz-crail.is-leaving { opacity: 0; }
+
+/* 列表比浮层宽：平时的宽度之外，左边多出一段 padding 留给悬停展开的那一块（滚动容器只在 padding 外沿裁剪）。
+   多出的那段透明区域不接收鼠标，下面的会话流照常能点、能选字 */
+.cz-crail__list {
+  width: max(100%, 280px);
+  padding-left: calc(max(100%, 280px) - 100% + var(--sp-1));
+  align-items: flex-end;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  /* 上方多留一些：最上面那张图的悬停气泡朝上弹出，不被滚动容器裁掉 */
+  padding-block: var(--sp-1);
+  padding-right: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.cz-crail__list::-webkit-scrollbar { display: none; }
+
+/* 每张图一个磨砂块，样式与左侧置顶块一致 */
+.cz-crail__card {
+  flex: none;
+  box-sizing: border-box;
+  width: 100%;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--mat-pop);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-hi), 0 2px 8px -4px var(--scrim);
+}
+.cz-crail__card > .cz-ctx__sub { margin: 0; }
+/* 占用那一块：比上下文栏里的大号百分比小一档 */
+.cz-crail__card > .cz-ctx__overview { gap: var(--sp-1) var(--sp-2); }
+.cz-crail__percent { font-size: 26px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.cz-crail__used { color: var(--text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+/* 磨砂块各自是层叠上下文：悬停 / 聚焦的那块抬上来，气泡伸出块外时不被相邻的块盖住 */
+.cz-crail__card { position: relative; }
+.cz-crail__card:is(:hover, :focus-within) { z-index: 1; width: max(100%, 272px); }
+/* 悬停气泡默认朝上弹（ChartTip 内联 transform 往上移 100%）：最上面那块是图时（没有占用数据）上方空间不够，
+ * 改到图下方。translate 属性和内联 transform 叠加，正好抵掉那 -100% */
+.cz-crail__card:first-child .cz-ctx__cache-tip { top: calc(100% + 4px); translate: 0 100%; }
+
+:root[data-motion="reduce"] :is(.cz-crail, .cz-crail__card) { transition: none; animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.cz-crail, .cz-crail__card) { transition: none; animation: none; }
+}

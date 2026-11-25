@@ -15,11 +15,13 @@ import { uuid } from '../core/browser';
 import { expandLabels } from '../core/composer';
 import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
+import { PinnedRail } from '../ui/sidebar/PinnedRail';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
+import { ChartRail } from '../ui/context/ChartRail';
 import type { Billing } from '../ui/context/CostSection';
 import { getLiveText, isHiddenTurn, isTurnActive } from '../ui/flow/format';
 import { scrollBehavior } from '../ui/flow/motion';
@@ -111,7 +113,7 @@ export function MainApp() {
   const [accountVersion, setAccountVersion] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
-  /** 右侧上下文栏收起；新开会话时自动展开 */
+  /** 右侧上下文栏收起；新开会话、切换会话都保持当前布局 */
   const [ctxCollapsed, setCtxCollapsed] = useState(false);
   /** 窄屏（手机）：两侧栏是浮层抽屉，同一时间最多开一个；与宽屏的收起状态各管各的 */
   const narrow = useMediaQuery(NARROW_QUERY);
@@ -394,7 +396,6 @@ export function MainApp() {
       return d ? draftSel(d) : null;
     });
     setOpenSub(null);
-    setCtxCollapsed(false);
     setConfig(boot?.defaults ?? FALLBACK_CONFIG);
   }, [boot]);
 
@@ -430,7 +431,6 @@ export function MainApp() {
     else {
       // 工作空间里还没有会话：直接进入新会话草稿
       setSel(draftSel(cwd));
-      setCtxCollapsed(false);
     }
   }, [listed, cwd, sel, selectSession, pinsLoaded, wsLoaded]);
 
@@ -677,7 +677,11 @@ export function MainApp() {
     return !base || /^https?:\/\/api\.anthropic\.com(\/|$)/i.test(base) ? 'api' : 'thirdParty';
   }, [sessionAccount]);
   /** 配了映射的 API 账号：模型菜单改用它的映射项（订阅账号与没配映射的 API 账号不变） */
-  const modelMap = useMemo(() => (hasModelMapping(sessionAccount?.api?.models) ? sessionAccount!.api!.models! : null), [sessionAccount]);
+  const modelMap = useMemo(() => {
+    // Kiro 账号的映射是从内置 kiro.rs 服务自动拉取的，放在 kiro.models
+    const m = sessionAccount?.api?.models ?? sessionAccount?.kiro?.models;
+    return hasModelMapping(m) ? m! : null;
+  }, [sessionAccount]);
   // 模型菜单：会话所用账号实际可用的模型（CLI 报告的）。按账号记住，切会话时不闪回内置表；拉不到 = null（菜单用内置表）
   const modelAccount = sessionAccount?.id ?? null;
   const modelLists = useRef(new Map<string, CliModelList | null>());
@@ -1142,11 +1146,36 @@ export function MainApp() {
         {/* 骨架固定在这个位置渲染：加载中 → 淡出是同一个元素，不会重新挂载闪一下 */}
         {skeleton.phase !== 'off' && <FlowSkeleton leaving={skeleton.phase === 'leaving'} />}
       </div>
+      {/* 侧栏收起时左侧浮出置顶会话，只能点了切换；窄屏用抽屉，不显示 */}
+      <PinnedRail
+        open={collapsed && !narrow}
+        pinned={pins}
+        workspaces={wsState.list}
+        currentSessionId={sel?.id ?? null}
+        onSelectSession={selectSession}
+      />
+      {/* 上下文栏收起时右侧留白里浮出上下文占用和几张图（留白够宽才出现）；窄屏用抽屉，不显示 */}
+      <ChartRail
+        open={ctxCollapsed && !narrow}
+        usage={sel && view?.id === sel.id ? view.context : null}
+        cache={sel && view?.id === sel.id ? view.conv.meta.cache : undefined}
+        turns={sel && view?.id === sel.id ? view.conv.turns : undefined}
+        compactions={sel && view?.id === sel.id ? view.conv.meta.compactions : undefined}
+        subCosts={sel && subCosts?.id === sel.id ? subCosts.items : null}
+        pricing={pricing}
+        model={sel && view?.id === sel.id ? view.conv.meta.model : undefined}
+        billing={billing}
+        onJumpTurn={jumpToTurn}
+      />
       {!wsConnected && <div className="cz-app__notice cz-app__notice--warn" role="status">连接已断开，正在重连…</div>}
       {notice && <div className="cz-app__notice" role="status">{notice}</div>}
       <div className="cz-app__composer" ref={composerWrapRef}>
         {/* 一直挂着：空了以后自己先播完退场再消失 */}
-        <PromptPanel items={view?.prompts ?? NO_PROMPTS} onReply={onPromptReply} />
+        <PromptPanel
+          items={view?.prompts ?? NO_PROMPTS}
+          onReply={onPromptReply}
+          editor={{ pick: pickFiles, paste: api.paste, supportsMixed: boot.supportsMixedPick, previewInfo: api.previewInfo, previewRawUrl: api.previewRawUrl }}
+        />
         <CallBar
           state={callState}
           needsAttention={!!view?.prompts?.length}
@@ -1212,6 +1241,7 @@ export function MainApp() {
         onDismiss={closeDrawer}
         sidebarCollapsed={narrow ? drawer !== 'left' : collapsed}
         onToggleSidebar={() => (narrow ? setDrawer((d) => (d === 'left' ? null : 'left')) : setCollapsed((v) => !v))}
+        onNewSession={newSession}
         contextCollapsed={narrow ? drawer !== 'right' : ctxCollapsed}
         onToggleContext={() => (narrow ? setDrawer((d) => (d === 'right' ? null : 'right')) : setCtxCollapsed((v) => !v))}
         sidebar={

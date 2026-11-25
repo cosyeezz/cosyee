@@ -181,7 +181,7 @@ function defaultStatFile(filePath: string): { mtimeMs: number; size: number } | 
 }
 
 /** 执行外部命令（关闭 stdin、隐藏窗口、不启用 shell，Windows 下自动处理 .cmd/.bat） */
-function defaultRunCommand(cmd: string, args: string[], opts: AgyCommandOpts): Promise<AgyCommandResult> {
+export function defaultRunCommand(cmd: string, args: string[], opts: AgyCommandOpts): Promise<AgyCommandResult> {
   return new Promise((resolve, reject) => {
     if (opts.signal?.aborted) {
       reject(new Error('操作已取消'));
@@ -249,7 +249,7 @@ function defaultRunCommand(cmd: string, args: string[], opts: AgyCommandOpts): P
   });
 }
 
-async function readTextLimited(res: Response, maxBytes: number): Promise<string> {
+export async function readTextLimited(res: Response, maxBytes: number): Promise<string> {
   const lenHeader = res.headers?.get?.('content-length');
   if (lenHeader) {
     const n = Number(lenHeader);
@@ -285,7 +285,7 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function lastNonEmptyLine(text: string): string | null {
+export function lastNonEmptyLine(text: string): string | null {
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
     const cleaned = sanitizeLogLine(lines[i]!).trim();

@@ -26,11 +26,18 @@ function run() {
   var title = env('PICK_TITLE');
   var startDir = env('PICK_START_DIR');
 
-  // A bare osascript process has no Dock presence; "accessory" lets it own a key window,
-  // and activating makes the panel come to the front over the browser.
+  // macOS 14+ uses cooperative activation: a background "accessory" process launched by the server
+  // is usually refused focus, so the panel shows up but swallows clicks until the system lets it
+  // activate (sometimes never). A "regular" app gets activated, but often only after a retry, so keep
+  // asking until it sticks (max ~3s, so we never fight a user who deliberately switched away).
   var app = $.NSApplication.sharedApplication;
-  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
-  app.activateIgnoringOtherApps(true);
+  var prev = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
+  function bringUp() {
+    if (app.respondsToSelector('activate')) app.activate;   // macOS 14+
+    app.activateIgnoringOtherApps(true);
+  }
+  bringUp();
 
   var panel = $.NSOpenPanel.openPanel;
   panel.canChooseFiles = (mode !== 'folders');
@@ -46,7 +53,20 @@ function run() {
   panel.level = $.NSModalPanelWindowLevel;   // stay above other windows
   panel.makeKeyAndOrderFront(null);
 
+  var tries = 0;
+  var timer = $.NSTimer.timerWithTimeIntervalRepeatsBlock(0.1, true, function (t) {
+    tries++;
+    if (app.isActive || tries > 30) { t.invalidate; return; }
+    bringUp();
+    panel.makeKeyAndOrderFront(null);
+  });
+  // common modes: the timer must also fire inside runModal's modal run loop
+  $.NSRunLoop.currentRunLoop.addTimerForMode(timer, $.NSRunLoopCommonModes);
+
   var result = panel.runModal;               // NSModalResponseOK === 1
+  timer.invalidate;
+  // hand focus back to the app the user came from (we're active now, so yielding is allowed)
+  if (prev && !prev.isNil()) prev.activateWithOptions(0);
   var out = [];
   if (Number(result) === 1) {
     var urls = panel.URLs;

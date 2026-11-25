@@ -114,6 +114,9 @@
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
+/* 收起侧栏时顶部左侧的按钮组：新建会话 + 展开侧栏 */
+.cz-shell__lead { flex: none; display: flex; gap: var(--sp-1); margin-left: -4px; }
+.cz-shell__lead > .cz-shell__expand { margin-left: 0; }
 .cz-shell__expand--right { margin-left: 0; margin-right: -4px; }
 .cz-shell__expand:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border-strong); }
 .cz-shell__main {

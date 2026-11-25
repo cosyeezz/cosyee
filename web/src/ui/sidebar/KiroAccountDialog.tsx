@@ -1,5 +1,5 @@
-// 添加 / 重新登录 Kiro 账号：通过本机 kiro.rs 代理（上游 hank9999/kiro.rs 原样编译）把 Claude Code 接到 Kiro 订阅。
-// 没有引擎时先在本机拉取上游源码编译；已有引擎时选择登录方式（AWS Builder ID / IAM Identity Center / 从 Kiro IDE 或 CLI 导入 / Kiro API Key）。
+// 添加 / 重新登录 Kiro 账号：通过本机 kiro.rs 服务（ZyphrZero/kiro.rs 预编译版本）把 Claude Code 接到 Kiro 订阅。
+// 没有引擎时先下载 kiro.rs；已有引擎时选择登录方式（AWS Builder ID / IAM Identity Center / 从 Kiro IDE 或 CLI 导入 / Kiro API Key）。
 // 设备码登录给出验证码与登录页链接并轮询进度；只有点「取消」才会终止登录。
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -117,7 +117,7 @@ export function KiroAccountDialog({
     loadStatus();
   }, [loadStatus]);
 
-  // 引擎编译中：轮询 build.state 与 step
+  // 引擎下载中：轮询 build.state 与 step
   const buildRunning = status?.engine.build.state === 'running';
   useEffect(() => {
     if (!buildRunning) return;
@@ -367,34 +367,25 @@ export function KiroAccountDialog({
       </>
     );
   } else if (status && status.engine.source === 'none') {
-    const { missingTools, build } = status.engine;
+    const { build } = status.engine;
     const isBuilding = build.state === 'running';
-    const disabled = busy || isBuilding || missingTools.length > 0;
+    const disabled = busy || isBuilding;
     body = (
       <>
         {!reloginId && targetSeg}
         <div className={`cz-acct-dlg__pane${enter === false ? ' cz-acct-dlg__swap' : ''}`}>
           {!reloginId && onChangeKind && <AddKindSeg kind="kiro" onChange={onChangeKind} />}
           <p className="cz-acct-dlg__text">
-            使用 Kiro 账号需要先在本机安装 kiro.rs 代理引擎：将从上游仓库 hank9999/kiro.rs 拉取源码并在本机编译，耗时约几分钟（需要 git 和 cargo）。
+            使用 Kiro 账号需要先下载 kiro.rs：将从 ZyphrZero/kiro.rs 的 GitHub Release 下载预编译包并校验 SHA256，无需本机编译。
           </p>
-          {missingTools.length > 0 && (
-            <div className="cz-kiro-warn" role="alert">
-              <div>缺少编译工具：{missingTools.join('、')}</div>
-              <div>
-                请先安装 Rust 工具链（包含 cargo）：
-                <a href="https://rustup.rs" target="_blank" rel="noreferrer noopener">https://rustup.rs</a>
-              </div>
-            </div>
-          )}
           {isBuilding && (
             <p className="cz-acct-dlg__text" role="status">
-              正在安装 kiro.rs：{build.step ?? '准备中…'}
+              正在下载 kiro.rs：{build.step ?? '准备中…'}
             </p>
           )}
           {build.state === 'failed' && (
             <p className="cz-acct-dlg__text cz-acct-dlg__text--error" role="alert">
-              编译失败：{build.error ?? '未知错误'}
+              下载失败：{build.error ?? '未知错误'}
             </p>
           )}
         </div>
@@ -409,7 +400,7 @@ export function KiroAccountDialog({
           disabled={disabled}
           onClick={() => void startBuild()}
         >
-          {isBuilding ? '安装中…' : build.state === 'failed' ? '重试安装' : '安装引擎'}
+          {isBuilding ? '正在下载…' : build.state === 'failed' ? '重试下载' : '下载 kiro.rs'}
         </button>
       </>
     );
@@ -433,7 +424,7 @@ export function KiroAccountDialog({
             </div>
           )}
           <p className="cz-acct-dlg__text">
-            通过本机 kiro.rs 代理将 Claude Code 接入你的 Kiro 订阅。使用 Google / GitHub 登录的用户，请先在 Kiro IDE 或运行 <code>kiro-cli login</code> 登录后选择导入。
+            通过本机 kiro.rs 服务将 Claude Code 接入你的 Kiro 订阅。使用 Google / GitHub 登录的用户，请先在 Kiro IDE 或运行 <code>kiro-cli login</code> 登录后选择导入。
           </p>
           <div className="cz-acct-dlg__field">
             <span>登录方式</span>

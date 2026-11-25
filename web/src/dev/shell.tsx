@@ -1,14 +1,16 @@
 // 外壳调试页：http://127.0.0.1:5173/?dev=shell
 import { useMemo, useState } from 'react';
-import { DEFAULT_AGENT_MODELS } from '@cosyee/shared';
+import { BUILTIN_PRICES, DEFAULT_AGENT_MODELS } from '@cosyee/shared';
 import type { AgentModelConfig, CachePoint, ContextUsage, DelegateModelList, DeletedSession, SessionSummary, SkillMode, Turn, Workspace } from '@cosyee/shared';
 import { AppShell } from '../ui/layout/AppShell';
 import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
+import { PinnedRail } from '../ui/sidebar/PinnedRail';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { SessionDetailContext } from '../ui/sidebar/sessionDetail';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
+import { ChartRail } from '../ui/context/ChartRail';
 import { FilesContext, type FilesApi } from '../ui/files/FileContext';
 import {
   mockAccount,
@@ -220,6 +222,7 @@ export default function ShellDev() {
       onDismiss={() => setDrawer(null)}
       sidebarCollapsed={narrow ? drawer !== 'left' : collapsed}
       onToggleSidebar={() => (narrow ? setDrawer('left') : setCollapsed((v) => !v))}
+      onNewSession={() => setCurrentId(null)}
       contextCollapsed={narrow ? drawer !== 'right' : ctxCollapsed}
       onToggleContext={() => (narrow ? setDrawer('right') : setCtxCollapsed((v) => !v))}
       sidebar={
@@ -257,7 +260,15 @@ export default function ShellDev() {
         />
       }
       main={
-        <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--text-3)', fontSize: 'var(--fs-sm)' }}>
+        <div style={{ flex: 1, position: 'relative', display: 'grid', placeItems: 'center', color: 'var(--text-3)', fontSize: 'var(--fs-sm)', container: 'cz-main / inline-size' }}>
+          <PinnedRail
+            open={collapsed && !narrow}
+            pinned={pins}
+            workspaces={workspaces}
+            currentSessionId={currentId}
+            onSelectSession={selectSession}
+          />
+          <ChartRail open={ctxCollapsed && !narrow} usage={usage} cache={devCache} turns={devTurns} pricing={BUILTIN_PRICES} />
           <div style={{ textAlign: 'center', lineHeight: 2 }}>
             <div>会话流 + 输入框 占位</div>
             <div>点账户栏可切换「已登录 / 未登录」</div>

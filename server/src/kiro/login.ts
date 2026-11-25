@@ -1,4 +1,5 @@
-// Kiro 账号登录：同一时间只允许一个，10 分钟超时，可取消，失败不留目录，重新登录先备份失败恢复。
+// Kiro 账号登录：同一时间只允许一个，10 分钟超时，可取消，失败不留目录与服务里的残留；重新登录失败时旧凭据原样保留。
+// 取得凭据后交给 KiroAccountAdmin 映射到内置 kiro.rs 服务（分组 + 凭据 + 客户端 Key）。
 // 支持 5 种方式：
 //   - builderId / idc：AWS SSO OIDC 设备码授权（严格校验 region 与 startUrl，防 SSRF）
 //   - kiroIde：只读导入 ~/.aws/sso/cache/kiro-auth-token.json（IdC 时校验 40 位 hex clientIdHash 读同目录客户端文件）
@@ -11,17 +12,10 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import type { AccountLogin, KiroLoginMethod } from '@cosyee/shared';
-import { API_FILE } from '../accounts/api-config.js';
 import { isFile } from '../claude/bin.js';
 import { HttpError } from '../workspaces.js';
 import type { KiroEngine } from './engine.js';
-import {
-  type KiroProxyManager,
-  createProxyConfig,
-  kiroConfigPath,
-  kiroCredsPath,
-  readKiroProxyConfig,
-} from './proxy.js';
+import type { KiroAccountAdmin } from './service-admin.js';
 import {
   HEX40_RE,
   KIRO_API_KEY_RE,
@@ -34,7 +28,6 @@ import {
   kiroApiRegion,
   normalizeStartUrl,
   sanitizeKiroError,
-  writeFileAtomic,
 } from './sanitize.js';
 
 const BUILDER_ID_START_URL = 'https://view.awsapps.com/start';
@@ -73,7 +66,7 @@ export interface KiroAccountHooks {
 
 export interface KiroLoginOptions {
   engine: Pick<KiroEngine, 'binaryPath' | 'isEnabled'>;
-  proxy: KiroProxyManager;
+  admin: KiroAccountAdmin;
   accounts: KiroAccountHooks;
   /** 测试替换：fetch */
   fetch?: typeof globalThis.fetch;
@@ -105,15 +98,6 @@ export interface StartKiroLoginOpts {
   apiKey?: unknown;
 }
 
-interface ReloginBackup {
-  credsPath: string;
-  credsRaw: Buffer | null;
-  configPath: string;
-  configRaw: Buffer | null;
-  apiPath: string;
-  apiRaw: Buffer | null;
-}
-
 interface LoginJob {
   state: AccountLogin;
   ac: AbortController;
@@ -142,38 +126,6 @@ function cleanLabel(v: unknown): string {
 
 function newLoginId(): string {
   return crypto.randomBytes(5).toString('hex');
-}
-
-function readRawOrNull(file: string): Buffer | null {
-  try {
-    return fs.readFileSync(file);
-  } catch {
-    return null;
-  }
-}
-
-function captureBackup(dir: string): ReloginBackup {
-  return {
-    credsPath: kiroCredsPath(dir),
-    credsRaw: readRawOrNull(kiroCredsPath(dir)),
-    configPath: kiroConfigPath(dir),
-    configRaw: readRawOrNull(kiroConfigPath(dir)),
-    apiPath: path.join(dir, API_FILE),
-    apiRaw: readRawOrNull(path.join(dir, API_FILE)),
-  };
-}
-
-function restoreBackup(b: ReloginBackup): void {
-  const restoreOne = (p: string, raw: Buffer | null) => {
-    if (raw !== null) {
-      writeFileAtomic(p, raw, 0o600);
-    } else {
-      try { fs.rmSync(p, { force: true }); } catch { /* ignore */ }
-    }
-  };
-  restoreOne(b.credsPath, b.credsRaw);
-  restoreOne(b.configPath, b.configRaw);
-  restoreOne(b.apiPath, b.apiRaw);
 }
 
 function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
@@ -354,83 +306,65 @@ export class KiroLogin {
   ): Promise<void> {
     const { state, ac } = job;
     let allocated: { id: string; dir: string } | null = null;
-    let dir: string | null = params.existingDir;
-    let backup: ReloginBackup | null = null;
+    let mapped = false;
 
     try {
-      // 1. 获取凭据（在写任何账号目录文件之前完成 OIDC / 导入，取消时零残留）
+      // 1. 获取凭据（映射到服务之前先完成 OIDC / 导入，取消时零残留）
       let cred: KiroCredentialEntry;
-      let credRegion = params.region;
 
       if (params.method === 'builderId' || params.method === 'idc') {
         cred = await this.loginOidc(job, params.region, params.startUrl, ac.signal);
       } else if (params.method === 'kiroIde') {
-        const imported = this.importKiroIde();
-        cred = imported.cred;
-        credRegion = imported.region;
+        cred = this.importKiroIde().cred;
       } else if (params.method === 'kiroCli') {
-        const imported = await this.importKiroCli();
-        cred = imported.cred;
-        credRegion = imported.region;
+        cred = (await this.importKiroCli()).cred;
       } else {
         cred = buildKiroCredential({ authMethod: 'api_key', kiroApiKey: params.apiKey }, this.now());
       }
 
       if (ac.signal.aborted) throw new Error(state.error ?? '已取消');
 
-      // 2. 准备账号目录（重新登录先停旧进程并备份；新账号分配目录）
-      if (params.target && dir) {
+      // 2. 映射到内置服务：重新登录换凭据（Key 不变），新账号分配目录后新建分组 / 凭据 / Key
+      const { admin, accounts } = this.opts;
+      if (params.target && params.existingDir) {
         // 等授权可能过了几分钟：期间账号可能被移除，或有会话开始执行
-        this.opts.accounts.existingKiroDir(params.target);
-        const running = this.opts.accounts.running(params.target);
+        accounts.existingKiroDir(params.target);
+        const running = accounts.running(params.target);
         if (running > 0) throw new Error(`该账号有 ${running} 个会话正在执行，请等它们结束后再重新登录`);
-        await this.opts.accounts.stopAccountProcesses(params.target);
-        await this.opts.proxy.stop(dir);
-        backup = captureBackup(dir);
-      } else {
-        allocated = this.opts.accounts.allocateNewDir();
-        dir = allocated.dir;
-      }
-
-      // 3. 写入 kiro/credentials.json（数组格式）与 kiro/config.json + cosyee-api.json
-      const prevProxyCfg = params.target ? readKiroProxyConfig(dir) : null;
-      const port = prevProxyCfg?.port ?? (await this.opts.proxy.pickFreePort());
-      const proxyCfg = prevProxyCfg
-        ? { ...prevProxyCfg, port, region: credRegion }
-        : createProxyConfig(port, credRegion);
-
-      writeFileAtomic(kiroCredsPath(dir), JSON.stringify([cred], null, 2) + '\n', 0o600);
-      this.opts.proxy.writeAccountConfigs(dir, params.method, proxyCfg);
-
-      if (ac.signal.aborted) throw new Error(state.error ?? '已取消');
-
-      // 4. 启动代理并验证凭据
-      if (params.method === 'apiKey') {
-        await this.opts.proxy.getBalance(dir);
-      } else {
-        await this.opts.proxy.refreshToken(dir);
-      }
-
-      if (ac.signal.aborted) throw new Error(state.error ?? '已取消');
-
-      // 5. 登记账号 / 通知更新
-      if (params.target) {
-        this.opts.accounts.commitRelogin(params.target, params.label);
+        await accounts.stopAccountProcesses(params.target);
+        await admin.relogin({
+          accountId: params.target,
+          dir: params.existingDir,
+          method: params.method,
+          cred,
+          signal: ac.signal,
+        });
+        // 映射成功后不再检查取消：已经改了服务里的数据，要把账号登记完整
+        await admin.refreshModels(params.target, params.existingDir, false);
+        accounts.commitRelogin(params.target, params.label);
         state.accountId = params.target;
-      } else if (allocated) {
-        this.opts.accounts.commitNew(allocated.id, allocated.dir, params.label ?? '');
+      } else {
+        allocated = accounts.allocateNewDir();
+        await admin.addAccount({
+          accountId: allocated.id,
+          dir: allocated.dir,
+          method: params.method,
+          cred,
+          signal: ac.signal,
+        });
+        mapped = true;
+        await admin.refreshModels(allocated.id, allocated.dir, false);
+        accounts.commitNew(allocated.id, allocated.dir, params.label ?? '');
         state.accountId = allocated.id;
       }
       state.status = 'done';
       state.error = null;
     } catch (e) {
-      // 失败 / 取消：停止本次启动的代理，恢复备份或删除新目录
-      if (dir) {
-        try { await this.opts.proxy.stop(dir); } catch { /* ignore */ }
-      }
-      if (backup) {
-        try { restoreBackup(backup); } catch { /* ignore */ }
-      } else if (allocated) {
+      // 失败 / 取消：新账号清掉服务里已创建的数据并删除目录；重新登录的旧凭据在 admin.relogin 里已保证不动
+      if (allocated) {
+        if (mapped) {
+          try { await this.opts.admin.removeAccount(allocated.id, allocated.dir); } catch { /* ignore */ }
+        }
         this.opts.accounts.discardDir(allocated.dir);
       }
       if (state.status !== 'done') {

@@ -4,6 +4,8 @@
   display: flex;
   flex-direction: column;
   position: relative;
+  /* 右侧图表浮层（ChartRail）按这一栏的宽度决定出不出现 */
+  container: cz-main / inline-size;
 }
 .cz-app__flow {
   flex: 1 1 0;

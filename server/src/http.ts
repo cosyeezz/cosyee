@@ -13,7 +13,7 @@ import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
 import { runSnippet } from './exec.js';
-import { openRaw, previewFile, resolveForAction } from './files.js';
+import { mentionForms, openRaw, previewFile, resolveForAction, type OutsideCheck } from './files.js';
 import { gitBranch } from './git.js';
 import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 import { readSkillContent } from './skillsDisk.js';
@@ -27,6 +27,7 @@ import type { Sessions } from './sessions.js';
 import { MAX_STT_SECONDS, type Speech, SpeechNotReady } from './speech/index.js';
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
+import { type ComponentUpdater, componentRoutes } from './components/updater.js';
 import { type AgyCli, agyCliRoutes } from './delegate/agyCli.js';
 import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
 
@@ -48,6 +49,8 @@ export interface HttpDeps {
   agyAccounts?: AgyAccounts;
   /** Antigravity CLI（agy）版本与升级；不传则 /api/agy/cli 返回 404（旧测试） */
   agyCli?: AgyCli;
+  /** 本机组件版本与自动更新；不传则 /api/components 返回 404（旧测试） */
+  components?: ComponentUpdater;
   /** Kiro 账号与 kiro.rs 引擎 / 代理；不传则 /api/kiro 接口返回 404（旧测试） */
   kiro?: KiroService;
   /** 额度：传 session 时取该会话所用账号的额度，否则取当前账号的 */
@@ -481,7 +484,7 @@ export function createHandler(deps: HttpDeps) {
 
     if (method === 'POST' && p === '/api/workspaces/pick') {
       onlyLocal(req);
-      const items = await runPick(req, lock, { mode: 'folders', title: '选择工作空间文件夹' });
+      const items = await runPick(res, lock, { mode: 'folders', title: '选择工作空间文件夹' });
       const first = items.find((i) => i.kind === 'folder');
       if (!first) return sendJson(res, 200, { workspace: null });
       const ws = deps.workspaces.add(first.path);
@@ -638,6 +641,11 @@ export function createHandler(deps: HttpDeps) {
       if (!r) throw new HttpError(404, '未找到');
       return sendJson(res, r.status, r.body);
     }
+    if (deps.components && (p === '/api/components' || p.startsWith('/api/components/'))) {
+      const r = await componentRoutes(deps.components, { method, pathname: p, query: q, fromLocal: fromLocal(req) });
+      if (!r) throw new HttpError(404, '未找到');
+      return sendJson(res, r.status, r.body);
+    }
     if (p === '/api/kiro' || p.startsWith('/api/kiro/')) return kiroRoutes(req, res, method, p, q);
 
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
@@ -774,7 +782,7 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       const mode = parseMode(body.mode);
       const start = deps.workspaces.list().current ?? undefined;
-      const items = await runPick(req, lock, { mode, title: '选择文件或文件夹', startDir: start });
+      const items = await runPick(res, lock, { mode, title: '选择文件或文件夹', startDir: start });
       return sendJson(res, 200, { items: deps.previews.register(items), supportsMixed });
     }
 
@@ -840,16 +848,16 @@ export function createHandler(deps: HttpDeps) {
       return;
     }
 
-    // 会话工作目录内的文件预览。cwd 由服务端按会话 id 解析（运行中的会话 → 会话记录头部），
+    // 会话工作目录内（或会话记录里提到过）的文件预览。cwd 由服务端按会话 id 解析（运行中的会话 → 会话记录头部），
     // 客户端传的 cwd 只在它是已打开的工作空间时才当作兜底（新会话还没有记录时）；授权规则见 files.ts。
     if (method === 'GET' && p === '/api/files/preview') {
       const cwd = await sessionCwd(q.get('session'), q.get('cwd'));
-      return sendJson(res, 200, await previewFile(cwd, q.get('path')));
+      return sendJson(res, 200, await previewFile(cwd, q.get('path'), mentionedIn(q.get('session')!)));
     }
 
     if (method === 'GET' && p === '/api/files/raw') {
       const cwd = await sessionCwd(q.get('session'), q.get('cwd'));
-      const t = await openRaw(cwd, q.get('path'));
+      const t = await openRaw(cwd, q.get('path'), mentionedIn(q.get('session')!));
       const headers: Record<string, string | number> = {
         'content-type': t.type,
         'content-length': t.size,
@@ -875,7 +883,7 @@ export function createHandler(deps: HttpDeps) {
       onlyLocal(req);
       const body = await readJson(req);
       const cwd = await sessionCwd(body.session, body.cwd);
-      const target = await resolveForAction(cwd, body.path);
+      const target = await resolveForAction(cwd, body.path, mentionedIn(body.session as string));
       const spawner = deps.spawner ?? defaultSpawner;
       if (p === '/api/files/reveal') {
         if (!revealPath(target.abs, spawner)) throw new HttpError(404, '文件不存在');
@@ -951,6 +959,11 @@ export function createHandler(deps: HttpDeps) {
     throw new HttpError(404, '找不到该会话的工作目录');
   }
 
+  /** cwd 之外的路径：会话记录里原样提到过才放行（session 已由 sessionCwd 校验过） */
+  function mentionedIn(session: string): OutsideCheck {
+    return (abs) => deps.sessions.mentions(session, mentionForms(abs), process.platform === 'win32');
+  }
+
   /** 在服务端桌面上弹窗口的操作只接受本机连接：远程设备看不到这些窗口（前端远程时也不显示这些按钮） */
   function onlyLocal(req: IncomingMessage): void {
     if (!fromLocal(req)) throw new HttpError(403, '远程连接不能在服务器桌面上打开窗口');
@@ -971,23 +984,25 @@ export function createHandler(deps: HttpDeps) {
   }
 
   async function runPick(
-    req: IncomingMessage,
+    res: ServerResponse,
     l: PickLock,
     o: { mode: PickMode; title: string; startDir?: string },
   ) {
     if (l.busy) throw new HttpError(409, '已有选择窗口打开');
-    l.busy = true;
     const ac = new AbortController();
-    // 客户端中途断开：关掉选择窗口
-    const onClose = () => ac.abort();
-    req.on('close', onClose);
+    // 客户端中途断开（刷新页面、关标签）：关掉选择窗口，否则它一直占着锁，之后的选择都 409。
+    // 要听 res 的 close：读完请求体后 req 的 close 早就发过了，挂在 req 上永远等不到。
+    const onClose = () => { if (!res.writableFinished) ac.abort(); };
+    if (res.destroyed) throw new HttpError(499, '请求已取消');
+    res.on('close', onClose);
+    l.busy = true;
     try {
       return await pick({ ...o, signal: ac.signal });
     } catch (e) {
       if (ac.signal.aborted) throw new HttpError(499, '请求已取消');
       throw new HttpError(500, `无法打开选择窗口: ${e instanceof Error ? e.message : e}`);
     } finally {
-      req.off('close', onClose);
+      res.off('close', onClose);
       l.busy = false;
     }
   }

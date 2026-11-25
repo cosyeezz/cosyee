@@ -844,10 +844,12 @@ export class Runner {
       switchToAuto = true;
     } else if (p.kind === 'plan' && reply.kind === 'revise') {
       const fb = typeof reply.feedback === 'string' ? reply.feedback.trim() : '';
+      // 意见框和主输入框一样能带文件 / 图片（`@"路径"`），但拒绝消息里 CLI 不会展开它们：提示模型自己读
+      const files = fb.includes('@"') ? '\n\nFiles referenced as @"path" (including pasted images) were attached by the user; read them with the Read tool.' : '';
       response = {
         behavior: 'deny',
         message: fb
-          ? `The user did not approve the plan. Their feedback:\n${fb}`
+          ? `The user did not approve the plan. Their feedback:\n${fb}${files}`
           : 'The user did not approve the plan. Revise the plan, or ask the user what to change.',
       };
     } else {

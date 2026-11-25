@@ -1,5 +1,6 @@
-// Kiro 账号后端单测：引擎编译与日志、代理生命周期与端口冲突、5 种登录方式、SSRF/脱敏校验、
-// 总开关持久化与 HTTP/1.0 路由、账号集成。全部使用临时目录，绝不读取本机真实 Kiro 登录。
+// Kiro 账号后端单测：内置 kiro.rs 单实例服务（启停、端口冲突）、账号与服务里凭据/分组/Key 的映射（添加、重新登录、移除、回滚）、
+// 旧格式账号迁移、模型映射、5 种登录方式、SSRF/脱敏校验、HTTP/1.0 路由。
+// 全部使用临时目录和一个内存里的假 kiro.rs（Admin API + /v1/models），绝不读取本机真实 Kiro 登录、不联网。
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -16,13 +17,15 @@ import { Accounts } from './accounts/index.js';
 import { claudeEnv, setBeforeClaudeEnv } from './claude/bin.js';
 import { createHandler } from './http.js';
 import { KiroEngine, KiroService, KIRO_ENGINE_MISSING, KIRO_SERVICE_STOPPED } from './kiro/index.js';
+import { buildKiroModelMap } from './kiro/models.js';
 import {
   KiroProxyManager,
-  createProxyConfig,
+  createServiceConfig,
+  kiroChildEnv,
   kiroConfigPath,
   kiroCredsPath,
-  kiroChildEnv,
-  readKiroProxyConfig,
+  readKiroServiceConfig,
+  writeKiroServiceConfig,
 } from './kiro/proxy.js';
 import { buildKiroCredential, isValidRegion, kiroApiRegion, normalizeStartUrl, sanitizeKiroError } from './kiro/sanitize.js';
 import { setActiveConfigDir } from './paths.js';
@@ -33,11 +36,6 @@ let base: string;
 let root: string;
 let home: string;
 const saved: Record<string, string | undefined> = {};
-
-const SHA_A = 'a'.repeat(40);
-const SHA_B = 'b'.repeat(40);
-const SHA_C = 'c'.repeat(40);
-const EXE_NAME = process.platform === 'win32' ? 'kiro-rs.exe' : 'kiro-rs';
 
 class FakeProc extends EventEmitter {
   stdout = new PassThrough();
@@ -95,21 +93,162 @@ function createFakeBin(name = 'kiro-rs-fake'): string {
   return p;
 }
 
-/** 构造一套完全隔离的测试环境（含 Accounts、KiroService、可控运行会话数与假 admin HTTP 响应） */
+/** 内置服务的数据目录（与 KiroService 默认值一致：<COSYEE_HOME>/kiro-rs/service） */
+function serviceDir(): string {
+  return path.join(home, 'kiro-rs', 'service');
+}
+
+interface FakeCred {
+  id: number;
+  body: Record<string, unknown>;
+  groups: string[];
+}
+interface FakeKey {
+  id: number;
+  key: string;
+  name: string;
+  group: string;
+}
+
+/**
+ * 内存里的假 kiro.rs：按 config.json 里的 adminApiKey 认 Admin API，模拟分组、凭据、客户端 Key、余额与 /v1/models。
+ * 只认 127.0.0.1 的请求，其他地址交给 fallback。
+ */
+class FakeKiroServer {
+  groups = new Set<string>();
+  creds = new Map<number, FakeCred>();
+  keys = new Map<number, FakeKey>();
+  calls: string[] = [];
+  nextCred = 1;
+  nextKey = 1;
+  /** 返回 true 时该凭据的余额查询失败（502） */
+  balanceFail: (c: FakeCred) => boolean = () => false;
+  /** 返回字符串时添加该凭据失败（400，消息为该字符串） */
+  addFail: (body: Record<string, unknown>) => string | null = () => null;
+  /** 为 true 时创建客户端 Key 失败（500） */
+  keyFail = false;
+  /** 让 /v1/models 返回错误状态 */
+  modelsStatus = 200;
+  models = ['claude-sonnet-4-5', 'claude-sonnet-4-5-thinking', 'claude-opus-4-5', 'claude-haiku-4-5'];
+  balance = { subscriptionTitle: 'KIRO PRO', currentUsage: 12.5, usageLimit: 500, nextResetAt: 1700000000.5 };
+
+  private adminKey(): string | null {
+    return readKiroServiceConfig(serviceDir())?.adminApiKey ?? null;
+  }
+
+  private json(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  }
+
+  private err(status: number, message: string): Response {
+    return this.json(status, { error: { type: 'error', message } });
+  }
+
+  callsOf(prefix: string): string[] {
+    return this.calls.filter((c) => c.startsWith(prefix));
+  }
+
+  fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url);
+    if (url.hostname !== '127.0.0.1') throw new Error(`Unexpected fetch: ${url.toString()}`);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const key = new Headers(init?.headers).get('x-api-key');
+    const body: Record<string, unknown> = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+
+    if (url.pathname === '/v1/models') {
+      const k = [...this.keys.values()].find((x) => x.key === key);
+      if (!k) return this.err(401, 'invalid key');
+      const has = [...this.creds.values()].some((c) => c.groups.includes(k.group));
+      if (!has) return this.err(401, 'no credentials in group');
+      this.calls.push(`${method} /v1/models`);
+      if (this.modelsStatus !== 200) return this.err(this.modelsStatus, 'models failed');
+      return this.json(200, { data: this.models.map((id) => ({ id })) });
+    }
+
+    const pfx = '/api/admin';
+    if (!url.pathname.startsWith(pfx)) return this.err(404, 'not found');
+    if (!key || key !== this.adminKey()) return this.err(401, 'unauthorized');
+    const p = url.pathname.slice(pfx.length);
+    this.calls.push(`${method} ${p}`);
+    let m: RegExpExecArray | null;
+
+    if (method === 'GET' && p === '/credentials') {
+      const list = [...this.creds.values()].map((c) => ({ id: c.id, groups: c.groups }));
+      return this.json(200, { total: list.length, available: list.length, currentId: list[0]?.id ?? 0, credentials: list });
+    }
+    if (method === 'POST' && p === '/credentials') {
+      const fail = this.addFail(body);
+      if (fail) return this.err(400, fail);
+      const dup = [...this.creds.values()].some(
+        (c) =>
+          (typeof body.refreshToken === 'string' && c.body.refreshToken === body.refreshToken) ||
+          (typeof body.kiroApiKey === 'string' && c.body.kiroApiKey === body.kiroApiKey),
+      );
+      if (dup) return this.err(400, '凭据已存在');
+      const id = this.nextCred++;
+      const { groups, ...rest } = body;
+      this.creds.set(id, { id, body: rest, groups: Array.isArray(groups) ? (groups as string[]) : [] });
+      return this.json(200, { success: true, message: 'ok', credentialId: id });
+    }
+    if (method === 'DELETE' && (m = /^\/credentials\/(\d+)$/.exec(p))) {
+      const id = Number(m[1]);
+      if (!this.creds.delete(id)) return this.err(404, '凭据不存在');
+      return this.json(200, { success: true, message: 'deleted' });
+    }
+    if (method === 'GET' && (m = /^\/credentials\/(\d+)\/balance$/.exec(p))) {
+      const c = this.creds.get(Number(m[1]));
+      if (!c) return this.err(404, '凭据不存在');
+      if (this.balanceFail(c)) return this.err(502, 'upstream rejected ksk_leaked_secret_xyz');
+      const b = this.balance;
+      return this.json(200, { id: c.id, ...b, remaining: b.usageLimit - b.currentUsage, usagePercentage: 2.5 });
+    }
+    if (method === 'POST' && p === '/groups') {
+      const name = String(body.name ?? '');
+      if (this.groups.has(name)) return this.err(409, '分组已存在');
+      this.groups.add(name);
+      return this.json(200, { success: true, message: 'ok' });
+    }
+    if (method === 'DELETE' && (m = /^\/groups\/([^/]+)$/.exec(p))) {
+      const name = decodeURIComponent(m[1]!);
+      if (!this.groups.delete(name)) return this.err(404, '分组不存在');
+      for (const [id, k] of this.keys) if (k.group === name) this.keys.delete(id);
+      return this.json(200, { success: true, message: 'ok' });
+    }
+    if (method === 'POST' && p === '/client-keys') {
+      if (this.keyFail) return this.err(500, 'key store broken');
+      const group = String(body.group ?? '');
+      if (!this.groups.has(group)) return this.err(400, '分组不存在');
+      const id = this.nextKey++;
+      const k: FakeKey = { id, key: `sk-fake-${id}-${'x'.repeat(24)}`, name: String(body.name ?? ''), group };
+      this.keys.set(id, k);
+      return this.json(200, { id, key: k.key, name: k.name, createdAt: '2026-01-01T00:00:00Z' });
+    }
+    if (method === 'DELETE' && (m = /^\/client-keys\/(\d+)$/.exec(p))) {
+      if (!this.keys.delete(Number(m[1]))) return this.err(404, 'Key 不存在');
+      return this.json(200, { success: true, message: 'ok' });
+    }
+    return this.err(404, `unhandled ${method} ${p}`);
+  };
+}
+
+/** 构造一套完全隔离的测试环境（Accounts、KiroService、可控运行会话数、假 kiro.rs） */
 function makeHarness(opts: {
   binPath?: string | null;
+  /** 非 127.0.0.1 的请求（OIDC 等）走这里 */
   fetch?: typeof globalThis.fetch;
   runningMap?: Map<string, number>;
   ideTokenFile?: string;
   cliDbFile?: string;
-  adminRefreshOk?: boolean;
-  adminBalance?: { subscriptionTitle: string | null; currentUsage: number; usageLimit: number; nextResetAt: number | null } | null;
+  server?: FakeKiroServer;
   spawnOverride?: (bin: string, args: string[], env: NodeJS.ProcessEnv) => FakeProc;
 } = {}) {
   const store = new StateStore(path.join(home, 'state.json'));
   const runningMap = opts.runningMap ?? new Map<string, number>();
   const spawned: Array<{ bin: string; args: string[]; env: NodeJS.ProcessEnv; proc: FakeProc }> = [];
   const fakeBin = opts.binPath === undefined ? createFakeBin() : opts.binPath;
+  const server = opts.server ?? new FakeKiroServer();
+  const logs: string[] = [];
+  const modelsChanged: string[] = [];
 
   const ideFile = opts.ideTokenFile ?? path.join(tmp, 'nonexistent-ide-token.json');
   const cliFile = opts.cliDbFile ?? path.join(tmp, 'nonexistent-cli.sqlite3');
@@ -121,53 +260,13 @@ function makeHarness(opts: {
     processes: () => 0,
     stop: async () => {},
     kiroProxyState: (dir) => kiroRef?.proxy.stateOf(dir) ?? { proxy: 'stopped', error: null },
-    stopKiroProxy: (dir) => kiroRef?.proxy.stop(dir) ?? Promise.resolve(),
+    removeKiroAccount: (id, dir) => kiroRef?.removeAccount(id, dir) ?? Promise.resolve(),
     onChanged: () => {},
   });
 
-  const adminFetch: typeof globalThis.fetch = async (input, init) => {
+  const loginFetch: typeof globalThis.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.startsWith('http://127.0.0.1:')) {
-      const headers = new Headers(init?.headers);
-      const key = headers.get('x-api-key');
-      // 校验是否匹配某个账号目录的 adminApiKey
-      let matched = false;
-      for (const a of accounts.listKiroAccounts()) {
-        const cfg = readKiroProxyConfig(a.dir);
-        if (cfg && cfg.adminApiKey === key) matched = true;
-      }
-      // 登录验证时账号尚未登记进 accounts.list，也扫描 accountsRoot
-      if (!matched && fs.existsSync(root)) {
-        for (const name of fs.readdirSync(root)) {
-          const cfg = readKiroProxyConfig(path.join(root, name));
-          if (cfg && cfg.adminApiKey === key) matched = true;
-        }
-      }
-      if (!matched) {
-        return new Response(JSON.stringify({ error: { message: 'unauthorized' } }), { status: 401 });
-      }
-      if (url.endsWith('/api/admin/credentials')) {
-        return new Response(JSON.stringify({ total: 1, available: 1, currentId: 1, credentials: [{ id: 1 }] }), { status: 200 });
-      }
-      if (url.endsWith('/refresh')) {
-        if (opts.adminRefreshOk === false) {
-          return new Response(JSON.stringify({ error: { message: 'invalid refreshToken=secret_tok_123' } }), { status: 400 });
-        }
-        return new Response(JSON.stringify({ success: true, message: 'ok' }), { status: 200 });
-      }
-      if (url.endsWith('/balance')) {
-        if (opts.adminBalance === null) {
-          return new Response(JSON.stringify({ error: { message: 'bad key ksk_leaked_secret_xyz' } }), { status: 401 });
-        }
-        const b = opts.adminBalance ?? {
-          subscriptionTitle: 'KIRO PRO',
-          currentUsage: 12.5,
-          usageLimit: 500,
-          nextResetAt: 1700000000.5,
-        };
-        return new Response(JSON.stringify({ id: 1, ...b, remaining: b.usageLimit - b.currentUsage, usagePercentage: 2.5 }), { status: 200 });
-      }
-    }
+    if (url.startsWith('http://127.0.0.1:')) return server.fetch(input, init);
     if (opts.fetch) return opts.fetch(input, init);
     throw new Error(`Unexpected fetch: ${url}`);
   };
@@ -183,12 +282,17 @@ function makeHarness(opts: {
       commitNew: (id, dir, label) => accounts.commitNewKiro(id, dir, label),
       commitRelogin: (id, label) => accounts.commitReloginKiro(id, label),
       discardDir: (dir) => accounts.discardKiroDir(dir),
+      modelsChanged: (id) => modelsChanged.push(id),
     },
     engine: {
       env: () => ({ ...process.env, ...(fakeBin ? { COSYEE_KIRO_RS: fakeBin } : {}) }),
+      // 引擎的自动检查永远连不上网，绝不联网
+      fetch: async () => {
+        throw new Error('offline');
+      },
     },
     proxy: {
-      fetch: adminFetch,
+      fetch: server.fetch,
       pickFreePort: async () => nextPort++,
       findFreePortSync: (p) => p,
       readyPollMs: 5,
@@ -199,15 +303,41 @@ function makeHarness(opts: {
         return proc as unknown as ChildProcess;
       },
     },
+    admin: { fetch: server.fetch, log: (m) => logs.push(m) },
     login: {
-      fetch: adminFetch,
+      fetch: loginFetch,
       kiroIdeTokenPath: () => ideFile,
       kiroCliDbPath: () => cliFile,
       pollDelayMs: () => 5,
     },
   });
   kiroRef = kiro;
-  return { store, accounts, kiro, spawned, runningMap };
+  return { store, accounts, kiro, spawned, runningMap, server, logs, modelsChanged };
+}
+
+type Harness = ReturnType<typeof makeHarness>;
+
+/** 用 apiKey 方式登录一个新账号并等完成，返回账号 id 与目录 */
+async function loginApiKey(h: Harness, apiKey: string, label?: string): Promise<{ id: string; dir: string }> {
+  const job = h.kiro.startLogin({ method: 'apiKey', apiKey, ...(label ? { label } : {}) });
+  await h.kiro.login.waitForLogin();
+  const st = h.kiro.getLogin(job.loginId);
+  if (st.status !== 'done') throw new Error(`login failed: ${st.error}`);
+  const id = st.accountId!;
+  return { id, dir: h.accounts.dirFor(id)! };
+}
+
+/** 造一个旧格式账号（每账号一个进程时代）：cosyee-api.json 里是 {method, port}，凭据在 <dir>/kiro/credentials.json */
+function makeLegacyAccount(h: Harness, id: string, cred: Record<string, unknown> | null, method: 'builderId' | 'apiKey' = 'builderId'): string {
+  const dir = path.join(root, id);
+  fs.mkdirSync(path.join(dir, 'kiro'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'cosyee-api.json'),
+    JSON.stringify({ baseUrl: 'http://127.0.0.1:19999', apiKey: 'legacy-proxy-key', authType: 'apiKey', kiro: { method, port: 19999 } }),
+  );
+  if (cred) fs.writeFileSync(path.join(dir, 'kiro', 'credentials.json'), JSON.stringify([cred]));
+  h.store.state.accounts.list.push({ id, label: `旧 ${id}`, dir, createdAt: 1 });
+  return dir;
 }
 
 describe('sanitize & validation', () => {
@@ -261,317 +391,358 @@ describe('sanitize & validation', () => {
   });
 });
 
-describe('KiroEngine', () => {
-  it('完整 build 流程、日志截断单调递增、保留当前与上一版、失败保留旧版', async () => {
-    let targetSha = SHA_A;
-    let cargoFail = false;
-    let onUpgradedCalls = 0;
-    const commands: string[] = [];
-
-    const engine = new KiroEngine({
-      rootDir: () => path.join(home, 'kiro-rs'),
-      env: () => ({}),
-      findTool: (name) => `/fake/${name}`,
-      logMaxLines: 5,
-      onUpgraded: () => { onUpgradedCalls++; },
-      fetch: async (_url, init) => {
-        const h = new Headers(init?.headers);
-        expect(h.get('user-agent')).not.toMatch(/cosyee/i);
-        return new Response(JSON.stringify({
-          sha: targetSha,
-          commit: { committer: { date: '2026-11-24T00:00:00Z' }, message: `release ${targetSha.slice(0, 6)}\ndetail` },
-        }), { status: 200 });
-      },
-      runCommand: async (cmd, args, opts) => {
-        commands.push(`${path.basename(cmd)} ${args.join(' ')}`);
-        opts.onLine?.(`run ${path.basename(cmd)} ${args[0] ?? ''}`);
-        const srcDir = path.join(home, 'kiro-rs', 'src');
-        if (cmd.endsWith('git') && args[0] === 'clone') {
-          fs.mkdirSync(path.join(srcDir, '.git'), { recursive: true });
-          return { code: 0, stdout: '', stderr: '' };
-        }
-        if (cmd.endsWith('git') && args[0] === 'rev-parse') {
-          return { code: 0, stdout: targetSha + '\n', stderr: '' };
-        }
-        if (cmd.endsWith('git') && args[0] === 'status') {
-          return { code: 0, stdout: '', stderr: '' };
-        }
-        if (cmd.endsWith('cargo') && args[0] === 'build') {
-          for (let i = 0; i < 6; i++) opts.onLine?.(`compiling crate ${i}`);
-          if (cargoFail) return { code: 1, stdout: '', stderr: 'compile err' };
-          // 确认 admin-ui/dist/index.html 占位已建立
-          expect(fs.existsSync(path.join(srcDir, 'admin-ui', 'dist', 'index.html'))).toBe(true);
-          const outBin = path.join(srcDir, 'target', 'release', EXE_NAME);
-          fs.mkdirSync(path.dirname(outBin), { recursive: true });
-          fs.writeFileSync(outBin, `bin-${targetSha}`);
-          return { code: 0, stdout: '', stderr: '' };
-        }
-        if (args[0] === '--version') {
-          return { code: 0, stdout: 'kiro-rs 2026.10.1\n', stderr: '' };
-        }
-        return { code: 0, stdout: '', stderr: '' };
-      },
+describe('buildKiroModelMap（模型映射）', () => {
+  it('每个系列取版本最高的做别名，其余进 extra，-thinking 丢掉', () => {
+    const map = buildKiroModelMap([
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-5-thinking',
+      'claude-sonnet-4',
+      'claude-opus-4-5',
+      'claude-opus-4-1',
+      'claude-haiku-4-5',
+      'auto',
+    ]);
+    expect(map).toEqual({
+      alias: { opus: { id: 'claude-opus-4-5' }, sonnet: { id: 'claude-sonnet-4-5' }, haiku: { id: 'claude-haiku-4-5' } },
+      extra: [{ id: 'claude-sonnet-4' }, { id: 'claude-opus-4-1' }, { id: 'auto' }],
     });
-
-    expect(engine.status().source).toBe('none');
-    engine.startBuild();
-    await engine.waitForBuild();
-
-    const stA = engine.status();
-    expect(stA.source).toBe('managed');
-    expect(stA.current?.commit).toBe(SHA_A);
-    expect(stA.updateAvailable).toBe(false);
-    expect(stA.build.state).toBe('idle');
-    expect(onUpgradedCalls).toBe(1);
-    expect(engine.binaryPath()).toBe(path.join(home, 'kiro-rs', 'bin', SHA_A, EXE_NAME));
-
-    // 日志超过 logMaxLines(5) 被截断，但 next 仍单调且能按 next 增量读
-    const log1 = engine.getLog(0);
-    expect(log1.lines.length).toBeLessThanOrEqual(5);
-    expect(log1.next).toBeGreaterThan(5);
-    const log2 = engine.getLog(log1.next);
-    expect(log2).toEqual({ lines: [], next: log1.next });
-
-    // 升级到 SHA_B，然后到 SHA_C：清理时保留 SHA_C 与 SHA_B，删掉 SHA_A
-    targetSha = SHA_B;
-    engine.startBuild();
-    await engine.waitForBuild();
-    expect(engine.status().current?.commit).toBe(SHA_B);
-
-    targetSha = SHA_C;
-    engine.startBuild();
-    await engine.waitForBuild();
-    expect(engine.status().current?.commit).toBe(SHA_C);
-    const bins = fs.readdirSync(path.join(home, 'kiro-rs', 'bin'));
-    expect(bins).toContain(SHA_C);
-    expect(bins).toContain(SHA_B);
-    expect(bins).not.toContain(SHA_A);
-
-    // 新版本编译失败时保留 SHA_C 不动
-    targetSha = 'd'.repeat(40);
-    cargoFail = true;
-    engine.startBuild();
-    await engine.waitForBuild();
-    expect(engine.status().build.state).toBe('failed');
-    expect(engine.status().current?.commit).toBe(SHA_C);
-    expect(fs.existsSync(path.join(home, 'kiro-rs', 'bin', 'd'.repeat(40)))).toBe(false);
+    expect(JSON.stringify(map)).not.toContain('thinking');
   });
 
-  it('查找顺序 COSYEE_KIRO_RS > managed，env 来源 adminUi 按 true 处理，总开关 enabled 持久化', () => {
-    const envBin = createFakeBin('env-kiro');
-    const engine1 = new KiroEngine({ rootDir: () => path.join(home, 'kiro-rs'), env: () => ({ COSYEE_KIRO_RS: envBin }) });
-    expect(engine1.status().source).toBe('env');
-    expect(engine1.status().adminUi).toBe(true);
-    expect(engine1.status().adminUiError).toBeNull();
-    expect(engine1.binaryPath()).toBe(envBin);
-    expect(engine1.isEnabled()).toBe(true);
-    engine1.setEnabled(false);
-
-    const engine2 = new KiroEngine({ rootDir: () => path.join(home, 'kiro-rs'), env: () => ({}) });
-    expect(engine2.isEnabled()).toBe(false);
+  it('Kiro 的点号版本号（claude-sonnet-5.5）也能比出最高版本', () => {
+    const map = buildKiroModelMap([
+      'auto', 'claude-haiku-4.5', 'claude-haiku-5.5', 'claude-opus-4.8', 'claude-opus-5', 'claude-opus-5.5',
+      'claude-sonnet-4.6', 'claude-sonnet-5', 'claude-sonnet-5.5', 'glm-5',
+    ]);
+    expect(map?.alias).toEqual({
+      opus: { id: 'claude-opus-5.5' }, sonnet: { id: 'claude-sonnet-5.5' }, haiku: { id: 'claude-haiku-5.5' },
+    });
+    expect(map?.extra?.map((m) => m.id)).toContain('claude-opus-5');
   });
 
-  it('admin-ui 构建：失败退回占位继续编译且不误认残留 dist；同 commit 重建换新目录名并用 npx 回退', async () => {
-    let uiShouldFail = true;
-    let nowMs = 1_700_000_000_000;
-    const ran: Array<{ cmd: string; args: string[] }> = [];
+  it('只有 fable 5-1 时只配 fable；版本按数字比较而不是字符串（4-10 > 4-9）', () => {
+    expect(buildKiroModelMap(['claude-fable-5-1'])).toEqual({ alias: { fable: { id: 'claude-fable-5-1' } } });
+    const m = buildKiroModelMap(['claude-sonnet-4-9', 'claude-sonnet-4-10']);
+    expect(m?.alias?.sonnet?.id).toBe('claude-sonnet-4-10');
+  });
 
-    const engine = new KiroEngine({
-      rootDir: () => path.join(home, 'kiro-rs'),
-      env: () => ({}),
-      now: () => (nowMs += 1000),
-      // 没有 pnpm 时自动回退 npx --yes pnpm@11
-      findTool: (name) => (name === 'pnpm' ? null : `/fake/${name}`),
-      fetch: async () => new Response(JSON.stringify({
-        sha: SHA_A,
-        commit: { committer: { date: '2026-11-24T00:00:00Z' }, message: 'init' },
-      }), { status: 200 }),
-      runCommand: async (cmd, args) => {
-        ran.push({ cmd: path.basename(cmd), args });
-        const srcDir = path.join(home, 'kiro-rs', 'src');
-        const uiDir = path.join(srcDir, 'admin-ui');
-        if (cmd.endsWith('git') && args[0] === 'clone') {
-          fs.mkdirSync(path.join(srcDir, '.git'), { recursive: true });
-          fs.mkdirSync(path.join(uiDir, 'dist'), { recursive: true });
-          fs.writeFileSync(path.join(uiDir, 'package.json'), '{"name":"ui"}');
-          // 预先放一个旧 dist，验证失败时绝不会被误当成本次成功
-          fs.writeFileSync(path.join(uiDir, 'dist', 'index.html'), '<html>stale</html>');
-          return { code: 0, stdout: '', stderr: '' };
-        }
-        if (cmd.endsWith('git') && args[0] === 'rev-parse') return { code: 0, stdout: SHA_A + '\n', stderr: '' };
-        if (cmd.endsWith('git') && args[0] === 'status') return { code: 0, stdout: '', stderr: '' };
-        if (cmd.endsWith('npx')) {
-          if (args.includes('install')) {
-            // 验证旧 dist 已被清掉
-            expect(fs.existsSync(path.join(uiDir, 'dist', 'index.html'))).toBe(false);
-            return uiShouldFail ? { code: 1, stdout: '', stderr: 'offline' } : { code: 0, stdout: '', stderr: '' };
-          }
-          if (args.includes('build')) {
-            fs.mkdirSync(path.join(uiDir, 'dist'), { recursive: true });
-            fs.writeFileSync(path.join(uiDir, 'dist', 'index.html'), '<html>real admin ui</html>');
-            return { code: 0, stdout: '', stderr: '' };
-          }
-        }
-        if (cmd.endsWith('cargo') && args[0] === 'build') {
-          expect(fs.existsSync(path.join(uiDir, 'dist', 'index.html'))).toBe(true);
-          const outBin = path.join(srcDir, 'target', 'release', EXE_NAME);
-          fs.mkdirSync(path.dirname(outBin), { recursive: true });
-          fs.writeFileSync(outBin, 'bin');
-          return { code: 0, stdout: '', stderr: '' };
-        }
-        return { code: 0, stdout: 'kiro-rs 2026.10.1\n', stderr: '' };
-      },
-    });
-
-    // 第一次：admin-ui 失败，但引擎仍然编译成功，adminUi=false 且带错误原因
-    engine.startBuild();
-    await engine.waitForBuild();
-    const st1 = engine.status();
-    expect(st1.source).toBe('managed');
-    expect(st1.adminUi).toBe(false);
-    expect(st1.adminUiError).toBeTruthy();
-    const bin1 = engine.binaryPath()!;
-    expect(bin1).toContain(SHA_A);
-    expect(ran.some((r) => r.cmd === 'npx' && r.args[0] === '--yes' && r.args[1] === 'pnpm@11' && r.args[2] === 'install' && r.args[3] === '--frozen-lockfile')).toBe(true);
-
-    // 第二次：同一 commit 重新编译（此时网络恢复），换成新目录名，不覆盖旧目录里的 exe
-    uiShouldFail = false;
-    engine.startBuild();
-    await engine.waitForBuild();
-    const st2 = engine.status();
-    expect(st2.adminUi).toBe(true);
-    expect(st2.adminUiError).toBeNull();
-    const bin2 = engine.binaryPath()!;
-    expect(bin2).not.toBe(bin1);
-    expect(fs.existsSync(bin1)).toBe(true); // 旧版目录保留（作为上一版）
-    expect(fs.existsSync(bin2)).toBe(true);
+  it('同版本带日期后缀的取日期最新的；没有可用模型返回 null', () => {
+    const m = buildKiroModelMap(['claude-sonnet-4-5-20250101', 'claude-sonnet-4-5-20250929']);
+    expect(m?.alias?.sonnet?.id).toBe('claude-sonnet-4-5-20250929');
+    expect(buildKiroModelMap([])).toBeNull();
+    expect(buildKiroModelMap(['claude-opus-4-5-thinking'])).toBeNull();
   });
 });
 
-describe('KiroProxyManager & claudeEnv & api-config', () => {
-  it('api-config 往返保留 kiro 字段，kiroChildEnv 删除 KIRO_API_KEY', () => {
+describe('api-config 与 kiroChildEnv', () => {
+  it('新格式 {method, credentialId, keyId} 往返，旧格式 {method, port} 仍可识别并原样写回', () => {
     const dir = path.join(root, 'acc-k1');
     writeApiConfig(dir, {
       baseUrl: 'http://127.0.0.1:19999',
       apiKey: 'proxy-key-123456',
       authType: 'apiKey',
-      kiro: { method: 'builderId', port: 19999 },
+      kiro: { method: 'builderId', credentialId: 3, keyId: 7 },
     });
-    const back = readApiConfig(dir);
-    expect(back?.kiro).toEqual({ method: 'builderId', port: 19999 });
-    expect(back?.baseUrl).toBe('http://127.0.0.1:19999');
+    expect(readApiConfig(dir)?.kiro).toEqual({ method: 'builderId', credentialId: 3, keyId: 7 });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8')).kiro).toEqual({
+      method: 'builderId',
+      credentialId: 3,
+      keyId: 7,
+    });
 
+    const old = path.join(root, 'acc-old');
+    fs.mkdirSync(old, { recursive: true });
+    fs.writeFileSync(
+      path.join(old, 'cosyee-api.json'),
+      JSON.stringify({ baseUrl: 'http://127.0.0.1:1', apiKey: 'k-123456', authType: 'apiKey', kiro: { method: 'apiKey', port: 18080 } }),
+    );
+    expect(readApiConfig(old)?.kiro).toEqual({ method: 'apiKey', legacyPort: 18080 });
+    writeApiConfig(old, readApiConfig(old)!);
+    expect(JSON.parse(fs.readFileSync(path.join(old, 'cosyee-api.json'), 'utf8')).kiro).toEqual({ method: 'apiKey', port: 18080 });
+  });
+
+  it('kiroChildEnv 删除 KIRO_API_KEY', () => {
     const env = kiroChildEnv({ PATH: 'x', KIRO_API_KEY: 'ksk_must_not_leak', kiro_api_key: 'ksk_2' });
     expect(env.KIRO_API_KEY).toBeUndefined();
     expect(env.kiro_api_key).toBeUndefined();
     expect(env.PATH).toBe('x');
   });
+});
 
-  it('端口被真实占用时 ensure 同步换端口并更新 cosyee-api.json 与 config.json，claudeEnv 立刻读到新端口', async () => {
-    // 占住一个真实 127.0.0.1 端口
+describe('KiroProxyManager（单实例服务）', () => {
+  function makeProxy(opts: { bin?: () => string | null; enabled?: () => boolean; server?: FakeKiroServer; accounts?: () => Array<{ id: string; dir: string; label: string }> } = {}) {
+    const server = opts.server ?? new FakeKiroServer();
+    const procs: FakeProc[] = [];
+    const bins: string[] = [];
+    const args: string[][] = [];
+    const envs: NodeJS.ProcessEnv[] = [];
+    const defaultBin = createFakeBin();
+    const proxy = new KiroProxyManager({
+      engine: { binaryPath: opts.bin ?? (() => defaultBin), isEnabled: opts.enabled ?? (() => true) },
+      dataDir: serviceDir,
+      listKiroAccounts: opts.accounts ?? (() => []),
+      fetch: server.fetch,
+      findFreePortSync: (p) => p,
+      pickFreePort: async () => 31000,
+      readyPollMs: 5,
+      readyTimeoutMs: 500,
+      spawnProxy: (bin, a, env) => {
+        const p = new FakeProc();
+        procs.push(p);
+        bins.push(bin);
+        args.push(a);
+        envs.push(env);
+        return p as unknown as ChildProcess;
+      },
+    });
+    return { proxy, server, procs, bins, args, envs };
+  }
+
+  it('ensure 创建 config.json（0600、两个不同的随机密钥）与空 credentials.json，只起一个进程，重复调用幂等', async () => {
+    const { proxy, procs, args, envs } = makeProxy();
+    process.env.KIRO_API_KEY = 'ksk_must_not_leak';
+    proxy.ensure();
+    proxy.ensure();
+    expect(procs.length).toBe(1);
+
+    const cfg = readKiroServiceConfig(serviceDir())!;
+    expect(cfg.apiKey).not.toBe(cfg.adminApiKey);
+    expect(args[0]).toEqual(['--config', kiroConfigPath(serviceDir()), '--credentials', kiroCredsPath(serviceDir())]);
+    expect(JSON.parse(fs.readFileSync(kiroCredsPath(serviceDir()), 'utf8'))).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(kiroConfigPath(serviceDir()), 'utf8')).updateAutoApply).toBe(false);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(kiroConfigPath(serviceDir())).mode & 0o777).toBe(0o600);
+    }
+    expect(envs[0]!.KIRO_API_KEY).toBeUndefined();
+
+    await proxy.ready();
+    expect(proxy.serviceState()).toEqual({ proxy: 'ready', error: null });
+    expect(proxy.baseUrl()).toBe(`http://127.0.0.1:${cfg.port}`);
+    await proxy.stopAll();
+  });
+
+  it('stop 后状态为 stopped、进程被杀；之后 ensure 重新启动', async () => {
+    const { proxy, procs } = makeProxy();
+    proxy.ensure();
+    await proxy.ready();
+    await proxy.stop();
+    expect(procs[0]!.killed).toBe(true);
+    expect(proxy.serviceState().proxy).toBe('stopped');
+    proxy.ensure();
+    expect(procs.length).toBe(2);
+    await proxy.stopAll();
+  });
+
+  it('enabled=false 与没有引擎时 ensure / claudeEnv 绝不启进程并给出明确错误', () => {
+    const off = makeProxy({ enabled: () => false });
+    expect(() => off.proxy.ensure()).toThrow(KIRO_SERVICE_STOPPED);
+    expect(off.procs.length).toBe(0);
+
+    const none = makeProxy({ bin: () => null });
+    expect(() => none.proxy.ensure()).toThrow(KIRO_ENGINE_MISSING);
+    expect(none.procs.length).toBe(0);
+
+    const dir = path.join(root, 'acc-off');
+    writeApiConfig(dir, { baseUrl: 'http://127.0.0.1:1', apiKey: 'k-123456', authType: 'apiKey', kiro: { method: 'apiKey', credentialId: 1, keyId: 1 } });
+    setBeforeClaudeEnv(() => off.proxy.ensure());
+    expect(() => claudeEnv(dir)).toThrow(KIRO_SERVICE_STOPPED);
+  });
+
+  it('端口被真实占用时 ensure 同步换端口：写 config.json 并改写全部账号的 baseUrl，claudeEnv 立刻读到新端口', async () => {
     const blocker = net.createServer();
     await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
-    const occupiedPort = (blocker.address() as AddressInfo).port;
-
+    const occupied = (blocker.address() as AddressInfo).port;
     try {
       const bin = createFakeBin();
-      const engine = new KiroEngine({ rootDir: () => path.join(home, 'kiro-rs'), env: () => ({ COSYEE_KIRO_RS: bin }) });
-      const dir = path.join(root, 'acc-port');
-      const cfg = createProxyConfig(occupiedPort);
+      const dirA = path.join(root, 'acc-a');
+      const dirB = path.join(root, 'acc-b');
+      const dirLegacy = path.join(root, 'acc-legacy');
+      for (const [d, id] of [[dirA, 1], [dirB, 2]] as const) {
+        writeApiConfig(d, {
+          baseUrl: `http://127.0.0.1:${occupied}`,
+          apiKey: `client-key-${id}`,
+          authType: 'apiKey',
+          kiro: { method: 'apiKey', credentialId: id, keyId: id },
+        });
+      }
+      fs.mkdirSync(dirLegacy, { recursive: true });
+      fs.writeFileSync(
+        path.join(dirLegacy, 'cosyee-api.json'),
+        JSON.stringify({ baseUrl: 'http://127.0.0.1:19999', apiKey: 'legacy-k', authType: 'apiKey', kiro: { method: 'apiKey', port: 19999 } }),
+      );
+      const cfg0 = createServiceConfig(occupied);
+      writeKiroServiceConfig(serviceDir(), cfg0);
+
       const procs: FakeProc[] = [];
       const proxy = new KiroProxyManager({
-        engine,
+        // 不替换 findFreePortSync：走真实的同步端口检测
+        engine: { binaryPath: () => bin, isEnabled: () => true },
+        dataDir: serviceDir,
+        listKiroAccounts: () => [
+          { id: 'a', dir: dirA, label: 'A' },
+          { id: 'b', dir: dirB, label: 'B' },
+          { id: 'l', dir: dirLegacy, label: 'L' },
+        ],
         spawnProxy: () => {
           const p = new FakeProc();
           procs.push(p);
           return p as unknown as ChildProcess;
         },
       });
-      proxy.writeAccountConfigs(dir, 'apiKey', cfg);
-      setBeforeClaudeEnv((d) => proxy.ensure(d));
+      setBeforeClaudeEnv(() => proxy.ensure());
 
-      const env = claudeEnv(dir);
+      const env = claudeEnv(dirA);
       expect(procs.length).toBe(1);
-      const updatedApi = readApiConfig(dir)!;
-      const updatedCfg = readKiroProxyConfig(dir)!;
-      expect(updatedApi.kiro?.port).not.toBe(occupiedPort);
-      expect(updatedCfg.port).toBe(updatedApi.kiro?.port);
-      expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${updatedCfg.port}`);
-      expect(env.ANTHROPIC_API_KEY).toBe(cfg.apiKey);
-
+      const cfg = readKiroServiceConfig(serviceDir())!;
+      expect(cfg.port).not.toBe(occupied);
+      expect(cfg.apiKey).toBe(cfg0.apiKey);
+      expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${cfg.port}`);
+      expect(env.ANTHROPIC_API_KEY).toBe('client-key-1');
+      expect(readApiConfig(dirB)!.baseUrl).toBe(`http://127.0.0.1:${cfg.port}`);
+      // 旧格式账号还没迁移，不改它
+      expect(readApiConfig(dirLegacy)!.baseUrl).toBe('http://127.0.0.1:19999');
       await proxy.stopAll();
     } finally {
       await new Promise<void>((r) => blocker.close(() => r()));
     }
   });
 
-  it('enabled=false 时 ensure 与 claudeEnv 绝不启进程并给出明确错误', () => {
+  it('进程启动后报端口被占用时，ready 用异步分配的新端口重试一次', async () => {
+    const server = new FakeKiroServer();
+    const procs: FakeProc[] = [];
     const bin = createFakeBin();
-    const engine = new KiroEngine({ rootDir: () => path.join(home, 'kiro-rs'), env: () => ({ COSYEE_KIRO_RS: bin }) });
-    engine.setEnabled(false);
-    const dir = path.join(root, 'acc-off');
-    const spawnSpy = vi.fn();
-    const proxy = new KiroProxyManager({ engine, spawnProxy: spawnSpy });
-    proxy.writeAccountConfigs(dir, 'apiKey', createProxyConfig(28888));
-    setBeforeClaudeEnv((d) => proxy.ensure(d));
-
-    expect(() => claudeEnv(dir)).toThrow(KIRO_SERVICE_STOPPED);
-    expect(spawnSpy).not.toHaveBeenCalled();
-  });
-
-  it('引擎升级后：空闲代理自动重启换新版本，执行中会话的代理留在旧版并计入 outdated', async () => {
-    let curBin = createFakeBin('kiro-v1');
-    const dirIdle = path.join(root, 'acc-idle');
-    const dirBusy = path.join(root, 'acc-busy');
-    const store = new StateStore(path.join(home, 'state.json'));
-    const runningMap = new Map<string, number>([['busy1', 1], ['idle1', 0]]);
-    const spawnedBins: string[] = [];
-
     const proxy = new KiroProxyManager({
-      engine: { binaryPath: () => curBin, isEnabled: () => true },
+      engine: { binaryPath: () => bin, isEnabled: () => true },
+      dataDir: serviceDir,
+      listKiroAccounts: () => [],
+      // 第一个进程起不来（端口被别人占了），探测连不上；第二个进程起来后才有响应
+      fetch: async (input, init) => {
+        if (procs.length < 2) throw new Error('connect ECONNREFUSED');
+        return server.fetch(input, init);
+      },
       findFreePortSync: (p) => p,
-      spawnProxy: (bin) => {
-        spawnedBins.push(bin);
-        return new FakeProc() as unknown as ChildProcess;
+      pickFreePort: async () => 31234,
+      readyPollMs: 5,
+      readyTimeoutMs: 500,
+      spawnProxy: () => {
+        const p = new FakeProc();
+        procs.push(p);
+        if (procs.length === 1) {
+          // 第一次启动：立刻报端口占用并退出
+          setTimeout(() => {
+            p.stderr.write('Error: Address already in use (os error 48)');
+            setTimeout(() => p.exit(1), 2);
+          }, 1);
+        }
+        return p as unknown as ChildProcess;
       },
     });
-    proxy.writeAccountConfigs(dirIdle, 'apiKey', createProxyConfig(28801));
-    proxy.writeAccountConfigs(dirBusy, 'apiKey', createProxyConfig(28802));
-    store.state.accounts.list.push(
-      { id: 'idle1', label: 'Idle', dir: dirIdle, createdAt: 1 },
-      { id: 'busy1', label: 'Busy', dir: dirBusy, createdAt: 2 },
-    );
+    await proxy.ready();
+    expect(procs.length).toBe(2);
+    expect(readKiroServiceConfig(serviceDir())!.port).toBe(31234);
+    expect(proxy.serviceState().proxy).toBe('ready');
+    await proxy.stopAll();
+  });
 
-    proxy.ensure(dirIdle);
-    proxy.ensure(dirBusy);
-    expect(proxy.isOutdated(dirIdle)).toBe(false);
-    expect(proxy.isOutdated(dirBusy)).toBe(false);
+  it('引擎升级后：空闲时 restartIdle 换新版本，有执行中会话时保持 outdated', async () => {
+    let cur = createFakeBin('kiro-v1');
+    const { proxy, bins } = makeProxy({ bin: () => cur });
+    proxy.ensure();
+    await proxy.ready();
+    expect(proxy.isOutdated()).toBe(false);
 
-    // 切换新引擎
-    curBin = createFakeBin('kiro-v2');
-    expect(proxy.isOutdated(dirIdle)).toBe(true);
-    expect(proxy.isOutdated(dirBusy)).toBe(true);
+    cur = createFakeBin('kiro-v2');
+    expect(proxy.isOutdated()).toBe(true);
+    await proxy.restartIdle(() => true);
+    expect(proxy.isOutdated()).toBe(true);
+    expect(bins.length).toBe(1);
 
-    await proxy.restartIdle((dir) => (dir === dirBusy ? (runningMap.get('busy1') ?? 0) > 0 : false));
-    expect(proxy.isOutdated(dirIdle)).toBe(false);
-    expect(proxy.isOutdated(dirBusy)).toBe(true);
-    expect(spawnedBins[spawnedBins.length - 1]).toBe(curBin);
+    await proxy.restartIdle(() => false);
+    expect(proxy.isOutdated()).toBe(false);
+    expect(bins[bins.length - 1]).toBe(cur);
+    await proxy.stopAll();
+  });
 
+  it('request 用管理密钥访问 Admin API；密钥错误的假服务返回 401；账号自己的错误让 stateOf 报 failed', async () => {
+    const { proxy } = makeProxy();
+    const r = await proxy.request('GET', '/credentials');
+    expect(r.ok).toBe(true);
+    expect((r.json as { total: number }).total).toBe(0);
+
+    const ep = await proxy.adminEndpoint();
+    expect(ep.url).toBe(`http://127.0.0.1:${proxy.port()}/admin`);
+    expect(ep.key).toBe(readKiroServiceConfig(serviceDir())!.adminApiKey);
+
+    proxy.setAccountError('/some/dir', '迁移失败：x');
+    expect(proxy.stateOf('/some/dir')).toEqual({ proxy: 'failed', error: '迁移失败：x' });
+    expect(proxy.stateOf('/other/dir').proxy).toBe('ready');
+    proxy.setAccountError('/some/dir', null);
+    expect(proxy.stateOf('/some/dir').proxy).toBe('ready');
     await proxy.stopAll();
   });
 });
 
-describe('KiroLogin（5 种方式、失败清理、重新登录备份恢复）', () => {
-  it('未安装引擎或总开关关闭时直接返回 409', () => {
-    const hNoEngine = makeHarness({ binPath: null });
-    expect(() => hNoEngine.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_12345678' })).toThrow(KIRO_ENGINE_MISSING);
+describe('账号与内置服务的映射（添加、回滚、重新登录、移除、额度、模型）', () => {
+  it('添加账号：分组 → 凭据 → 余额验证 → 客户端 Key → cosyee-api.json，不下发系统 Key', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_valid_key_001', 'Key账号');
+    const svc = readKiroServiceConfig(serviceDir())!;
 
-    const hOff = makeHarness();
-    hOff.kiro.engine.setEnabled(false);
-    expect(() => hOff.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_12345678' })).toThrow(KIRO_SERVICE_STOPPED);
+    expect([...h.server.groups]).toEqual([id]);
+    expect(h.server.creds.size).toBe(1);
+    const cred = [...h.server.creds.values()][0]!;
+    expect(cred.groups).toEqual([id]);
+    expect(cred.body).toMatchObject({ authMethod: 'api_key', kiroApiKey: 'ksk_valid_key_001' });
+    expect(h.server.keys.size).toBe(1);
+    const key = [...h.server.keys.values()][0]!;
+    expect(key.group).toBe(id);
+    expect(key.name).toBe(`cosyee ${id}`);
+
+    // 顺序：先分组，再凭据，再余额验证，最后客户端 Key
+    const order = h.server.calls.filter((c) => /^(POST \/groups|POST \/credentials|GET \/credentials\/\d+\/balance|POST \/client-keys)$/.test(c));
+    expect(order).toEqual(['POST /groups', 'POST /credentials', `GET /credentials/${cred.id}/balance`, 'POST /client-keys']);
+
+    const api = readApiConfig(dir)!;
+    expect(api.kiro).toEqual({ method: 'apiKey', credentialId: cred.id, keyId: key.id });
+    expect(api.apiKey).toBe(key.key);
+    expect(api.apiKey).not.toBe(svc.apiKey); // 系统 Key 绝不下发给账号
+    expect(api.apiKey).not.toBe(svc.adminApiKey);
+    expect(api.authType).toBe('apiKey');
+    expect(api.baseUrl).toBe(`http://127.0.0.1:${svc.port}`);
+    expect(api.models).toEqual({
+      alias: { opus: { id: 'claude-opus-4-5' }, sonnet: { id: 'claude-sonnet-4-5' }, haiku: { id: 'claude-haiku-4-5' } },
+    });
+    expect(h.modelsChanged).toEqual([]); // 登录时写入映射不触发重置
+
+    // 账号列表：有 kiro（含 models）、无 api，不含任何密钥
+    const entry = h.accounts.list().list.find((x) => x.id === id)!;
+    expect(entry.api).toBeUndefined();
+    expect(entry.plan).toBe('Kiro');
+    expect(entry.name).toBe('Key账号');
+    expect(entry.kiro).toEqual({ method: 'apiKey', proxy: 'ready', error: null, models: api.models });
+    const listJson = JSON.stringify(h.accounts.list());
+    expect(listJson).not.toContain(key.key);
+    expect(listJson).not.toContain('ksk_valid_key_001');
+    expect(listJson).not.toContain(svc.adminApiKey);
+
+    // saveApi 不允许修改 Kiro 账号
+    await expect(h.accounts.saveApi({ id, baseUrl: 'https://x.test', apiKey: 'sk-1' })).rejects.toThrow('Kiro');
+    await h.kiro.dispose();
   });
 
-  it('builderId 设备码流程（authorization_pending → slow_down → 成功）且不泄露令牌', async () => {
+  it('两个账号各有独立的分组、凭据与 Key，Key 只能用自己分组的凭据', async () => {
+    const h = makeHarness();
+    const a = await loginApiKey(h, 'ksk_acc_a_0001');
+    const b = await loginApiKey(h, 'ksk_acc_b_0001');
+    expect(h.server.groups.size).toBe(2);
+    expect(h.server.creds.size).toBe(2);
+    expect(readApiConfig(a.dir)!.apiKey).not.toBe(readApiConfig(b.dir)!.apiKey);
+    expect(readApiConfig(a.dir)!.kiro).not.toEqual(readApiConfig(b.dir)!.kiro);
+    expect(readApiConfig(a.dir)!.baseUrl).toBe(readApiConfig(b.dir)!.baseUrl);
+    await h.kiro.dispose();
+  });
+
+  it('builderId 设备码流程（authorization_pending → slow_down → 成功），凭据按 idc 写入服务，不泄露令牌', async () => {
     let tokenCalls = 0;
     const h = makeHarness({
       fetch: async (input) => {
@@ -593,11 +764,7 @@ describe('KiroLogin（5 种方式、失败清理、重新登录备份恢复）',
           tokenCalls++;
           if (tokenCalls === 1) return new Response(JSON.stringify({ error: 'authorization_pending' }), { status: 400 });
           if (tokenCalls === 2) return new Response(JSON.stringify({ error: 'slow_down' }), { status: 400 });
-          return new Response(JSON.stringify({
-            accessToken: 'at_secret_val',
-            refreshToken: 'rt_secret_val',
-            expiresIn: 3600,
-          }), { status: 200 });
+          return new Response(JSON.stringify({ accessToken: 'at_secret_val', refreshToken: 'rt_secret_val', expiresIn: 3600 }), { status: 200 });
         }
         throw new Error(`unexpected ${url}`);
       },
@@ -609,39 +776,25 @@ describe('KiroLogin（5 种方式、失败清理、重新登录备份恢复）',
     expect(final.status).toBe('done');
     expect(final.userCode).toBe('ABCD-EFGH');
     expect(final.url).toBe('https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH');
-    expect(final.accountId).toBeTruthy();
 
-    // 检查账号列表：有 kiro、无 api、plan='Kiro'、不含任何令牌
     const listJson = JSON.stringify(h.accounts.list());
-    expect(listJson).not.toContain('at_secret_val');
-    expect(listJson).not.toContain('rt_secret_val');
-    expect(listJson).not.toContain('csec_super_secret');
+    for (const s of ['at_secret_val', 'rt_secret_val', 'csec_super_secret']) expect(listJson).not.toContain(s);
     const entry = h.accounts.list().list.find((x) => x.id === final.accountId)!;
-    expect(entry.api).toBeUndefined();
-    expect(entry.plan).toBe('Kiro');
     expect(entry.name).toBe('我的 Kiro');
-    expect(entry.kiro).toEqual({ method: 'builderId', proxy: 'ready', error: null });
+    expect(entry.kiro).toMatchObject({ method: 'builderId', proxy: 'ready', error: null });
 
-    // credentials.json 必须是数组格式
-    const dir = h.accounts.dirFor(final.accountId!)!;
-    const creds = JSON.parse(fs.readFileSync(kiroCredsPath(dir), 'utf8'));
-    expect(Array.isArray(creds)).toBe(true);
-    expect(creds[0].authMethod).toBe('idc');
-    expect(creds[0].refreshToken).toBe('rt_secret_val');
-    expect(creds[0].clientId).toBe('cid_1');
-
-    // saveApi 不允许修改 Kiro 账号
-    await expect(h.accounts.saveApi({ id: final.accountId!, baseUrl: 'https://x.test', apiKey: 'sk-1' })).rejects.toThrow('Kiro');
-
+    const cred = [...h.server.creds.values()][0]!;
+    expect(cred.body).toMatchObject({ authMethod: 'idc', refreshToken: 'rt_secret_val', clientId: 'cid_1', clientSecret: 'csec_super_secret' });
+    expect(cred.groups).toEqual([final.accountId]);
+    expect(readApiConfig(h.accounts.dirFor(final.accountId!)!)!.kiro).toMatchObject({ method: 'builderId', credentialId: cred.id });
     await h.kiro.dispose();
   });
 
-  it('kiroIde 导入（IdC 带 40 位 hex clientIdHash）不修改源文件；非法 hash 被拒绝', async () => {
+  it('kiroIde 导入（IdC 带 40 位 hex clientIdHash）不修改源文件；非法 hash 被拒绝且不留目录和服务数据', async () => {
     const cacheDir = path.join(tmp, 'sso-cache');
     fs.mkdirSync(cacheDir, { recursive: true });
     const hash = '1'.repeat(40);
     const tokFile = path.join(cacheDir, 'kiro-auth-token.json');
-    const cliFile = path.join(cacheDir, `${hash}.json`);
     const origTok = JSON.stringify({
       refreshToken: 'ide_rt_1',
       accessToken: 'ide_at_1',
@@ -651,31 +804,27 @@ describe('KiroLogin（5 种方式、失败清理、重新登录备份恢复）',
       region: 'us-east-1',
     });
     fs.writeFileSync(tokFile, origTok);
-    fs.writeFileSync(cliFile, JSON.stringify({ clientId: 'ide_cid', clientSecret: 'ide_csec' }));
+    fs.writeFileSync(path.join(cacheDir, `${hash}.json`), JSON.stringify({ clientId: 'ide_cid', clientSecret: 'ide_csec' }));
 
     const h = makeHarness({ ideTokenFile: tokFile });
     expect(h.kiro.status().imports.kiroIde).toBe(true);
     const job = h.kiro.startLogin({ method: 'kiroIde' });
     await h.kiro.login.waitForLogin();
     expect(h.kiro.getLogin(job.loginId).status).toBe('done');
-    expect(fs.readFileSync(tokFile, 'utf8')).toBe(origTok); // 原文件丝毫未动
+    expect(fs.readFileSync(tokFile, 'utf8')).toBe(origTok);
+    expect([...h.server.creds.values()][0]!.body).toMatchObject({ authMethod: 'idc', clientId: 'ide_cid', refreshToken: 'ide_rt_1' });
 
-    // 非法 clientIdHash（路径穿越）被拒绝且不留目录
-    fs.writeFileSync(tokFile, JSON.stringify({
-      refreshToken: 'ide_rt_2',
-      authMethod: 'IdC',
-      clientIdHash: '../evil',
-    }));
+    fs.writeFileSync(tokFile, JSON.stringify({ refreshToken: 'ide_rt_2', authMethod: 'IdC', clientIdHash: '../evil' }));
     const beforeDirs = fs.readdirSync(root);
     const job2 = h.kiro.startLogin({ method: 'kiroIde' });
     await h.kiro.login.waitForLogin();
     expect(h.kiro.getLogin(job2.loginId).status).toBe('failed');
     expect(fs.readdirSync(root)).toEqual(beforeDirs);
-
+    expect(h.server.creds.size).toBe(1);
     await h.kiro.dispose();
   });
 
-  it('kiroCli 只读导入临时 SQLite（social 与 odic），不修改数据库', async () => {
+  it('kiroCli 只读导入临时 SQLite（social），不修改数据库', async () => {
     const req = createRequire(import.meta.url);
     const { DatabaseSync } = req('node:sqlite') as typeof import('node:sqlite');
     const dbFile = path.join(tmp, 'kiro-cli.sqlite3');
@@ -696,62 +845,368 @@ describe('KiroLogin（5 种方式、失败清理、重新登录备份恢复）',
     expect(h.kiro.status().imports.kiroCli).toBe(true);
     const job = h.kiro.startLogin({ method: 'kiroCli' });
     await h.kiro.login.waitForLogin();
-    const res = h.kiro.getLogin(job.loginId);
-    expect(res.status).toBe('done');
-    const dir = h.accounts.dirFor(res.accountId!)!;
-    const creds = JSON.parse(fs.readFileSync(kiroCredsPath(dir), 'utf8'));
-    expect(creds[0].authMethod).toBe('social');
-    expect(creds[0].refreshToken).toBe('cli_rt_1');
-    expect(creds[0].profileArn).toBe('arn:aws:codewhisperer:us-east-1:123:profile/abc');
-
+    expect(h.kiro.getLogin(job.loginId).status).toBe('done');
+    expect([...h.server.creds.values()][0]!.body).toMatchObject({
+      authMethod: 'social',
+      refreshToken: 'cli_rt_1',
+      profileArn: 'arn:aws:codewhisperer:us-east-1:123:profile/abc',
+    });
     await h.kiro.dispose();
   });
 
-  it('apiKey 登录、验证失败清理目录、重新登录失败恢复旧凭据、执行中会话重新登录 409', async () => {
-    // 1. 验证失败：不留目录，错误脱敏
-    const hFail = makeHarness({ adminBalance: null });
+  it('未安装引擎或总开关关闭时直接返回 409', () => {
+    const hNoEngine = makeHarness({ binPath: null });
+    expect(() => hNoEngine.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_12345678' })).toThrow(KIRO_ENGINE_MISSING);
+    const hOff = makeHarness();
+    hOff.kiro.engine.setEnabled(false);
+    expect(() => hOff.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_12345678' })).toThrow(KIRO_SERVICE_STOPPED);
+  });
+
+  it('回滚：apiKey 余额验证失败 → 服务里的凭据与分组被删，不留目录，错误脱敏', async () => {
+    const h = makeHarness();
+    h.server.balanceFail = () => true;
     const before = fs.readdirSync(root);
-    const jFail = hFail.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_leaked_secret_xyz' });
-    await hFail.kiro.login.waitForLogin();
-    const stFail = hFail.kiro.getLogin(jFail.loginId);
-    expect(stFail.status).toBe('failed');
-    expect(stFail.error).not.toContain('ksk_leaked_secret_xyz');
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_leaked_secret_xyz' });
+    await h.kiro.login.waitForLogin();
+    const st = h.kiro.getLogin(job.loginId);
+    expect(st.status).toBe('failed');
+    expect(st.error).not.toContain('ksk_leaked_secret_xyz');
+    expect(h.server.creds.size).toBe(0);
+    expect(h.server.keys.size).toBe(0);
+    expect(h.server.groups.size).toBe(0);
     expect(fs.readdirSync(root)).toEqual(before);
+    expect(h.accounts.listKiroAccounts()).toEqual([]);
+    await h.kiro.dispose();
+  });
 
-    // 2. 正常 apiKey 登录
-    let balanceShouldFail = false;
-    const h = makeHarness({
-      adminBalance: { subscriptionTitle: 'KIRO FREE', currentUsage: 5, usageLimit: 50, nextResetAt: 1700000000 },
-    });
-    const jOk = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_valid_key_001', label: 'Key账号' });
+  it('回滚：服务拒绝凭据（刷新失败）→ 分组被删，错误不含令牌', async () => {
+    const h = makeHarness();
+    h.server.addFail = () => 'refresh failed for refreshToken=secret_tok_123';
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_whatever_001' });
     await h.kiro.login.waitForLogin();
-    const accId = h.kiro.getLogin(jOk.loginId).accountId!;
-    const dir = h.accounts.dirFor(accId)!;
-    const origCreds = fs.readFileSync(kiroCredsPath(dir), 'utf8');
+    const st = h.kiro.getLogin(job.loginId);
+    expect(st.status).toBe('failed');
+    expect(st.error).not.toContain('secret_tok_123');
+    expect(h.server.groups.size).toBe(0);
+    expect(h.server.creds.size).toBe(0);
+    await h.kiro.dispose();
+  });
 
-    // 有执行中会话时重新登录返回 409
-    h.runningMap.set(accId, 1);
-    expect(() => h.kiro.startLogin({ method: 'apiKey', accountId: accId, apiKey: 'ksk_valid_key_002' })).toThrow('正在执行');
-    h.runningMap.set(accId, 0);
-
-    // 重新登录验证失败时恢复原 credentials.json
-    const origGetBalance = h.kiro.proxy.getBalance.bind(h.kiro.proxy);
-    vi.spyOn(h.kiro.proxy, 'getBalance').mockImplementation(async (d) => {
-      if (balanceShouldFail) throw new Error('invalid api key');
-      return origGetBalance(d);
-    });
-    balanceShouldFail = true;
-    const jRelog = h.kiro.startLogin({ method: 'apiKey', accountId: accId, apiKey: 'ksk_bad_relogin_999' });
+  it('回滚：创建客户端 Key 失败 → 凭据与分组被删', async () => {
+    const h = makeHarness();
+    h.server.keyFail = true;
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_key_step_001' });
     await h.kiro.login.waitForLogin();
-    expect(h.kiro.getLogin(jRelog.loginId).status).toBe('failed');
-    expect(fs.readFileSync(kiroCredsPath(dir), 'utf8')).toBe(origCreds);
+    expect(h.kiro.getLogin(job.loginId).status).toBe('failed');
+    expect(h.server.creds.size).toBe(0);
+    expect(h.server.groups.size).toBe(0);
+    expect(h.accounts.listKiroAccounts()).toEqual([]);
+    await h.kiro.dispose();
+  });
 
-    // 移除账号前停止代理并删目录
-    const stopSpy = vi.spyOn(h.kiro.proxy, 'stop');
-    await h.accounts.remove(accId);
-    expect(stopSpy).toHaveBeenCalledWith(dir);
+  it('同一份凭据已属于另一个账号：新账号失败，不动原账号的凭据，只回滚自己新建的分组', async () => {
+    const h = makeHarness();
+    const a = await loginApiKey(h, 'ksk_shared_key_01');
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_shared_key_01' });
+    await h.kiro.login.waitForLogin();
+    const st = h.kiro.getLogin(job.loginId);
+    expect(st.status).toBe('failed');
+    expect(st.error).toContain('已在 kiro.rs 服务中存在');
+    expect(h.server.creds.size).toBe(1);
+    expect(h.server.keys.size).toBe(1);
+    expect([...h.server.groups]).toEqual([a.id]);
+    await h.kiro.dispose();
+  });
+
+  it('登录被取消：服务里不留数据', async () => {
+    const h = makeHarness();
+    h.server.balanceFail = () => true;
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_cancel_me_01' });
+    h.kiro.cancelLogin(job.loginId);
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job.loginId).status).not.toBe('done');
+    expect(h.server.creds.size).toBe(0);
+    expect(h.server.groups.size).toBe(0);
+    expect(h.accounts.listKiroAccounts()).toEqual([]);
+    await h.kiro.dispose();
+  });
+
+  it('重新登录：新凭据加入同一分组，旧凭据删除，客户端 Key 不变，其他字段保持', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_first_key_001');
+    const before = readApiConfig(dir)!;
+    const oldId = (before.kiro as { credentialId: number }).credentialId;
+
+    const job = h.kiro.startLogin({ method: 'apiKey', accountId: id, apiKey: 'ksk_second_key_002' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job.loginId).status).toBe('done');
+
+    const after = readApiConfig(dir)!;
+    const newId = (after.kiro as { credentialId: number }).credentialId;
+    expect(newId).not.toBe(oldId);
+    expect((after.kiro as { keyId: number }).keyId).toBe((before.kiro as { keyId: number }).keyId);
+    expect(after.apiKey).toBe(before.apiKey);
+    expect(after.baseUrl).toBe(before.baseUrl);
+    expect(after.models).toEqual(before.models);
+    expect([...h.server.creds.keys()]).toEqual([newId]);
+    expect(h.server.creds.get(newId)!.groups).toEqual([id]);
+    expect(h.server.creds.get(newId)!.body.kiroApiKey).toBe('ksk_second_key_002');
+    expect(h.server.keys.size).toBe(1);
+    expect(h.server.groups.size).toBe(1);
+    await h.kiro.dispose();
+  });
+
+  it('重新登录失败：新凭据被删，旧凭据与配置原样保留；有执行中会话时 409', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_valid_key_001');
+    const origCfg = fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8');
+    const origCreds = [...h.server.creds.keys()];
+
+    h.runningMap.set(id, 1);
+    expect(() => h.kiro.startLogin({ method: 'apiKey', accountId: id, apiKey: 'ksk_valid_key_002' })).toThrow('正在执行');
+    h.runningMap.set(id, 0);
+
+    h.server.balanceFail = (c) => c.body.kiroApiKey === 'ksk_bad_relogin_999';
+    const job = h.kiro.startLogin({ method: 'apiKey', accountId: id, apiKey: 'ksk_bad_relogin_999' });
+    await h.kiro.login.waitForLogin();
+    const st = h.kiro.getLogin(job.loginId);
+    expect(st.status).toBe('failed');
+    expect(st.error).not.toContain('ksk_leaked_secret_xyz');
+    expect([...h.server.creds.keys()]).toEqual(origCreds);
+    expect(fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8')).toBe(origCfg);
+    expect(h.accounts.listKiroAccounts().map((a) => a.id)).toEqual([id]);
+    await h.kiro.dispose();
+  });
+
+  it('重新登录用服务里已存在的同一份凭据：视为成功，凭据与 Key 都不变', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_same_key_0001');
+    const before = fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8');
+    const job = h.kiro.startLogin({ method: 'apiKey', accountId: id, apiKey: 'ksk_same_key_0001' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job.loginId).status).toBe('done');
+    expect(fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8')).toBe(before);
+    expect(h.server.creds.size).toBe(1);
+    await h.kiro.dispose();
+  });
+
+  it('移除账号：删除服务里的凭据、Key 和分组（force），不影响其他账号，并删除账号目录', async () => {
+    const h = makeHarness();
+    const a = await loginApiKey(h, 'ksk_acc_a_0001');
+    const b = await loginApiKey(h, 'ksk_acc_b_0001');
+    const keyB = readApiConfig(b.dir)!.kiro as { credentialId: number; keyId: number };
+
+    await h.accounts.remove(a.id);
+    expect(fs.existsSync(a.dir)).toBe(false);
+    expect([...h.server.groups]).toEqual([b.id]);
+    expect([...h.server.creds.keys()]).toEqual([keyB.credentialId]);
+    expect([...h.server.keys.keys()]).toEqual([keyB.keyId]);
+    expect(h.server.callsOf('DELETE /groups/')).toEqual([`DELETE /groups/${a.id}`]);
+
+    await h.accounts.remove(b.id);
+    expect(h.server.groups.size + h.server.creds.size + h.server.keys.size).toBe(0);
+    await h.kiro.dispose();
+  });
+
+  it('移除账号时服务已关闭：账号仍被移除，清理失败只记日志', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_acc_off_0001');
+    await h.kiro.stopService(true);
+    await h.accounts.remove(id);
     expect(fs.existsSync(dir)).toBe(false);
+    expect(h.logs.some((l) => l.includes('无法清理'))).toBe(true);
+    expect(h.server.creds.size).toBe(1); // 已知局限：服务关闭时凭据留在服务里
+    await h.kiro.dispose();
+  });
 
+  it('额度：从服务读取并换算重置时间；凭据不在服务里时给出重新登录提示', async () => {
+    const h = makeHarness();
+    const { id } = await loginApiKey(h, 'ksk_valid_key_001');
+    expect(await h.kiro.balance(id)).toEqual({ subscription: 'KIRO PRO', used: 12.5, limit: 500, resetsAt: 1700000000500 });
+
+    h.server.creds.clear();
+    await expect(h.kiro.balance(id)).rejects.toThrow('重新登录');
+    await h.kiro.dispose();
+  });
+
+  it('额度查询失败返回脱敏的 502', async () => {
+    const h = makeHarness();
+    const { id } = await loginApiKey(h, 'ksk_valid_key_001');
+    h.server.balanceFail = () => true;
+    const err = await h.kiro.balance(id).catch((e: Error & { status?: number }) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { status?: number }).status).toBe(502);
+    expect((err as Error).message).not.toContain('ksk_leaked_secret_xyz');
+    await h.kiro.dispose();
+  });
+
+  it('刷新模型：有变化时写回映射并通知；无变化不通知；拉取失败保留旧映射', async () => {
+    const h = makeHarness();
+    const { id, dir } = await loginApiKey(h, 'ksk_valid_key_001');
+    const first = readApiConfig(dir)!.models;
+    expect(await h.kiro.refreshModels(id)).toBe(false);
+    expect(h.modelsChanged).toEqual([]);
+
+    h.server.models = ['claude-sonnet-4-5', 'claude-sonnet-4-6', 'claude-sonnet-4-6-thinking', 'claude-fable-5-1', 'claude-opus-4-5'];
+    expect(await h.kiro.refreshModels(id)).toBe(true);
+    expect(h.modelsChanged).toEqual([id]);
+    expect(readApiConfig(dir)!.models).toEqual({
+      alias: { opus: { id: 'claude-opus-4-5' }, sonnet: { id: 'claude-sonnet-4-6' }, fable: { id: 'claude-fable-5-1' } },
+      extra: [{ id: 'claude-sonnet-4-5' }],
+    });
+
+    const second = readApiConfig(dir)!.models;
+    h.server.modelsStatus = 500;
+    h.server.models = ['claude-haiku-4-5'];
+    expect(await h.kiro.refreshModels(id)).toBe(false);
+    expect(readApiConfig(dir)!.models).toEqual(second);
+    expect(second).not.toEqual(first);
+    expect(h.logs.some((l) => l.includes('刷新 Kiro 模型列表失败'))).toBe(true);
+    expect(h.modelsChanged).toEqual([id]);
+    await h.kiro.dispose();
+  });
+});
+
+describe('旧格式（每账号一个进程）账号迁移到内置服务', () => {
+  const idcCred = { authMethod: 'builder-id', refreshToken: 'legacy_rt_1', accessToken: 'legacy_at', clientId: 'legacy_cid', clientSecret: 'legacy_csec', region: 'us-east-1' };
+
+  it('迁移成功：凭据进分组、生成 Key、cosyee-api.json 换新格式、kiro/ 归档为 kiro.migrated/', async () => {
+    const h = makeHarness();
+    const dir = makeLegacyAccount(h, 'legacy1', idcCred);
+    expect(h.accounts.listKiroAccounts().map((a) => a.id)).toEqual(['legacy1']);
+    const legacyCredsText = fs.readFileSync(path.join(dir, 'kiro', 'credentials.json'), 'utf8');
+
+    h.kiro.init();
+    await h.kiro.waitForMigration();
+
+    const api = readApiConfig(dir)!;
+    const svc = readKiroServiceConfig(serviceDir())!;
+    expect(api.kiro).toMatchObject({ method: 'builderId' });
+    expect('credentialId' in api.kiro!).toBe(true);
+    expect('keyId' in api.kiro!).toBe(true);
+    expect(api.apiKey).not.toBe('legacy-proxy-key');
+    expect(api.apiKey).not.toBe(svc.apiKey);
+    expect(api.baseUrl).toBe(`http://127.0.0.1:${svc.port}`);
+    expect(api.models?.alias?.sonnet?.id).toBe('claude-sonnet-4-5');
+
+    expect(fs.existsSync(path.join(dir, 'kiro'))).toBe(false);
+    expect(fs.readFileSync(path.join(dir, 'kiro.migrated', 'credentials.json'), 'utf8')).toBe(legacyCredsText);
+
+    expect([...h.server.groups]).toEqual(['legacy1']);
+    const cred = [...h.server.creds.values()][0]!;
+    expect(cred.groups).toEqual(['legacy1']);
+    expect(cred.body).toMatchObject({ authMethod: 'idc', refreshToken: 'legacy_rt_1', clientId: 'legacy_cid', authRegion: 'us-east-1' });
+    expect(h.kiro.proxy.stateOf(dir)).toEqual({ proxy: 'ready', error: null });
+    expect(h.modelsChanged).toEqual(['legacy1']); // 迁移改了模型映射，通知账号重置会话
+    await h.kiro.dispose();
+  });
+
+  it('迁移 apiKey 账号时不做余额验证（临时故障不让原本可用的账号失败）', async () => {
+    const h = makeHarness();
+    h.server.balanceFail = () => true;
+    const dir = makeLegacyAccount(h, 'legacy-key', { authMethod: 'api_key', kiroApiKey: 'ksk_legacy_key_1' }, 'apiKey');
+    h.kiro.init();
+    await h.kiro.waitForMigration();
+    expect(readApiConfig(dir)!.kiro).toMatchObject({ method: 'apiKey', credentialId: expect.any(Number) });
+    expect([...h.server.creds.values()][0]!.body).toMatchObject({ authMethod: 'api_key', kiroApiKey: 'ksk_legacy_key_1' });
+    await h.kiro.dispose();
+  });
+
+  it('迁移失败：文件原样不动，账号显示错误，其他账号照常迁移；修好后下次启动重试成功', async () => {
+    const h = makeHarness();
+    h.server.addFail = (b) => (b.refreshToken === 'bad_rt' ? 'refresh failed for refreshToken=bad_rt' : null);
+    const badDir = makeLegacyAccount(h, 'bad', { authMethod: 'social', refreshToken: 'bad_rt' });
+    const noFileDir = makeLegacyAccount(h, 'nofile', null);
+    const okDir = makeLegacyAccount(h, 'good', { authMethod: 'social', refreshToken: 'good_rt' });
+    const badApiText = fs.readFileSync(path.join(badDir, 'cosyee-api.json'), 'utf8');
+    const badCredsText = fs.readFileSync(path.join(badDir, 'kiro', 'credentials.json'), 'utf8');
+
+    h.kiro.init();
+    await h.kiro.waitForMigration();
+
+    expect(fs.readFileSync(path.join(badDir, 'cosyee-api.json'), 'utf8')).toBe(badApiText);
+    expect(fs.readFileSync(path.join(badDir, 'kiro', 'credentials.json'), 'utf8')).toBe(badCredsText);
+    expect(fs.existsSync(path.join(badDir, 'kiro.migrated'))).toBe(false);
+    const st = h.kiro.proxy.stateOf(badDir);
+    expect(st.proxy).toBe('failed');
+    expect(st.error).toMatch(/^迁移失败：/);
+    expect(st.error).not.toContain('bad_rt');
+    expect(h.kiro.proxy.stateOf(noFileDir).error).toContain('无法读取旧版凭据文件');
+    // 服务里没留下失败账号的分组
+    expect([...h.server.groups]).toEqual(['good']);
+
+    const entries = h.accounts.list().list;
+    expect(entries.find((e) => e.id === 'bad')!.kiro).toMatchObject({ method: 'builderId', proxy: 'failed' });
+    expect(entries.find((e) => e.id === 'good')!.kiro).toMatchObject({ proxy: 'ready', error: null });
+    expect('credentialId' in readApiConfig(okDir)!.kiro!).toBe(true);
+    expect(fs.existsSync(path.join(okDir, 'kiro.migrated'))).toBe(true);
+
+    // 修好后再次触发迁移：失败账号成功，错误清除，已迁移的账号不重复处理
+    h.server.addFail = () => null;
+    const credCountBefore = h.server.creds.size;
+    h.kiro.init();
+    await h.kiro.waitForMigration();
+    expect('credentialId' in readApiConfig(badDir)!.kiro!).toBe(true);
+    expect(h.kiro.proxy.stateOf(badDir).error).toBeNull();
+    expect(h.server.creds.size).toBe(credCountBefore + 1);
+    expect(h.kiro.proxy.stateOf(noFileDir).proxy).toBe('failed');
+    await h.kiro.dispose();
+  });
+
+  it('上次迁移在中途断掉（凭据已在分组里、Key 还没建）：重试复用已有凭据，不重复添加', async () => {
+    const h = makeHarness();
+    const dir = makeLegacyAccount(h, 'half', { authMethod: 'social', refreshToken: 'half_rt' });
+    h.server.groups.add('half');
+    h.server.creds.set(5, { id: 5, body: { authMethod: 'social', refreshToken: 'half_rt' }, groups: ['half'] });
+    h.server.nextCred = 6;
+    h.kiro.init();
+    await h.kiro.waitForMigration();
+    expect(h.server.creds.size).toBe(1);
+    expect(readApiConfig(dir)!.kiro).toMatchObject({ credentialId: 5 });
+    expect(h.server.keys.size).toBe(1);
+    await h.kiro.dispose();
+  });
+
+  it('总开关关闭或没有引擎时不迁移，也不碰服务', async () => {
+    const hOff = makeHarness();
+    const dir = makeLegacyAccount(hOff, 'off1', idcCred);
+    hOff.kiro.engine.setEnabled(false);
+    hOff.kiro.init();
+    await hOff.kiro.waitForMigration();
+    expect(fs.existsSync(path.join(dir, 'kiro', 'credentials.json'))).toBe(true);
+    expect(hOff.server.calls).toEqual([]);
+    expect(hOff.spawned.length).toBe(0);
+
+    const hNone = makeHarness({ binPath: null });
+    makeLegacyAccount(hNone, 'none1', idcCred);
+    hNone.kiro.init();
+    await hNone.kiro.waitForMigration();
+    expect(hNone.server.calls).toEqual([]);
+  });
+
+  it('迁移前：额度查询给出「正在迁移」提示；旧格式账号重新登录等同于迁移', async () => {
+    const h = makeHarness();
+    const dir = makeLegacyAccount(h, 'legacy2', idcCred, 'apiKey');
+    await expect(h.kiro.balance('legacy2')).rejects.toThrow('迁移');
+
+    const job = h.kiro.startLogin({ method: 'apiKey', accountId: 'legacy2', apiKey: 'ksk_relogin_legacy' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job.loginId).status).toBe('done');
+    const api = readApiConfig(dir)!;
+    expect('credentialId' in api.kiro!).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'kiro'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'kiro.migrated'))).toBe(true);
+    expect([...h.server.creds.values()][0]!.body.kiroApiKey).toBe('ksk_relogin_legacy');
+    expect(h.kiro.proxy.stateOf(dir).error).toBeNull();
+    await h.kiro.dispose();
+  });
+
+  it('移除尚未迁移的旧格式账号不碰服务', async () => {
+    const h = makeHarness();
+    const dir = makeLegacyAccount(h, 'legacy3', idcCred);
+    await h.accounts.remove('legacy3');
+    expect(fs.existsSync(dir)).toBe(false);
+    expect(h.server.calls).toEqual([]);
     await h.kiro.dispose();
   });
 });
@@ -760,9 +1215,7 @@ describe('HTTP /api/kiro 路由（含 HTTP/1.0 无请求体、fromLocal 限制�
   it('覆盖 /api/kiro 全部端点，HTTP/1.0 无 Origin 响应无 chunked/gzip，远程 403，忙会话 409', async () => {
     const h = makeHarness();
     // 先建一个 Kiro 账号
-    const j = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_http_test_001' });
-    await h.kiro.login.waitForLogin();
-    const accId = h.kiro.getLogin(j.loginId).accountId!;
+    const { id: accId } = await loginApiKey(h, 'ksk_http_test_001');
 
     const workspaces = new Workspaces(h.store);
     let port = 0;
@@ -856,8 +1309,9 @@ describe('HTTP /api/kiro 路由（含 HTTP/1.0 无请求体、fromLocal 限制�
       expect(startBody.service.running).toBe(1);
       expect(startBody.service.items).toEqual([{ id: accId, label: 'Kiro', proxy: 'starting' }]);
       // GET /api/kiro 绝不包含 adminApiKey
-      const cfg = readKiroProxyConfig(h.accounts.dirFor(accId)!)!;
+      const cfg = readKiroServiceConfig(serviceDir())!;
       expect(JSON.stringify(startBody)).not.toContain(cfg.adminApiKey);
+      expect(JSON.stringify(startBody)).not.toContain(cfg.apiKey);
 
       // 6. POST /api/kiro/service/admin：带 Origin 或 Sec-Fetch-Site/Mode 的网页请求一律 403
       const originAdmin = await fetch(`http://127.0.0.1:${port}/api/kiro/service/admin?account=${accId}`, {
@@ -899,24 +1353,20 @@ describe('HTTP /api/kiro 路由（含 HTTP/1.0 无请求体、fromLocal 限制�
         key: cfg.adminApiKey,
       });
 
-      // 7. 模拟 sidecar / 管理页面改写了 credentials.json：重启代理绝不覆盖 credentials.json
-      const credsFile = kiroCredsPath(h.accounts.dirFor(accId)!);
+      // 7. 模拟管理页面改写了 credentials.json：重启服务绝不覆盖它
+      const credsFile = kiroCredsPath(serviceDir());
       const refreshedCreds = JSON.stringify([{ authMethod: 'api_key', kiroApiKey: 'ksk_updated_in_admin_ui' }]);
       fs.writeFileSync(credsFile, refreshedCreds);
       await h.kiro.restartService(true);
       expect(fs.readFileSync(credsFile, 'utf8')).toBe(refreshedCreds);
+      expect(h.spawned.length).toBe(3); // 登录时一次、stop 后 start 一次、restart 一次
+      expect(h.spawned[2]!.args).toEqual(['--config', kiroConfigPath(serviceDir()), '--credentials', credsFile]);
 
-      // 8. 凭据在管理页面被删空时，查询余额给出明确 409 提示而非崩溃
-      const emptyProxy = new KiroProxyManager({
-        engine: h.kiro.engine,
-        findFreePortSync: (p) => p,
-        readyPollMs: 5,
-        readyTimeoutMs: 300,
-        spawnProxy: () => new FakeProc() as unknown as ChildProcess,
-        fetch: async () => new Response(JSON.stringify({ total: 0, available: 0, currentId: 0, credentials: [] }), { status: 200 }),
-      });
-      await expect(emptyProxy.getBalance(h.accounts.dirFor(accId)!)).rejects.toThrow('没有可用凭据');
-      await emptyProxy.stopAll();
+      // 8. 凭据在服务里被删掉时，查询余额给出明确 409 提示而非崩溃
+      h.server.creds.clear();
+      const missing = await fetch(`http://127.0.0.1:${port}/api/kiro/balance?account=${accId}`);
+      expect(missing.status).toBe(409);
+      expect((await missing.json()).error).toContain('重新登录');
     } finally {
       await new Promise<void>((r) => srv.close(() => r()));
       await h.kiro.dispose();

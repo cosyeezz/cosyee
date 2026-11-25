@@ -140,7 +140,7 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 | `COSYEE_PORT` | 后端端口，默认 7878 |
 | `COSYEE_WEB_PORT` | 开发模式前端（Vite）端口，默认 5273；前后端都读这个变量 |
 | `COSYEE_CLAUDE` | `claude` 可执行文件的路径，默认从 PATH 查找 |
-| `COSYEE_KIRO_RS` | 手动指定 `kiro-rs` 代理可执行文件路径（默认使用 `~/.cosyee/kiro-rs` 里编译的版本） |
+| `COSYEE_KIRO_RS` | 手动指定 `kiro-rs` 可执行文件路径（默认使用 `~/.cosyee/kiro-rs` 里下载的预编译版本） |
 | `COSYEE_ACCOUNTS_DIR` | 添加的账号的配置目录放在哪里，默认 `~/.claude-accounts`（主要供测试用） |
 | `COSYEE_DESKTOP_DEV` | 仅桌面版开发：设为 1 时窗口加载 Vite 地址并连接已运行的后端（由 `npm run dev:desktop` 设置） |
 | `COSYEE_SPEECH` | 设为 `0` 时启动后不预先下载语音模型（默认在后台下载朗读、识别模型到 `~/.cosyee/speech`，各约 175MB） |
@@ -179,7 +179,7 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 - **移除**：只能移除添加的账号（不能移除默认账号和当前账号；并行模式下有执行中会话的账号也不能移除）；先解除共享链接，再删除该账号目录里的私有内容，不会碰共享的内容。
 - 在终端里用某个添加的账号：`CLAUDE_CONFIG_DIR=~/.claude-accounts/<id> claude`。
 - 列表只显示名字、套餐和备注名，不显示、不下发邮箱和账号 uuid（前端拿到的 id 只是本地目录名）。
-- **Kiro 账号**：通过本机 [kiro.rs](https://github.com/hank9999/kiro.rs)（未修改的上游源码，需本机 `git` 与 `cargo` 在 `~/.cosyee/kiro-rs/` 下编译，或用 `COSYEE_KIRO_RS` 指定）将 Anthropic API 转发为 Kiro API。每个 Kiro 账号运行独立的本地代理（`127.0.0.1`，配置与凭据隔离在账号目录的 `kiro/` 子目录），支持 AWS Builder ID / IAM Identity Center 设备码登录、只读导入本机 Kiro IDE / Kiro CLI 登录，或使用 `ksk_` API Key。
+- **Kiro 账号**：通过本机 [kiro.rs](https://github.com/ZyphrZero/kiro.rs)（下载其 GitHub Release 预编译包并校验 SHA256，安装在 `~/.cosyee/kiro-rs/`，无需本机编译；也可用 `COSYEE_KIRO_RS` 指定）将 Anthropic API 转发为 Kiro API。一个本地服务（`127.0.0.1`）托管全部 Kiro 账号，各账号的凭据隔离在账号目录的 `kiro/` 子目录，支持 AWS Builder ID / IAM Identity Center 设备码登录、只读导入本机 Kiro IDE / Kiro CLI 登录，或使用 `ksk_` API Key。
 
 ## 安全
 

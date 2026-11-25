@@ -195,10 +195,7 @@ export function ContextPanel({
     );
   }
 
-  const { totalTokens } = usage;
-  const catSum = usage.categories.reduce((s, c) => s + Math.max(0, c.tokens), 0);
-  // 分母：通常是总量；若分类合计超过总量（数据不一致）就按合计，避免条溢出
-  const denom = Math.max(totalTokens, catSum, 1);
+  const denom = usageDenom(usage);
   const skills = usage.skills ?? [];
   // Cosyee 自带的 MCP 服务器不在这里列：它的工具（delegate 等）归到「工具」一节，按工具开关
   const servers = (usage.mcpServers ?? []).filter((s) => s.name !== COSYEE_MCP_SERVER);
@@ -415,25 +412,37 @@ export function ContextPanel({
   );
 }
 
+/** 分段条的分母：通常是总量；若分类合计超过总量（数据不一致）就按合计，避免条溢出 */
+export function usageDenom(usage: ContextUsage): number {
+  const catSum = usage.categories.reduce((s, c) => s + Math.max(0, c.tokens), 0);
+  return Math.max(usage.totalTokens, catSum, 1);
+}
+
+/** 上下文占用的分段条（上下文栏和收起后的图表浮层共用）：hot 是被指着的那一类，条上只亮这一段 */
+export function UsageBar({ usage, denom, hot, onHot }: { usage: ContextUsage; denom: number; hot: string | null; onHot: (name: string | null) => void }) {
+  const on = hot !== null && usage.categories.some((c) => c.name === hot && c.tokens > 0);
+  return (
+    <div className={`cz-ctx__bar${on ? ' has-hot' : ''}`} role="img" aria-label={`已用 ${formatPercent(usage.percent)}`}>
+      {usage.categories.filter((c) => c.tokens > 0).map((c) => (
+        <span
+          key={c.name}
+          className={`cz-ctx__seg${c.name === hot ? ' is-hot' : ''}`}
+          style={{ width: `${(c.tokens / denom) * 100}%`, background: categoryColor(c.name) }}
+          title={`${c.name}：${formatTokens(c.tokens)}`}
+          onMouseEnter={() => onHot(c.name)}
+          onMouseLeave={() => onHot(null)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** 分段条 + 分类明细：指着某一类时，条上只亮这一段（反过来也一样） */
 function Breakdown({ usage, denom }: { usage: ContextUsage; denom: number }) {
   const [hot, setHot] = useState<string | null>(null);
-  const hover = (name: string) => ({ onMouseEnter: () => setHot(name), onMouseLeave: () => setHot(null) });
-
-  const on = hot !== null && usage.categories.some((c) => c.name === hot && c.tokens > 0);
   return (
     <>
-      <div className={`cz-ctx__bar${on ? ' has-hot' : ''}`} role="img" aria-label={`已用 ${formatPercent(usage.percent)}`}>
-        {usage.categories.filter((c) => c.tokens > 0).map((c) => (
-          <span
-            key={c.name}
-            className={`cz-ctx__seg${c.name === hot ? ' is-hot' : ''}`}
-            style={{ width: `${(c.tokens / denom) * 100}%`, background: categoryColor(c.name) }}
-            title={`${c.name}：${formatTokens(c.tokens)}`}
-            {...hover(c.name)}
-          />
-        ))}
-      </div>
+      <UsageBar usage={usage} denom={denom} hot={hot} onHot={setHot} />
       <ul className="cz-ctx__list cz-ctx__list--cats">
         {usage.categories.map((c) => (
           <CategoryRow key={c.name} cat={c} denom={denom} hot={c.name === hot} onHot={setHot} />

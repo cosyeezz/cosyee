@@ -390,6 +390,15 @@ describe('Runner 待回应请求（can_use_tool）', () => {
     expect(writes).toHaveLength(2);
   });
 
+  it('ExitPlanMode 修改意见带 @"路径"：提示模型用 Read 读附件', () => {
+    const { r, writes } = make();
+    r.handleMessage(plan());
+    r.reply('p1', { kind: 'revise', feedback: '参考 @"/tmp/a.png"' });
+    const msg = resp(writes[0]!).message as string;
+    expect(msg.startsWith('The user did not approve the plan. Their feedback:\n参考 @"/tmp/a.png"')).toBe(true);
+    expect(msg).toContain('Read tool');
+  });
+
   it('control_cancel_request 丢掉对应的待回应请求', () => {
     const { r, log } = make();
     r.handleMessage(ask('a1'));

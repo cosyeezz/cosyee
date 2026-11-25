@@ -2,7 +2,11 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: 2px var(--sp-2);
+  /* 与额度圆环按钮同高（24px），输入框底栏三个控件对齐 */
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  line-height: 1;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;

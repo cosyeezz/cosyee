@@ -45,13 +45,13 @@ const kiroStatusOf = (over?: {
 }): KiroStatus => ({
   engine: {
     source: 'managed',
-    current: { commit: 'a1b2c3d4e5f67890', date: 1700000000000, title: 'init' },
+    current: { commit: 'v0.9.8', date: 1700000000000, title: 'init' },
     latest: null,
     updateAvailable: false,
     checkedAt: null,
     missingTools: [],
     build: { state: 'idle', step: null, error: null },
-    adminUi: false,
+    adminUi: true,
     adminUiError: null,
     ...(over?.engine ?? {}),
   },
@@ -120,23 +120,24 @@ describe('AddKindSeg 键盘循环', () => {
 describe('KiroAccountDialog', () => {
   const noop = () => {};
 
-  it('无引擎：显示说明与安装按钮；缺工具时列出工具、rustup 链接并禁用按钮', async () => {
+  it('无引擎：显示下载说明与「下载 kiro.rs」按钮，不再提示编译工具', async () => {
     routes = {
       'GET /api/kiro': () => ({
-        body: kiroStatusOf({ engine: { source: 'none', current: null, missingTools: ['git', 'cargo'] } }),
+        body: kiroStatusOf({ engine: { source: 'none', current: null } }),
       }),
     };
     mount(<KiroAccountDialog onClose={noop} onDone={noop} onSwitch={noop} />);
     await flush();
 
     const dlg = document.querySelector('[role="dialog"]')!;
-    expect(dlg.textContent).toContain('hank9999/kiro.rs');
-    expect(dlg.textContent).toContain('缺少编译工具：git、cargo');
-    expect(dlg.querySelector('a')?.getAttribute('href')).toBe('https://rustup.rs');
-    expect(dlgBtn('安装引擎')?.disabled).toBe(true);
+    expect(dlg.textContent).toContain('ZyphrZero/kiro.rs');
+    expect(dlg.textContent).not.toContain('cargo');
+    expect(dlg.textContent).not.toContain('缺少编译工具');
+    expect(dlg.querySelector('a')).toBeNull();
+    expect(dlgBtn('下载 kiro.rs')?.disabled).toBe(false);
   });
 
-  it('无引擎：点击安装触发 build、403 原样显示错误；编译中轮询 step 直到失败可重试、成功后进入登录表单', async () => {
+  it('无引擎：点击下载触发 build、403 原样显示错误；下载中轮询 step 直到失败可重试、成功后进入登录表单', async () => {
     vi.useFakeTimers();
     let step = 0;
     routes = {
@@ -144,23 +145,23 @@ describe('KiroAccountDialog', () => {
         if (step === 0) return { body: kiroStatusOf({ engine: { source: 'none', current: null } }) };
         if (step === 1) {
           step = 2;
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: 'cargo build --release', error: null } } }) };
+          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '下载 kiro-rs-linux.tar.gz', error: null } } }) };
         }
         if (step === 2) {
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'failed', step: null, error: 'rustc 版本过低' } } }) };
+          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'failed', step: null, error: 'SHA256 校验失败' } } }) };
         }
         return { body: kiroStatusOf({ engine: { source: 'managed' } }) };
       },
       'POST /api/kiro/engine/build': () => {
         if (step === 0) {
           step = 1;
-          return { status: 403, body: { error: '仅允许本机连接编译 kiro.rs' } };
+          return { status: 403, body: { error: '仅允许本机连接下载 kiro.rs' } };
         }
         if (step === 1) {
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: 'git clone', error: null } } }) };
+          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '获取 Release 信息', error: null } } }) };
         }
         step = 3;
-        return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '编译中', error: null } } }) };
+        return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '下载中', error: null } } }) };
       },
     };
     try {
@@ -168,27 +169,27 @@ describe('KiroAccountDialog', () => {
       await flush();
 
       // 第一次 build 403 → 原样显示错误
-      click(dlgBtn('安装引擎')!);
+      click(dlgBtn('下载 kiro.rs')!);
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('仅允许本机连接编译 kiro.rs');
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('仅允许本机连接下载 kiro.rs');
 
       // 第二次 build → running → 轮询 step → failed
-      click(dlgBtn('安装引擎')!);
+      click(dlgBtn('下载 kiro.rs')!);
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('git clone');
-      expect(dlgBtn('安装中…')?.disabled).toBe(true);
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('获取 Release 信息');
+      expect(dlgBtn('正在下载…')?.disabled).toBe(true);
 
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('cargo build --release');
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('下载 kiro-rs-linux.tar.gz');
 
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('rustc 版本过低');
-      expect(dlgBtn('重试安装')?.disabled).toBe(false);
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('SHA256 校验失败');
+      expect(dlgBtn('重试下载')?.disabled).toBe(false);
 
-      // 重试安装 → 完成后进入登录表单
-      click(dlgBtn('重试安装')!);
+      // 重试下载 → 完成后进入登录表单
+      click(dlgBtn('重试下载')!);
       await flush();
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
@@ -325,8 +326,8 @@ describe('AccountMenu Kiro 集成', () => {
     vi.setSystemTime(base);
     let kiroSt = kiroStatusOf({
       engine: {
-        current: { commit: '1234567890abcdef', date: base - 86400_000, title: 'old' },
-        latest: { commit: 'fedcba0987654321', date: base, title: 'new release' },
+        current: { commit: 'v0.9.8', date: base - 86400_000, title: 'old' },
+        latest: { commit: 'v0.9.9', date: base, title: 'new release' },
         updateAvailable: true,
       },
     });
@@ -351,8 +352,8 @@ describe('AccountMenu Kiro 集成', () => {
       'POST /api/kiro/engine/build': () => {
         kiroSt = kiroStatusOf({
           engine: {
-            current: { commit: '1234567890abcdef', date: base - 86400_000, title: 'old' },
-            build: { state: 'running', step: '正在拉取源码', error: null },
+            current: { commit: 'v0.9.8', date: base - 86400_000, title: 'old' },
+            build: { state: 'running', step: '正在下载', error: null },
           },
         });
         return { body: kiroSt };
@@ -383,9 +384,9 @@ describe('AccountMenu Kiro 集成', () => {
       expect(rows[2].textContent).toContain('代理异常：端口占用');
       expect(rows[2].textContent).toContain('额度读取失败');
 
-      // 引擎行：显示短 sha、有更新、更新、检查更新
+      // 引擎行：直接显示 release tag、有更新、更新、检查更新
       const eng = document.querySelector('.cz-kiro-eng')!;
-      expect(eng.textContent).toContain('kiro.rs 引擎 1234567');
+      expect(eng.textContent).toContain('kiro.rs 引擎 v0.9.8');
       expect(eng.textContent).toContain('有更新');
 
       const checkBtn = [...eng.querySelectorAll('button')].find((b) => b.textContent === '检查更新')!;
@@ -397,7 +398,7 @@ describe('AccountMenu Kiro 集成', () => {
       click(updateBtn);
       await flush();
       expect(calls.some((c) => c.url === '/api/kiro/engine/build')).toBe(true);
-      expect(eng.textContent).toContain('正在拉取源码');
+      expect(eng.textContent).toContain('正在下载');
 
       // 点 Kiro 行的「重新登录」打开 KiroAccountDialog
       click(rows[1].querySelector('[aria-label="重新登录"]')!);
@@ -408,7 +409,7 @@ describe('AccountMenu Kiro 集成', () => {
     }
   });
 
-  it('service.enabled=false 时引擎行显示「已停止」、outdated>0 显示重启提示，且对话框提示先到客户端「本机服务」启动', async () => {
+  it('service.enabled=false 时引擎行显示「已停止」、outdated>0 显示服务重启提示，且对话框提示先到客户端「本机服务」启动', async () => {
     const kiroAcc = acctEntry({
       id: 'k1', label: 'Kiro 主号', name: 'Kiro 主号', plan: null, loggedIn: true, active: false, isDefault: false,
       kiro: { method: 'builderId', proxy: 'stopped', error: null },
@@ -418,7 +419,7 @@ describe('AccountMenu Kiro 集成', () => {
       'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
       'GET /api/kiro/balance?account=k1': () => ({ status: 500, body: { error: 'stopped' } }),
       'GET /api/kiro': () => ({
-        body: kiroStatusOf({ service: { enabled: false, outdated: 2 } }),
+        body: kiroStatusOf({ service: { enabled: false, outdated: 1 } }),
       }),
     };
     mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
@@ -427,7 +428,7 @@ describe('AccountMenu Kiro 集成', () => {
 
     const eng = document.querySelector('.cz-kiro-eng')!;
     expect(eng.textContent).toContain('已停止');
-    expect(eng.textContent).toContain('2 个代理重启后用新版');
+    expect(eng.textContent).toContain('kiro.rs 服务重启后用新版');
     // web 不提供启动 / 停止 / 重启按钮
     expect([...eng.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['检查更新']);
 

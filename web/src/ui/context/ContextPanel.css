@@ -1,5 +1,5 @@
-.cz-ctx {
-  /* 分类颜色：复用 tokens 里的 --ctx-*，不足的用混色派生（仅限本面板） */
+/* 分类颜色：复用 tokens 里的 --ctx-*，不足的用混色派生（仅限本面板和收起后的图表浮层 ChartRail） */
+:is(.cz-ctx, .cz-crail) {
   --cz-ctx-sys-prompt: var(--ctx-1);
   --cz-ctx-sys-tools: var(--ctx-2);
   --cz-ctx-messages: var(--ctx-3);
@@ -10,7 +10,9 @@
   --cz-ctx-buffer: var(--ctx-buffer);
   --cz-ctx-free: var(--ctx-free);
   --cz-ctx-other: var(--ctx-other);
+}
 
+.cz-ctx {
   /* 控件高度：鼠标紧凑，触屏在文件末尾放大 */
   --cz-ctx-ctl: 26px;
   --cz-ctx-row: 30px;

@@ -317,6 +317,34 @@ describe('/api/files/* 接口', () => {
     expect((await fetch(u(outside))).status).toBe(404); // 不是工作空间：不能借此把 cwd 指到别处
   });
 
+  it('cwd 之外：会话记录里原样提到过的路径放行，没提到过的仍 403', async () => {
+    const shots = path.join(tmp, 'shots');
+    fs.mkdirSync(shots, { recursive: true });
+    const shot = path.join(shots, 'shot.png');
+    fs.writeFileSync(shot, PNG);
+    fs.writeFileSync(path.join(shots, 'shot.png.bak'), PNG);
+    fs.writeFileSync(path.join(shots, 'other.png'), PNG);
+    const file = path.join(tmp, 'claude', 'projects', encodeCwd(cwd), `${SID}.jsonl`);
+    const text = `截图已保存到 ${shot}，另一张 [链接](${encodeURI(path.join(shots, 'other.png').replace(/\\/g, '/'))})`;
+    fs.appendFileSync(file, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } }) + '\n');
+
+    const r = await prev(shot);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ kind: 'image', mimeType: 'image/png', path: shot });
+    const img = await raw(shot);
+    expect(img.status).toBe(200);
+    expect(Buffer.from(await img.arrayBuffer()).equals(PNG)).toBe(true);
+    expect((await prev(path.join(shots, 'other.png'))).status).toBe(200); // Markdown 链接里的百分号编码
+    calls.length = 0;
+    expect((await post('reveal', { session: SID, path: shot })).status).toBe(200);
+    expect(calls).toHaveLength(1);
+
+    expect((await prev(path.join(shots, 'shot.png.bak'))).status).toBe(403); // 只是前缀相同
+    expect((await prev(path.join(outside, 'secret.txt'))).status).toBe(403);
+    expect((await prev(shots)).status).toBe(403); // 提到文件不等于提到它所在目录
+    expect((await raw(path.join(outside, 'secret.txt'))).status).toBe(403);
+  });
+
   it('raw：图片带正确 content-type 与 nosniff；SVG 带沙箱 CSP；文本 404；越界 403', async () => {
     const png = await raw('pic.png');
     expect(png.status).toBe(200);

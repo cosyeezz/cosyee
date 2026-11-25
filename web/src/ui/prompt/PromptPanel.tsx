@@ -2,7 +2,8 @@
 // 只显示队首一项；换项时用 key 重置内部状态。
 // 动效：整块从输入框上沿浮起；换到下一项时卡片交叉淡入；全部回应完先下沉淡出再卸载。
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import type { AskQuestion, PendingPrompt, PromptReply } from '@cosyee/shared';
+import type { AskQuestion, PendingPrompt, PromptReply, SessionConfig } from '@cosyee/shared';
+import { Composer, type ComposerHandle, type ComposerProps } from '../composer/Composer';
 import { Markdown } from '../flow/Markdown';
 import { leavingProps, usePresence } from '../motion/usePresence';
 import './PromptPanel.css';
@@ -12,11 +13,25 @@ export interface PromptPanelProps {
   items: PendingPrompt[];
   /** 回应其中一个（id = PendingPrompt.id） */
   onReply: (id: string, reply: PromptReply) => void;
+  /** 修改意见框（与主输入框同一个组件）选文件 / 粘贴图片 / 预览标签用；不传则「+」选不到文件、不接受粘贴图片 */
+  editor?: PromptEditorDeps;
 }
 
-const noop = () => {};
+/** 意见框需要的输入框能力 */
+export type PromptEditorDeps = Pick<ComposerProps, 'pick' | 'paste' | 'supportsMixed' | 'previewInfo' | 'previewRawUrl'>;
 
-export function PromptPanel({ items, onReply }: PromptPanelProps) {
+const noop = () => {};
+const NO_EDITOR: PromptEditorDeps = {
+  pick: async () => ({ items: [], supportsMixed: false }),
+  supportsMixed: false,
+  previewInfo: async () => { throw new Error('预览不可用'); },
+  previewRawUrl: () => '',
+};
+// 意见框不显示底栏，模型配置用不到
+const NO_CONFIG: SessionConfig = { model: '', effort: 'medium' };
+const NONE: string[] = [];
+
+export function PromptPanel({ items, onReply, editor = NO_EDITOR }: PromptPanelProps) {
   const ref = useRef<HTMLElement>(null);
   // 退场期间 items 已经空了：继续显示最后一份
   const last = useRef(items);
@@ -47,7 +62,7 @@ export function PromptPanel({ items, onReply }: PromptPanelProps) {
       {cur.kind === 'question' ? (
         <QuestionCard key={cur.id} id={cur.id} questions={cur.questions} onReply={reply} cls={cardCls} />
       ) : (
-        <PlanCard key={cur.id} id={cur.id} plan={cur.plan} planFilePath={cur.planFilePath} onReply={reply} cls={cardCls} />
+        <PlanCard key={cur.id} id={cur.id} plan={cur.plan} planFilePath={cur.planFilePath} onReply={reply} cls={cardCls} editor={editor} />
       )}
       {more > 0 && <div className="cz-prompt__more">还有 {more} 个待处理</div>}
     </section>
@@ -202,16 +217,18 @@ function QuestionCard({ id, questions, onReply, cls }: { id: string; questions: 
 
 // ───────────── 计划 ─────────────
 
-function PlanCard({ id, plan, planFilePath, onReply, cls }: { id: string; plan: string; planFilePath?: string; onReply: PromptPanelProps['onReply']; cls: string }) {
+function PlanCard({ id, plan, planFilePath, onReply, cls, editor }: { id: string; plan: string; planFilePath?: string; onReply: PromptPanelProps['onReply']; cls: string; editor: PromptEditorDeps }) {
   const [revising, setRevising] = useState(false);
-  const [feedback, setFeedback] = useState('');
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (revising) ref.current?.focus();
-  }, [revising]);
-  const send = () => {
-    const f = feedback.trim();
+  const [empty, setEmpty] = useState(true);
+  const ref = useRef<ComposerHandle>(null);
+  // 意见里的 `@"路径"`（文件 / 粘贴的图片）原样发出，模型自己去读
+  const send = (text: string) => {
+    const f = text.trim();
     if (f) onReply(id, { kind: 'revise', feedback: f });
+  };
+  const cancel = () => {
+    setRevising(false);
+    setEmpty(true);
   };
   return (
     <div className={`cz-prompt__card${cls}`}>
@@ -221,26 +238,30 @@ function PlanCard({ id, plan, planFilePath, onReply, cls }: { id: string; plan: 
       </div>
       {planFilePath && <div className="cz-prompt__path" title={planFilePath}>{planFilePath}</div>}
       {revising && (
-        <textarea
-          ref={ref}
-          className="cz-prompt__feedback"
-          rows={3}
-          placeholder="说说想怎么改（Enter 发送，Shift+Enter 换行）"
-          aria-label="修改意见"
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-            e.preventDefault();
-            send();
-          }}
-        />
+        <div className="cz-prompt__feedback">
+          <Composer
+            ref={ref}
+            inline
+            autoFocus
+            placeholder="说说想怎么改（Enter 发送，Shift+Enter 换行）"
+            onSend={send}
+            onEmptyChange={setEmpty}
+            onEscape={cancel}
+            onInterrupt={noop}
+            running={false}
+            {...editor}
+            slashCommands={NONE}
+            skills={NONE}
+            config={NO_CONFIG}
+            onConfigChange={noop}
+          />
+        </div>
       )}
       <div className="cz-prompt__actions">
         {revising ? (
           <>
-            <button type="button" className="cz-prompt__btn" onClick={() => setRevising(false)}>取消</button>
-            <button type="button" className="cz-prompt__btn cz-prompt__btn--primary" disabled={!feedback.trim()} onClick={send}>发送意见</button>
+            <button type="button" className="cz-prompt__btn" onClick={cancel}>取消</button>
+            <button type="button" className="cz-prompt__btn cz-prompt__btn--primary" disabled={empty} onClick={() => ref.current?.submit()}>发送意见</button>
           </>
         ) : (
           <>

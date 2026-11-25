@@ -30,6 +30,7 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
    - 触屏设备：悬停类效果（聚光、停靠栏）要有合理的触摸替代或直接关闭。
 
 4. **把优化后的规格简要告诉用户**（几行即可），然后实现，并在浏览器里实际看一遍效果。
+   - `.shots/` 脚本只在 Windows 那台机器上（未入库）；macOS 上没有时，自己写个一次性 CDP 脚本放 `/tmp`，用 `/Applications/Google Chrome.app` 的 `--headless=new` + 独立 `--user-data-dir`，Node 22 自带 `WebSocket` / `fetch`，不用装依赖。
    - Cosyee 截图：`.shots/cdp-shot.mjs <url> <out.png> '<步骤JSON>' '<clip表达式>'`；切主题用步骤 `localStorage.setItem("cz-theme","dark")` + `!{"method":"Page.reload",...}`；clip 要写成 `({x:..,y:..,width:..,height:..})`（不加括号会被当成代码块）。
    - 主界面连的是用户真实后端：点按钮要用精确的类名选择器，**别按文字匹配**（「自动」「Opus 5.5」会先命中侧栏会话标题，点成切换会话）。只为看效果时优先用 `?dev=shell|flow|composer|motion` 调试页。
    - 上下文栏多宽度截图 + 溢出检测：先 `npx vite --port 5199`，再 `.shots/ctx.mjs <前缀> [theme]`（`WIDTHS`、`H`、`PRE`=页面内 JS，返回字符串会打印）。检测通过不等于好看，**截图必须逐张看**（吸顶文字重叠就没被检测出来）；交互场景要让 `PRE` 返回证据，确认真的触发了。
@@ -45,6 +46,7 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
 > 菜单当前项用半透明玻璃胶囊做底；切换时胶囊滑向新位置，移动中沿移动方向拉长，到位弹性回弹；胶囊边缘带一圈细高光。
 
 优化要点：胶囊是独立绝对定位层，用 transform 移动而非改 left/width；拉长量与移动距离挂钩并设上限；回弹用弹簧或 overshoot 缓动。
+- 新的列表要用胶囊时直接复用 `web/src/ui/motion/LiquidCapsule.tsx`：放在**滚动容器**的第一个子元素（它按父元素 + scrollTop 量位置），行要 `position: relative; z-index: 1` 盖住胶囊，并用 `:has(> .cz-capsule.is-on)` 去掉选中行自己的底色。点击后先挪高亮再 `startTransition` 换主区，用 `web/src/ui/sidebar/usePendingSelect.ts`（侧栏和收起后的置顶浮层 `PinnedRail` 共用）。
 
 ### 2. 聚光
 > 卡片为磨砂玻璃材质；悬停时在卡片内部跟随光标显示一团柔和径向光斑，靠近光标的边框局部提亮；卡片随光标位置轻微3D倾斜，不超过4度；移出后平滑复原。
@@ -116,6 +118,11 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
 > 菜单做成底部居中的浮动玻璃停靠栏，只放图标；悬停时当前图标放大，相邻图标跟随放大；上方显示名称。
 
 优化要点：放大倍数按光标到图标中心的距离连续计算（而非仅当前±1），设最大倍数；图标需 aria-label；名称提示用 tooltip 并支持键盘聚焦显示。
+- 用于「竖排文字列表的波浪放大」时（现成 hook `web/src/ui/motion/useWaveMagnify.ts`，在置顶浮层 `PinnedRail` 上做过；用户后来改成「只放大悬停的那一行、其他行不变」，所以浮层现在用 CSS `:hover` 放大并单行展开，没再用这个 hook。给紧凑的导航列表加之前先确认要不要连带放大相邻行）：
+  - 只放大行里的内容（包一层 `__mag`），不放大行本身：行高、悬停底色、液态胶囊都不动，也不会互相盖住。参数：半径 84px（约 2.7 行）、衰减 `(1-(d/R)²)²`、最大 1.2 倍 + 右移 4px、origin 左中、transform 过渡 160ms ease-out。
+  - JS 只写每行的 `--m`（0~1），rAF 合并；滚轮滚动时按上次的光标位置重算，波浪会跟着行滚过去。非鼠标指针和减少动效时不写。
+  - 放大后标题会超出行右边：按钮 `overflow: hidden` + 右侧渐隐遮罩，渐隐宽度写成 `var(--m) * 18px`，平时不裁。
+  - 验证要用 CDP `Input.dispatchMouseEvent`（mouseMoved / mouseWheel）真实移动，再读各行的 `--m` 看波峰位置，别只看截图。
 
 ### 6. 数据唤醒
 > 为Dashboard添加数据加载动效。页面进入时，核心指标从0平滑递增至目标数值，使用Ease Out缓动；趋势线从左向右逐步绘制，图表和指标依次出现，动画结束后保持稳定。

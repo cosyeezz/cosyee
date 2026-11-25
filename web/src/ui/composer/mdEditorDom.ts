@@ -30,6 +30,22 @@ export interface ScanResult {
 
 const isChip = (n: Node): boolean => n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).classList.contains(CHIP_CLASS);
 
+/**
+ * 着色行里只剩一个 <br>（其余都是空文本）：WebKit 把整行删空时放的占位符，不是换行。
+ * 当成换行会多出一行，删空后输入框仍占两行。
+ */
+function isPlaceholderBr(root: HTMLElement, parent: HTMLElement, br: HTMLElement): boolean {
+  // 只认最后一行（后面最多还有末尾占位符 <br>），中间行的 <br> 仍按换行算
+  if (parent.parentNode !== root || !parent.classList.contains(LINE_CLASS)) return false;
+  const next = parent.nextSibling;
+  if (next && !(next === root.lastChild && next.nodeType === Node.ELEMENT_NODE && (next as HTMLElement).tagName === 'BR')) return false;
+  for (const n of Array.from(parent.childNodes)) {
+    if (n === br) continue;
+    if (n.nodeType !== Node.TEXT_NODE || (n.textContent ?? '').replace(ZWSP, '') !== '') return false;
+  }
+  return true;
+}
+
 /** 读出编辑区的扁平文本，并把若干 DOM 位置换算成扁平文本偏移。 */
 export function scanEditor(root: HTMLElement, points: ScanPoint[] = []): ScanResult {
   let text = '';
@@ -65,6 +81,7 @@ export function scanEditor(root: HTMLElement, points: ScanPoint[] = []): ScanRes
       }
       if (child.tagName === 'BR') {
         if (isRoot && child === root.lastChild) continue; // 末尾占位符
+        if (isPlaceholderBr(root, el, child)) continue; // 着色行被删空后浏览器留下的占位符
         text += '\n';
         continue;
       }

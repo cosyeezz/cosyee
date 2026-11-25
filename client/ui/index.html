@@ -350,6 +350,12 @@
     word-break: break-word;
   }
   .kiro-update code { margin-right: 6px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .comp { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 2px; }
+  .comp.first { margin-top: 0; border-top: 0; padding-top: 0; }
+  .comp .checks { margin: 14px 0; }
+  .comp .local-msg, .comp .local-log { margin: 12px 0 0; }
+  .comp-actions { align-items: center; }
+  .comp-actions .toggle.comp-auto { margin-left: auto; padding: 0; gap: 10px; }
   .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; }
   .sub-hint:empty { display: none; }
   .sub-hint.error { color: var(--danger); }
@@ -485,6 +491,7 @@
         <button type="button" class="btn danger" id="l-stop"><svg class="i"><use href="#i-stop"/></svg>停止</button>
         <button type="button" class="btn ghost" id="l-install"><svg class="i"><use href="#i-down"/></svg><span>安装</span></button>
       </div>
+      <div class="comp" id="cp-server"></div>
       <div class="divider"></div>
       <label class="toggle"><span>允许手机和其它电脑通过 Tailscale 连接（启动时生效）</span><input type="checkbox" role="switch" id="l-tailnet"></label>
       <div id="local-msg"></div>
@@ -494,13 +501,12 @@
       <span class="beam" aria-hidden="true"></span>
       <div class="local-head">
         <span class="ico"><svg class="i"><use href="#i-layers"/></svg></span>
-        <div class="t"><b>kiro.rs 服务</b><small>用 Kiro 订阅运行 Claude Code。原样编译上游 hank9999/kiro.rs，跟随它更新。</small></div>
+        <div class="t"><b>kiro.rs 服务</b><small>用 Kiro 订阅运行 Claude Code。ZyphrZero/kiro.rs 预编译版本，一个服务托管全部 Kiro 账号。</small></div>
         <span class="pill" id="k-pill"><i></i><span>检查中</span></span>
       </div>
       <dl class="checks">
-        <div><dt>编译工具</dt><dd id="k-tools" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
         <div><dt>引擎</dt><dd id="k-engine" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
-        <div><dt>账号代理</dt><dd id="k-proxy" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+        <div><dt>服务</dt><dd id="k-proxy" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
       </dl>
       <p class="kiro-update" id="k-update" hidden></p>
       <div class="actions">
@@ -508,7 +514,7 @@
         <button type="button" class="btn danger" id="k-stop" hidden><svg class="i"><use href="#i-stop"/></svg>停止</button>
         <button type="button" class="btn" id="k-restart" hidden><svg class="i"><use href="#i-refresh"/></svg>重启</button>
         <button type="button" class="btn" id="k-admin" aria-expanded="false" aria-controls="k-admin-list"><svg class="i"><use href="#i-open"/></svg>管理页面</button>
-        <button type="button" class="btn ghost" id="k-engine-btn"><svg class="i"><use href="#i-down"/></svg><span>安装引擎</span></button>
+        <button type="button" class="btn ghost" id="k-engine-btn"><svg class="i"><use href="#i-down"/></svg><span>下载 kiro.rs</span></button>
       </div>
       <div class="admin-picker" id="k-admin-list" hidden></div>
       <div class="sub-confirm" id="k-confirm" role="alert" hidden>
@@ -518,6 +524,7 @@
           <button type="button" class="btn ghost" id="k-confirm-cancel">取消</button>
         </div>
       </div>
+      <div class="comp" id="cp-kiro"></div>
       <div class="sub-hint" id="k-hint"></div>
       <div class="local-msg" id="k-msg" role="status" aria-live="polite"></div>
       <pre class="local-log" id="k-log"></pre>
@@ -546,9 +553,19 @@
           <button type="button" class="btn ghost" id="a-confirm-cancel">取消</button>
         </div>
       </div>
+      <div class="comp" id="cp-agy"></div>
       <div class="sub-hint" id="a-hint"></div>
       <div class="local-msg" id="a-msg" role="status" aria-live="polite"></div>
       <pre class="local-log" id="a-log"></pre>
+    </div>
+    <div class="card spot sub-card" id="claude-card">
+      <span class="beam" aria-hidden="true"></span>
+      <div class="local-head">
+        <span class="ico"><svg class="i"><use href="#i-terminal"/></svg></span>
+        <div class="t"><b>Claude CLI</b><small>Cosyee 运行会话用的 claude 命令行，更新由服务端执行 claude update。</small></div>
+        <span class="pill" id="cl-pill"><i></i><span>检查中</span></span>
+      </div>
+      <div class="comp first" id="cp-claude"></div>
     </div>
   </section>
 
@@ -792,7 +809,7 @@
     if (lst && lst.running) lmsg('改动在重新启动服务后生效（先停止再启动）。');
   };
   function setCheck(id, text, state) {
-    var el = $(id);
+    var el = typeof id === 'string' ? $(id) : id;
     el.className = state || '';
     el.querySelector('span').textContent = text;
     el.querySelector('use').setAttribute('href', state === 'bad' ? '#i-alert' : '#i-check');
@@ -818,6 +835,7 @@
     $('l-open').hidden = !st.running;
     $('l-open').className = 'btn' + (st.running ? ' primary' : '');
     $('l-stop').disabled = b || !st.running;
+    if (serverPanel) serverPanel.render();
   }
   async function lrefresh() {
     try { lst = await invoke('local_status'); } catch (e) { return; }
@@ -826,6 +844,10 @@
     subCards.forEach(function (c) {
       if (!lst.running) c.setOffline();
       else if (!c.st && !c.inFlight && !c.busy) c.refresh();
+    });
+    compPanels.forEach(function (p) {
+      if (!lst.running) p.setOffline();
+      else if (!p.st && !p.err) compsFetch().catch(function () {});
     });
   }
   function errText(e) { return typeof e === 'string' ? e : (e && e.message) || String(e); }
@@ -900,7 +922,7 @@
           var added = 0;
           var reset = false;
           try {
-            var res = await invoke(cfg.logCmd, { from: logFrom });
+            var res = await invoke(cfg.logCmd, Object.assign({ from: logFrom }, cfg.logExtra));
             if (gen !== logResetGen) return { added: 0, reset: false, stale: true };
             // 服务端开始了新的任务、日志重新编号：从头取
             if (res && typeof res.next === 'number' && res.next < logFrom) {
@@ -996,7 +1018,7 @@
         if (card.inFlight) return;
         card.inFlight = true;
         try {
-          card.applyStatus(await invoke(cfg.statusCmd));
+          card.applyStatus(await (cfg.fetchStatus ? cfg.fetchStatus() : invoke(cfg.statusCmd)));
         } catch (e) {
           var info = apiErrInfo(e);
           if (info.kind === 'offline') card.setOffline();
@@ -1023,7 +1045,7 @@
         pill.className = 'pill' + (unsupported || (card.err && !offline) ? ' bad' : '');
         pill.querySelector('span').textContent = offline ? '服务端未运行' : unsupported ? '需更新服务端' : card.err ? '读取失败' : '检查中';
         $(cfg.cardId).classList.remove('busy');
-        $(cfg.confirmIds.box).hidden = true;
+        if (cfg.confirmIds) $(cfg.confirmIds.box).hidden = true;
         var hint = $(cfg.hintId);
         if (offline) {
           hint.className = 'sub-hint';
@@ -1092,12 +1114,17 @@
   var kStartMode = 'start';
   var kEngineMode = 'build';
   var kAdminOpen = false;
+  // release tag（v0.9.9）原样显示；旧版本的 40 位 sha 才截成 7 位
+  function kVer(commit) {
+    if (!commit) return '';
+    return /^[0-9a-f]{40}$/i.test(commit) ? commit.slice(0, 7) : commit;
+  }
   var PROXY_LABELS = { ready: '运行中', starting: '启动中', failed: '失败', stopped: '已停止' };
 
   var kiroCard = createServiceCard({
     cardId: 'kiro-card',
     pillId: 'k-pill',
-    checkIds: ['k-tools', 'k-engine', 'k-proxy'],
+    checkIds: ['k-engine', 'k-proxy'],
     hintId: 'k-hint',
     msgId: 'k-msg',
     logId: 'k-log',
@@ -1132,7 +1159,7 @@
       $('k-admin').setAttribute('aria-expanded', 'false');
       $('k-admin-list').hidden = true;
       $('k-engine-btn').className = 'btn ghost';
-      $('k-engine-btn').querySelector('span').textContent = '安装引擎';
+      $('k-engine-btn').querySelector('span').textContent = '下载 kiro.rs';
       $('k-engine-btn').querySelector('use').setAttribute('href', '#i-down');
       $('k-engine-btn').disabled = true;
     },
@@ -1140,7 +1167,6 @@
       var st = c.st;
       var eng = st.engine || {};
       var svc = st.service || {};
-      var missing = Array.isArray(eng.missingTools) ? eng.missingTools : [];
       var build = eng.build || { state: 'idle', step: null, error: null };
       var building = build.state === 'running';
       var buildFailed = build.state === 'failed';
@@ -1152,44 +1178,39 @@
       var accounts = svc.accounts || 0;
       var outdated = svc.outdated || 0;
       var hasAccounts = accounts > 0;
-      var canBuild = missing.length === 0;
       var items = Array.isArray(svc.items) ? svc.items : [];
       var adminUi = eng.adminUi === true;
       var adminReady = svc.enabled !== false && hasAccounts && items.length > 0 && adminUi;
 
-      setCheck('k-tools', canBuild ? '已就绪' : '缺少 ' + missing.join('、'), canBuild ? 'ok' : 'bad');
-
       if (isEnv) {
         setCheck('k-engine', '自定义', 'ok');
-        if (eng.current && eng.current.commit) $('k-engine').title = '自定义（' + eng.current.commit.slice(0, 7) + '）';
+        if (eng.current && eng.current.commit) $('k-engine').title = '自定义（' + kVer(eng.current.commit) + '）';
       } else if (installed) {
-        var sha = eng.current && eng.current.commit ? eng.current.commit.slice(0, 7) : '';
+        var sha = eng.current && eng.current.commit ? kVer(eng.current.commit) : '';
         var dt = eng.current && eng.current.date ? fmtDate(eng.current.date) : '';
         setCheck('k-engine', sha ? (dt ? sha + ' ' + dt : sha) : '已安装', 'ok');
       } else {
         setCheck('k-engine', '未安装', 'bad');
       }
 
-      if (!hasAccounts) {
-        setCheck('k-proxy', '0 / 0', 'wait');
+      if (running) {
+        setCheck('k-proxy', outdated > 0 ? '运行中（旧版，需重启）' : '运行中', outdated > 0 ? 'bad' : 'ok');
+      } else if (failed) {
+        setCheck('k-proxy', '启动失败', 'bad');
       } else {
-        var pText = (svc.running || 0) + ' / ' + accounts;
-        if (outdated > 0) pText += '（' + outdated + ' 个旧版）';
-        else if (failed && !running) pText += '（失败）';
-        var pState = failed && !running ? 'bad' : running ? (outdated > 0 ? 'bad' : 'ok') : '';
-        setCheck('k-proxy', pText, pState);
+        setCheck('k-proxy', '已停止', 'wait');
       }
 
       var pill = $('k-pill');
       if (building) {
         pill.className = 'pill';
-        pill.querySelector('span').textContent = '编译中';
+        pill.querySelector('span').textContent = '下载中';
       } else if (!installed) {
         pill.className = 'pill bad';
         pill.querySelector('span').textContent = '未安装';
       } else if (running) {
         pill.className = 'pill ok';
-        pill.querySelector('span').textContent = '运行中（' + svc.running + ' 个代理）';
+        pill.querySelector('span').textContent = '运行中';
       } else if (failed) {
         pill.className = 'pill bad';
         pill.querySelector('span').textContent = '启动失败';
@@ -1205,7 +1226,7 @@
 
       var upd = $('k-update');
       if (!isEnv && eng.updateAvailable && eng.latest && eng.latest.commit) {
-        var lSha = eng.latest.commit.slice(0, 7);
+        var lSha = kVer(eng.latest.commit);
         var lTitle = eng.latest.title || '';
         var lDate = eng.latest.date ? fmtDate(eng.latest.date) : '';
         upd.textContent = '';
@@ -1280,22 +1301,22 @@
       var eb = $('k-engine-btn');
       if (!installed) {
         kEngineMode = 'build';
-        eb.querySelector('span').textContent = '安装引擎';
+        eb.querySelector('span').textContent = '下载 kiro.rs';
         eb.querySelector('use').setAttribute('href', '#i-down');
-        eb.className = 'btn ' + (canBuild ? 'primary' : 'ghost');
-        eb.disabled = busy || !canBuild;
+        eb.className = 'btn primary';
+        eb.disabled = busy;
       } else if (!isEnv && eng.adminUi === false) {
         kEngineMode = 'build';
-        eb.querySelector('span').textContent = '重新构建';
+        eb.querySelector('span').textContent = '重新下载';
         eb.querySelector('use').setAttribute('href', '#i-refresh');
-        eb.className = 'btn ' + (!running && canBuild ? 'primary' : 'ghost');
-        eb.disabled = busy || !canBuild;
+        eb.className = 'btn ' + (!running ? 'primary' : 'ghost');
+        eb.disabled = busy;
       } else if (!isEnv && eng.updateAvailable) {
         kEngineMode = 'build';
         eb.querySelector('span').textContent = '更新引擎';
         eb.querySelector('use').setAttribute('href', '#i-down');
-        eb.className = 'btn ' + (!running && canBuild ? 'primary' : 'ghost');
-        eb.disabled = busy || !canBuild;
+        eb.className = 'btn ' + (!running ? 'primary' : 'ghost');
+        eb.disabled = busy;
       } else {
         kEngineMode = 'check';
         eb.querySelector('span').textContent = '检查更新';
@@ -1309,32 +1330,20 @@
       var hints = [];
       var hintLevel = '';
       if (buildFailed && build.error) {
-        hints.push('编译失败：' + build.error);
+        hints.push('下载失败：' + build.error);
         hintLevel = 'error';
       } else if (building && build.step) {
-        hints.push('正在编译：' + build.step);
-      }
-      if (installed && eng.adminUi === false && eng.adminUiError) {
-        hints.push('管理页面不可用：' + eng.adminUiError);
-        if (!hintLevel) hintLevel = 'warn';
-      }
-      if (missing.indexOf('cargo') !== -1) {
-        hints.push('缺少 cargo，请先安装 Rust（https://rustup.rs）。');
-        if (!hintLevel) hintLevel = 'warn';
-      }
-      if (missing.indexOf('git') !== -1) {
-        hints.push('缺少 git，请先安装 Git。');
-        if (!hintLevel) hintLevel = 'warn';
+        hints.push('正在下载：' + build.step);
       }
       if (hasService && !hasAccounts) {
         if (installed) {
-          hints.push('引擎已就绪，还没有 Kiro 账号。添加账号后代理会自动启动，无需再点启动。');
+          hints.push('引擎已就绪，还没有 Kiro 账号。添加账号后服务会自动启动，无需再点启动。');
         } else {
-          hints.push('先安装引擎，再添加 Kiro 账号。');
+          hints.push('先下载 kiro.rs，再添加 Kiro 账号。');
         }
       }
       if (outdated > 0) {
-        hints.push('有 ' + outdated + ' 个代理仍在使用旧版引擎，点击「重启」后生效。');
+        hints.push('服务仍在使用旧版引擎，点击「重启」后生效。');
         if (!hintLevel) hintLevel = 'warn';
       }
       var hint = $('k-hint');
@@ -1390,7 +1399,7 @@
   function kDoEngine() {
     if (kEngineMode === 'check') {
       kiroCard.runAction('检查更新', function () { return invoke('kiro_check'); }, {
-        startMsg: '正在检查上游更新…',
+        startMsg: '正在检查 kiro.rs 更新…',
         onResult: function (c, st) {
           c.applyStatus(st);
           c.msg(st && st.engine && st.engine.updateAvailable ? '发现新版本，可以点击「更新引擎」。' : '已是最新版本。');
@@ -1399,9 +1408,9 @@
       return;
     }
     var eng = kiroCard.st && kiroCard.st.engine;
-    var label = !eng || eng.source === 'none' ? '安装引擎' : eng.adminUi === false ? '重新构建' : '更新引擎';
+    var label = !eng || eng.source === 'none' ? '下载 kiro.rs' : eng.adminUi === false ? '重新下载' : '更新引擎';
     kiroCard.runAction(label, function () { return invoke('kiro_build'); }, {
-      startMsg: label + '：正在启动编译…',
+      startMsg: label + '：正在启动下载…',
       clearConfirm: true,
       withLog: true,
     });
@@ -1542,12 +1551,252 @@
     });
   }
 
-  var subCards = [kiroCard, agyCard];
+  // ───── 本机组件版本管理（Claude CLI / kiro.rs / agy / 服务端：版本、检查更新、立即更新、自动更新） ─────
+  function fmtTime(ms) {
+    var d = fmtDate(ms);
+    if (!d) return '';
+    var x = new Date(ms), pad = function (n) { return n < 10 ? '0' + n : String(n); };
+    return d + ' ' + pad(x.getHours()) + ':' + pad(x.getMinutes());
+  }
+  function compMarkup(p) {
+    function chk(key, label) {
+      return '<div><dt>' + label + '</dt><dd id="' + p + '-' + key + '" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>';
+    }
+    return '<dl class="checks">' + chk('ver', '当前版本') + chk('latest', '最新版') + chk('checked', '上次检查') + '</dl>' +
+      '<div class="actions comp-actions">' +
+      '<button type="button" class="btn" id="' + p + '-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>' +
+      '<button type="button" class="btn primary" id="' + p + '-update"><svg class="i"><use href="#i-down"/></svg><span>立即更新</span></button>' +
+      '<label class="toggle comp-auto"><span>自动更新</span><input type="checkbox" role="switch" id="' + p + '-auto"></label>' +
+      '</div>' +
+      '<div class="sub-hint" id="' + p + '-note"></div>' +
+      '<div class="local-msg" id="' + p + '-msg" role="status" aria-live="polite"></div>' +
+      '<pre class="local-log" id="' + p + '-log"></pre>';
+  }
+  /** 把一个 ComponentStatus 画到 prefix 对应的那一组控件上。o.busy：本页正在执行这个组件的操作；o.updateOk：额外的「能更新」条件 */
+  function compFill(p, st, o) {
+    var job = st.job || null;
+    var runningJob = !!(job && job.state === 'running');
+    var failedJob = !!(job && job.state === 'failed');
+    var busy = !!o.busy || runningJob;
+    var custom = !!st.custom, installed = !!st.installed, avail = !!st.updateAvailable;
+    if (custom) setCheck(p + '-ver', (st.version || '') + (st.version ? ' · ' : '') + '自定义', 'ok');
+    else if (installed) setCheck(p + '-ver', st.version || '已安装', 'ok');
+    else setCheck(p + '-ver', '未安装', 'bad');
+    if (st.checkError) setCheck(p + '-latest', '检查失败', 'bad');
+    else if (st.latest) setCheck(p + '-latest', st.latest, avail ? 'bad' : 'ok');
+    else setCheck(p + '-latest', '未检查', 'wait');
+    var when = fmtTime(st.checkedAt);
+    setCheck(p + '-checked', when || '从未', when ? 'ok' : 'wait');
+    $(p + '-check').disabled = busy || custom;
+    var ub = $(p + '-update');
+    ub.querySelector('span').textContent = runningJob ? '更新中…' : '立即更新';
+    ub.disabled = busy || custom || !installed || !avail || o.updateOk === false;
+    var auto = $(p + '-auto');
+    auto.checked = !!st.autoUpdate;
+    auto.disabled = !!o.busy || custom;
+    var hints = [], level = '';
+    if (failedJob) { hints.push('更新失败：' + (job.error || '未知错误')); level = 'error'; }
+    if (custom) hints.push('这是用户指定的程序（环境变量或源码运行），只显示版本，不检查、不自动更新。');
+    else if (st.pending) hints.push('有新版本，等任务结束后自动更新');
+    else if (avail && st.autoUpdate && st.updatedBy === 'client') hints.push('有新版本，客户端开着时会在没有任务时自动更新。');
+    if (st.checkError) { hints.push('检查更新失败：' + st.checkError); if (!level) level = 'warn'; }
+    if (!installed && !custom) {
+      hints.push(st.id === 'claude' ? '没有找到 Claude CLI，请先安装并登录。' : '还没有安装，请用上方的按钮安装。');
+      if (!level) level = 'warn';
+    }
+    var note = $(p + '-note');
+    note.className = 'sub-hint' + (level ? ' ' + level : '');
+    note.textContent = hints.join('\n');
+    return { runningJob: runningJob, failedJob: failedJob, busy: busy };
+  }
+  /** 无状态（服务端没运行 / 版本太旧 / 读取失败）时把这一组控件置灰 */
+  function compFillUnavailable(p, err, installedText, isServer) {
+    var offline = err && err.kind === 'offline', unsupported = err && err.kind === 'unsupported';
+    setCheck(p + '-ver', installedText || '…', installedText ? 'ok' : 'wait');
+    setCheck(p + '-latest', '…', 'wait');
+    setCheck(p + '-checked', '…', 'wait');
+    $(p + '-check').disabled = true;
+    $(p + '-update').disabled = true;
+    $(p + '-update').querySelector('span').textContent = '立即更新';
+    $(p + '-auto').disabled = true;
+    var note = $(p + '-note');
+    note.className = 'sub-hint' + (offline || !err ? '' : unsupported ? ' warn' : ' error');
+    note.textContent = !err ? ''
+      : offline ? (isServer ? '服务端未运行，启动后才能检查更新；也可以直接用上方的「更新」重新安装。' : '服务端未运行，请先启动上方的 Cosyee 服务端。')
+      : unsupported ? (isServer ? '当前服务端版本不支持组件管理，请用上方的「更新」按钮更新服务端。' : '当前服务端版本不支持组件管理，请先更新上方的服务端。')
+      : (err.error || '无法读取组件状态');
+  }
+  var COMP_PILL = {
+    running: ['', '更新中'], failed: ['bad', '失败'], missing: ['bad', '未安装'], custom: ['', '自定义'],
+    avail: ['info', '可更新'], latest: ['ok', '已是最新'], ok: ['ok', '已安装'],
+  };
+  function compPillKey(st, v) {
+    return v.runningJob ? 'running' : v.failedJob ? 'failed' : st.custom ? 'custom' : !st.installed ? 'missing' : st.updateAvailable ? 'avail' : st.latest ? 'latest' : 'ok';
+  }
+
+  // 一次请求拿到四个组件，分发给各卡片；多处同时刷新时共用同一个在途请求
+  var compsInFlight = null;
+  function compFind(res, id) {
+    var list = res && Array.isArray(res.list) ? res.list : [];
+    return list.filter(function (c) { return c && c.id === id; })[0] || null;
+  }
+  function compsFetch() {
+    if (compsInFlight) return compsInFlight;
+    var p = invoke('components_status').then(function (res) {
+      compPanels.forEach(function (x) { x.setStatus(compFind(res, x.id)); });
+      return res;
+    }, function (e) {
+      var info = apiErrInfo(e);
+      compPanels.forEach(function (x) { x.setError(info); });
+      throw e;
+    });
+    compsInFlight = p;
+    var clear = function () { if (compsInFlight === p) compsInFlight = null; };
+    p.then(clear, clear);
+    return p;
+  }
+
+  /** 本页对一个组件的日志增量轮询（component_log） */
+  function createCompLog(id, boxId) {
+    var from = 0, timer = null, inflight = false;
+    function poll() {
+      if (inflight) return Promise.resolve();
+      inflight = true;
+      return invoke('component_log', { id: id, from: from }).then(function (r) {
+        var box = $(boxId);
+        if (r && typeof r.next === 'number' && r.next < from) { from = 0; box.textContent = ''; }
+        else if (r && Array.isArray(r.lines) && r.lines.length) {
+          box.classList.add('show');
+          box.textContent += r.lines.join('\n') + '\n';
+          box.scrollTop = box.scrollHeight;
+          from = typeof r.next === 'number' ? r.next : from + r.lines.length;
+        } else if (r && typeof r.next === 'number') from = r.next;
+      }).catch(function () { /* 忽略瞬时错误 */ }).then(function () { inflight = false; });
+    }
+    return {
+      active: function () { return !!timer; },
+      once: poll,
+      start: function (reset) {
+        if (reset) { from = 0; $(boxId).textContent = ''; }
+        $(boxId).classList.add('show');
+        if (!timer) timer = setInterval(poll, 500);
+        poll();
+      },
+      stop: function (flush) {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (flush) poll();
+      },
+    };
+  }
+
+  /** kiro.rs / agy / 服务端卡片里的「组件版本」一栏 */
+  function createCompPanel(id) {
+    var p = 'cp-' + id;
+    $(p).innerHTML = compMarkup(p);
+    var log = createCompLog(id, p + '-log');
+    var isServer = id === 'server';
+    var panel = {
+      id: id, st: null, err: null, busy: false,
+      msg: function (text, isError) { var m = $(p + '-msg'); m.textContent = text || ''; m.className = 'local-msg' + (isError ? ' error' : ''); },
+      setStatus: function (st) {
+        panel.st = st; panel.err = st ? null : { kind: 'other', error: '服务端没有返回这个组件' };
+        if (st && st.job && st.job.state === 'running') { if (!log.active()) log.start(false); }
+        else if (log.active()) log.stop(true);
+        panel.render();
+      },
+      setError: function (info) { panel.st = null; panel.err = info; log.stop(false); panel.render(); },
+      setOffline: function () { panel.setError({ kind: 'offline', error: '服务端未运行' }); },
+      render: function () {
+        var local = isServer && lst ? { busy: lbusy || lst.busy, installed: lst.installed } : null;
+        if (!panel.st) { compFillUnavailable(p, panel.err, local && local.installed ? local.installed : '', isServer); return; }
+        compFill(p, panel.st, { busy: panel.busy || (local && local.busy), updateOk: isServer ? !!(lst && lst.npm) : true });
+      },
+      run: async function (label, fn, withLog) {
+        panel.busy = true; panel.render();
+        panel.msg(label + '中…');
+        if (withLog) log.start(true);
+        try {
+          var res = await fn();
+          panel.msg('');
+          if (res && typeof res === 'object' && res.id) panel.setStatus(res);
+          return res;
+        } catch (e) {
+          var info = apiErrInfo(e);
+          if (withLog) log.stop(false);
+          if (info.kind === 'offline') panel.setOffline();
+          panel.msg(label + '失败：' + (info.error || errText(e)), true);
+        } finally {
+          panel.busy = false; panel.render();
+        }
+      },
+      bind: function () {
+        $(p + '-check').onclick = function () {
+          panel.run('检查更新', function () { return invoke('component_check', { id: id }); }).then(function () {
+            var st = panel.st;
+            if (!st) return;
+            if (st.checkError) panel.msg('检查更新失败：' + st.checkError, true);
+            else panel.msg(st.updateAvailable ? '发现新版本：' + (st.latest || '') : '已是最新版本。');
+          });
+        };
+        $(p + '-update').onclick = function () {
+          // 服务端不能自己更新自己，沿用上面「更新」按钮的流程：停服务 → npm 安装 → 再启动
+          if (isServer) { lrun('更新', linstall).then(function () { compsFetch().catch(function () {}); }); return; }
+          panel.run('更新', function () { return invoke('component_update', { id: id }); }, true);
+        };
+        $(p + '-auto').onchange = function () {
+          var want = $(p + '-auto').checked;
+          panel.run('设置自动更新', function () { return invoke('component_auto', { id: id, enabled: want }); });
+        };
+      },
+    };
+    return panel;
+  }
+  var serverPanel = createCompPanel('server');
+  var kiroPanel = createCompPanel('kiro');
+  var agyPanel = createCompPanel('agy');
+  var compPanels = [serverPanel, kiroPanel, agyPanel];
+
+  // ───── Claude CLI ─────
+  $('cp-claude').innerHTML = compMarkup('cp-claude');
+  var claudeCard = createServiceCard({
+    cardId: 'claude-card',
+    pillId: 'cl-pill',
+    checkIds: ['cp-claude-ver', 'cp-claude-latest', 'cp-claude-checked'],
+    hintId: 'cp-claude-note',
+    msgId: 'cp-claude-msg',
+    logId: 'cp-claude-log',
+    logCmd: 'component_log',
+    logExtra: { id: 'claude' },
+    fetchStatus: function () {
+      return compsFetch().then(function (res) {
+        var st = compFind(res, 'claude');
+        if (!st) throw { kind: 'other', error: '服务端没有返回 Claude CLI 组件' };
+        return st;
+      });
+    },
+    unsupportedText: '当前服务端版本不支持组件管理，请先更新上方的服务端。',
+    isJobRunning: function (st) { return !!(st && st.job && st.job.state === 'running'); },
+    renderOfflineControls: function () {
+      $('cp-claude-check').disabled = true;
+      $('cp-claude-update').disabled = true;
+      $('cp-claude-auto').disabled = true;
+    },
+    renderOnline: function (c) {
+      var st = c.st;
+      var v = compFill('cp-claude', st, { busy: c.busy });
+      $('claude-card').classList.toggle('busy', v.busy);
+      var pill = COMP_PILL[compPillKey(st, v)];
+      $('cl-pill').className = 'pill' + (pill[0] ? ' ' + pill[0] : '');
+      $('cl-pill').querySelector('span').textContent = pill[1];
+    },
+  });
+  var subCards = [kiroCard, agyCard, claudeCard];
 
   if (invoke) {
     spotlight($('local-card'), 0);
     spotlight($('kiro-card'), 0);
     spotlight($('agy-card'), 0);
+    spotlight($('claude-card'), 0);
     $('l-install').onclick = function () { lrun(lst && lst.installed ? '更新' : '安装', linstall); };
     $('l-start').onclick = function () {
       lrun('启动', async function () { await invoke('local_start', { tailnet: tailnet.checked }); ensureLocalEntry(); });
@@ -1589,6 +1838,28 @@
     $('a-restart-btn').onclick = function () { aDoRestart(false); };
     $('a-confirm-ok').onclick = function () { if (agyCard.confirm) aDoRestart(true); };
     $('a-confirm-cancel').onclick = function () { agyCard.confirm = null; agyCard.render(); };
+
+    compPanels.forEach(function (p) { p.bind(); });
+    $('cp-claude-check').onclick = function () {
+      claudeCard.runAction('检查更新', function () { return invoke('component_check', { id: 'claude' }); }, {
+        startMsg: '正在检查最新版…',
+        onResult: function (c, st) {
+          c.applyStatus(st);
+          if (st && st.checkError) c.msg('检查更新失败：' + st.checkError, true);
+          else c.msg(st && st.updateAvailable ? '发现新版本：' + (st.latest || '') : '已是最新版本。');
+        },
+      });
+    };
+    $('cp-claude-update').onclick = function () {
+      claudeCard.runAction('更新', function () { return invoke('component_update', { id: 'claude' }); }, {
+        startMsg: '更新：正在执行…',
+        withLog: true,
+      });
+    };
+    $('cp-claude-auto').onchange = function () {
+      var want = $('cp-claude-auto').checked;
+      claudeCard.runAction('设置自动更新', function () { return invoke('component_auto', { id: 'claude', enabled: want }); }, { startMsg: '正在保存…' });
+    };
 
     // 标题栏菜单「停止本机服务」会带 ?stop=1 回到这里
     if (params.get('stop') === '1') lrefresh().then(function () { lrun('停止', function () { return invoke('local_stop'); }); });

@@ -13,6 +13,7 @@ import type { DotState } from './state.js';
 import {
   DetailScan, HistoryFilter, type Json, type Scan, mergeScans, newScan, parseLine, pickLastActive, pickTitle, scanLines, splitLines,
 } from './transcript.js';
+import { fileMentions } from './mentions.js';
 import { HttpError } from './workspaces.js';
 
 const WINDOW = 64 * 1024;
@@ -101,6 +102,8 @@ export class Sessions {
   private detailCache = new Map<string, DetailCacheEntry>();
   /** 同一文件（路径 + mtime + size）的并发详情读取合并成一次 */
   private detailInflight = new Map<string, Promise<SessionDetail>>();
+  /** 会话文件 → 已确认提到过的路径（mentions 的命中缓存） */
+  private mentionHits = new Map<string, Set<string>>();
 
   constructor(
     private readonly dots: DotState,
@@ -170,6 +173,35 @@ export class Sessions {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 会话记录里是否提到过这个路径（needles 是同一路径的几种写法，已按 JSON 转义）。
+   * 记录只追加不改写，命中结果按文件缓存；没命中每次重扫（只在点开 cwd 之外的路径时发生）。
+   */
+  async mentions(id: string, needles: string[], ignoreCase = false): Promise<boolean> {
+    const loc = await this.locate(id);
+    if (!loc) return false;
+    const key = needles.join('\0');
+    const hits = this.mentionHits.get(loc.file);
+    if (hits?.has(key)) return true;
+    let found: boolean;
+    try {
+      found = await fileMentions(loc.file, needles, ignoreCase);
+    } catch {
+      return false;
+    }
+    if (found) {
+      const set = hits ?? new Set<string>();
+      set.add(key);
+      this.mentionHits.delete(loc.file);
+      this.mentionHits.set(loc.file, set);
+      if (this.mentionHits.size > DETAIL_CACHE_MAX) {
+        const oldest = this.mentionHits.keys().next().value;
+        if (oldest !== undefined) this.mentionHits.delete(oldest);
+      }
+    }
+    return found;
   }
 
   // ───────────── 列表 ─────────────

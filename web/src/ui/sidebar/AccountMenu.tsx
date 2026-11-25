@@ -17,6 +17,7 @@ import { AccountDialog } from './AccountDialog';
 import { AddTargetSeg, type AddTarget } from './AddTargetSeg';
 import { AgyAccountDialog } from './AgyAccountDialog';
 import { ApiAccountDialog, type AddKind } from './ApiAccountDialog';
+import { ComponentsDialog } from './ComponentsDialog';
 import { KiroAccountDialog } from './KiroAccountDialog';
 import { AccountModeSwitch } from './AccountModeSwitch';
 import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
@@ -395,6 +396,8 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   const [editingAgyId, setEditingAgyId] = useState<string | null>(null);
   const [renamingBusy, setRenamingBusy] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  /** 「本机组件」对话框 */
+  const [componentsOpen, setComponentsOpen] = useState(false);
   /** 菜单开着时每分钟推进一次，驱动额度重置倒计时与到期提示刷新；关闭后清理计时器 */
   const [now, setNow] = useState(() => Date.now());
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -408,7 +411,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     setError(null);
     setEditingAgyId(null);
   }, []);
-  useDismiss(open && !dialog, wrapRef, close);
+  useDismiss(open && !dialog && !componentsOpen, wrapRef, close);
 
   const loadClaude = useCallback(() => {
     api.accounts().then(setData, (e) => setError(msg(e)));
@@ -889,7 +892,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                 <div className="cz-sidebar__acct-note cz-kiro-eng">
                   <div className="cz-kiro-eng__line">
                     <span className="cz-kiro-eng__ver">
-                      kiro.rs 引擎{kiroStatus?.engine.current?.commit ? ` ${kiroStatus.engine.current.commit.slice(0, 7)}` : ''}
+                      kiro.rs 引擎{kiroStatus?.engine.current?.commit ? ` ${/^[0-9a-f]{40}$/i.test(kiroStatus.engine.current.commit) ? kiroStatus.engine.current.commit.slice(0, 7) : kiroStatus.engine.current.commit}` : ''}
                     </span>
                     {kiroStatus && !kiroStatus.service.enabled && (
                       <span className="cz-kiro-eng__badge">已停止</span>
@@ -909,7 +912,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                               disabled={kiroBuilding || kiroChecking}
                               onClick={() => void buildKiroEngine()}
                             >
-                              {kiroBuilding ? '启动中…' : '更新'}
+                              {kiroBuilding ? '下载中…' : '更新'}
                             </button>
                           </>
                         )}
@@ -925,7 +928,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                     )}
                   </div>
                   {kiroStatus && kiroStatus.service.outdated > 0 && (
-                    <div className="cz-kiro-eng__note">{kiroStatus.service.outdated} 个代理重启后用新版</div>
+                    <div className="cz-kiro-eng__note">kiro.rs 服务重启后用新版</div>
                   )}
                   {kiroStatus?.engine.build.state === 'failed' && kiroStatus.engine.build.error && (
                     <div className="cz-kiro-eng__err" role="alert">{kiroStatus.engine.build.error}</div>
@@ -1056,9 +1059,15 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
           {error && <div className="cz-sidebar__acct-note cz-sidebar__acct-note--error">{error}</div>}
 
           <div className="cz-sidebar__menu-sep" />
+          <button type="button" className="cz-comp-entry" onClick={() => setComponentsOpen(true)}>
+            <span className="cz-sidebar__menu-icon"><Icon name="settings" size={16} /></span>
+            <span className="cz-sidebar__menu-name">本机组件</span>
+          </button>
           <ThemeSwitch />
         </div>
       )}
+
+      {componentsOpen && <ComponentsDialog onClose={() => setComponentsOpen(false)} />}
 
       {dialog?.kind === 'login' && (
         <AccountDialog

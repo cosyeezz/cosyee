@@ -177,3 +177,14 @@ describe('Composer 双击 Esc 回退', () => {
     expect(m.host.querySelector('.cz-composer__hint')?.textContent).toBe('没有可回退的消息');
   });
 });
+
+describe('Composer 排队列表', () => {
+  it('条目里的 @"路径" 显示成附件标签，和会话流一致', () => {
+    const text = '看下 @"/Users/x/.cosyee/pastes/paste-1795590625505-274f6bf64a62.png" 这个\n第二行';
+    const m = mount({ running: true, queue: [{ id: 'q1', text, mode: 'next', at: 0 }] });
+    const line = m.host.querySelector<HTMLElement>('.cz-queue__text')!;
+    expect(line.textContent).toBe('看下 img1 这个');
+    const tag = line.querySelector<HTMLElement>('.cz-flow__tag--img')!;
+    expect(tag.title).toBe('/Users/x/.cosyee/pastes/paste-1795590625505-274f6bf64a62.png');
+  });
+});

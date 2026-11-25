@@ -3,11 +3,13 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ApiModelMap, CliModel, PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
 import type { Attachment } from '@cosyee/shared';
-import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
+import { itemKind, labelChips, parseUserText, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
 import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
 import { api } from '../../core/api';
 import { ensureSpeech } from '../../core/speech/ensure';
 import { micSupport, startRecording, type Recorder } from '../../core/speech/recorder';
+import { splitUserText } from '../flow/format';
+import { AttachmentTag } from '../flow/UserMessage';
 import { Icon } from '../icons/Icon';
 import { TOUCH_QUERY, useMediaQuery } from '../layout/useMediaQuery';
 import { ModelMenu } from '../menus/ModelMenu';
@@ -20,7 +22,7 @@ import { createChipElement } from './chipElement';
 import { CHIP_CLASS, insertNodesAt, isEditorEmpty, readSegments, relabelChips } from './editorDom';
 import { DRAFT_DELAY_MS, readDraft, writeDraft } from './draft';
 import { applyTextEdit, charBeforeNode, getSelectionOffsets, highlightEditor, scanEditor, setEditorContent, setSelectionOffsets } from './mdEditorDom';
-import { tokenize } from './mdHighlight';
+import { CHIP_CHAR, tokenize } from './mdHighlight';
 import { listIndentEdit, listNewlineEdit } from './mdList';
 import { filterSlash, matchSlash, type SlashItem } from './slash';
 import { cleanPastedText } from './pasteText';
@@ -86,6 +88,19 @@ export interface ComposerProps {
   onRewind?: (targetId: string) => void;
   /** 输入框下方一行的左侧内容（新会话时放工作空间选择器）；不传则不占位 */
   footLeft?: ReactNode;
+  /**
+   * 嵌在别处的输入框（如计划审批的修改意见）：不显示底栏（模型 / 模式 / 额度）、不读写草稿、
+   * Esc 调 onEscape 而不是打开回退浮层
+   */
+  inline?: boolean;
+  /** 覆盖默认的占位提示 */
+  placeholder?: string;
+  /** 挂载后聚焦编辑区 */
+  autoFocus?: boolean;
+  /** 有无内容（文字 / 标签）变化时通知 */
+  onEmptyChange?: (empty: boolean) => void;
+  /** inline 时按 Esc */
+  onEscape?: () => void;
 }
 
 /** 给外部（选中回复）用的命令式接口 */
@@ -99,6 +114,8 @@ export interface ComposerHandle {
   restoreText: (text: string, how: 'replace' | 'append') => void;
   /** 当前是否有未发送的内容（文字或标签） */
   hasContent: () => boolean;
+  /** 等同按 Enter：有内容就发送 */
+  submit: () => void;
 }
 
 interface SlashState {
@@ -120,8 +137,19 @@ function oneLine(text: string): string {
   return (text.split('\n').find((l) => l.trim()) ?? '').trim();
 }
 
+/** 排队 / 插话条目：`@"路径"` 还原成和会话流一样的附件标签（点击预览）；整条消息解析后再取首行，编号与气泡一致 */
+function QueueText({ text }: { text: string }) {
+  const { userText, attachments } = useMemo(() => parseUserText(text), [text]);
+  const segs = useMemo(() => splitUserText(oneLine(userText), attachments), [userText, attachments]);
+  return (
+    <span className="cz-queue__text" title={userText}>
+      {segs.map((s, i) => (s.type === 'text' ? s.text : <AttachmentTag key={i} attachment={s.attachment} />))}
+    </span>
+  );
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, handleRef) {
-  const { onSend, onInterrupt, running, supportsMixed, slashCommands, skills, config, onConfigChange, disabled } = props;
+  const { onSend, onInterrupt, running, supportsMixed, slashCommands, skills, config, onConfigChange, disabled, inline } = props;
   const editorRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const composing = useRef(false);
@@ -139,6 +167,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const slashRef = useRef<SlashState | null>(null);
   slashRef.current = slash;
   const [rewindOpen, setRewindOpen] = useState(false);
+  const onEmptyChange = props.onEmptyChange;
+  useEffect(() => { onEmptyChange?.(empty); }, [empty, onEmptyChange]);
   const lastEsc = useRef(0);
 
   // 把会变的回调放进 ref，给 ChipPreview 传稳定引用，避免它反复请求
@@ -159,14 +189,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     writeDraft(isEditorEmpty(ed) ? '' : serialize(readSegments(ed)));
   }, []);
   const scheduleDraft = useCallback(() => {
+    if (inline) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(saveDraftNow, DRAFT_DELAY_MS);
-  }, [saveDraftNow]);
+  }, [saveDraftNow, inline]);
   const clearDraft = useCallback(() => {
+    if (inline) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
     draftTimer.current = null;
     writeDraft('');
-  }, []);
+  }, [inline]);
   useEffect(() => {
     // 页面关闭 / 切后台前补写一次，避免丢最后 300ms 的输入
     const flush = () => { if (draftTimer.current) saveDraftNow(); };
@@ -322,12 +354,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const ed = editorRef.current;
       return !!ed && !isEditorEmpty(ed);
     },
-  }), [disabled, afterChange]);
+    submit() {
+      send('next');
+    },
+  }), [disabled, afterChange, send]);
 
   // 挂载时编辑区为空就恢复草稿（`@"路径"` 还原成标签，并套上 Markdown 着色）；不抢焦点
   useLayoutEffect(() => {
     const ed = editorRef.current;
-    if (!ed || !isEditorEmpty(ed)) return;
+    if (!ed) return;
+    if (props.autoFocus) ed.focus();
+    if (inline || !isEditorEmpty(ed)) return;
     const d = readDraft();
     if (!d) return;
     ed.innerHTML = '';
@@ -415,6 +452,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   // ───────────── 事件 ─────────────
 
+  /**
+   * 退格 / Delete 删标签：标签是 contenteditable=false 且包在着色行 span 里，WebKit 原生删不掉，
+   * 所以按扁平文本偏移自己删。光标紧挨标签、或选区里含标签时处理并返回 true；其余交给浏览器。
+   */
+  const deleteChipAtCaret = (backward: boolean): boolean => {
+    const ed = editorRef.current;
+    if (!ed) return false;
+    const sel = getSelectionOffsets(ed);
+    if (!sel) return false;
+    const { text } = scanEditor(ed);
+    let from = Math.min(sel.anchor, sel.focus);
+    let to = Math.max(sel.anchor, sel.focus);
+    if (from === to) {
+      if (backward) from -= 1;
+      else to += 1;
+      if (from < 0 || to > text.length) return false;
+    }
+    if (!text.slice(from, to).includes(CHIP_CHAR)) return false;
+    applyTextEdit(ed, { from, to, insert: '', caret: from });
+    afterChange();
+    return true;
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (slashOpen) {
@@ -435,6 +495,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         return;
       }
     }
+    if (e.key === 'Escape' && inline) {
+      e.preventDefault();
+      props.onEscape?.();
+      return;
+    }
     if (e.key === 'Escape') {
       // 双击 Esc（400ms 内）：打开回退浮层。单击 Esc 不做任何事
       e.preventDefault();
@@ -446,6 +511,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       } else {
         lastEsc.current = now;
       }
+      return;
+    }
+    if ((e.key === 'Backspace' || e.key === 'Delete') && deleteChipAtCaret(e.key === 'Backspace')) {
+      e.preventDefault();
       return;
     }
     if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -631,7 +700,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           {queueItems.map((q) => (
             <li key={q.id} className="cz-queue__item">
               <span className={`cz-queue__tag cz-queue__tag--${q.mode}`}>{q.mode === 'next' ? '插话' : '排队'}</span>
-              <span className="cz-queue__text" title={q.text}>{oneLine(q.text)}</span>
+              <QueueText text={q.text} />
               <button type="button" className="cz-queue__btn" title="中断当前任务，立即执行这条" onMouseDown={keepFocus} onClick={() => props.onQueueSendNow?.(q.id)}>立即发送</button>
               <button type="button" className="cz-queue__btn" title="撤回这条并放回输入框编辑" onMouseDown={keepFocus} onClick={() => props.onQueueCancel?.(q.id)}>撤回编辑</button>
             </li>
@@ -696,7 +765,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               suppressContentEditableWarning
               spellCheck={false}
               data-empty={empty ? 'true' : 'false'}
-              data-placeholder={!running ? '输入 / 以使用命令' : touch ? '输入以插话' : 'Enter 插话 · Ctrl+Enter 排队'}
+              data-placeholder={props.placeholder ?? (!running ? '输入 / 以使用命令' : touch ? '输入以插话' : 'Enter 插话 · Ctrl+Enter 排队')}
               onInput={(e) => afterChange(composing.current || (e.nativeEvent as InputEvent).isComposing === true)}
               onKeyDown={onKeyDown}
               onKeyUp={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') evalSlash(); }}
@@ -764,19 +833,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       </div>
       </div>
       {hint && <div className="cz-composer__hint" role="status">{hint}</div>}
-      <div className="cz-composer__foot">
-        {props.footLeft && <div className="cz-composer__foot-left">{props.footLeft}</div>}
-        <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} modelMap={props.modelMap} modelList={props.modelList} onRefreshModels={props.onRefreshModels} />
-        <ModeMenu mode={config.permissionMode ?? 'auto'} onChange={(m) => onConfigChange({ ...config, permissionMode: m })} disabled={disabled} />
-        {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
-      </div>
+      {!inline && (
+        <div className="cz-composer__foot">
+          {props.footLeft && <div className="cz-composer__foot-left">{props.footLeft}</div>}
+          <ModelMenu config={config} onChange={onConfigChange} disabled={disabled} ultracodeAvailable={props.ultracodeAvailable} modelMap={props.modelMap} modelList={props.modelList} onRefreshModels={props.onRefreshModels} />
+          <ModeMenu mode={config.permissionMode ?? 'auto'} onChange={(m) => onConfigChange({ ...config, permissionMode: m })} disabled={disabled} />
+          {props.loadUsage && <UsageMeter load={props.loadUsage} running={running} />}
+        </div>
+      )}
       {preview && (
         <ChipPreview
           anchor={preview}
           onClose={closePreview}
           onRemove={() => {
             const ed = editorRef.current;
-            if (ed && preview.parentNode === ed) {
+            // 标签包在着色行 <span class="cz-md-line"> 里，不是编辑区的直接子节点
+            if (ed && ed.contains(preview)) {
               preview.remove();
               afterChange();
             }

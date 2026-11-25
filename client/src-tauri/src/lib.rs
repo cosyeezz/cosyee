@@ -127,7 +127,12 @@ pub fn run() {
         local::agy_check,
         local::agy_update,
         local::agy_log,
-        local::agy_restart
+        local::agy_restart,
+        local::components_status,
+        local::component_check,
+        local::component_update,
+        local::component_auto,
+        local::component_log
     ]);
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![probe, set_servers]);
@@ -153,6 +158,9 @@ pub fn run() {
                 .hidden_title(true)
                 .traffic_light_position(tauri::LogicalPosition::new(14.0, 19.0));
             builder.build()?;
+            // 客户端开着时负责更新本机 npm 安装的 cosyee 服务端（服务端不能自己替换自己）
+            #[cfg(desktop)]
+            local::spawn_auto_update();
 
             // macOS：保留系统菜单（否则 ⌘C / ⌘V 不可用）并加「连接」菜单。Windows / Linux 不要菜单栏，
             // 同样的操作放在标题栏左上角的菜单里。

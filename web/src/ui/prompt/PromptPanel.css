@@ -113,19 +113,9 @@
   border-radius: var(--r-md);
 }
 .cz-prompt__path { font-size: var(--fs-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cz-prompt__feedback {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  padding: var(--sp-2);
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-}
-.cz-prompt__feedback:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* 修改意见框：就是主输入框（Composer inline），卡片里去掉它的浮起阴影 */
+.cz-prompt__feedback { width: 100%; }
+.cz-prompt__feedback .cz-composer__box { box-shadow: var(--mat-hi); }
 
 .cz-prompt__actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
 .cz-prompt__btn {

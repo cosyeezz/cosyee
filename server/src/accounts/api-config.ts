@@ -10,9 +10,21 @@ export const OFFICIAL_HOST = 'api.anthropic.com';
 
 const KIRO_METHODS = new Set<string>(['builderId', 'idc', 'kiroIde', 'kiroCli', 'apiKey']);
 
+/** Kiro 账号元数据（新格式）：账号在内置 kiro.rs 服务里对应的凭据与客户端 Key（Key 绑定以账号 id 命名的分组） */
 export interface KiroAccountMeta {
   method: KiroLoginMethod;
-  port: number;
+  credentialId: number;
+  keyId: number;
+}
+
+/** 旧格式：每个账号一个独立的 kiro.rs 进程（端口记在这里）。迁移到内置服务前仍然算 Kiro 账号 */
+export interface KiroLegacyMeta {
+  method: KiroLoginMethod;
+  legacyPort: number;
+}
+
+export function isLegacyKiro(k: KiroAccountMeta | KiroLegacyMeta): k is KiroLegacyMeta {
+  return 'legacyPort' in k;
 }
 
 export interface ApiConfig {
@@ -23,16 +35,21 @@ export interface ApiConfig {
   authType: ApiAuthType;
   /** 模型映射；没配 = 不介入 */
   models?: ApiModelMap;
-  /** Kiro 账号元数据（本机 kiro.rs 代理）；普通 API 账号没有 */
-  kiro?: KiroAccountMeta;
+  /** Kiro 账号元数据（内置 kiro.rs 服务）；普通 API 账号没有 */
+  kiro?: KiroAccountMeta | KiroLegacyMeta;
 }
 
-function parseKiroMeta(v: unknown): KiroAccountMeta | null {
+function parseKiroMeta(v: unknown): KiroAccountMeta | KiroLegacyMeta | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (typeof o.method !== 'string' || !KIRO_METHODS.has(o.method)) return null;
-  if (typeof o.port !== 'number' || !Number.isInteger(o.port) || o.port < 1 || o.port > 65535) return null;
-  return { method: o.method as KiroLoginMethod, port: o.port };
+  const method = o.method as KiroLoginMethod;
+  const isId = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  if (isId(o.credentialId) && isId(o.keyId)) return { method, credentialId: o.credentialId, keyId: o.keyId };
+  if (typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535) {
+    return { method, legacyPort: o.port };
+  }
+  return null;
 }
 
 /** 账号目录里的 API 配置；不是 API 账号（或读不到）返回 null */
@@ -59,7 +76,9 @@ export function writeApiConfig(dir: string, cfg: ApiConfig): void {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, API_FILE);
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  // 旧格式落盘时还原成 { method, port }，保证迁移前后读写一致
+  const out = cfg.kiro && isLegacyKiro(cfg.kiro) ? { ...cfg, kiro: { method: cfg.kiro.method, port: cfg.kiro.legacyPort } } : cfg;
+  fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 

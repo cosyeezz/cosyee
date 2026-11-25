@@ -150,6 +150,44 @@ describe('Composer 列表', () => {
   });
 });
 
+describe('Composer 删除标签', () => {
+  // 着色后标签包在 .cz-md-line 里，不是编辑区的直接子节点
+  const withChip = () => {
+    const m = mount();
+    act(() => m.ref.current!.restoreText('看 @"/a/b.png" 尾', 'replace'));
+    const chip = m.ed().querySelector<HTMLElement>('.cz-chip')!;
+    expect(chip.parentElement).not.toBe(m.ed());
+    return m;
+  };
+
+  it('光标在标签后按退格删掉标签', () => {
+    const m = withChip();
+    const at = '看 '.length;
+    act(() => setSelectionOffsets(m.ed(), at + 1));
+    expect(m.key('Backspace').defaultPrevented).toBe(true);
+    expect(m.ed().querySelector('.cz-chip')).toBeNull();
+    expect(getSelectionOffsets(m.ed())).toEqual({ anchor: at, focus: at });
+  });
+
+  it('光标在标签前按 Delete 删掉标签；不挨着标签时交给浏览器', () => {
+    const m = withChip();
+    act(() => setSelectionOffsets(m.ed(), '看 '.length));
+    expect(m.key('Delete').defaultPrevented).toBe(true);
+    expect(m.ed().querySelector('.cz-chip')).toBeNull();
+    act(() => setSelectionOffsets(m.ed(), 1));
+    expect(m.key('Backspace').defaultPrevented).toBe(false);
+  });
+
+  it('预览浮窗的「移除」删掉标签', () => {
+    const m = withChip();
+    act(() => { m.ed().querySelector<HTMLElement>('.cz-chip')!.click(); });
+    const btn = document.querySelector<HTMLButtonElement>('.cz-preview__remove')!;
+    act(() => btn.click());
+    expect(m.ed().querySelector('.cz-chip')).toBeNull();
+    expect(document.querySelector('.cz-preview')).toBeNull();
+  });
+});
+
 describe('Composer 草稿', () => {
   it('输入 300ms 后写入 localStorage，期间不写', () => {
     const m = mount();

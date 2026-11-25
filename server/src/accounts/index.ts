@@ -42,8 +42,8 @@ export interface AccountsDeps {
   spawnLogin?: (env: NodeJS.ProcessEnv) => ChildProcess;
   /** Kiro 账号代理状态查询（供 list() 下发 AccountKiroInfo） */
   kiroProxyState?: (dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error'>;
-  /** 移除 Kiro 账号前停止它的代理进程 */
-  stopKiroProxy?: (dir: string) => Promise<void>;
+  /** 移除 Kiro 账号前，把它在内置 kiro.rs 服务里的凭据 / Key / 分组一并删掉（失败只记日志，不阻止移除） */
+  removeKiroAccount?: (id: string, dir: string) => Promise<void>;
 }
 
 interface LocalInfo {
@@ -409,7 +409,11 @@ export class Accounts {
       // Kiro 账号不下发 api，改下发 kiro；普通 API 账号标题用备注名或主机名
       if (api?.kiro) {
         const ps = this.deps.kiroProxyState?.(a.dir) ?? { proxy: 'stopped' as const, error: null };
-        Object.assign(e, { name: a.label || 'Kiro', plan: 'Kiro', kiro: { method: api.kiro.method, proxy: ps.proxy, error: ps.error } });
+        Object.assign(e, {
+          name: a.label || 'Kiro',
+          plan: 'Kiro',
+          kiro: { method: api.kiro.method, proxy: ps.proxy, error: ps.error, ...(api.models ? { models: api.models } : {}) },
+        });
       } else if (api) {
         Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
       }
@@ -585,6 +589,11 @@ export class Accounts {
     this.deps.onChanged({ reset: id, notify: 'refresh' });
   }
 
+  /** Kiro 模型映射重新拉取后变了：作废该账号的模型缓存并通知前端刷新 */
+  kiroModelsChanged(id: string): void {
+    this.deps.onChanged({ reset: id, notify: 'refresh' });
+  }
+
   /** Kiro 登录失败时清理未登记的新目录 */
   discardKiroDir(dir: string): void {
     this.discardDir(dir);
@@ -691,7 +700,7 @@ export class Accounts {
     const running = this.deps.running(id);
     if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再移除`);
     if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
-    if (readApiConfig(a.dir)?.kiro) await this.deps.stopKiroProxy?.(a.dir);
+    if (readApiConfig(a.dir)?.kiro) await this.deps.removeKiroAccount?.(id, a.dir);
     this.removeDir(a.dir);
     this.s.list = this.s.list.filter((x) => x.id !== id);
     for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];

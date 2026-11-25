@@ -100,3 +100,28 @@ describe('mdEditorDom', () => {
     expect(performance.now() - t).toBeLessThan(1500);
   });
 });
+
+describe('删空后的占位 <br>', () => {
+  const html = (s: string) => {
+    const ed = editor();
+    ed.innerHTML = s;
+    return ed;
+  };
+
+  it('唯一一行被删空只剩 <br>：不算换行，编辑区清空', () => {
+    const ed = html('<span class="cz-md-line"><br></span>');
+    expect(scanEditor(ed).text).toBe('');
+    highlightEditor(ed);
+    expect(ed.innerHTML).toBe('');
+  });
+
+  it('最后一行被删空：只保留上一行的换行', () => {
+    const ed = html('<span class="cz-md-line">a\n</span><span class="cz-md-line"><br></span>');
+    expect(scanEditor(ed).text).toBe('a\n');
+  });
+
+  it('中间行的 <br> 仍按换行算', () => {
+    const ed = html('<span class="cz-md-line"><br></span><span class="cz-md-line">b</span>');
+    expect(scanEditor(ed).text).toBe('\nb');
+  });
+});

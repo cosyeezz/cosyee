@@ -201,41 +201,63 @@ pub async fn local_install() -> Result<String, String> {
     let guard = take_busy()?;
     blocking(move || {
         let _g = guard;
-        if let Ok(mut l) = LOG.lock() {
-            l.clear();
-        }
-        let args = ["install", "-g", "--prefer-online", "--no-fund", "--no-audit", PACKAGE_URL];
-        log(format!("> npm {}", args.join(" ")));
-        let mut child = command("npm", &args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("无法运行 npm（先安装 Node.js 24+）：{e}"))?;
-        let err = child.stderr.take().map(|e| {
-            std::thread::spawn(move || {
-                for line in BufReader::new(e).lines().map_while(Result::ok) {
-                    log(line);
-                }
-            })
-        });
-        if let Some(out) = child.stdout.take() {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                log(line);
-            }
-        }
-        if let Some(t) = err {
-            let _ = t.join();
-        }
-        let status = child.wait().map_err(|e| e.to_string())?;
-        if !status.success() {
-            log(format!("npm 退出码 {}", status.code().unwrap_or(-1)));
-            return Err("安装失败，详情见日志".into());
-        }
-        let v = npm_root().as_deref().and_then(installed_version).ok_or("安装完成，但没找到 cosyee-server 包")?;
-        log(format!("已安装 cosyee-server {v}"));
-        Ok(v)
+        clear_log();
+        install_inner()
     })
     .await?
+}
+
+fn clear_log() {
+    if let Ok(mut l) = LOG.lock() {
+        l.clear();
+    }
+}
+
+fn install_inner() -> Result<String, String> {
+    let args = ["install", "-g", "--prefer-online", "--no-fund", "--no-audit", PACKAGE_URL];
+    log(format!("> npm {}", args.join(" ")));
+    let mut child = command("npm", &args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("无法运行 npm（先安装 Node.js 24+）：{e}"))?;
+    let err = child.stderr.take().map(|e| {
+        std::thread::spawn(move || {
+            for line in BufReader::new(e).lines().map_while(Result::ok) {
+                log(line);
+            }
+        })
+    });
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            log(line);
+        }
+    }
+    if let Some(t) = err {
+        let _ = t.join();
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if !status.success() {
+        log(format!("npm 退出码 {}", status.code().unwrap_or(-1)));
+        return Err("安装失败，详情见日志".into());
+    }
+    let v = npm_root().as_deref().and_then(installed_version).ok_or("安装完成，但没找到 cosyee-server 包")?;
+    log(format!("已安装 cosyee-server {v}"));
+    Ok(v)
+}
+
+fn start_params_file() -> PathBuf {
+    log_file().with_file_name("client-start.json")
+}
+
+fn remember_start(tailnet: bool) {
+    let _ = std::fs::write(start_params_file(), serde_json::json!({ "tailnet": tailnet }).to_string());
+}
+
+/// 上次由客户端启动服务端时的 tailnet 参数；从没记录过（服务端不是客户端启动的）返回 None。
+fn last_start() -> Option<bool> {
+    let text = std::fs::read_to_string(start_params_file()).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("tailnet")?.as_bool()
 }
 
 /// 后台启动服务端。tailnet=true 时监听 Tailscale（手机和其它电脑可连），否则只给本机用。
@@ -244,58 +266,71 @@ pub async fn local_start(tailnet: bool) -> Result<(), String> {
     let guard = take_busy()?;
     blocking(move || {
         let _g = guard;
-        if running() {
-            return Ok(());
-        }
-        let root = npm_root().ok_or("找不到 npm（先安装 Node.js 24+）")?;
-        let entry = root.join("cosyee-server").join("server.mjs");
-        if !entry.exists() {
-            return Err("还没安装服务端".into());
-        }
-        let lf = log_file();
-        let file = std::fs::File::create(&lf).map_err(|e| format!("无法写日志 {}：{e}", lf.display()))?;
-        let file2 = file.try_clone().map_err(|e| e.to_string())?;
-        let entry_s = entry.to_string_lossy().into_owned();
-        let mut c = command("node", &[&entry_s]);
-        c.current_dir(home())
-            .env("COSYEE_HOST", if tailnet { "tailscale" } else { "127.0.0.1" })
-            .env("COSYEE_PORT", PORT.to_string())
-            .stdout(Stdio::from(file))
-            .stderr(Stdio::from(file2));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：没有窗口，也不跟客户端共享 Ctrl+C
-            c.creation_flags(0x0800_0000 | 0x0000_0200);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            c.process_group(0);
-        }
-        let mut child = c.spawn().map_err(|e| format!("无法启动 node：{e}"))?;
-        let started = Instant::now();
-        loop {
-            if running() {
-                // 回收子进程（服务端退出时不留僵尸进程）；客户端退出不影响服务端
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                return Ok(());
-            }
-            if let Ok(Some(st)) = child.try_wait() {
-                return Err(format!("服务端退出了（{st}）：\n{}", tail(&lf, 12)));
-            }
-            if started.elapsed() > Duration::from_secs(15) {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                return Err(format!("等了 15 秒服务端还没响应：\n{}", tail(&lf, 12)));
-            }
-            std::thread::sleep(Duration::from_millis(300));
-        }
+        start_inner(tailnet)
     })
     .await?
+}
+
+/// 启动成功后记下这次的启动参数，客户端自动更新服务端时按它重启（客户端重启后也沿用）。
+fn start_inner(tailnet: bool) -> Result<(), String> {
+    // 服务端本来就在跑时不知道它的参数，不覆盖记录
+    if spawn_server(tailnet)? {
+        remember_start(tailnet);
+    }
+    Ok(())
+}
+
+fn spawn_server(tailnet: bool) -> Result<bool, String> {
+    if running() {
+        return Ok(false);
+    }
+    let root = npm_root().ok_or("找不到 npm（先安装 Node.js 24+）")?;
+    let entry = root.join("cosyee-server").join("server.mjs");
+    if !entry.exists() {
+        return Err("还没安装服务端".into());
+    }
+    let lf = log_file();
+    let file = std::fs::File::create(&lf).map_err(|e| format!("无法写日志 {}：{e}", lf.display()))?;
+    let file2 = file.try_clone().map_err(|e| e.to_string())?;
+    let entry_s = entry.to_string_lossy().into_owned();
+    let mut c = command("node", &[&entry_s]);
+    c.current_dir(home())
+        .env("COSYEE_HOST", if tailnet { "tailscale" } else { "127.0.0.1" })
+        .env("COSYEE_PORT", PORT.to_string())
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::from(file2));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP：没有窗口，也不跟客户端共享 Ctrl+C
+        c.creation_flags(0x0800_0000 | 0x0000_0200);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    let mut child = c.spawn().map_err(|e| format!("无法启动 node：{e}"))?;
+    let started = Instant::now();
+    loop {
+        if running() {
+            // 回收子进程（服务端退出时不留僵尸进程）；客户端退出不影响服务端
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok(true);
+        }
+        if let Ok(Some(st)) = child.try_wait() {
+            return Err(format!("服务端退出了（{st}）：\n{}", tail(&lf, 12)));
+        }
+        if started.elapsed() > Duration::from_secs(15) {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Err(format!("等了 15 秒服务端还没响应：\n{}", tail(&lf, 12)));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 #[tauri::command]
@@ -303,20 +338,24 @@ pub async fn local_stop() -> Result<(), String> {
     let guard = take_busy()?;
     blocking(move || {
         let _g = guard;
-        let r = http_local("POST", "/api/shutdown").ok_or("服务端没有运行")?;
-        if !is_ok(&r) {
-            return Err("这个服务端版本不支持从客户端停止（先更新），或者 7878 端口上是别的程序".into());
-        }
-        let started = Instant::now();
-        while running() {
-            if started.elapsed() > Duration::from_secs(15) {
-                return Err("服务端 15 秒内没有退出".into());
-            }
-            std::thread::sleep(Duration::from_millis(300));
-        }
-        Ok(())
+        stop_inner()
     })
     .await?
+}
+
+fn stop_inner() -> Result<(), String> {
+    let r = http_local("POST", "/api/shutdown").ok_or("服务端没有运行")?;
+    if !is_ok(&r) {
+        return Err("这个服务端版本不支持从客户端停止（先更新），或者 7878 端口上是别的程序".into());
+    }
+    let started = Instant::now();
+    while running() {
+        if started.elapsed() > Duration::from_secs(15) {
+            return Err("服务端 15 秒内没有退出".into());
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    Ok(())
 }
 
 // ───────────── 本机服务端扩展接口（kiro.rs / Antigravity CLI） ─────────────
@@ -638,6 +677,134 @@ pub async fn agy_restart(force: Option<bool>) -> Result<serde_json::Value, Local
     local_api_request("POST", path.into(), Duration::from_secs(30)).await
 }
 
+// ───────────── 本机组件（Claude CLI / kiro.rs / agy / cosyee 服务端）版本管理 ─────────────
+
+const COMPONENT_IDS: [&str; 4] = ["claude", "kiro", "agy", "server"];
+
+/// id 只能是四个固定值，拼进请求路径前先校验。
+fn component_id(id: &str) -> Result<&'static str, LocalApiError> {
+    COMPONENT_IDS.iter().copied().find(|c| *c == id).ok_or_else(|| LocalApiError::Other {
+        status: None,
+        error: format!("未知组件：{id}"),
+    })
+}
+
+#[tauri::command]
+pub async fn components_status() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("GET", "/api/components".into(), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn component_check(id: String) -> Result<serde_json::Value, LocalApiError> {
+    let id = component_id(&id)?;
+    local_api_request("POST", format!("/api/components/{id}/check"), Duration::from_secs(30)).await
+}
+
+#[tauri::command]
+pub async fn component_update(id: String) -> Result<serde_json::Value, LocalApiError> {
+    let id = component_id(&id)?;
+    local_api_request("POST", format!("/api/components/{id}/update"), Duration::from_secs(15)).await
+}
+
+#[tauri::command]
+pub async fn component_auto(id: String, enabled: bool) -> Result<serde_json::Value, LocalApiError> {
+    let id = component_id(&id)?;
+    let flag = u8::from(enabled);
+    local_api_request("POST", format!("/api/components/{id}/auto?enabled={flag}"), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn component_log(id: String, from: usize) -> Result<serde_json::Value, LocalApiError> {
+    let id = component_id(&id)?;
+    local_api_request("GET", format!("/api/components/{id}/log?from={from}"), Duration::from_secs(5)).await
+}
+
+// ───────────── 客户端自动更新 cosyee 服务端 ─────────────
+// 服务端不能在运行中替换自己：客户端开着时每小时看一次 /api/components，
+// 有新版、自动更新开着、不是自定义、没有任务在跑时，由客户端停服务 → npm 安装 → 按上次的参数重新启动。
+
+const AUTO_UPDATE_FIRST_DELAY: Duration = Duration::from_secs(5 * 60);
+const AUTO_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// 是否应该现在自动更新服务端。components 是 GET /api/components 的响应，running_count 是 GET /api/running 的 count。
+/// 数据缺失或格式不对一律不更新。
+fn should_auto_update_server(components: &serde_json::Value, running_count: Option<u64>) -> bool {
+    if running_count != Some(0) {
+        return false;
+    }
+    let Some(server) = components
+        .get("list")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.iter().find(|c| c.get("id").and_then(|v| v.as_str()) == Some("server")))
+    else {
+        return false;
+    };
+    let flag = |k: &str| server.get(k).and_then(|v| v.as_bool());
+    flag("installed") == Some(true)
+        && flag("custom") == Some(false)
+        && flag("updateAvailable") == Some(true)
+        && flag("autoUpdate") == Some(true)
+}
+
+fn api_get(path: &str) -> Option<serde_json::Value> {
+    let resp = http_local_with_timeout("GET", path, Duration::from_secs(5)).ok()?;
+    decode_api_response(resp).ok()
+}
+
+fn api_running_count() -> Option<u64> {
+    api_get("/api/running")?.get("count")?.as_u64()
+}
+
+/// 每小时一次的检查；返回时服务端要么没动，要么已经按原参数重新启动（失败会写日志）。
+fn auto_update_tick() {
+    let Some(components) = api_get("/api/components") else { return };
+    if !should_auto_update_server(&components, api_running_count()) {
+        return;
+    }
+    // 只更新由客户端 npm 安装的那份
+    if npm_root().as_deref().and_then(installed_version).is_none() {
+        return;
+    }
+    let Some(tailnet) = last_start() else {
+        log("自动更新：不知道服务端是怎么启动的（不是客户端启动的），跳过");
+        return;
+    };
+    let Ok(_guard) = take_busy() else { return };
+    // 拿到操作权后再确认一次没有任务，缩小窗口
+    if api_running_count() != Some(0) {
+        return;
+    }
+    clear_log();
+    log("自动更新：发现服务端新版本，没有任务在执行，开始更新");
+    log("自动更新：停止服务端");
+    if let Err(e) = stop_inner() {
+        log(format!("自动更新：停止失败，放弃本次更新：{e}"));
+        return;
+    }
+    log("自动更新：安装新版本");
+    match install_inner() {
+        Ok(v) => log(format!("自动更新：已安装 {v}")),
+        // 装失败了也把原来的版本启动回来
+        Err(e) => log(format!("自动更新：安装失败：{e}")),
+    }
+    log("自动更新：启动服务端");
+    match start_inner(tailnet) {
+        Ok(()) => log("自动更新：完成"),
+        Err(e) => log(format!("自动更新：启动失败：{e}")),
+    }
+}
+
+/// 客户端启动时调用：后台线程，几分钟后第一次检查，之后每小时一次。
+pub fn spawn_auto_update() {
+    let _ = std::thread::Builder::new().name("server-auto-update".into()).spawn(|| {
+        std::thread::sleep(AUTO_UPDATE_FIRST_DELAY);
+        loop {
+            auto_update_tick();
+            std::thread::sleep(AUTO_UPDATE_INTERVAL);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +923,61 @@ mod tests {
         let s = build_admin_init_script("http://127.0.0.1:8080", "k\"'\n</script>").unwrap();
         assert!(s.contains(r#"location.origin==="http://127.0.0.1:8080""#));
         assert!(s.contains(r#"localStorage.setItem("adminApiKey","k\"'\n</script>")"#));
+    }
+
+    fn comps(server: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "list": [
+            { "id": "claude", "installed": true, "custom": false, "updateAvailable": true, "autoUpdate": true },
+            server,
+        ]})
+    }
+
+    fn server_item(custom: bool, update: bool, auto: bool) -> serde_json::Value {
+        serde_json::json!({ "id": "server", "installed": true, "custom": custom, "updateAvailable": update, "autoUpdate": auto })
+    }
+
+    #[test]
+    fn auto_update_when_available_and_idle() {
+        assert!(should_auto_update_server(&comps(server_item(false, true, true)), Some(0)));
+    }
+
+    #[test]
+    fn auto_update_skips_when_busy_or_unknown() {
+        let c = comps(server_item(false, true, true));
+        assert!(!should_auto_update_server(&c, Some(1)));
+        assert!(!should_auto_update_server(&c, None));
+    }
+
+    #[test]
+    fn auto_update_skips_custom_auto_off_and_no_update() {
+        assert!(!should_auto_update_server(&comps(server_item(true, true, true)), Some(0)));
+        assert!(!should_auto_update_server(&comps(server_item(false, true, false)), Some(0)));
+        assert!(!should_auto_update_server(&comps(server_item(false, false, true)), Some(0)));
+        let not_installed = comps(serde_json::json!({ "id": "server", "installed": false, "custom": false, "updateAvailable": true, "autoUpdate": true }));
+        assert!(!should_auto_update_server(&not_installed, Some(0)));
+    }
+
+    #[test]
+    fn auto_update_skips_missing_or_malformed_json() {
+        assert!(!should_auto_update_server(&serde_json::Value::Null, Some(0)));
+        assert!(!should_auto_update_server(&serde_json::json!({}), Some(0)));
+        assert!(!should_auto_update_server(&serde_json::json!({ "list": "x" }), Some(0)));
+        assert!(!should_auto_update_server(&serde_json::json!({ "list": [{ "id": "claude", "updateAvailable": true }] }), Some(0)));
+        // 字段缺失或类型不对
+        assert!(!should_auto_update_server(&comps(serde_json::json!({ "id": "server", "updateAvailable": true })), Some(0)));
+        assert!(!should_auto_update_server(
+            &comps(serde_json::json!({ "id": "server", "installed": true, "custom": false, "updateAvailable": "yes", "autoUpdate": true })),
+            Some(0)
+        ));
+    }
+
+    #[test]
+    fn component_id_whitelist() {
+        for id in ["claude", "kiro", "agy", "server"] {
+            assert_eq!(component_id(id).unwrap(), id);
+        }
+        for bad in ["", "Claude", "../x", "kiro/check", "agy?x=1", "other"] {
+            assert!(component_id(bad).is_err(), "{bad}");
+        }
     }
 }

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PendingPrompt } from '@cosyee/shared';
+import { DRAFT_KEY } from '../composer/draft';
 import { PromptPanel } from './PromptPanel';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -93,24 +94,58 @@ describe('PromptPanel 计划', () => {
     expect(m.onReply).toHaveBeenCalledWith('pl', { kind: 'approve' });
   });
 
-  it('继续完善：填写意见后发送', () => {
+  /** 意见框就是主输入框（contenteditable）：直接改 DOM 后触发 input */
+  const typeEditor = (ed: HTMLElement, text: string) =>
+    act(() => {
+      ed.textContent = text;
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  const key = (el: Element, init: KeyboardEventInit) =>
+    act(() => { el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })); });
+
+  it('继续完善：意见框是主输入框，填写后发送', () => {
     const m = mount([plan]);
     m.click(m.btn('继续完善'));
-    const ta = m.host.querySelector('textarea')!;
+    const ed = m.host.querySelector<HTMLElement>('.cz-composer__editor')!;
+    expect(ed).toBeTruthy();
+    expect(document.activeElement).toBe(ed);
+    expect(ed.dataset.placeholder).toContain('说说想怎么改');
+    // 与主输入框同样有「+」添加文件和语音输入，但没有模型 / 模式底栏
+    expect(m.host.querySelector('[aria-label="添加文件"]')).toBeTruthy();
+    expect(m.host.querySelector('[aria-label="语音输入"]')).toBeTruthy();
+    expect(m.host.querySelector('.cz-composer__foot')).toBeNull();
     expect((m.btn('发送意见') as HTMLButtonElement).disabled).toBe(true);
-    m.type(ta, '加上测试');
+    typeEditor(ed, '加上测试');
+    expect((m.btn('发送意见') as HTMLButtonElement).disabled).toBe(false);
     m.click(m.btn('发送意见'));
     expect(m.onReply).toHaveBeenCalledWith('pl', { kind: 'revise', feedback: '加上测试' });
   });
 
-  it('意见框 Enter 发送，Shift+Enter 不发送', () => {
+  it('意见框 Enter 发送，Shift+Enter 不发送，Esc 收起', () => {
     const m = mount([plan]);
     m.click(m.btn('继续完善'));
-    const ta = m.host.querySelector('textarea')!;
-    m.type(ta, '改');
-    act(() => { ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })); });
+    const ed = m.host.querySelector<HTMLElement>('.cz-composer__editor')!;
+    typeEditor(ed, '改');
+    key(ed, { key: 'Enter', shiftKey: true });
     expect(m.onReply).not.toHaveBeenCalled();
-    act(() => { ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    key(ed, { key: 'Enter' });
     expect(m.onReply).toHaveBeenCalledWith('pl', { kind: 'revise', feedback: '改' });
+
+    m.onReply.mockClear();
+    key(ed, { key: 'Escape' });
+    expect(m.host.querySelector('.cz-composer__editor')).toBeNull();
+    expect(m.btn('继续完善')).toBeTruthy();
+  });
+
+  it('意见框不读写主输入框的草稿', () => {
+    localStorage.setItem(DRAFT_KEY, '主输入框的草稿');
+    const m = mount([plan]);
+    m.click(m.btn('继续完善'));
+    const ed = m.host.querySelector<HTMLElement>('.cz-composer__editor')!;
+    expect(ed.textContent).toBe('');
+    typeEditor(ed, '意见');
+    m.click(m.btn('发送意见'));
+    expect(localStorage.getItem(DRAFT_KEY)).toBe('主输入框的草稿');
+    localStorage.removeItem(DRAFT_KEY);
   });
 });

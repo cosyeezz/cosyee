@@ -74,6 +74,9 @@ export function UsageMeter({ load, running }: UsageMeterProps) {
   const worst = info ? worstLimit(info.limits) : null;
   const pct = worst?.percent ?? 0;
 
+  // 没有订阅额度（API / Kiro 账号返回 null，或没有任何限制）就不显示圆环
+  if (!info || info.limits.length === 0) return null;
+
   return (
     <div className="cz-usage" ref={boxRef}>
       <button
@@ -105,7 +108,7 @@ export function UsageMeter({ load, running }: UsageMeterProps) {
       </button>
       {mounted && (
         <div ref={panelRef} className={`cz-usage__panel cz-pop${leaving ? ' is-leaving' : ''}`} role="dialog" aria-label="订阅额度" {...leavingProps(leaving)}>
-          {info ? info.limits.map((l, i) => <Bar key={`${l.kind}:${l.model ?? ''}:${i}`} l={l} />) : <div className="cz-usage__sub">正在读取…</div>}
+          {info.limits.map((l, i) => <Bar key={`${l.kind}:${l.model ?? ''}:${i}`} l={l} />)}
         </div>
       )}
     </div>

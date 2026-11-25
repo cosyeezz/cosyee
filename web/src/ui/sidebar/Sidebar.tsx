@@ -2,7 +2,7 @@
 // 工作空间的选择在新会话的输入框左下角（WorkspaceMenu），不在侧栏里。
 // 批量操作放在各自区块的标题行上（悬停出现）：工作空间组头 = 删除这一组的全部会话；已删除标题 = 全部恢复 / 全部永久删除。
 // 受控组件，数据与回调全部来自 props；搜索词是纯界面状态，留在组件内。
-import { startTransition, useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { Account, DeletedSession, SessionSummary, Workspace } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
 import { AccountMenu } from './AccountMenu';
@@ -12,6 +12,7 @@ import { SearchRow } from './SearchRow';
 import { SessionCardProvider, useSessionCard } from './SessionCard';
 import { SessionRow } from './SessionRow';
 import { excludePinned, filterByTitle, groupByWorkspace, samePath, workspaceName } from './sidebarUtil';
+import { usePendingSelect } from './usePendingSelect';
 import { LiquidCapsule } from '../motion/LiquidCapsule';
 import './Sidebar.css';
 
@@ -69,28 +70,8 @@ export function Sidebar({
   const [folded, setFolded] = useState<string[]>([]);
   const now = Date.now();
 
-  // 点击会话时先在侧栏里把高亮挪过去（只重渲染侧栏，胶囊立刻开始流动），
-  // 再用 transition 让主区去换对话：重的那次提交不会挡住点击反馈。
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [seenId, setSeenId] = useState(currentSessionId);
-  if (seenId !== currentSessionId) {
-    setSeenId(currentSessionId);
-    setPendingId(null);
-  }
-  useEffect(() => {
-    if (pendingId === null) return;
-    const t = setTimeout(() => setPendingId(null), 1500);
-    return () => clearTimeout(t);
-  }, [pendingId]);
-  const activeId = pendingId ?? currentSessionId;
-  const selectSession = (id: string) => {
-    if (id === currentSessionId) {
-      onSelectSession(id);
-      return;
-    }
-    setPendingId(id);
-    startTransition(() => onSelectSession(id));
-  };
+  // 点击会话时高亮先在侧栏里挪过去，主区随后再换对话
+  const { activeId, select: selectSession } = usePendingSelect(currentSessionId, onSelectSession);
 
   const pinnedShown = filterByTitle(pinned, query);
   const searching = query.trim() !== '';

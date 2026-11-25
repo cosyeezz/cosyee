@@ -1,8 +1,10 @@
 // 会话工作目录内的文件预览：解析路径、授权（必须在会话 cwd 内）、安全读取、类型识别、文本解码。
 //
-// 授权模型：可读范围 = 会话 cwd 之内的任何文件（不要求 transcript 里出现过）。
-// - 词法检查：`..` 逃逸、cwd 之外的绝对路径 → 403；
+// 授权模型：可读范围 = 会话 cwd 之内的任何文件 + 会话记录里原样提到过的 cwd 之外的路径（如 agent 截图存到 /tmp）。
+// - 词法检查：`..` 逃逸、cwd 之外的绝对路径 → 交给调用方的 OutsideCheck（查会话记录），没提到过 → 403；
 // - realpath 检查：符号链接 / junction 指向 cwd 之外 → 403（比较 realpath(目标) 与 realpath(cwd)）；
+//   cwd 之外、已被会话提到过的路径不做这项比较（macOS 的 /tmp 本身就是指向 /private/tmp 的链接）；
+//   提到过只放行那一个路径本身，目录里的其它文件仍要各自被提到过；
 // - 设备路径（`\\.\`、`\\?\`、UNC）与 Windows 保留名（con / nul / com1…）→ 403；
 // - 读取：O_NOFOLLOW + dev/ino 校验，读前读后 size / mtime 校验，读期间被换掉则 409。
 import { constants } from 'node:fs';
@@ -91,7 +93,26 @@ const looksLikeSvg = (head: Buffer): boolean => /<svg[\s>]/i.test(head.toString(
 
 // ───────────── 路径解析与授权 ─────────────
 
-const forbidden = (msg = '只能查看会话工作目录内的文件') => new HttpError(403, msg);
+const forbidden = (msg = '只能查看会话工作目录内、或会话中提到过的文件') => new HttpError(403, msg);
+
+/** cwd 之外的绝对路径是否放行（调用方按会话记录判断）；不传则一律 403 */
+export type OutsideCheck = (abs: string) => Promise<boolean>;
+
+/**
+ * 同一路径在会话记录（jsonl）里可能的几种写法，已按 JSON 字符串转义：
+ * 原样、`~/…`（在家目录下时）、Windows 的正斜杠写法、Markdown 链接里的百分号编码。
+ */
+export function mentionForms(abs: string): string[] {
+  const forms = new Set<string>([abs]);
+  if (isWin) forms.add(abs.replace(/\\/g, '/'));
+  const home = os.homedir();
+  if (home && isInside(abs, home) && pathKey(abs) !== pathKey(home)) forms.add('~' + abs.slice(home.length).replace(/\\/g, '/'));
+  for (const f of [...forms]) {
+    const enc = encodeURI(f.replace(/\\/g, '/'));
+    if (enc !== f) forms.add(enc);
+  }
+  return [...forms].map((f) => JSON.stringify(f).slice(1, -1));
+}
 
 const RESERVED = /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/i;
 
@@ -114,12 +135,21 @@ export interface Target {
   /** realpath；读取只用它 */
   real: string;
   stat: fs.Stats;
+  /** 在 cwd 之外、因会话提到过而放行 */
+  external: boolean;
   line?: number;
   fragment?: string;
 }
 
-/** 请求里的 path（href 或路径）→ 绝对路径。只做字符串运算与词法授权，不碰文件系统。 */
-export function lexicalTarget(cwd: string, input: unknown): { abs: string; cwdAbs: string; line?: number; fragment?: string } {
+/**
+ * 请求里的 path（href 或路径）→ 绝对路径。只做字符串运算与词法授权，不碰文件系统。
+ * allowOutside 为真时 cwd 之外的路径不抛错，返回 outside: true 交给调用方再判断。
+ */
+export function lexicalTarget(
+  cwd: string,
+  input: unknown,
+  allowOutside = false,
+): { abs: string; cwdAbs: string; outside: boolean; line?: number; fragment?: string } {
   if (typeof input !== 'string' || !input) throw new HttpError(400, '缺少 path');
   const link = localFileLink(input);
   if (!link) throw new HttpError(400, '不是本地文件路径');
@@ -133,19 +163,21 @@ export function lexicalTarget(cwd: string, input: unknown): { abs: string; cwdAb
     if (hasReservedName(abs)) throw forbidden('不支持设备名');
     if (abs.slice(2).includes(':')) throw forbidden('不支持备用数据流路径');
   }
-  if (!isInside(abs, cwdAbs)) throw forbidden();
-  return { abs, cwdAbs, ...(link.line ? { line: link.line } : {}), ...(link.fragment ? { fragment: link.fragment } : {}) };
+  const outside = !isInside(abs, cwdAbs);
+  if (outside && !allowOutside) throw forbidden();
+  return { abs, cwdAbs, outside, ...(link.line ? { line: link.line } : {}), ...(link.fragment ? { fragment: link.fragment } : {}) };
 }
 
 /** 完整解析：词法授权 + realpath 授权。路径不存在 404，在 cwd 之外 / 符号链接逃逸 403。 */
-export async function resolveTarget(cwd: string, input: unknown): Promise<Target> {
-  const lex = lexicalTarget(cwd, input);
-  const t = await authorize(lex.abs, lex.cwdAbs);
+export async function resolveTarget(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<Target> {
+  const lex = lexicalTarget(cwd, input, !!outsideOk);
+  if (lex.outside && !(await outsideOk!(lex.abs))) throw forbidden();
+  const t = await authorize(lex.abs, lex.cwdAbs, lex.outside);
   return { ...t, ...(lex.line ? { line: lex.line } : {}), ...(lex.fragment ? { fragment: lex.fragment } : {}) };
 }
 
 /** 已规范化的绝对路径（不再按 href 解析，文件名里的 `#` / `%` 保持原样）→ realpath 授权 */
-async function authorize(abs: string, cwdAbs: string): Promise<Target> {
+async function authorize(abs: string, cwdAbs: string, external: boolean): Promise<Target> {
   let cwdReal: string;
   try {
     cwdReal = await fs.promises.realpath(cwdAbs);
@@ -153,7 +185,7 @@ async function authorize(abs: string, cwdAbs: string): Promise<Target> {
     throw new HttpError(404, '工作目录不存在');
   }
   const real = await realpathOf(abs);
-  if (!isInside(real, cwdReal)) throw forbidden('路径指向工作目录之外（符号链接 / junction）');
+  if (!external && !isInside(real, cwdReal)) throw forbidden('路径指向工作目录之外（符号链接 / junction）');
   let stat: fs.Stats;
   try {
     stat = await fs.promises.lstat(real);
@@ -161,7 +193,7 @@ async function authorize(abs: string, cwdAbs: string): Promise<Target> {
     throw mapFsError(e);
   }
   if (!stat.isFile() && !stat.isDirectory()) throw forbidden('不是普通文件或目录');
-  return { abs, real, stat };
+  return { abs, real, stat, external };
 }
 
 async function realpathOf(p: string): Promise<string> {
@@ -217,7 +249,7 @@ async function openChecked(t: Target): Promise<fs.promises.FileHandle> {
 
 /** 读完后确认文件没被换掉 / 改动：路径仍解析到同一个文件、仍在 cwd 内，size / mtime 与读前一致 */
 async function verifyUnchanged(cwd: string, t: Target, h: fs.promises.FileHandle, before: fs.Stats): Promise<void> {
-  const after = await authorize(t.abs, normalizeDir(cwd));
+  const after = await authorize(t.abs, normalizeDir(cwd), t.external);
   if (pathKey(after.real) !== pathKey(t.real) || after.stat.dev !== t.stat.dev || after.stat.ino !== t.stat.ino) {
     throw new HttpError(409, '文件在读取期间发生变化，请重新加载');
   }
@@ -250,9 +282,9 @@ async function listDir(dir: string): Promise<{ entries: FileEntry[]; truncated: 
 }
 
 /** 文件预览：返回结构化结果。文本 ≤ 2MB；图片 / PDF 只返回类型，内容走 raw 接口。 */
-export function previewFile(cwd: string, input: unknown): Promise<FilePreview> {
+export function previewFile(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<FilePreview> {
   return limited(async () => {
-    const t = await resolveTarget(cwd, input);
+    const t = await resolveTarget(cwd, input, outsideOk);
     const base: FilePreview = {
       name: path.basename(t.abs) || t.abs,
       path: t.abs,
@@ -315,9 +347,9 @@ export interface RawFile {
  * 图片 / PDF 的原始内容：返回已校验的文件句柄（调用方负责 createReadStream 并关闭）。
  * Content-Type 由魔数决定，不信扩展名；超过 20MB 413；不是图片 / PDF 404。
  */
-export async function openRaw(cwd: string, input: unknown): Promise<RawFile> {
+export async function openRaw(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<RawFile> {
   if (reading >= MAX_READING) throw new HttpError(429, '文件预览请求过多，请稍后重试');
-  const t = await resolveTarget(cwd, input);
+  const t = await resolveTarget(cwd, input, outsideOk);
   if (!t.stat.isFile()) throw new HttpError(404, '不是文件');
   const h = await openChecked(t);
   try {
@@ -341,7 +373,7 @@ export async function openRaw(cwd: string, input: unknown): Promise<RawFile> {
 }
 
 /** 供 reveal / terminal 用：授权并返回要操作的路径与类型（文件 → 选中；目录 → 打开）。 */
-export async function resolveForAction(cwd: string, input: unknown): Promise<{ abs: string; isDir: boolean }> {
-  const t = await resolveTarget(cwd, input);
+export async function resolveForAction(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<{ abs: string; isDir: boolean }> {
+  const t = await resolveTarget(cwd, input, outsideOk);
   return { abs: t.abs, isDir: t.stat.isDirectory() };
 }
