@@ -1,7 +1,7 @@
 // 实时事件：CLI stdout 的一行 JSON（原样转发）+ 后端合成的 cosyee_user。
 // 所有函数都是纯函数：不认识的事件原样返回 s，不抛错。
 
-import type { CliModelCost, SessionMeta } from '@cosyee/shared';
+import { parseDelegateNotification, type CliModelCost, type SessionMeta } from '@cosyee/shared';
 import {
   addUserSkill,
   appendToolJson,
@@ -19,6 +19,7 @@ import {
   findRun,
   finishTurn,
   isActive,
+  isDelegateRun,
   makeTurn,
   maybeFinishPending,
   newBook,
@@ -31,6 +32,7 @@ import {
 } from './core';
 import { arr, isObj, str, textOf } from './util';
 import { resolveRun } from './resume';
+import { applyDelegateNotification } from './delegate';
 import { recordCache, recordCacheDelta, recordCompact } from './cacheHit';
 
 const strList = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
@@ -107,6 +109,15 @@ function applySystem(s: ConvState, e: Record<string, unknown>, now: number): Con
       const st = ref && thinkingStep(d, ref);
       if (!st) return s;
       st.tokens = e.estimated_tokens;
+      return commit(s, d);
+    }
+    case 'cosyee_agent_params': {
+      // 服务端按设置补上的子代理模型 / 强度（委派刚开始，还没有输出）；嵌套子代理的调用找不到就忽略
+      const d = openDraft(s, now);
+      const run = d && findRun(d, str(e.tool_use_id));
+      if (!d || !run) return s;
+      if (str(e.model)) run.model = str(e.model);
+      if (str(e.effort)) run.effort = str(e.effort);
       return commit(s, d);
     }
     case 'compact_boundary': {
@@ -294,6 +305,12 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
       return scope === '' ? { ...next, meta: recordCache(next.meta, isObj(e.message) ? e.message : null, next.turns.length - 1) } : next;
     }
     case 'user': {
+      // 后台委派的完成通知（服务端注入给 CLI 的 user 消息，若被回放出来）：不开轮、不显示，只给委派子代理落定结果
+      if (scopeOf(e) === '' && isObj(e.message)) {
+        const nt = textOf(e.message.content);
+        const note = nt.includes('cosyee-delegate-notification') ? parseDelegateNotification(nt) : null;
+        if (note) return applyDelegateNotification(s, note, now);
+      }
       // 技能正文：CLI 合成的 user 消息（isSynthetic），归给该代理最近一个等正文的 Skill 调用
       if (e.isSynthetic === true) {
         const text = textOf(isObj(e.message) ? e.message.content : undefined);
@@ -319,7 +336,9 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
       if (!arr(content).some((b) => isObj(b) && b.type === 'tool_result')) return s;
       const d = openDraft(s, now);
       if (!d) return s;
-      touch(d, scopeOf(e));
+      // 后台委派的过程事件可能在主轮结束后才到（运行还在更早的轮里）：不重开主轮
+      const scope = scopeOf(e);
+      if (!(scope !== '' && s.turns.some((t) => t.subagents.some((r) => r.toolUseId === scope && isDelegateRun(r))))) touch(d, scope);
       applyToolResults(d, content, e.tool_use_result);
       maybeFinishPending(d);
       return commit(s, d);

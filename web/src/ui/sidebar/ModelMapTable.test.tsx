@@ -107,6 +107,47 @@ describe('ModelMapTable', () => {
     expect(hasModelMapping(last)).toBe(false);
   });
 
+  it('「添加一个模型…」里按回车直接添加', () => {
+    let last: ApiModelMap = {};
+    table({}, (x) => (last = x), []);
+    const input = field('要添加的模型');
+    type(input, 'grok-4.7');
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(last.extra).toEqual([{ id: 'grok-4.7' }]);
+  });
+
+  it('下拉：搜索框里 ↓ 进入候选，Esc 收起并把焦点还给下拉按钮', () => {
+    table({}, () => {});
+    const caret = row('Opus 5.5').querySelector<HTMLButtonElement>('.cz-mmap__caret')!;
+    click(caret);
+    const search = document.querySelector<HTMLInputElement>('[aria-label="搜索模型"]')!;
+    act(() => { search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(document.activeElement?.textContent).toBe(OPTIONS[0]);
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.querySelector('[aria-label="搜索模型"]')).toBeNull();
+    expect(document.activeElement).toBe(caret);
+  });
+
+  it('先填显示名称、后填模型：名称不丢；两者都清空才删掉条目', () => {
+    let last: ApiModelMap = {};
+    table({}, (x) => (last = x));
+    type(field('Sonnet 5.5 显示名称'), 'MiniMax');
+    table(last, (x) => (last = x));
+    expect(field('Sonnet 5.5 显示名称').value).toBe('MiniMax');
+    type(field('Sonnet 5.5 实际请求模型'), 'minimax-m2.5');
+    expect(last.alias?.sonnet).toEqual({ id: 'minimax-m2.5', label: 'MiniMax' });
+  });
+
+  it('编辑自定义模型的 id 不会重挂输入框', () => {
+    let last: ApiModelMap = { extra: [{ id: 'a' }] };
+    const render = () => root!.render(<ModelMapTable value={last} onChange={(x) => (last = x)} options={[]} onFetch={() => {}} fetching={false} hint={null} />);
+    table(last, (x) => (last = x), []);
+    const input = field('a 实际请求模型');
+    type(input, 'ab');
+    act(render);
+    expect(field('ab 实际请求模型')).toBe(input);
+  });
+
   it('显示名称与 1M 勾选写进同一条目；没填模型时 1M 不可勾', () => {
     table({}, () => {});
     expect(field('Sonnet 5.5 支持 1M 上下文').disabled).toBe(true);

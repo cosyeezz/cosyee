@@ -8,24 +8,32 @@ import { fileURLToPath } from 'node:url';
 import type { ClientMsg, PriceTable, ServerMsg } from '@cosyee/shared';
 import { WebSocket, WebSocketServer } from 'ws';
 import { AccountProvider } from './account.js';
+import { AgyAccounts } from './accounts/agy.js';
 import { Accounts, DEFAULT_ID } from './accounts/index.js';
+import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
+import { AcpPool, AgyBackend } from './delegate/acp.js';
 import { createHandler, hostAllowed } from './http.js';
+import { KiroService } from './kiro/index.js';
 import { Pins } from './pins.js';
 import { PricingService } from './pricing.js';
 import { Previews } from './preview.js';
 import type { Spawner } from './reveal.js';
 import { cosyeeHome, isSafeId } from './paths.js';
+import { AgyCli } from './delegate/agyCli.js';
+import { DelegateRecorder } from './delegate/record.js';
 import { TAILSCALE_MODE, connectionAllowed, listenAddress, originAllowed, requestAuthorized } from './security.js';
 import { Sessions } from './sessions.js';
 import { Trash } from './trash.js';
+import { StopStore } from './stops.js';
 import { ToolStatsStore } from './toolStats.js';
 import { CompactStatsStore } from './compactStats.js';
 import { DotState } from './state.js';
 import { UsageProvider, fetchUsage } from './usage.js';
 import { CliModelsDisk, CliModelsProvider, fetchCliModels, type FetchedModels } from './cliModels.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
+import { Speech } from './speech/index.js';
 
 /** state.json 里最多保留多少个会话的配置记录（超出丢最久没用的） */
 const MAX_SESSION_CONFIGS = 2000;
@@ -62,6 +70,10 @@ export interface StartOptions {
   fetchCliModels?: (dir: string | null) => Promise<FetchedModels | null>;
   /** false = 模型列表不落盘（测试用） */
   cliModels?: false;
+  /** 启动后在后台下载语音运行库和模型（朗读、语音输入、通话首次使用不用等） */
+  prefetchSpeech?: boolean;
+  /** Tailscale HTTPS 入口（见 tailscaleHttps.ts），经 /api/bootstrap 告诉网页 */
+  httpsUrl?: () => string | null;
 }
 
 export interface RunningServer {
@@ -72,6 +84,7 @@ export interface RunningServer {
   store: StateStore;
   pins: Pins;
   trash: Trash;
+  stops: StopStore;
   /** 优雅关闭：断开 WS、停止 HTTP、结束所有 claude 进程。 */
   stop(): Promise<void>;
 }
@@ -105,19 +118,35 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const workspaces = new Workspaces(store);
   const dots = new DotState(store);
   const sessions = new Sessions(dots);
+  const delegateRecord = new DelegateRecorder(path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'delegates'));
   // Pins 的到期回调需要 manager，manager 又需要 pins：用闭包延后取
   let notifySidebar: () => void = () => {};
   const pins = new Pins(store, { onExpire: () => notifySidebar() });
-  const trash = new Trash(store, dots, pins);
+  const stops = new StopStore(store);
+  const trash = new Trash(store, dots, pins, undefined, stops);
   const toolStats = new ToolStatsStore();
   const compactStats = new CompactStatsStore();
   // 多账号：manager / sessions 与 accounts 互相需要，同样用闭包延后取
   let accounts: Accounts | null = null;
+  let agyAccounts: AgyAccounts | null = null;
+  let kiro: KiroService | null = null;
+  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? DEFAULT_ID });
+  const onExitPool = () => acpPool.dispose(true);
+  process.once('exit', onExitPool);
+  const agyCli = new AgyCli({ pool: acpPool });
+  const agyBackend = new AgyBackend({
+    pool: acpPool,
+    accounts: {
+      activeAccount: () => agyAccounts?.activeAccount() ?? { id: DEFAULT_ID, dir: null },
+      accountFor: (id) => agyAccounts?.accountFor(id) ?? (id === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null),
+    },
+  });
   sessions.setFlags({
     isDeleted: (id) => trash.isDeleted(id),
     pinKind: (id) => pins.kind(id),
     configOf: (id) => store.state.sessionConfigs[id] ?? null,
     forkSrcOf: (id) => store.state.forks[id]?.src ?? null,
+    delegateEntries: (id, toolUseId) => delegateRecord.read(id, toolUseId),
     // 并行模式下会话列表标出账号：正在运行的进程用的账号优先，否则看绑定
     accountOf: (id) => {
       if (!accounts || accounts.mode() !== 'parallel') return null;
@@ -129,6 +158,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     dots,
     sessions,
     pins,
+    stops,
+    delegateRecord,
+    delegateBackend: agyBackend,
     timings: opts.timings,
     claudePath: opts.claudePath,
     configs: {
@@ -159,6 +191,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.disabledAgents = [...names];
         store.save();
       },
+      nativeAgents: () => store.state.nativeAgents,
+      setNativeAgents: (enabled) => {
+        store.state.nativeAgents = enabled;
+        store.save();
+      },
       known: () => store.state.knownTools,
       setKnown: (names) => {
         const cur = store.state.knownTools;
@@ -166,6 +203,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.knownTools = [...names];
         store.save();
       },
+    },
+    agentModels: {
+      get: () => store.state.agentModels,
     },
     compactWindow: {
       get: () => store.state.compactWindow,
@@ -216,6 +256,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const account = {
     get: () => {
       const a = activeAccount();
+      // Kiro 账号：名字用备注名 / Kiro，套餐显示为 Kiro
+      if (accounts?.isKiro(a.id)) return Promise.resolve({ name: accounts.displayName(a.id) ?? 'Kiro', plan: 'Kiro' });
       // API 账号没有 claude.ai 登录信息：名字用备注名 / 主机名，套餐显示为 API
       if (accounts?.isApi(a.id)) return Promise.resolve({ name: accounts.displayName(a.id) ?? 'API', plan: 'API' });
       return providerFor(accountInfos, (d) => new AccountProvider(d), a.id, a.dir).get();
@@ -256,6 +298,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     running: (id) => manager.runningCount(id),
     processes: (id) => manager.processCount(id),
     stop: (match) => (match ? manager.stopAccounts(match, 5000) : manager.resetAll(5000)),
+    kiroProxyState: (dir) => kiro?.proxy.stateOf(dir) ?? { proxy: 'stopped', error: null },
+    stopKiroProxy: (dir) => kiro?.proxy.stop(dir) ?? Promise.resolve(),
     onChanged: (e) => {
       if (e.reset) {
         accountInfos.get(e.reset)?.reset();
@@ -271,12 +315,38 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     },
   });
   accounts.init();
+  kiro = new KiroService({
+    accounts: {
+      listKiroAccounts: () => accounts!.listKiroAccounts(),
+      allocateNewDir: () => accounts!.allocateKiroDir(),
+      existingKiroDir: (id) => accounts!.existingKiroDir(id),
+      running: (id) => manager.runningCount(id),
+      stopAccountProcesses: (id) => accounts!.stopAccountProcesses(id),
+      commitNew: (id, dir, label) => accounts!.commitNewKiro(id, dir, label),
+      commitRelogin: (id, label) => accounts!.commitReloginKiro(id, label),
+      discardDir: (dir) => accounts!.discardKiroDir(dir),
+    },
+  });
+  kiro.init();
+  setBeforeClaudeEnv((dir) => kiro?.proxy.ensure(dir));
+  const onExitKiro = () => kiro?.disposeSync();
+  process.once('exit', onExitKiro);
+  agyAccounts = new AgyAccounts({
+    store,
+    running: (id) => acpPool.runningCount(id),
+    stopAccount: (id) => acpPool.stopAccount(id),
+    resetAccount: (id) => acpPool.resetAccount(id),
+    onChanged: () => manager.notifyAgy(),
+  });
+  agyAccounts.init();
   const previews = new Previews();
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
 
   let actualPort = wantPort;
+  const speech = new Speech();
   const handler = createHandler({
+    delegateModels: (cwd, refresh) => agyBackend.models({ cwd, refresh }),
     port: () => actualPort,
     version: opts.version ?? readVersion(),
     webDist,
@@ -285,6 +355,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     manager,
     account,
     accounts,
+    agyAccounts,
+    agyCli,
+    kiro,
     usage,
     cliModels,
     store,
@@ -298,7 +371,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     authToken: opts.authToken,
     host: bindHost,
     onShutdown: opts.onShutdown,
+    speech,
+    httpsUrl: opts.httpsUrl,
   });
+
+  if (opts.prefetchSpeech) {
+    speech.prepare('tts');
+    speech.prepare('stt');
+  }
 
   const server = http.createServer((req, res) => {
     void handler(req, res);
@@ -381,6 +461,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       clearInterval(heartbeat);
       pins.dispose();
       accounts?.dispose();
+      agyAccounts?.dispose();
+      agyCli.dispose();
+      setBeforeClaudeEnv(null);
+      process.off('exit', onExitKiro);
+      await kiro?.dispose();
+      process.off('exit', onExitPool);
+      acpPool.dispose();
       pricing.stop?.();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
@@ -392,5 +479,5 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     return stopping;
   };
 
-  return { port: actualPort, manager, sessions, workspaces, store, pins, trash, stop };
+  return { port: actualPort, manager, sessions, workspaces, store, pins, trash, stops, stop };
 }

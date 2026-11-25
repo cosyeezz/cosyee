@@ -5,13 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import {
-  type CostParts, type PinKind, type PriceTable, type RequestUsage, type SessionConfig, type SessionSummary, type SubagentCost,
+  type CostParts, type PinKind, type PriceTable, type RequestUsage, type SessionConfig, type SessionDetail, type SessionSummary, type SubagentCost,
   ZERO_COST, addCost, requestCost, uncachedCost,
 } from '@cosyee/shared';
 import { encodeCwdCandidates, isSafeId, isSessionUuid, projectsDir } from './paths.js';
 import type { DotState } from './state.js';
 import {
-  HistoryFilter, type Json, type Scan, mergeScans, newScan, parseLine, pickLastActive, pickTitle, scanLines, splitLines,
+  DetailScan, HistoryFilter, type Json, type Scan, mergeScans, newScan, parseLine, pickLastActive, pickTitle, scanLines, splitLines,
 } from './transcript.js';
 import { HttpError } from './workspaces.js';
 
@@ -19,11 +19,19 @@ const WINDOW = 64 * 1024;
 const CONCURRENCY = 16;
 /** 分支链最多往上追几层（防环、防无意义的深链） */
 const FORK_CHAIN_MAX = 20;
+/** 会话详情缓存上限，超出淘汰最早写入的条目 */
+const DETAIL_CACHE_MAX = 200;
 
 interface CacheEntry {
   mtimeMs: number;
   size: number;
   scan: Scan;
+}
+
+interface DetailCacheEntry {
+  mtimeMs: number;
+  size: number;
+  detail: SessionDetail;
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -60,7 +68,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
 }
 
 /** 历史过滤规则变化时递增，让前端缓存的旧结果失效 */
-const HISTORY_FORMAT = 2;
+const HISTORY_FORMAT = 3;
 
 /** 分支会话的标题：「分支 · 原标题」（原标题已经带前缀时不重复加） */
 const FORK_PREFIX = '分支 · ';
@@ -80,6 +88,8 @@ export interface SessionFlags {
   pinKind(id: string): PinKind | null;
   /** 分支会话的来源会话 id（子代理记录留在来源会话下，要顺着它去找）；不是分支返回 null */
   forkSrcOf?(id: string): string | null;
+  /** 委派（Antigravity）的执行过程记录；没有返回 null */
+  delegateEntries?(id: string, toolUseId: string): Promise<Json[] | null>;
   /** 并行模式下会话所属账号的显示名（其它情况返回 null / 不提供） */
   accountOf?(id: string): string | null;
   /** 会话最近一次使用的配置（发送 / 切换时记下）；没有记录返回 null */
@@ -88,6 +98,9 @@ export interface SessionFlags {
 
 export class Sessions {
   private cache = new Map<string, CacheEntry>();
+  private detailCache = new Map<string, DetailCacheEntry>();
+  /** 同一文件（路径 + mtime + size）的并发详情读取合并成一次 */
+  private detailInflight = new Map<string, Promise<SessionDetail>>();
 
   constructor(
     private readonly dots: DotState,
@@ -268,6 +281,51 @@ export class Sessions {
     return f.result();
   }
 
+  private async readDetail(file: string): Promise<SessionDetail> {
+    const scan = new DetailScan();
+    const rl = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+    try {
+      for await (const line of rl) if (line) scan.push(line);
+    } finally {
+      rl.close();
+    }
+    return scan.result();
+  }
+
+  /** 会话悬浮卡片详情：按 mtimeMs + size 缓存，并发请求合并成一次流式读取。已软删除但文件仍在的会话也可读。 */
+  async detail(id: string, cwd: string): Promise<SessionDetail> {
+    const loc = await this.locate(id, cwd);
+    if (!loc) throw new HttpError(404, '会话不存在');
+    let st: fs.Stats;
+    try {
+      st = await fs.promises.stat(loc.file);
+    } catch {
+      throw new HttpError(404, '会话不存在');
+    }
+    const hit = this.detailCache.get(loc.file);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.detail;
+
+    const key = `${loc.file}\0${st.mtimeMs}\0${st.size}`;
+    const pending = this.detailInflight.get(key);
+    if (pending) return pending;
+
+    const job = this.readDetail(loc.file)
+      .then((detail) => {
+        this.detailCache.delete(loc.file);
+        this.detailCache.set(loc.file, { mtimeMs: st.mtimeMs, size: st.size, detail });
+        if (this.detailCache.size > DETAIL_CACHE_MAX) {
+          const oldest = this.detailCache.keys().next().value;
+          if (oldest !== undefined) this.detailCache.delete(oldest);
+        }
+        return detail;
+      })
+      .finally(() => {
+        this.detailInflight.delete(key);
+      });
+    this.detailInflight.set(key, job);
+    return job;
+  }
+
   async history(id: string, cwd: string): Promise<Json[]> {
     const loc = await this.locate(id, cwd);
     if (!loc) throw new HttpError(404, '会话不存在');
@@ -313,6 +371,11 @@ export class Sessions {
     if (!loc) throw new HttpError(404, '会话不存在');
     // 分支会话与来源会话同属一个 projects 子目录，直接在 loc.dir 下按 id 取各自的 subagents
     const chain = this.forkChain(id);
+    // 委派（Antigravity）不是 claude 的子代理，过程由 Cosyee 自己记录
+    for (const sid of chain) {
+      const own = await this.flags?.delegateEntries?.(sid, toolUseId);
+      if (own) return own;
+    }
     const subDirs = chain.map((sid) => path.join(loc.dir, sid, 'subagents'));
     let agentId: string | null = null;
 

@@ -1,9 +1,10 @@
 // 一个会话一个 claude 进程（stream-json 双向）。负责：启动 / 读写 / 回合状态机 / control_request /
 // 中断 / 空闲回收。不关心 WebSocket 订阅者，通过 RunnerHooks 把结果交给 manager。
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type {
+  AgentModelConfig,
   AppliedSettings,
   AskQuestion,
   CosyeeUserEvent,
@@ -14,12 +15,27 @@ import type {
   QueueMode,
   RunStatus,
   SessionConfig,
+  StopKind,
 } from '@cosyee/shared';
 import { LineSplitter, parseLine } from '../transcript.js';
-import { claudeEnv, resolveClaude, spawnSpec } from './bin.js';
+import { classifyStop, type RateLimitHint } from '../stops.js';
+import { agentParamsEvent, CosyeeMcp, DELEGATE_TOOL_NAME, DELEGATE_TOOL_NAMES, MCP_SERVER } from '../delegate/mcp.js';
+import { DelegateJobs } from '../delegate/jobs.js';
+import { sharedAgyBackend } from '../delegate/acp.js';
+import { listAgents } from '../delegate/agents.js';
+import type { DelegateBackend } from '../delegate/backend.js';
+import { baseClaudeHome } from '../paths.js';
+import { claudeEnv, killTree, killTreeSync, resolveClaude, spawnSpec } from './bin.js';
 import { ControlTracker } from './control.js';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+export interface RunnerStopInfo {
+  kind: StopKind;
+  reason: string;
+  /** 额度重置时间（epoch 秒，来自本轮 rate_limit_event，仅 rate_limit 且存在时有） */
+  resetsAt?: number;
+}
 
 export interface RunnerHooks {
   /** CLI 的一个事件（或合成的 cosyee_user），应广播给订阅者 */
@@ -28,10 +44,16 @@ export interface RunnerHooks {
   onSettings(applied: AppliedSettings): void;
   /** 一轮结束（回到 idle，或进程在回合中意外退出）；进程可能仍在，也可能已不在 */
   onTurnEnd(): void;
+  /** 本轮因错误停止（错误 result 收尾，或进程非主动异常退出） */
+  onStopped?(info: RunnerStopInfo): void;
+  /** 本轮以成功 result 正常收尾（用于清除之前的错误停止记录） */
+  onTurnOk?(): void;
   /** 排队消息列表变了（完整快照）：新排入、开始执行、被撤回、进程退出 */
   onQueue?(items: QueueItem[]): void;
   /** 待用户回应的请求（AskUserQuestion / ExitPlanMode）变了（完整快照） */
   onPrompts?(items: PendingPrompt[]): void;
+  /** Claude 后台任务（子代理 / 后台命令）数量变化 */
+  onBackgroundTasks?(count: number): void;
   /** 进程已退出，runner 可丢弃 */
   onExit(): void;
 }
@@ -72,7 +94,28 @@ export interface RunnerInit {
   flagSettings?: () => Record<string, unknown>;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
+  /** 测试用：委派后端。不传 = sharedAgyBackend()；null = 禁用 delegate */
+  delegateBackend?: DelegateBackend | null;
+  /** 已关闭的智能体名，每次调用时读取 */
+  disabledAgents?: () => readonly string[];
+  /** 原生子代理开关，每次调用时读取；不传 = 开 */
+  nativeAgents?: () => boolean;
+  /** 子代理的默认模型 / 强度，每次调用时读取（改设置立即生效）；不传 = 不介入 */
+  agentDefaults?: () => AgentDefaults | null;
+  /** 委派任务（Antigravity）的后台任务表：由 manager 按会话持有，进程回收 / 重启后任务继续跑。不传 = runner 自建一个（测试） */
+  delegateJobs?: DelegateJobs;
 }
+
+export interface AgentDefaults {
+  /** 没给的字段不补 */
+  claude: { model?: string; effort?: string };
+  agy: AgentModelConfig['agy'];
+}
+
+/** 注册给 CLI 的 PreToolUse hook 的回调 id */
+const AGENT_HOOK_ID = 'agent-defaults';
+/** SessionStart(compact) hook 的回调 id：压缩后补回委派状态 */
+const COMPACT_HOOK_ID = 'delegate-compact';
 
 const EVENT_BUFFER_MAX = 100_000;
 const STDERR_TAIL_BYTES = 8 * 1024;
@@ -122,34 +165,28 @@ export const PATH_PROMPT =
   '(e.g. [runner.ts](F:/repo/src/runner.ts)); append :line for a specific line ([runner.ts](F:/repo/src/runner.ts:42)); ' +
   'wrap the target in <> when the path contains spaces ([a b.md](<F:/repo/a b.md>)). Do not put file links inside backticks.';
 
-/**
- * 分工约定：主会话负责理解、设计与最终判断，把耗 token 的搜索 / 实现交给 Sonnet 子代理。
- * 主会话每轮都要重读整个上下文，大段工具输出留在子代理里能持续省钱。不论主会话用什么模型都追加。
- */
-export const DELEGATION_PROMPT =
-  'Delegation policy: the main session owns understanding, ' +
-  'design and every final judgment; delegate token-heavy legwork to subagents with model "sonnet". ' +
-  '(1) Search / diagnosis: when locating something means sweeping many files, directories or naming conventions, use an ' +
-  'Explore subagent. It only locates and gathers evidence, never concludes: each finding = file:line + a 5-10 line key ' +
-  'snippet + a one-line reason. Judge from the snippets; re-read the source only when unsure. Targeted lookups that one ' +
-  'or two Grep/Read calls can settle, do yourself. ' +
-  '(2) Implementation: clarify requirements, read the necessary code, split the work into independent tasks, then give each ' +
-  'general-purpose subagent a self-contained spec: files/functions to change (with paths) and what not to touch; ' +
-  'interface signatures, data structures, naming; existing code to imitate (file:line); acceptance criteria (build, lint, ' +
-  'tests pass; expected behavior). Require a report with a change summary plus the verification commands and results. ' +
-  'Review the diff yourself; send fixes back to the same subagent via SendMessage rather than spawning a new one. ' +
-  '(3) Parallelism: only for independent tasks, split by module; define shared interfaces first; never let two subagents ' +
-  'edit the same file. Worktree isolation starts from HEAD and cannot see uncommitted changes, so if the working tree is ' +
-  'dirty, split by disjoint files in the main working tree instead. ' +
-  '(4) Keep for yourself: small changes (roughly under a few dozen lines), cross-layer changes that need decisions along ' +
-  'the way, UI tweaks that need visual iteration, and all final judgments (is it a bug, which design to choose).';
+/** Claude 自带的子代理工具；整条停用后 CLI 会恢复内置 WebFetch */
+const NATIVE_AGENT_TOOL = 'Agent';
 
-/** 每次启动追加到系统提示词的全部内容 */
-// 不能含换行：claude 若解析到 .cmd / .bat，参数要经 cmd.exe 转发，换行会把整条命令行截断
-export const APPEND_PROMPT = `${PATH_PROMPT} ${DELEGATION_PROMPT}`;
+/** flag settings 的 permissions.deny 里是否整条停用了某个工具（不含 Agent(x) 这类带参数的规则） */
+export function isDenied(settings: Record<string, unknown>, tool: string): boolean {
+  const deny = (settings.permissions as { deny?: unknown } | undefined)?.deny;
+  return Array.isArray(deny) && deny.includes(tool);
+}
+
+/**
+ * 有委派时追加：只讲什么时候派、什么自己做；怎么派（参数、后台、读结果、续接）全在工具 schema 里。
+ * 没有可用委派时不追加任何分工提示。模型 / 强度由配置决定，这里不提。
+ * 不能含换行：claude 若解析到 .cmd / .bat，参数要经 cmd.exe 转发，换行会把整条命令行截断。
+ */
+export const DELEGATE_PROMPT =
+  'Delegation: use mcp__cosyee__delegate proactively, without waiting for the user to ask, for research that takes more than a ' +
+  'few lookups (including tracing a bug) and for implementation you can specify up front (including UI work); split such work into ' +
+  'independent tasks first. Do yourself only one- or two-call lookups, edits of a few lines, and decisions that cannot be ' +
+  'specified in advance. You keep all final judgments.';
 
 /** 构造 claude 命令行参数（不含可执行文件）。 */
-export function buildArgs(sessionId: string, isNew: boolean, config: SessionConfig, extraSettings: Record<string, unknown> = {}): string[] {
+export function buildArgs(sessionId: string, isNew: boolean, config: SessionConfig, extraSettings: Record<string, unknown> = {}, opts: { delegate?: boolean } = {}): string[] {
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -169,37 +206,14 @@ export function buildArgs(sessionId: string, isNew: boolean, config: SessionConf
     '--model', config.model,
     '--effort', config.effort,
     // 每次启动都要带：--resume 不会沿用上次进程的追加提示词
-    '--append-system-prompt', APPEND_PROMPT,
+    '--append-system-prompt', opts.delegate ? `${PATH_PROMPT} ${DELEGATE_PROMPT}` : PATH_PROMPT,
   ];
+  if (opts.delegate) args.push('--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: 'sdk', name: MCP_SERVER } } }));
   const settings: Record<string, unknown> = { ...extraSettings };
   if (config.ultracode) settings.ultracode = true;
   if (Object.keys(settings).length) args.push('--settings', JSON.stringify(settings));
   args.push(isNew ? '--session-id' : '--resume', sessionId);
   return args;
-}
-
-function killTree(pid: number): void {
-  if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
-    } catch { /* ignore */ }
-  } else {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch { /* ignore */ }
-  }
-}
-
-function killTreeSync(pid: number): void {
-  if (process.platform === 'win32') {
-    try {
-      spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore', timeout: 5000 });
-    } catch { /* ignore */ }
-  } else {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch { /* ignore */ }
-  }
 }
 
 export class Runner {
@@ -214,6 +228,8 @@ export class Runner {
 
   private proc: ChildProcess | null = null;
   private control: ControlTracker;
+  /** initialize 的响应（commands / agents 带描述原文）；进程启动时发出，拿不到为 null */
+  private initResp: Promise<Json | null> = Promise.resolve(null);
   private splitter = new LineSplitter();
   private stderrTail = '';
 
@@ -242,6 +258,13 @@ export class Runner {
   /** result 之后是否还在等排队消息续轮 */
   private expectNext = false;
   private tasks = new Set<string>();
+  private lastTaskCount = 0;
+  /** 本轮最近一次 rate_limit_event（新一轮清空） */
+  private lastRateLimit: RateLimitHint | null = null;
+  /** 错误 result 暂存：进入 limbo 等后台任务时先不发 onStopped，等真正 finishTurn 且未被成功 result 覆盖时再发 */
+  private pendingStop: RunnerStopInfo | null = null;
+  /** 成功 result 暂存：finishTurn 时无 pendingStop 则触发 onTurnOk */
+  private pendingTurnOk = false;
 
   private idleTimer: NodeJS.Timeout | null = null;
   private limboTimer: NodeJS.Timeout | null = null;
@@ -262,10 +285,33 @@ export class Runner {
     this.probeMode = !!init.probe;
     this.timings = { ...DEFAULT_TIMINGS, ...init.timings };
     this.claudePath = init.claudePath ?? resolveClaude();
+    this.backendOverride = init.delegateBackend;
+    this.disabledAgents = init.disabledAgents;
+    this.nativeAgents = init.nativeAgents;
     this.control = new ControlTracker((o) => this.writeLine(o), `cosyee-${this.sessionId.slice(0, 8)}`, this.timings.requestTimeoutMs);
     this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings };
+    this.agentDefaults = init.agentDefaults;
+    this.delegateJobs = init.delegateJobs;
   }
 
+  private readonly agentDefaults?: () => AgentDefaults | null;
+  /** manager 传入的会话级后台任务表；没传时 start() 才懒建 localJobs */
+  private readonly delegateJobs?: DelegateJobs;
+  private localJobs: DelegateJobs | null = null;
+  /**
+   * inject 写给 CLI、还没进入对话的通知消息 uuid（运行中注入的）。不在 queue 里（前端看不到），
+   * 但 onResult 要把它当作“还有待执行的消息”，免得 result 后状态闪成 idle。
+   */
+  private injected = new Set<string>();
+
+  /** delegate 的进程内 MCP 服务（start 时按后端是否可用创建） */
+  private mcp: CosyeeMcp | null = null;
+  /** 本进程用的委派后端；进程活着期间 hold 住它的热进程，退出时释放 */
+  private delegateBackendInUse: DelegateBackend | null = null;
+  private releaseDelegateHold: (() => void) | null = null;
+  private readonly backendOverride: DelegateBackend | null | undefined;
+  private readonly disabledAgents?: () => readonly string[];
+  private readonly nativeAgents?: () => boolean;
   private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown> };
 
   get status(): RunStatus {
@@ -286,6 +332,15 @@ export class Runner {
     return { status: this._status, events: this.buffer.slice() };
   }
 
+  /**
+   * 给 permissions.deny 名单补上原生子代理开关：关掉、且本进程有委派可用（delegate 没被停用）时加上整个 Agent。
+   * 没有可用委派时开关不生效，免得两头都没有。
+   */
+  withNativeDeny(base: readonly string[]): string[] {
+    const off = !!this.mcp && this.nativeAgents?.() === false && !base.includes(DELEGATE_TOOL_NAME) && !base.includes(NATIVE_AGENT_TOOL);
+    return off ? [...base, NATIVE_AGENT_TOOL] : [...base];
+  }
+
   // ───────────── 启动 ─────────────
 
   /** 启动进程。cwd 不存在 / 启动失败会抛错。 */
@@ -297,11 +352,50 @@ export class Runner {
     } catch { /* 下面报错 */ }
     if (!st?.isDirectory()) throw new Error(`工作目录不存在: ${this.cwd}`);
 
-    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, this.initArgs.flagSettings?.() ?? {});
+    // 先构造环境变量（Kiro 账号会在这里检查总开关并确保代理启动），若抛错避免泄漏 mcp / delegate hold
+    const env = claudeEnv(this.accountDir);
+    const flags = this.initArgs.flagSettings?.() ?? {};
+    // 用户在工具面板里停用了 delegate：不注册 cosyee MCP，也不追加它的使用约定
+    const backend = isDenied(flags, DELEGATE_TOOL_NAME)
+      ? null
+      : this.backendOverride === undefined
+        ? sharedAgyBackend()
+        : this.backendOverride;
+    let mcp: CosyeeMcp | null = null;
+    if (backend?.available()) {
+      const configDir = this.accountDir ?? baseClaudeHome();
+      const scope = () => ({ configDir, cwd: this.cwd, disabled: this.disabledAgents?.() ?? [] });
+      const agents = listAgents(scope());
+      // 没有外部传入的任务表（测试）时自建一个，事件走本 runner
+      const jobs = this.delegateJobs ?? (this.localJobs ??= new DelegateJobs({ onEvents: (evs) => evs.forEach((e) => this.pushExternal(e)) }));
+      mcp = new CosyeeMcp({
+        jobs,
+        agents,
+        ctx: () => ({
+          cwd: this.cwd,
+          backend,
+          defaults: this.agentDefaults?.()?.agy ?? null,
+          agents: scope(),
+          readOnly: (this.applied.permissionMode ?? 'auto') === 'plan',
+        }),
+      });
+    }
+    this.mcp = mcp;
+    this.releaseDelegateHold?.();
+    this.releaseDelegateHold = null;
+    this.delegateBackendInUse = mcp ? backend : null;
+    if (mcp && backend?.hold) this.releaseDelegateHold = backend.hold(this.cwd);
+    const delegate = !!this.mcp;
+    const perms = (flags.permissions ?? {}) as { deny?: string[] };
+    const deny = this.withNativeDeny(perms.deny ?? []);
+    const settings = deny.length ? { ...flags, permissions: { ...perms, deny } } : flags;
+    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate });
+    // delegate 要跑很久：没有显式设置时把 MCP 工具超时放宽到 1 小时
+    if (delegate && !Object.keys(env).some((k) => k.toUpperCase() === 'MCP_TOOL_TIMEOUT')) env.MCP_TOOL_TIMEOUT = '3600000';
     const spec = spawnSpec(this.claudePath, args);
     const proc = spawn(spec.command, spec.args, {
       cwd: this.cwd,
-      env: claudeEnv(this.accountDir),
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       windowsVerbatimArguments: spec.verbatim,
@@ -328,6 +422,20 @@ export class Runner {
     } else {
       this.setStatus('starting');
     }
+    // 注册 SDK 型 MCP 服务器与子代理 hook（同步写入，排在任何用户消息之前）
+    const init: Json = {};
+    if (delegate) init.sdkMcpServers = [MCP_SERVER];
+    const hooks: Json = {};
+    if (this.agentDefaults) hooks.PreToolUse = [{ matcher: 'Agent|Task', hookCallbackIds: [AGENT_HOOK_ID] }];
+    if (delegate) hooks.SessionStart = [{ matcher: 'compact', hookCallbackIds: [COMPACT_HOOK_ID] }];
+    if (Object.keys(hooks).length) init.hooks = hooks;
+    // 没有要注册的也发一次：响应里的 commands / agents 带描述原文（上下文面板展开显示系统提示词里的那段）
+    this.initResp = this.control.request('initialize', init).catch((e) => {
+      if (Object.keys(init).length) {
+        console.warn(`[runner ${this.sessionId.slice(0, 8)}] 注册 cosyee MCP / hook 失败:`, e instanceof Error ? e.message : e);
+      }
+      return null;
+    });
     // 先开思考摘要（必须在第一条用户消息之前写入 stdin），再查一次 settings
     // （CLI 在收到第一条消息前就能响应 control_request）
     this.enableThinkingSummaries();
@@ -365,6 +473,8 @@ export class Runner {
       this.applied = { ...config };
       this.start();
     }
+    // 用户发消息时后台预热委派后端（不阻塞；已热则无操作），模型派任务时不用等冷启动
+    this.delegateBackendInUse?.prewarm?.(this.cwd);
     const uuid = id || randomUUID();
 
     if (this._status === 'idle' && !fresh) {
@@ -399,12 +509,67 @@ export class Runner {
       .catch((e) => console.warn(`[runner ${this.sessionId.slice(0, 8)}] 发送失败:`, e instanceof Error ? e.message : e));
   }
 
+  /**
+   * 注入一条系统通知（委派任务完成等）：写给 CLI，但不是用户消息——不进排队列表、不发 cosyee_user。
+   * 空闲且进程在：只写入，CLI 随后开轮时由「idle 收到轮内容」那条路径开轮；运行中：priority next 并入当前轮，
+   * 记入 injected（result 到时算“还有待执行的消息”）；没有进程：像 send 一样拉起进程开轮。
+   */
+  inject(text: string, config: SessionConfig): void {
+    validateConfig(config);
+    if (this.proc && !this.alive) throw new Error('claude 进程正在关闭，请稍后重试');
+    this.clearIdle();
+    const fresh = !this.proc;
+    this.probeMode = false;
+    const uuid = randomUUID();
+    if (fresh) {
+      this.applied = { ...config };
+      this.start();
+      this.beginTurn();
+      this.queueWrite(text, config, uuid);
+    } else if (this._status === 'idle') {
+      this.queueWrite(text, config, uuid);
+      // CLI 若没有因此开轮，进程不能永远悬着：补一个空闲回收（开轮时会 clearIdle）
+      this.armIdle(this.timings.idleMs);
+    } else {
+      this.injected.add(uuid);
+      this.queueWrite(text, config, uuid, 'next');
+    }
+  }
+
+  /** 把外部来源的事件（委派任务的进度等）当作 CLI 事件推给前端：同样进回合缓冲，订阅时可补发 */
+  pushExternal(e: Json): void {
+    this.pushEvent(e);
+  }
+
+  /** inject 的消息离开“待执行”状态（已开始 / 已进入对话 / 被取消）；返回是否确有其事 */
+  private takeInjected(id: string): boolean {
+    return this.injected.delete(id);
+  }
+
+  /** 注入的消息开始被 CLI 执行：与 startQueued 同理开新一轮，但不发 cosyee_user */
+  private startInjected(id: string): void {
+    if (!this.takeInjected(id)) return;
+    if (this._status === 'idle' || this.limbo) {
+      this.beginTurn();
+      this.clearIdle();
+      this.setStatus('running');
+    }
+  }
+
+  private dropInjected(id: string): void {
+    if (!this.takeInjected(id)) return;
+    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.tasks.size === 0) this.finishTurn();
+  }
+
   private beginTurn(): void {
     this.turnSeq++;
     this.buffer = [];
     this.interrupting = false;
     this.limbo = false;
-    this.tasks.clear();
+    this.lastRateLimit = null;
+    this.pendingStop = null;
+    this.pendingTurnOk = false;
+    // 不清空 this.tasks：上一轮启动的后台子代理在新一轮开始时可能仍在运行
     this.clearLimbo();
   }
 
@@ -451,7 +616,7 @@ export class Runner {
   /** 排队的消息没有开始就结束了（撤回 / 作废 / 拒绝）。若正等它续轮、已无别的可等，收尾本轮 */
   private dropQueued(id: string): void {
     if (!this.takeQueued(id)) return;
-    if (this.limbo && this.queue.length === 0 && this.tasks.size === 0) this.finishTurn();
+    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.tasks.size === 0) this.finishTurn();
   }
 
   /** command_lifecycle 帧：按 command_uuid 维护排队列表。帧本身不转发给前端 */
@@ -461,12 +626,14 @@ export class Runner {
     switch (msg.state) {
       case 'started':
         this.startQueued(id);
+        this.startInjected(id);
         break;
       case 'completed':
       case 'cancelled':
       case 'discarded':
       case 'refused':
         this.dropQueued(id);
+        this.dropInjected(id);
         break;
       // queued：send 时已记账
     }
@@ -474,7 +641,9 @@ export class Runner {
 
   /** --replay-user-messages 的回显：是排队消息的“开始”信号之一；开轮消息（不在列表里）的回显直接丢弃 */
   private onEcho(msg: Json): void {
-    if (typeof msg.uuid === 'string') this.startQueued(msg.uuid);
+    if (typeof msg.uuid !== 'string') return;
+    this.startQueued(msg.uuid);
+    this.startInjected(msg.uuid);
   }
 
   /** 修改配置：进程在则立即下发（下一轮生效），否则只记下，启动时用。 */
@@ -527,6 +696,11 @@ export class Runner {
     } catch { /* 进程退出或超时：忽略 */ }
   }
 
+  /** initialize 的响应；进程没起来或 CLI 不支持时为 null */
+  initInfo(): Promise<Json | null> {
+    return this.initResp;
+  }
+
   /** 通用 control_request（context / rename 等由 manager 调用）。 */
   request(subtype: string, extra: Json = {}, timeoutMs?: number): Promise<Json> {
     if (!this.alive) return Promise.reject(new Error('进程不在运行'));
@@ -564,6 +738,62 @@ export class Runner {
     try {
       this.writeLine({ type: 'control_response', response: { subtype: 'success', request_id: id, response } });
     } catch { /* 进程已退出 */ }
+  }
+
+  /**
+   * PreToolUse hook（Agent / Task）：调用没写 model / effort 时补上设置里的默认值。
+   * CLI 里调用参数优先于智能体定义，所以这里的值会盖过定义；点名的值不动。fork 类型必须沿用主会话模型，不补。
+   * 不返回 permissionDecision，权限规则（如停用的智能体）照常生效。
+   */
+  private onAgentHook(requestId: string, input: Json): void {
+    let response: Json = {};
+    try {
+      const ti: Json = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
+      const d = this.agentDefaults?.()?.claude;
+      if (d && ti.subagent_type !== 'fork') {
+        const model = ti.model || d.model;
+        const effort = ti.effort || d.effort;
+        response = {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            updatedInput: { ...ti, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
+          },
+        };
+        // 流里的 tool_use 仍是补之前的参数，另发一条事件告诉前端实际值
+        if (typeof input.tool_use_id === 'string') this.pushEvent(agentParamsEvent(input.tool_use_id, model, effort));
+      }
+    } catch { /* 出错就不介入 */ }
+    try {
+      this.writeLine({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+    } catch { /* 进程已退出 */ }
+  }
+
+  /** 压缩后（SessionStart compact）：把在跑的委派与未读结果作为 additionalContext 补给模型，没有就不介入 */
+  private onCompactHook(requestId: string): void {
+    let response: Json = {};
+    try {
+      const note = this.mcp ? (this.delegateJobs ?? this.localJobs)?.compactNote() : null;
+      if (note) response = { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: note } };
+    } catch { /* 出错就不介入 */ }
+    try {
+      this.writeLine({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+    } catch { /* 进程已退出 */ }
+  }
+
+  /** cosyee MCP 的 JSON-RPC 请求：交给 CosyeeMcp 处理，结果以 control_response 写回 */
+  private onMcpMessage(id: string, message: Json): void {
+    this.mcp!.handle(message).then(
+      (mcp_response) => {
+        try {
+          this.writeLine({ type: 'control_response', response: { subtype: 'success', request_id: id, response: { mcp_response } } });
+        } catch { /* 进程已退出 */ }
+      },
+      (e) => {
+        try {
+          this.writeLine({ type: 'control_response', response: { subtype: 'error', request_id: id, error: e instanceof Error ? e.message : String(e) } });
+        } catch { /* 进程已退出 */ }
+      },
+    );
   }
 
   private onCanUseTool(id: string, req: Json): void {
@@ -704,6 +934,7 @@ export class Runner {
       });
       if (r.rewound === true) {
         this.setQueue([]);
+        this.injected.clear();
         // 中断的 result 已经到过、却因为还有排队消息 / 任务在等续轮：回退后不会有续轮了
         if (this.limbo) this.finishTurn();
       }
@@ -769,10 +1000,16 @@ export class Runner {
         return;
       case 'control_request': {
         // CLI 反向请求。can_use_tool：AskUserQuestion / ExitPlanMode 转成待回应 prompt 交给前端，
-        // 其余工具（plan 模式下写计划文件等）一律放行；其它 subtype（hook / mcp 等）回错误避免它一直等
+        // 其余工具（plan 模式下写计划文件等）一律放行；其它 subtype 回错误避免它一直等
         const id = msg.request_id;
         if (typeof id === 'string' && msg.request?.subtype === 'can_use_tool') {
           this.onCanUseTool(id, msg.request);
+        } else if (typeof id === 'string' && msg.request?.subtype === 'mcp_message' && this.mcp && msg.request.server_name === MCP_SERVER) {
+          this.onMcpMessage(id, msg.request.message ?? {});
+        } else if (typeof id === 'string' && msg.request?.subtype === 'hook_callback' && msg.request.callback_id === AGENT_HOOK_ID) {
+          this.onAgentHook(id, msg.request.input ?? {});
+        } else if (typeof id === 'string' && msg.request?.subtype === 'hook_callback' && msg.request.callback_id === COMPACT_HOOK_ID) {
+          this.onCompactHook(id);
         } else if (typeof id === 'string') {
           try {
             this.writeLine({ type: 'control_response', response: { subtype: 'error', request_id: id, error: 'not supported by cosyee host' } });
@@ -809,14 +1046,22 @@ export class Runner {
     } else if (this.limbo && isTurnStart) {
       this.limbo = false;
       this.expectNext = false;
+      this.lastRateLimit = null;
       this.clearLimbo();
     }
 
     if (msg.type === 'system') this.trackTasks(msg);
+    if (msg.type === 'rate_limit_event' && msg.rate_limit_info && typeof msg.rate_limit_info === 'object') {
+      const info = msg.rate_limit_info as Json;
+      this.lastRateLimit = {
+        status: typeof info.status === 'string' ? info.status : undefined,
+        resetsAt: typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt) ? info.resetsAt : undefined,
+      };
+    }
 
     this.pushEvent(msg);
 
-    if (msg.type === 'result') this.onResult();
+    if (msg.type === 'result') this.onResult(msg);
     else if (this.limbo) this.armLimbo();
   }
 
@@ -841,6 +1086,14 @@ export class Runner {
         break;
       }
     }
+    this.notifyTasks();
+  }
+
+  private notifyTasks(): void {
+    const n = this.tasks.size;
+    if (n === this.lastTaskCount) return;
+    this.lastTaskCount = n;
+    this.hooks.onBackgroundTasks?.(n);
   }
 
   private pushEvent(e: unknown): void {
@@ -851,14 +1104,44 @@ export class Runner {
     this.hooks.onEvent(e);
   }
 
-  private onResult(): void {
+  private onResult(msg: Json): void {
     if (this.interrupting || this.rewinding) {
+      // 被用户中断 / 回退：用户已接手，按「本轮未出错」收尾（清掉自动重试轮残留的 retrying 记录）
+      this.pendingStop = null;
+      this.pendingTurnOk = true;
       this.finishTurn();
       return;
     }
+    const terminal = typeof msg.terminal_reason === 'string' ? msg.terminal_reason : '';
+    const aborted = /abort|interrupt/i.test(terminal);
+    const subtype = typeof msg.subtype === 'string' ? msg.subtype : '';
+    const failed = msg.is_error === true || (subtype !== '' && subtype !== 'success');
+    if (aborted) {
+      this.pendingStop = null;
+      this.pendingTurnOk = true;
+    } else {
+      if (failed) {
+        const err0 = Array.isArray(msg.errors) && typeof msg.errors[0] === 'string' ? msg.errors[0] : '';
+        const reason = (typeof msg.result === 'string' && msg.result) || err0 || '出错了';
+        const classified = classifyStop(reason, this.lastRateLimit);
+        const resetsAt =
+          classified.kind === 'rate_limit' &&
+          typeof this.lastRateLimit?.resetsAt === 'number' &&
+          Number.isFinite(this.lastRateLimit.resetsAt) &&
+          this.lastRateLimit.resetsAt > 0
+            ? this.lastRateLimit.resetsAt
+            : undefined;
+        this.pendingStop = { kind: classified.kind, reason, ...(resetsAt !== undefined ? { resetsAt } : {}) };
+        this.pendingTurnOk = false;
+      } else {
+        // 成功的 result：丢弃此前 limbo 期间暂存的错误
+        this.pendingStop = null;
+        this.pendingTurnOk = true;
+      }
+    }
     // 排队列表里还有没开始的消息：CLI 会自动为它开下一轮（send_now 中断后、later 都是这样）。
     // steering 并入当前轮的消息在 result 之前就 started 了，不在列表里，不会误判。
-    const more = this.queue.length > 0;
+    const more = this.queue.length > 0 || this.injected.size > 0;
     this.expectNext = more;
     // 还有排队的消息 / 后台任务：保持 running，等 CLI 自动续轮
     if (more || this.tasks.size > 0) {
@@ -887,10 +1170,17 @@ export class Runner {
 
   private finishTurn(): void {
     if (this._status === 'idle') return;
+    const stopped = this.pendingStop;
+    const turnOk = this.pendingTurnOk;
+    this.pendingStop = null;
+    this.pendingTurnOk = false;
+    this.lastRateLimit = null;
     this.limbo = false;
     this.expectNext = false;
     this.interrupting = false;
+    this.injected.clear(); // 收尾后没来得及开始的注入消息，CLI 之后会按空闲开轮处理
     this.tasks.clear();
+    this.notifyTasks();
     this.clearLimbo();
     if (this.killTimer) clearTimeout(this.killTimer);
     this.killTimer = null;
@@ -899,6 +1189,8 @@ export class Runner {
     this.setStatus('idle');
     if (this.alive) this.armIdle(this.timings.idleMs);
     this.hooks.onTurnEnd();
+    if (stopped) this.hooks.onStopped?.(stopped);
+    else if (turnOk) this.hooks.onTurnOk?.();
   }
 
   private setStatus(s: RunStatus, error?: string): void {
@@ -914,6 +1206,11 @@ export class Runner {
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
       if (this._status !== 'idle' || !this.proc) return;
+      // 还有后台委派任务在跑：它们完成后要往这个会话注入通知，进程先留着，下个周期再看
+      if ((this.delegateJobs ?? this.localJobs)?.hasBackground()) {
+        this.armIdle(ms);
+        return;
+      }
       this.intentional = true;
       try {
         this.proc.stdin!.end();
@@ -944,15 +1241,26 @@ export class Runner {
   private onClose(code: number | null, why?: string): void {
     if (this.closed) return;
     this.closed = true;
+    this.mcp?.abortAll();
+    this.releaseDelegateHold?.();
+    this.releaseDelegateHold = null;
     for (const line of this.splitter.flush()) this.onLine(line);
     this.control.rejectAll('claude 进程已退出');
     this.setQueue([]); // 进程没了，排队的消息也没了
+    this.injected.clear();
+    this.tasks.clear();
+    this.notifyTasks();
     this.clearPrompts(); // 待回应的请求也随进程失效（没法再写回）
     this.clearTimers();
     this.proc = null;
 
     const wasTurn = this._status === 'running' || this._status === 'starting';
     const failed = !!why || (code !== null && code !== 0);
+    // 错误 result 之后在 limbo 里等后台任务时进程没了：仍按那次错误登记（额度错误比退出原因更准确）
+    const pendingStop = this.pendingStop;
+    this.pendingStop = null;
+    this.pendingTurnOk = false;
+    this.lastRateLimit = null;
 
     if (this.intentional) {
       // 空闲回收 / 中断超时被杀 / 关闭：对前端表现为"空闲、可用 --resume 续聊"，不报 exited
@@ -967,6 +1275,13 @@ export class Runner {
       this.buffer = [];
       this.setStatus('exited', error);
       if (wasTurn) this.hooks.onTurnEnd();
+      // 只在一轮进行中退出时登记：空闲时退出不能往已正常结束的会话里发「继续」
+      if (pendingStop) {
+        this.hooks.onStopped?.(pendingStop);
+      } else if (error && wasTurn) {
+        const classified = classifyStop(error, null, Date.now(), { processExit: true });
+        this.hooks.onStopped?.({ kind: classified.kind, reason: error });
+      }
     }
     this.hooks.onExit();
   }

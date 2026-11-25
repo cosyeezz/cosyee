@@ -77,21 +77,16 @@
 @keyframes cz-ss-core { 0%, 100% { transform: scale(.92); } 50% { transform: scale(1.14); } }
 @keyframes cz-ss-glow { 0%, 100% { opacity: .4; } 50% { opacity: .75; } }
 
-/* 液滴（整理上下文 / 子代理面板） */
-.cz-ss-compacting .cz-ss-o { transform-origin: 32px 32px; animation: cz-ss-spin 5s linear infinite; }
-.cz-ss-compacting .cz-ss-o2 { animation-duration: 7s; animation-direction: reverse; }
-.cz-ss-compacting .cz-ss-o3 { animation-duration: 9s; }
-.cz-ss-compacting .cz-ss-o4 { animation-duration: 4.2s; animation-direction: reverse; }
-.cz-ss-compacting .cz-ss-o circle { animation: cz-ss-reach 3.2s ease-in-out infinite; }
-.cz-ss-compacting .cz-ss-o2 circle { animation-duration: 4.1s; }
-.cz-ss-compacting .cz-ss-o3 circle { animation-duration: 2.7s; }
-.cz-ss-compacting .cz-ss-o4 circle { animation-duration: 4.9s; }
-.cz-ss-compacting .cz-ss-core { transform-origin: 32px 32px; animation: cz-ss-swell 3.2s ease-in-out infinite; }
-@keyframes cz-ss-reach { 0%, 100% { transform: translateY(-21px); } 50% { transform: translateY(-3px); } }
-@keyframes cz-ss-swell { 50% { transform: scale(1.18); } }
-
-/* 子代理面板全部完成：液滴停在原地（动画暂停），文字流光由 TurnView 去掉 */
-.cz-ss-compacting.is-still * { animation-play-state: paused; }
+/* 小机器人（子代理面板）：眨眼、天线灯一明一暗；全部结束（is-still）眯眼笑、天线常亮 */
+.cz-ss-agent .cz-ss-ant { fill: none; stroke: var(--tk-d); stroke-width: 4.5; }
+.cz-ss-agent .cz-ss-tip { fill: var(--tk-d); transform-origin: 32px 8px; animation: cz-ss-beacon 1.6s ease-in-out infinite; }
+.cz-ss-agent .cz-ss-eyes { fill: var(--tk-on); transform-origin: 32px 37.5px; animation: cz-ss-blink 3.2s ease-in-out infinite; }
+.cz-ss-agent .cz-ss-smile { display: none; fill: none; stroke: var(--tk-on); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+@keyframes cz-ss-beacon { 0%, 100% { transform: scale(.8); opacity: .6; } 50% { transform: scale(1.1); opacity: 1; } }
+@keyframes cz-ss-blink { 0%, 90%, 100% { transform: none; } 95% { transform: scaleY(.1); } }
+.cz-ss-agent.is-still * { animation: none; }
+.cz-ss-agent.is-still .cz-ss-eyes { display: none; }
+.cz-ss-agent.is-still .cz-ss-smile { display: inline; }
 
 /* 魔法书（技能面板）：右页翻到左边后隐入左页，再从右边出现；三颗星依次闪烁 */
 .cz-ss-skill .cz-ss-ln { fill: none; stroke: var(--tk-on); stroke-opacity: .55; stroke-width: 2.6; stroke-linecap: round; }
@@ -192,12 +187,10 @@
 :root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting) { background: none; -webkit-text-fill-color: currentColor; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-n { animation: none; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-p { animation: none; opacity: 0; }
-:root[data-motion="reduce"] :is(.cz-ss-tool, .cz-ss-thinking, .cz-ss-compacting) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
-:root[data-motion="reduce"] :is(.cz-ss-thinking, .cz-ss-compacting) * { animation: none !important; }
-:root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o circle { transform: translateY(-12px); }
-:root[data-motion="reduce"] .cz-ss-compacting .cz-ss-o2 circle { transform: translateY(-9px); }
-:root[data-motion="reduce"] :is(.cz-ss-skill, .cz-ss-mcp):not(.is-still) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
-:root[data-motion="reduce"] :is(.cz-ss-skill, .cz-ss-mcp) * { animation: none !important; }
+:root[data-motion="reduce"] :is(.cz-ss-tool, .cz-ss-thinking) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] .cz-ss-thinking * { animation: none !important; }
+:root[data-motion="reduce"] :is(.cz-ss-agent, .cz-ss-skill, .cz-ss-mcp):not(.is-still) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] :is(.cz-ss-agent, .cz-ss-skill, .cz-ss-mcp) * { animation: none !important; }
 :root[data-motion="reduce"] .cz-ss-skill .cz-ss-flip { opacity: 0; }
 :root[data-motion="reduce"] .cz-ss-skill .cz-ss-sp { transform: scale(.85); opacity: .9; }
 :root[data-motion="reduce"] .cz-ss-done :is(.cz-ss-r, .cz-ss-c) { animation: none; stroke-dashoffset: 0; }

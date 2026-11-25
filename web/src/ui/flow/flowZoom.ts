@@ -28,6 +28,8 @@ function load(): number {
 
 let zoom = load();
 const subs = new Set<() => void>();
+/** 当前挂载中的所有会话流外层，用来在多实例并存时判定悬停优先 */
+const wraps = new Set<HTMLElement>();
 
 export function getFlowZoom(): number {
   return zoom;
@@ -137,16 +139,21 @@ export function useFlowZoomControls(
       if (steps) apply(getFlowZoom() + steps * ZOOM_STEP, e.clientX, e.clientY);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== '0') return;
-      if (!wrap.matches(':hover') && !wrap.contains(document.activeElement)) return;
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.key !== '0') return;
+      // 悬停优先：页面上有任一会话流被悬停时，只由被悬停的那个响应；否则由焦点所在的响应
+      const anyHovered = [...wraps].some((w) => w.matches(':hover'));
+      const matched = anyHovered ? wrap.matches(':hover') : wrap.contains(document.activeElement);
+      if (!matched) return;
       e.preventDefault();
       const r = (scrollRef.current ?? wrap).getBoundingClientRect();
       apply(1, r.left + r.width / 2, r.top + r.height / 2);
     };
 
+    wraps.add(wrap);
     wrap.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKey);
     return () => {
+      wraps.delete(wrap);
       wrap.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
       clearTimeout(hintTimer.current);

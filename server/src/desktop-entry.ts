@@ -43,6 +43,7 @@ async function onInit(m: InitMsg): Promise<void> {
       webDist: m.webDist,
       stateFile: m.stateFile,
       authToken: m.token,
+      prefetchSpeech: process.env.COSYEE_SPEECH !== '0',
       version: typeof __COSYEE_VERSION__ === 'string' ? __COSYEE_VERSION__ : undefined,
     });
     // 兜底：进程无论如何退出，都同步杀掉还活着的 claude 子进程树

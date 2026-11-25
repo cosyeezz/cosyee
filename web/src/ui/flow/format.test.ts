@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Turn } from '@cosyee/shared';
+import { DEFAULT_AGENT_MODELS, type SubagentRun, type Turn } from '@cosyee/shared';
 import {
   describeToolInput,
+  effortText,
+  runParams,
   parseAskAnswers,
   parseAskQuestions,
   planVerdict,
@@ -34,6 +36,20 @@ const baseTurn: Turn = {
   subagents: [],
   startedAt: 0,
 };
+
+describe('子代理的模型 / 思考等级', () => {
+  const run = (o: Partial<SubagentRun> = {}): SubagentRun => ({ toolUseId: 't', title: '', status: 'running', turn: baseTurn, ...o });
+  it('实际值优先，缺的用设置补；fork 不补；不再出现「继承主会话」', () => {
+    const cfg = { ...DEFAULT_AGENT_MODELS, agy: { model: 'neon', effort: 'low' as const } };
+    expect(runParams(run(), cfg)).toEqual({ model: 'sonnet', effort: 'medium' });
+    expect(runParams(run({ model: 'opus', effort: 'max' }), cfg)).toEqual({ model: 'opus', effort: 'max' });
+    expect(runParams(run({ subagentType: 'fork' }), cfg)).toEqual({});
+    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), cfg)).toEqual({ model: 'neon', effort: 'low' });
+    expect(runParams(run({ delegate: true, subagentType: 'Explore', model: 'orch' }), cfg)).toEqual({ model: 'orch' });
+    expect(effortText('medium')).toBe('思考 中等');
+    expect(effortText(undefined)).toBe('');
+  });
+});
 
 describe('formatDuration', () => {
   it('秒 / 分秒 / 时分', () => {
@@ -344,5 +360,10 @@ describe('AskUserQuestion / ExitPlanMode 展示', () => {
     expect(planVerdict('User has approved your plan. You can now start coding.', false)).toEqual({ approved: true });
     expect(planVerdict("The user doesn't want to proceed. The user said: 加上测试", true)).toEqual({ approved: false, feedback: '加上测试' });
     expect(planVerdict('', false)).toBeNull();
+  });
+  it('toolLine 兜底时对 Cosyee 工具去掉 mcp__cosyee__ 前缀', () => {
+    expect(toolLine({ name: 'mcp__cosyee__delegate_send', input: {}, summary: '' })).toBe('delegate_send');
+    expect(toolLine({ name: 'mcp__github__search', input: {}, summary: '' })).toBe('mcp__github__search');
+    expect(toolLine({ name: 'mcp__cosyee__delegate_send', input: {}, summary: 'delegate_send: a1b2c3d4' })).toBe('delegate_send: a1b2c3d4');
   });
 });

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Turn } from '@cosyee/shared';
-import { McpPanel } from './McpPanel';
+import { SessionDock } from './SessionDock';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,16 +23,28 @@ const steps: Turn['steps'] = [
   { kind: 'tool', id: '5', name: 'Bash', input: {}, summary: '' },
 ];
 
+const mkTurn = (s: Turn['steps']): Turn => ({
+  id: 't1',
+  userText: 'hi',
+  attachments: [],
+  status: 'running',
+  statusText: '',
+  steps: s,
+  answer: '',
+  subagents: [],
+  startedAt: 1,
+});
+
 async function mount(s: Turn['steps']) {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  await act(async () => root!.render(<McpPanel steps={s} />));
+  await act(async () => root!.render(<SessionDock turns={[mkTurn(s)]} sessionKey="s1" />));
 }
 const toolBtns = () => [...host!.querySelectorAll<HTMLButtonElement>('.cz-flow__mcp-tool')];
 const click = async (el: Element) => act(async () => void el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
-describe('McpPanel', () => {
+describe('McpList（经 SessionDock 展示）', () => {
   it('没有 MCP 调用时不渲染', async () => {
     await mount([steps[4]]);
     expect(host!.innerHTML).toBe('');
@@ -40,7 +52,7 @@ describe('McpPanel', () => {
 
   it('头部计数、工具摘要、失败标红、运行中流光', async () => {
     await mount(steps);
-    expect(host!.textContent).toContain('调用了 2 个 MCP 服务');
+    expect(host!.textContent).toContain('2 个 MCP 服务');
     expect(host!.querySelector('.cz-st-compacting')).not.toBeNull(); // docs 的调用还没结果
     expect(host!.querySelector('.cz-st-tool')?.textContent).toBe('docs');
     expect(toolBtns().map((b) => b.textContent)).toEqual(['nav ×2', 'click', 'q']);

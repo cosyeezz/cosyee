@@ -5,7 +5,7 @@ import { createContext, isValidElement, memo, useContext, useState, type ReactNo
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { isLocalPath, localFileLink, localPathHref, pathRelativeToFile, resolveAgainst } from '@cosyee/shared';
+import { type ExecResult, SHELL_LABEL, isLocalPath, localFileLink, localPathHref, pathRelativeToFile, resolveAgainst, snippetShell } from '@cosyee/shared';
 import { copyText } from '../../core/browser';
 import { useFiles } from '../files/FileContext';
 import { FilePathLink } from '../files/FilePathLink';
@@ -73,25 +73,119 @@ export function nodeText(node: ReactNode): string {
 
 export { copyText };
 
-export function CodeBlock({ lang, text, children }: { lang?: string; text: string; children: ReactNode }) {
+/** 一次运行的结果：正常结束 / 请求失败 / 用户点了停止 */
+type RunState = { kind: 'done'; result: ExecResult } | { kind: 'error'; message: string } | { kind: 'stopped' };
+
+function formatMs(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
+}
+
+function RunOutput({ state, onClose }: { state: RunState; onClose: () => void }) {
+  let status: ReactNode;
+  let body: ReactNode = null;
+  if (state.kind === 'stopped') {
+    status = <span className="cz-flow__run-status is-bad">已停止</span>;
+  } else if (state.kind === 'error') {
+    status = <span className="cz-flow__run-status is-bad">运行失败</span>;
+    body = <pre className="cz-flow__run-err">{state.message}</pre>;
+  } else {
+    const r = state.result;
+    status = (
+      <>
+        {r.timedOut
+          ? <span className="cz-flow__run-status is-bad">已超时</span>
+          : <span className={`cz-flow__run-status ${r.exitCode === 0 ? 'is-ok' : 'is-bad'}`}>退出码 {r.exitCode ?? '—'}</span>}
+        <span className="cz-flow__run-time">{formatMs(r.durationMs)}</span>
+        {r.truncated && <span className="cz-flow__run-time">输出过长已截断</span>}
+      </>
+    );
+    const empty = !r.stdout && !r.stderr;
+    body = (
+      <>
+        {r.stdout && <pre className="cz-flow__run-out">{r.stdout.replace(/\n$/, '')}</pre>}
+        {r.stderr && <pre className="cz-flow__run-err">{r.stderr.replace(/\n$/, '')}</pre>}
+        {empty && <div className="cz-flow__run-empty">（无输出）</div>}
+      </>
+    );
+  }
+  return (
+    <div className="cz-flow__run">
+      <div className="cz-flow__run-head">
+        <span className="cz-flow__run-meta">运行结果 {status}</span>
+        <button type="button" className="cz-flow__code-copy" onClick={onClose} aria-label="收起运行结果">收起</button>
+      </div>
+      {body}
+    </div>
+  );
+}
+
+/**
+ * 代码块。runnable 为真且语言是 shell 类、上下文提供了 exec 时，头部多一个「运行」按钮：
+ * 在会话工作目录里执行，结果显示在代码块下方；运行中按钮变成「停止」。
+ */
+export function CodeBlock({ lang, text, children, runnable = false }: { lang?: string; text: string; children: ReactNode; runnable?: boolean }) {
+  const files = useFiles();
   const [copied, setCopied] = useState(false);
+  const [running, setRunning] = useState<AbortController | null>(null);
+  const [run, setRun] = useState<RunState | null>(null);
+  const shell = runnable && files?.exec && files.platform ? snippetShell(lang, files.platform) : null;
   const onCopy = async () => {
     if (await copyText(text)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
   };
+  const onRun = async () => {
+    if (running) {
+      running.abort();
+      return;
+    }
+    if (!files?.exec || !lang) return;
+    const ac = new AbortController();
+    setRunning(ac);
+    setRun(null);
+    try {
+      setRun({ kind: 'done', result: await files.exec(lang, text, ac.signal) });
+    } catch (e) {
+      setRun(ac.signal.aborted ? { kind: 'stopped' } : { kind: 'error', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRunning(null);
+    }
+  };
   return (
     <div className="cz-flow__code">
       <div className="cz-flow__code-head">
         <span className="cz-flow__code-lang">{lang || 'text'}</span>
-        <button type="button" className="cz-flow__code-copy" onClick={onCopy}>
-          {copied ? '已复制' : '复制'}
-        </button>
+        <span className="cz-flow__code-actions">
+          {shell && (
+            <button
+              type="button"
+              className={`cz-flow__code-copy cz-flow__code-run${running ? ' is-running' : ''}`}
+              onClick={onRun}
+              title={running ? '停止运行' : `在 ${files!.cwd} 中用 ${SHELL_LABEL[shell]} 执行`}
+            >
+              {running ? '停止' : '运行'}
+            </button>
+          )}
+          <button type="button" className="cz-flow__code-copy" onClick={onCopy}>
+            {copied ? '已复制' : '复制'}
+          </button>
+        </span>
       </div>
       <pre className="cz-flow__code-pre">{children}</pre>
+      {running && <div className="cz-flow__run"><div className="cz-flow__run-head"><span className="cz-flow__run-meta">运行中…</span></div></div>}
+      {!running && run && <RunOutput state={run} onClose={() => setRun(null)} />}
     </div>
   );
+}
+
+/**
+ * 会话消息里的代码块可以运行；预览浮窗里渲染的 .md 文件（有基准文件）不行：
+ * 文档里的命令通常相对文档所在目录，而运行用的是会话工作目录，容易跑错地方。
+ */
+function MdCodeBlock({ lang, text, children }: { lang?: string; text: string; children: ReactNode }) {
+  const baseFile = useContext(BaseFileContext);
+  return <CodeBlock lang={lang} text={text} runnable={!baseFile}>{children}</CodeBlock>;
 }
 
 const components: Components = {
@@ -104,9 +198,9 @@ const components: Components = {
       lang = /language-([\w+#-]+)/.exec(cls)?.[1];
     }
     return (
-      <CodeBlock lang={lang} text={nodeText(children).replace(/\n$/, '')}>
+      <MdCodeBlock lang={lang} text={nodeText(children).replace(/\n$/, '')}>
         {children}
-      </CodeBlock>
+      </MdCodeBlock>
     );
   },
   a({ children, href }) {

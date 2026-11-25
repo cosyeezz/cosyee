@@ -1,0 +1,26 @@
+/* 会话级活动区（放在会话流末尾，跟着内容一起滚动）：无外框，高度随内容。 */
+
+.cz-dock {
+  min-width: 0;
+}
+
+/* 标题行是开合按钮：外观同原来的标题 */
+.cz-dock__head {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cz-dock__head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-sm); }
+.cz-dock__head > svg { flex: none; }
+.cz-dock__label { min-width: 0; line-height: 20px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cz-dock > .cz-flow__agents { padding: var(--sp-1) 0; }
+@media (pointer: coarse) {
+  .cz-dock__head { min-height: 36px; }
+  .cz-dock > .cz-flow__agents { padding: 0; }
+}

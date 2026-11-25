@@ -197,23 +197,20 @@ describe('TurnView 展开 / 吸顶 / 收起滚回', () => {
   });
 });
 
-describe('TurnView 子代理面板', () => {
+describe('TurnView 面板可见性', () => {
   const sub = (status: 'running' | 'done', id: string) => ({ toolUseId: id, title: '查一下', status, turn: base });
+  const withAll: Turn = {
+    ...base,
+    steps: [{ kind: 'tool', id: 'm1', name: 'mcp__pw__nav', input: {}, summary: 'nav', result: { content: 'ok', isError: false } }],
+    subagents: [sub('running', 'a'), sub('done', 'b')],
+    skills: [{ id: 's1', name: 'verify', source: 'model', status: 'loaded' }],
+  };
 
-  it('执行中：液滴图标 + 紫粉流光标题', () => {
-    const v = mount({ ...base, subagents: [sub('running', 'a'), sub('done', 'b')] });
-    const head = v.host.querySelector('.cz-flow__agents-head')!;
-    expect(head.textContent).toBe('2 个子代理执行中 1/2');
-    expect(head.querySelector('.cz-ss-compacting')).not.toBeNull();
-    expect(head.querySelector('.cz-ss-compacting')!.classList.contains('is-still')).toBe(false);
-    expect(head.querySelector('.cz-st-compacting')).not.toBeNull();
-  });
-
-  it('全部完成：文字不变，动画停下', () => {
-    const v = mount({ ...base, status: 'done', subagents: [sub('done', 'a')], endedAt: base.startedAt + 1 });
-    const head = v.host.querySelector('.cz-flow__agents-head')!;
-    expect(head.textContent).toBe('1 个子代理已完成');
-    expect(head.querySelector('.cz-ss-compacting')!.classList.contains('is-still')).toBe(true);
-    expect(head.querySelector('.cz-st-compacting')).toBeNull();
+  it('不再内联渲染子代理 / 技能 / MCP 面板，状态行保留子代理进度', () => {
+    const v = mount(withAll);
+    expect(v.host.querySelector('.cz-flow__agents-list')).toBeNull();
+    expect(v.host.querySelector('.cz-flow__pitem')).toBeNull();
+    expect(v.host.querySelector('.cz-flow__agent-item')).toBeNull();
+    expect(v.status().textContent).toContain('子代理 1/2');
   });
 });

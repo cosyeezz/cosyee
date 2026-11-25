@@ -189,15 +189,30 @@
   from { background-color: transparent; -webkit-backdrop-filter: blur(0) saturate(1); backdrop-filter: blur(0) saturate(1); }
 }
 
+/* ───── 通用折叠展开（Reveal.tsx）───── */
+.cz-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  transition: grid-template-rows 220ms var(--ease-out), opacity 220ms var(--ease-out);
+}
+.cz-reveal__in {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+@starting-style { .cz-reveal { grid-template-rows: 0fr; opacity: 0; } }
+.cz-reveal.is-leaving { grid-template-rows: 0fr; opacity: 0; pointer-events: none; }
+
 /* ───── 减少动效 ───── */
-:root[data-motion="reduce"] :is(.cz-pop, .cz-modal, .cz-modal-scrim) { transition: none; animation: none; }
+:root[data-motion="reduce"] :is(.cz-pop, .cz-modal, .cz-modal-scrim, .cz-reveal) { transition: none; animation: none; }
 :root[data-motion="reduce"] .cz-beam::after { display: none; }
 :root[data-motion="reduce"] .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }
 :root[data-motion="reduce"] .cz-spot::before,
 :root[data-motion="reduce"] .cz-spot::after { display: none; }
 :root[data-motion="reduce"] .cz-tilt { transform: none; }
 @media (prefers-reduced-motion: reduce) {
-  :is(.cz-pop, .cz-modal, .cz-modal-scrim) { transition: none; animation: none; }
+  :is(.cz-pop, .cz-modal, .cz-modal-scrim, .cz-reveal) { transition: none; animation: none; }
   .cz-tilt { transform: none; }
   .cz-beam::after { display: none; }
   .cz-beam.is-on { border-color: var(--beam-rest); mask: none; }

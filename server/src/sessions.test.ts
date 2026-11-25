@@ -83,11 +83,40 @@ describe('Sessions', () => {
     expect((await sessions.list(CWD))[0]!.dot).toBeNull();
   });
 
+  it('dot：主进程 idle 但有后台任务时仍为 running，全部结束后无订阅者呈 unread', async () => {
+    // 主轮次结束时仍有后台委派任务在跑（无订阅者）
+    dots.setRunning(SID, true);
+    dots.setBackground(SID, 1, 'delegate');
+    dots.setBackground(SID, 1, 'claude');
+    expect(dots.setRunning(SID, false)).toBe(false);
+    dots.turnFinished(SID, false);
+    expect(dots.isRunning(SID)).toBe(true);
+    expect((await sessions.list(CWD))[0]!.dot).toBe('running');
+
+    // 进程退出清掉 claude 后台任务，delegate 仍在跑 → 保持 running
+    expect(dots.setBackground(SID, 0, 'claude')).toBe(false);
+    expect(dots.isRunning(SID)).toBe(true);
+    expect((await sessions.list(CWD))[0]!.dot).toBe('running');
+
+    // 后台委派全部结束 → 不再是 running，露出 unread 蓝点
+    expect(dots.setBackground(SID, 0, 'delegate')).toBe(true);
+    expect(dots.isRunning(SID)).toBe(false);
+    expect((await sessions.list(CWD))[0]!.dot).toBe('unread');
+
+    // 查看后清除蓝点；有订阅者场景下后台任务结束后应为 null
+    expect(dots.viewed(SID)).toBe(true);
+    expect(dots.setBackground(SID, 1, 'claude')).toBe(true);
+    expect((await sessions.list(CWD))[0]!.dot).toBe('running');
+    expect(dots.setBackground(SID, 0, 'claude')).toBe(true);
+    dots.turnFinished(SID, true);
+    expect((await sessions.list(CWD))[0]!.dot).toBeNull();
+  });
+
   it('history 过滤个人信息条目', async () => {
     const h = await sessions.history(SID, CWD);
     const s = JSON.stringify(h);
     expect(s).not.toContain('accountUuid');
-    expect(h.some((e) => e.type === 'attachment')).toBe(false);
+    expect(h.some((e) => e.type === 'attachment' && e.attachment?.type !== 'queued_command')).toBe(false);
     expect(h.length).toBeGreaterThan(3);
   });
 
@@ -117,6 +146,18 @@ describe('Sessions', () => {
     const entries = await sessions.subagent(SID, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD);
     expect(entries.length).toBeGreaterThan(0);
     await expect(sessions.subagent(SID, 'toolu_nope', CWD)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('subagent：委派的过程记录优先；没有记录照旧找 claude 的子代理', async () => {
+    const own = [{ type: 'assistant', message: { content: [] } }];
+    const s = new Sessions(dots, {
+      isDeleted: () => false,
+      pinKind: () => null,
+      delegateEntries: async (id, tid) => (id === SID && tid === 'toolu_agy' ? own : null),
+    });
+    expect(await s.subagent(SID, 'toolu_agy', CWD)).toEqual(own);
+    expect((await s.subagent(SID, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD)).length).toBeGreaterThan(0);
+    await expect(s.subagent(SID, 'toolu_nope', CWD)).rejects.toMatchObject({ status: 404 });
   });
 
   it('appendTitle：追加两行后标题变化，文件仍以换行结尾', async () => {
@@ -302,5 +343,61 @@ describe('subagentCosts', () => {
   it('没有 subagents 目录返回空；会话不存在报 404', async () => {
     expect(await sessions.subagentCosts('99999999-0000-4000-8000-000000000000', CWD, BUILTIN_PRICES)).toEqual([]);
     await expect(sessions.subagentCosts('cccccccc-0000-4000-8000-000000000003', CWD, BUILTIN_PRICES)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('detail', () => {
+  const DID = 'eeeeeeee-0000-4000-8000-000000000005';
+  const NL = String.fromCharCode(10);
+
+  it('返回详情、命中缓存、文件变化后缓存失效，并发请求合并', async () => {
+    const dir = path.join(tmp, 'projects', encodeCwd(CWD));
+    const file = path.join(dir, `${DID}.jsonl`);
+    const line1 = JSON.stringify({
+      type: 'user', uuid: 'u1', parentUuid: null, timestamp: '2026-01-01T00:00:00Z', gitBranch: 'main',
+      message: { role: 'user', content: '第一个问题' },
+    });
+    const line2 = JSON.stringify({
+      type: 'assistant', uuid: 'a1', parentUuid: 'u1', timestamp: '2026-01-01T00:00:02Z', gitBranch: 'main',
+      message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: '第一次回答' }], usage: { input_tokens: 123 } },
+    });
+    fs.writeFileSync(file, [line1, line2].join(NL) + NL);
+
+    // 并发请求返回相同对象引用（合并为一次读取）
+    const [r1, r2] = await Promise.all([sessions.detail(DID, CWD), sessions.detail(DID, CWD)]);
+    expect(r1).toBe(r2);
+    expect(r1).toMatchObject({
+      userMessages: 1,
+      firstPrompt: '第一个问题',
+      lastPrompt: null,
+      lastReply: '第一次回答',
+      model: 'claude-sonnet-5-5',
+      branch: 'main',
+      contextTokens: 123,
+    });
+    // 命中缓存
+    expect(await sessions.detail(DID, CWD)).toBe(r1);
+
+    // 追加内容后（size 变化），缓存失效并返回新结果
+    const line3 = JSON.stringify({
+      type: 'user', uuid: 'u2', parentUuid: 'a1', timestamp: '2026-01-01T00:01:00Z', gitBranch: 'feat/x',
+      message: { role: 'user', content: '第二个问题' },
+    });
+    fs.appendFileSync(file, line3 + NL);
+    const r3 = await sessions.detail(DID, CWD);
+    expect(r3).not.toBe(r1);
+    expect(r3.userMessages).toBe(2);
+    expect(r3.lastPrompt).toBe('第二个问题');
+    expect(r3.branch).toBe('feat/x');
+  });
+
+  it('会话不存在或非法 id 抛 404；已软删除但文件仍在的会话仍可读', async () => {
+    await expect(sessions.detail('00000000-0000-4000-8000-0000000000ff', CWD)).rejects.toMatchObject({ status: 404 });
+    await expect(sessions.detail('../../x', CWD)).rejects.toMatchObject({ status: 404 });
+
+    const withDeleted = new Sessions(dots, { isDeleted: () => true, pinKind: () => null });
+    const d = await withDeleted.detail(SID, CWD);
+    expect(d.userMessages).toBe(1);
+    expect(d.firstPrompt).toBe('只回复 ok');
   });
 });

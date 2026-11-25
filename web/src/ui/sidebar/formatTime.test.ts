@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatLastActive } from './formatTime';
+import { formatAbsoluteTime, formatFullTime, formatLastActive, formatRelativeTime } from './formatTime';
 
 // 一律用本地时间构造，避免测试依赖运行机器的时区
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();
@@ -44,5 +44,35 @@ describe('formatLastActive', () => {
     const firstDay = at(2026, 3, 1, 8, 0);
     expect(formatLastActive(at(2026, 2, 28, 12, 0), firstDay)).toBe('昨天');
     expect(formatLastActive(at(2026, 2, 27, 12, 0), firstDay)).toBe('02/27');
+  });
+});
+
+describe('formatAbsoluteTime / formatRelativeTime / formatFullTime', () => {
+  const now = at(2026, 11, 16, 15, 30);
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  it('绝对时间补零为 YYYY/MM/DD HH:mm', () => {
+    expect(formatAbsoluteTime(at(2026, 1, 5, 9, 4))).toBe('2026/01/05 09:04');
+    expect(formatAbsoluteTime(at(2025, 12, 31, 23, 59))).toBe('2025/12/31 23:59');
+  });
+
+  it('相对时间按分钟 / 小时 / 天 / 月 / 年分段', () => {
+    expect(formatRelativeTime(now, now)).toBe('刚刚');
+    expect(formatRelativeTime(now - 59_000, now)).toBe('刚刚');
+    expect(formatRelativeTime(now + 10_000, now)).toBe('刚刚');
+    expect(formatRelativeTime(now - 1 * MIN, now)).toBe('1 分钟前');
+    expect(formatRelativeTime(now - 59 * MIN, now)).toBe('59 分钟前');
+    expect(formatRelativeTime(now - 3 * HOUR, now)).toBe('3 小时前');
+    expect(formatRelativeTime(now - 23 * HOUR, now)).toBe('23 小时前');
+    expect(formatRelativeTime(now - 1 * DAY, now)).toBe('1 天前');
+    expect(formatRelativeTime(now - 29 * DAY, now)).toBe('29 天前');
+    expect(formatRelativeTime(now - 65 * DAY, now)).toBe('2 个月前');
+    expect(formatRelativeTime(now - 400 * DAY, now)).toBe('1 年前');
+  });
+
+  it('完整时间拼接绝对时间与相对时间', () => {
+    expect(formatFullTime(now - 3 * HOUR, now)).toBe('2026/11/16 12:30 · 3 小时前');
   });
 });

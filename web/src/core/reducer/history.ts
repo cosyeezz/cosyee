@@ -3,7 +3,7 @@
 //   实时：cosyee_user 开轮、result 收尾；历史：真实用户消息开轮，system/turn_duration 收尾（没有就在下一轮开始或文件结束时收尾）。
 // 历史里每条条目只含一个 content block（同 message.id 分多行），与流式 index 一致，直接复用 applyAssistantMessage。
 
-import type { SessionMeta, Turn } from '@cosyee/shared';
+import { parseDelegateNotification, type SessionMeta, type Turn } from '@cosyee/shared';
 import {
   addUserSkill,
   applyAssistantMessage,
@@ -18,11 +18,12 @@ import {
   type ConvState,
   type Draft,
 } from './core';
-import { arr, isObj, str } from './util';
+import { arr, isObj, str, textOf } from './util';
+import { parseDelegateStop, settleFromNotification } from './delegate';
 import { cachePointOf, compactMarkOf, pushCachePoint, pushCompactMark } from './cacheHit';
 
 /** 不是用户说的话的 user 文本（标签开头） */
-const NOISE_RE = /^\s*<(?:bash-[\w-]+|local-command-[\w-]+|task-notification|system-reminder|tick|teammate-message|cross-session-message|command-[\w-]+)[\s>]/;
+const NOISE_RE = /^\s*<(?:bash-[\w-]+|local-command-[\w-]+|task-notification|system-reminder|tick|teammate-message|cross-session-message|cosyee-delegate-notification|command-[\w-]+)[\s>]/;
 const INTERRUPT_PREFIX = '[Request interrupted by user';
 const CMD_NAME_RE = /<command-name>\s*([^<]*?)\s*<\/command-name>/;
 const CMD_ARGS_RE = /<command-args>([\s\S]*?)<\/command-args>/;
@@ -173,6 +174,17 @@ function activeBranch(entries: unknown[]): unknown[] {
   });
 }
 
+/** 工具结果里有 delegate_stop 的停止结果：把对应的委派子代理落定为已停止 */
+function settleStopped(ctx: Ctx, content: unknown, at: number): void {
+  for (const b of arr(content)) {
+    if (!isObj(b) || b.type !== 'tool_result' || b.is_error === true) continue;
+    const stop = parseDelegateStop(textOf(b.content));
+    if (!stop) continue;
+    const turns = ctx.cur ? [...ctx.turns, ctx.cur.turn] : ctx.turns;
+    settleFromNotification(turns, { ...stop, status: 'stopped', conversationId: '', description: '' }, at);
+  }
+}
+
 function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx {
   const ctx: Ctx = { turns: [], cur: null, last: null, meta: {}, sub, cmd: null };
   let last = 0;
@@ -190,6 +202,15 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
 
     switch (raw.type) {
       case 'user': {
+        // 后台委派的完成通知：不是用户说的话，不开轮；只用它给对应的委派子代理落定结果
+        if (!sub) {
+          const nt = userText(isObj(raw.message) ? raw.message.content : undefined);
+          const note = nt !== null && nt.includes('cosyee-delegate-notification') ? parseDelegateNotification(nt) : null;
+          if (note) {
+            settleFromNotification(ctx.cur ? [...ctx.turns, ctx.cur.turn] : ctx.turns, note, at);
+            break;
+          }
+        }
         if (raw.isMeta === true) {
           // 其它 meta 一律忽略；只认技能正文：有 sourceToolUseID 的归 Skill 工具调用，没有的是用户 /技能名 的正文
           const mc = isObj(raw.message) ? raw.message.content : undefined;
@@ -212,7 +233,10 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         const text = userText(content);
         if (text === null) {
           if (sub && !ctx.cur) openTurn(ctx, '', at);
-          if (ctx.cur) applyToolResults(ctx.cur, content, raw.toolUseResult);
+          if (ctx.cur) {
+            applyToolResults(ctx.cur, content, raw.toolUseResult);
+            if (!sub) settleStopped(ctx, content, at);
+          }
           break;
         }
         if (text.startsWith(INTERRUPT_PREFIX)) {
@@ -237,12 +261,26 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         const a = raw.attachment;
         if (sub || !isObj(a) || a.type !== 'queued_command' || a.commandMode !== 'prompt') break;
         const prompt = typeof a.prompt === 'string' ? a.prompt : userText(a.prompt);
+        // 执行中送达的委派完成通知也是这种附件：只落定对应的委派子代理
+        const note = prompt ? parseDelegateNotification(prompt) : null;
+        if (note) {
+          settleFromNotification(ctx.cur ? [...ctx.turns, ctx.cur.turn] : ctx.turns, note, at);
+          break;
+        }
         const real = prompt ? realUserText(prompt) : null;
         if (real !== null) openTurn(ctx, real, at, { userId: str(a.source_uuid) || undefined, steer: true });
         break;
       }
       case 'assistant': {
-        if (raw.isApiErrorMessage === true) break;
+        if (raw.isApiErrorMessage === true) {
+          // API 错误条目：把当前活跃轮落定为 error（保留错误原因，不把错误文本当作回答正文）
+          if (!sub && ctx.cur && isActive(ctx.cur.turn)) {
+            const content = isObj(raw.message) ? raw.message.content : undefined;
+            const reason = textOf(content).trim() || '出错了';
+            finishTurn(ctx.cur.turn, 'error', at, reason);
+          }
+          break;
+        }
         if (!ctx.cur && sub) openTurn(ctx, '', at);
         if (!ctx.cur) break;
         touch(ctx.cur, '');

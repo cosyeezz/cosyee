@@ -84,9 +84,19 @@ export function listenAddress(bindHost: string): string {
 }
 
 /**
+ * Tailscale 里的机器名（MagicDNS 短名）。可以在管理后台改成跟系统主机名不一样的名字，
+ * 所以启动时从 `tailscale status` 读出来补进白名单（见 index.ts）。
+ */
+let tailscaleNames: string[] = [];
+
+export function setTailscaleNames(names: string[]): void {
+  tailscaleNames = [...new Set(names.map((n) => n.trim().toLowerCase()).filter((n) => /^[a-z0-9-]+$/.test(n)))];
+}
+
+/**
  * 允许出现在 Host / Origin 里的主机名（不含端口）。
  * 监听 127.0.0.1（默认）：只认回环；监听 0.0.0.0：再加本机任一网卡的 IPv4；监听具体 IP：再加这个 IP；
- * Tailscale 模式：再加本机 Tailscale 地址和本机名（MagicDNS 短名）；*.ts.net 全名见 hostnameAllowed。
+ * Tailscale 模式：再加本机 Tailscale 地址、本机名和 Tailscale 机器名（MagicDNS 短名）；*.ts.net 全名见 hostnameAllowed。
  * 仍然拒绝其它任何 Host（包括解析到本机的域名），防 DNS rebinding。
  */
 export function allowedHostnames(bindHost: string = '127.0.0.1', ifaces?: NodeJS.Dict<os.NetworkInterfaceInfo[]>): string[] {
@@ -94,7 +104,7 @@ export function allowedHostnames(bindHost: string = '127.0.0.1', ifaces?: NodeJS
   if (bindHost === TAILSCALE_MODE) {
     const hn = os.hostname().toLowerCase();
     // macOS 的 os.hostname() 带 .local 后缀，但 Tailscale MagicDNS 用不带后缀的短名；两个都要认
-    names.push(...tailscaleAddrs(ifaces).map((a) => (a.includes(':') ? `[${a}]` : a)), hn, hn.replace(/\.local$/, ''));
+    names.push(...tailscaleAddrs(ifaces).map((a) => (a.includes(':') ? `[${a}]` : a)), hn, hn.replace(/\.local$/, ''), ...tailscaleNames);
   } else if (bindHost === '0.0.0.0') names.push(...localIPv4s(ifaces));
   else if (bindHost !== '127.0.0.1' && bindHost !== 'localhost') names.push(bindHost);
   return [...new Set(names)];

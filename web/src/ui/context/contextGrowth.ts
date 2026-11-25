@@ -2,6 +2,7 @@
 // 第 i 次请求的输入 = 第 i-1 次的输入 + 第 i-1 次的回复（含 tool_use 参数）+ 这些工具的返回结果 (+ 新一轮的用户消息)。
 // 所以「打大上下文」的通常是上一次请求调用的工具；这里按 tool_use id 回到会话流里找到它们并粗估大小。
 import type { CachePoint, Turn } from '@cosyee/shared';
+import { toolLabel } from '../../core/reducer/util';
 
 /** 一次请求送给模型的输入总量（未缓存 + 写缓存 + 读缓存） */
 export const inputOf = (p: CachePoint) => p.input + p.create + p.read;
@@ -52,13 +53,13 @@ function findTool(turns: Turn[], at: number, id: string): GrowthItem {
   for (const t of order) {
     for (const s of t.steps) {
       if (s.kind === 'tool' && s.id === id) {
-        return { id, label: s.summary || s.name, tokens: estimateTokens(s.input) + estimateTokens(s.result?.content) };
+        return { id, label: s.summary || toolLabel(s.name), tokens: estimateTokens(s.input) + estimateTokens(s.result?.content) };
       }
     }
     const run = t.subagents.find((r) => r.toolUseId === id);
     if (run) {
       const out = run.turn.answer || [...run.turn.steps].reverse().find((s) => s.kind === 'text')?.text || '';
-      return { id, label: `Agent: ${run.title}`, tokens: textTokens(run.turn.userText) + textTokens(out) };
+      return { id, label: `${run.delegate === true ? 'delegate' : 'Agent'}: ${run.title}`, tokens: textTokens(run.turn.userText) + textTokens(out) };
     }
   }
   return { id, label: '（会话流里已找不到这次调用）', tokens: 0 };

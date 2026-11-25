@@ -1,5 +1,6 @@
 // MCP 工具调用的解析与分组：工具名格式 mcp__<服务器>__<工具>，服务器名可含 _ / -。
 import type { ToolStep, Turn } from '@cosyee/shared';
+import { isCosyeeTool } from '../../core/reducer/util';
 
 export interface McpName {
   server: string;
@@ -45,7 +46,7 @@ export interface McpServerGroup {
 export function groupMcpCalls(steps: Turn['steps'], known: readonly string[] = []): McpServerGroup[] {
   const servers = new Map<string, McpServerGroup>();
   for (const s of steps) {
-    if (s.kind !== 'tool') continue;
+    if (s.kind !== 'tool' || isCosyeeTool(s.name)) continue;
     const p = parseMcpName(s.name, known);
     if (!p) continue;
     let g = servers.get(p.server);

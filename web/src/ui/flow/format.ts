@@ -1,6 +1,7 @@
 // 会话流用到的纯函数（无 React 依赖，便于单测）。
-import type { Attachment, SubagentRun, ToolStep, Turn } from '@cosyee/shared';
+import type { AgentModelConfig, Attachment, SubagentRun, ToolStep, Turn } from '@cosyee/shared';
 import { EFFORTS, modelLabel } from '@cosyee/shared';
+import { toolLabel } from '../../core/reducer/util';
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -340,10 +341,19 @@ export function prettyModel(id: string | undefined): string {
 
 const effortName = (e: string): string => EFFORTS.find((x) => x.id === e)?.label ?? e;
 
-/** 思考等级文案：调用时指定了用指定值；否则继承主会话（知道主会话等级时带上） */
-export function effortText(effort: string | undefined, sessionEffort?: string): string {
-  if (effort) return `思考 ${effortName(effort)}`;
-  return sessionEffort ? `思考 ${effortName(sessionEffort)}（继承主会话）` : '思考等级继承主会话';
+export function effortText(effort: string | undefined): string {
+  return effort ? `思考 ${effortName(effort)}` : '';
+}
+
+/** 子代理的模型 / 思考等级：实际值优先，还不知道时用「子代理模型」设置里的值（fork 沿用主会话，设置不管它） */
+export function runParams(run: SubagentRun, cfg?: AgentModelConfig | null): { model?: string; effort?: string } {
+  const { model, effort } = run;
+  if (!cfg || run.subagentType === 'fork') return { model, effort };
+  if (run.delegate === true) {
+    // 已知实际模型却没有强度 = 这个模型不分强度，不拿设置里的值顶
+    return model ? { model, effort } : { model: cfg.agy.model ?? undefined, effort: effort ?? cfg.agy.effort ?? undefined };
+  }
+  return { model: model ?? cfg.claude.model, effort: effort ?? cfg.claude.effort };
 }
 
 // ───────────── AskUserQuestion / ExitPlanMode 的展示 ─────────────
@@ -413,7 +423,7 @@ export function planVerdict(text: string, isError: boolean): { approved: boolean
 export function toolLine(step: Pick<ToolStep, 'name' | 'input' | 'summary'>): string {
   if (step.name === 'AskUserQuestion') {
     const qs = parseAskQuestions(step.input);
-    if (qs.length === 0) return step.summary || step.name;
+    if (qs.length === 0) return step.summary || toolLabel(step.name);
     const first = plainFirstLine(qs[0]!.question, 80);
     return qs.length > 1 ? `提问：${first}（等 ${qs.length} 个问题）` : `提问：${first}`;
   }
@@ -421,5 +431,5 @@ export function toolLine(step: Pick<ToolStep, 'name' | 'input' | 'summary'>): st
     const line = plainFirstLine(planOf(step.input), 60);
     return line ? `计划：${line}` : '计划';
   }
-  return step.summary || step.name;
+  return step.summary || toolLabel(step.name);
 }

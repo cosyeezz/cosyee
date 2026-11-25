@@ -17,6 +17,10 @@ export type IconName =
   | 'file' | 'image' | 'compact'
   // 选中回复
   | 'reply' | 'copy'
+  // 朗读
+  | 'volume'
+  // 通话模式
+  | 'phone'
   // 会话流滚动导航（回到上一个 / 下一个交付点）
   | 'arrow-up' | 'arrow-down'
   // 侧栏
@@ -223,6 +227,14 @@ const SIMPLE: Record<string, JSX.Element> = {
   stop: <rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor" stroke="none" />,
   // 回复：向左弯的箭头
   reply: <path d="M6.5 3.5l-4 4 4 4M2.5 7.5H9a4.5 4.5 0 014.5 4.5v.5" />,
+  // 朗读：喇叭 + 两道声波
+  phone: <path d="M5.4 2.4l-2 .6c-.6.2-1 .8-.9 1.4.5 4.5 4.1 8.1 8.6 8.6.6.1 1.2-.3 1.4-.9l.6-2-2.7-1.5-1.3 1.3c-1.6-.7-2.9-2-3.6-3.6l1.3-1.3z" />,
+  volume: (
+    <>
+      <path d="M2.5 6h2.3L8 3.3v9.4L4.8 10H2.5z" />
+      <path d="M10.4 6a2.8 2.8 0 010 4M12.2 4.2a5.3 5.3 0 010 7.6" />
+    </>
+  ),
   // 复制：两张叠放的卡片
   copy: (
     <>

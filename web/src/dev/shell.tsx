@@ -1,8 +1,11 @@
 // 外壳调试页：http://127.0.0.1:5173/?dev=shell
 import { useMemo, useState } from 'react';
-import type { CachePoint, ContextUsage, DeletedSession, SessionSummary, Turn, Workspace } from '@cosyee/shared';
+import { DEFAULT_AGENT_MODELS } from '@cosyee/shared';
+import type { AgentModelConfig, CachePoint, ContextUsage, DelegateModelList, DeletedSession, SessionSummary, SkillMode, Turn, Workspace } from '@cosyee/shared';
 import { AppShell } from '../ui/layout/AppShell';
+import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
 import { Sidebar } from '../ui/sidebar/Sidebar';
+import { SessionDetailContext } from '../ui/sidebar/sessionDetail';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
@@ -13,6 +16,7 @@ import {
   mockDeleted,
   mockNonGitPaths,
   mockPinned,
+  mockSessionDetail,
   mockSessionsFor,
   mockWorkspaces,
 } from '../mock/shell';
@@ -50,7 +54,42 @@ const devFiles: FilesApi = {
   terminal: (path) => console.info('[dev] terminal', path),
 };
 
+const devDelegate: DelegateModelList = {
+  models: [
+    { value: 'gemini-4-neon', displayName: 'Gemini 4 Neon', efforts: ['low', 'medium', 'high'] },
+    { value: 'gemini-4-pro-preview', displayName: 'Gemini 4 Pro (Preview)', efforts: ['low', 'high'] },
+    { value: 'orch', displayName: 'Orchestrator (Beta)', efforts: [] },
+  ],
+  current: { model: 'gemini-4-neon', effort: 'high' },
+  at: 0,
+};
+
+/** ?dev=shell&stress=1：长名字、大数字，检查上下文栏在最窄时会不会溢出 */
+const stress = new URLSearchParams(location.search).has('stress');
+const devUsage: ContextUsage = stress
+  ? {
+      ...mockContextUsage,
+      nativeAgents: true,
+      usedTokens: 1_845_200, totalTokens: 2_000_000, percent: 92.26, untilAutocompact: 1_098_400,
+      toolTokens: [{ name: 'Bash', tokens: 12_300 }, { name: 'Read', tokens: 1_200 }],
+      disabledTools: ['WebSearch'],
+      skills: [
+        ...(mockContextUsage.skills ?? []),
+        { name: 'some-plugin:a-really-long-skill-name-that-goes-on', mode: 'on', tokens: 12_340, source: 'plugin' },
+      ],
+      mcpServers: [
+        ...(mockContextUsage.mcpServers ?? []),
+        { name: 'a-very-long-mcp-server-name-for-testing', status: 'failed', tokens: 123_000, tools: [{ name: 'do_something_extremely_long_and_verbose', tokens: 12_000 }] },
+      ],
+    }
+  : { ...mockContextUsage, nativeAgents: true };
+const devTools = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'mcp__cosyee__delegate'];
+
 export default function ShellDev() {
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [drawer, setDrawer] = useState<'left' | 'right' | null>(null);
+  const [ctxCollapsed, setCtxCollapsed] = useState(false);
+  const [agentModels, setAgentModels] = useState<AgentModelConfig>(DEFAULT_AGENT_MODELS);
   const [workspaces, setWorkspaces] = useState<Workspace[]>(mockWorkspaces);
   const [currentWs, setCurrentWs] = useState<string>(mockWorkspaces[0].path);
   // 每个工作空间各自的会话，切换时保留改名结果
@@ -63,7 +102,7 @@ export default function ShellDev() {
   const [collapsed, setCollapsed] = useState(false);
   const [signedIn] = useState(true);
 
-  const [usage, setUsage] = useState<ContextUsage | null>(mockContextUsage);
+  const [usage, setUsage] = useState<ContextUsage | null>(devUsage);
   const [loading, setLoading] = useState(false);
 
   const sessions = sessionsByWs[currentWs] ?? mockSessionsFor(currentWs);
@@ -147,10 +186,15 @@ export default function ShellDev() {
   const refresh = () => {
     setLoading(true);
     setTimeout(() => {
-      setUsage({ ...mockContextUsage, at: Date.now() });
+      setUsage((u) => ({ ...(u ?? devUsage), at: Date.now() }));
       setLoading(false);
     }, 800);
   };
+
+  const flip = (off: string[] | undefined, name: string, enabled: boolean) =>
+    enabled ? (off ?? []).filter((n) => n !== name) : [...(off ?? []), name];
+  const setSkillModes = (modes: Record<string, SkillMode>) =>
+    setUsage((u) => (u ? { ...u, skills: u.skills?.map((s) => (s.name in modes ? { ...s, mode: modes[s.name]! } : s)) } : u));
 
   const compact = () => {
     setUsage((u) =>
@@ -169,10 +213,15 @@ export default function ShellDev() {
   };
 
   return (
+    <SessionDetailContext.Provider value={mockSessionDetail}>
     <FilesContext.Provider value={devFiles}>
     <AppShell
-      sidebarCollapsed={collapsed}
-      onToggleSidebar={() => setCollapsed((v) => !v)}
+      narrow={narrow}
+      onDismiss={() => setDrawer(null)}
+      sidebarCollapsed={narrow ? drawer !== 'left' : collapsed}
+      onToggleSidebar={() => (narrow ? setDrawer('left') : setCollapsed((v) => !v))}
+      contextCollapsed={narrow ? drawer !== 'right' : ctxCollapsed}
+      onToggleContext={() => (narrow ? setDrawer('right') : setCtxCollapsed((v) => !v))}
       sidebar={
         <Sidebar
           workspaces={workspaces}
@@ -182,7 +231,7 @@ export default function ShellDev() {
           currentSessionId={currentId}
           account={signedIn ? mockAccount : null}
           onNewSession={() => setCurrentId(null)}
-          onCollapse={() => setCollapsed(true)}
+          onCollapse={() => (narrow ? setDrawer(null) : setCollapsed(true))}
           onSelectSession={selectSession}
           onTogglePin={togglePin}
           onDeleteSession={deleteSession}
@@ -203,6 +252,7 @@ export default function ShellDev() {
           title={current ? current.title : null}
           cwd={currentWs}
           branch={mockNonGitPaths.includes(currentWs) ? null : 'main'}
+          session={current}
           onRename={rename}
         />
       }
@@ -240,11 +290,34 @@ export default function ShellDev() {
           onRefresh={refresh}
           onCompact={compact}
           onCompactWindow={(w) => setUsage((u) => (u ? { ...u, compactWindow: w } : u))}
+          onCollapse={() => (narrow ? setDrawer(null) : setCtxCollapsed(true))}
+          onSkillMode={(name, mode) => setSkillModes({ [name]: mode })}
+          onSkillModes={setSkillModes}
+          onSkillRemove={(name) => setUsage((u) => (u ? { ...u, skills: u.skills?.filter((s) => s.name !== name) } : u))}
+          onMcpToggle={(server, enabled) =>
+            setUsage((u) =>
+              u ? { ...u, mcpServers: u.mcpServers?.map((s) => (s.name === server ? { ...s, status: enabled ? 'connected' : 'disabled' } : s)) } : u,
+            )
+          }
+          tools={devTools}
+          onToolToggle={(name, enabled) => setUsage((u) => (u ? { ...u, disabledTools: flip(u.disabledTools, name, enabled) } : u))}
+          agents={['Explore', 'Plan', 'general-purpose', 'statusline-setup']}
+          onAgentToggle={(name, enabled) => setUsage((u) => (u ? { ...u, disabledAgents: flip(u.disabledAgents, name, enabled) } : u))}
+          toolStats={stress ? { counts: { Bash: 123_456, Read: 8_921 }, skills: { impeccable: 1_234 }, sessions: 88, at: 0 } : null}
           cache={devCache}
           turns={devTurns}
+          agentModels={{
+            config: agentModels,
+            onChange: setAgentModels,
+            delegate: devDelegate,
+            onLoadDelegate: () => undefined,
+            nativeAgents: usage?.nativeAgents,
+            onNativeAgents: (enabled) => setUsage((u) => (u ? { ...u, nativeAgents: enabled } : u)),
+          }}
         />
       }
     />
     </FilesContext.Provider>
+    </SessionDetailContext.Provider>
   );
 }

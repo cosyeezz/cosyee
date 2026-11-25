@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CachePoint, Turn } from '@cosyee/shared';
-import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentEffortFromHistory, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { isCosyeeTool, toolLabel } from './reducer/util';
 import { MAX_CACHE_POINTS, cachePointOf, pushCachePoint } from './reducer/cacheHit';
 import { cliCostOf } from './reducer/live';
 
@@ -304,6 +305,39 @@ describe('历史：手造条目', () => {
     expect(fromHistory([]).turns).toEqual([]);
     expect(fromHistory([null, 1, 'x', {}, { type: 'user' }, { type: 'assistant' }]).turns).toEqual([]);
   });
+  it('API 错误条目（isApiErrorMessage）将当前轮标记为 error 并保留原因，不混入答复；后续用户消息正常开新轮并 done', () => {
+    const errText = "You've hit your 5-hour limit · resets 9pm";
+    const errEntry = {
+      type: 'assistant',
+      isApiErrorMessage: true,
+      timestamp: '2026-11-16T10:00:05.000Z',
+      message: { id: 'm_err', role: 'assistant', content: [{ type: 'text', text: errText }] },
+    };
+    const failed = fromHistory([
+      { type: 'user', timestamp: '2026-11-16T10:00:00.000Z', sessionId: 'S', message: { role: 'user', content: '帮我改代码' } },
+      errEntry,
+    ]);
+    expect(failed.turns).toHaveLength(1);
+    expect(failed.turns[0].status).toBe('error');
+    expect(failed.turns[0].reason).toBe(errText);
+    expect(failed.turns[0].endedAt).toBe(Date.parse('2026-11-16T10:00:05.000Z'));
+    expect(failed.turns[0].answer).toBe('');
+    expect(failed.turns[0].steps).toEqual([]);
+
+    // 其后再有一条普通 user 消息 + assistant 回复：开新一轮且新一轮正常 done
+    const recovered = fromHistory([
+      { type: 'user', timestamp: '2026-11-16T10:00:00.000Z', sessionId: 'S', message: { role: 'user', content: '帮我改代码' } },
+      errEntry,
+      { type: 'user', timestamp: '2026-11-16T15:00:00.000Z', message: { role: 'user', content: '【自动重试】请继续' } },
+      { type: 'assistant', timestamp: '2026-11-16T15:00:02.000Z', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: '已继续完成' }] } },
+    ]);
+    expect(recovered.turns).toHaveLength(2);
+    expect(recovered.turns[0].status).toBe('error');
+    expect(recovered.turns[0].reason).toBe(errText);
+    expect(recovered.turns[1].userText).toBe('【自动重试】请继续');
+    expect(recovered.turns[1].status).toBe('done');
+    expect(recovered.turns[1].answer).toBe('已继续完成');
+  });
 });
 
 describe('子代理历史', () => {
@@ -380,6 +414,22 @@ describe('toolSummary', () => {
     expect(toolSummary('Grep', { pattern: 'foo' })).toBe('Grep: foo');
     expect(toolSummary('Agent', { description: '查一下', prompt: '...' })).toBe('Agent: 查一下');
     expect(toolSummary('WebFetch', { url: 'http://x' })).toBe('WebFetch: http://x');
+    expect(toolSummary('SendMessage', { to: 'worker', summary: '修测试', message: '去把测试修好' })).toBe('SendMessage: worker · 修测试');
+    expect(toolSummary('SendMessage', { to: 'worker', message: '继续' })).toBe('SendMessage: worker · 继续');
+    expect(toolSummary('SendMessage', { to: 'main', message: '' })).toBe('SendMessage: main');
+    expect(toolSummary('TaskStop', { task_id: 'a1b2' })).toBe('TaskStop: a1b2');
+    expect(toolSummary('TaskOutput', { task_id: 'a1b2', block: true })).toBe('TaskOutput: a1b2');
+    expect(toolSummary('mcp__cosyee__delegate', { description: '重构登录页', prompt: '把 …' })).toBe('delegate: 重构登录页');
+    expect(toolSummary('mcp__cosyee__delegate_status', {})).toBe('delegate_status');
+    expect(toolSummary('SendToProject',{ project_name: 'Cosyee', attach_git_remote: true })).toBe('SendToProject: Cosyee');
+  });
+  it('isCosyeeTool / toolLabel 去掉 mcp__cosyee__ 前缀，外部 MCP 与内置工具原样', () => {
+    expect(isCosyeeTool('mcp__cosyee__delegate')).toBe(true);
+    expect(isCosyeeTool('mcp__github__search')).toBe(false);
+    expect(toolLabel('mcp__cosyee__delegate')).toBe('delegate');
+    expect(toolLabel('mcp__cosyee__delegate_send')).toBe('delegate_send');
+    expect(toolLabel('mcp__github__search')).toBe('mcp__github__search');
+    expect(toolLabel('Bash')).toBe('Bash');
   });
   it('多行取首行；过长截断；无参数只有名字；未知工具兜底', () => {
     expect(toolSummary('Bash', { command: 'echo a\necho b' })).toBe('Bash: echo a …');
@@ -688,4 +738,141 @@ describe('applyEvents（批量共享草稿）', () => {
       expect(JSON.stringify(batched)).toBe(snap);
     });
   }
+});
+
+describe('delegate 委派按子代理展示', () => {
+  const D = 'toolu_D';
+  const input = { description: '查一下依赖', prompt: '列出 package.json 的依赖' };
+  const callMsg = { type: 'assistant', parent_tool_use_id: null, message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: D, name: 'mcp__cosyee__delegate', input }] } };
+  const sub = (event: unknown) => ({ type: 'stream_event', parent_tool_use_id: D, api_message_id: `agy-${D}-1`, event });
+  const result = (text: string, isError = false) => ({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: D, content: [{ type: 'text', text }], is_error: isError }] } });
+
+  it('实时：建子代理（标题 / prompt / 类型），合成事件进子代理，tool_result 结束', () => {
+    let s = applyEvents(initState(), [user('让委派看看'), callMsg], 2_000_000);
+    const run0 = s.turns[0].subagents[0]!;
+    expect(run0).toMatchObject({ toolUseId: D, title: '查一下依赖', delegate: true, subagentType: 'general-purpose', status: 'running' });
+    expect(run0.turn.userText).toBe('列出 package.json 的依赖');
+    expect(s.turns[0].steps.some((x) => x.kind === 'tool' && x.id === D)).toBe(false);
+    s = applyEvents(s, [
+      sub({ type: 'message_start', message: { id: `agy-${D}-1`, model: 'gemini-3-pro' } }),
+      sub({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      sub({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '有 3 个依赖' } }),
+      sub({ type: 'content_block_stop', index: 0 }),
+      { type: 'assistant', parent_tool_use_id: D, message: { id: `agy-${D}-2`, role: 'assistant', model: 'gemini-3-pro', content: [{ type: 'tool_use', id: `agy_${D}_2`, name: 'view_file', input: { path: 'package.json' } }] } },
+      { type: 'user', parent_tool_use_id: D, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `agy_${D}_2`, content: '{}', is_error: false }] } },
+    ], 2_000_000);
+    const run1 = s.turns[0].subagents[0]!;
+    expect(run1.model).toBe('gemini-3-pro');
+    const tool = run1.turn.steps.find((x) => x.kind === 'tool');
+    expect(tool).toMatchObject({ name: 'view_file', result: { content: '{}', isError: false } });
+    expect(run1.turn.steps.some((x) => x.kind === 'text' && x.text === '有 3 个依赖')).toBe(true);
+    s = applyEvent(s, result('有 3 个依赖\n\n[conversation_id: conv-1234-abcd]'), 2_000_000);
+    const run2 = s.turns[0].subagents[0]!;
+    expect(run2.status).toBe('done');
+    expect(run2.taskId).toBeUndefined();
+    // 已有过程：不拿结果覆盖
+    expect(run2.turn.answer).not.toContain('conversation_id');
+  });
+
+  it('cosyee_agent_params：记下实际模型 / 强度；找不到的调用忽略', () => {
+    const ev = { type: 'system', subtype: 'cosyee_agent_params', tool_use_id: D, model: 'gemini-4-neon', effort: 'high' };
+    const s = applyEvents(initState(), [user('x'), callMsg, { ...ev, tool_use_id: 'other', model: 'no' }, ev], 2_000_000);
+    expect(s.turns[0].subagents[0]).toMatchObject({ model: 'gemini-4-neon', effort: 'high' });
+    expect(subagentEffortFromHistory([{ type: 'user' }, { type: 'assistant', effort: 'low', message: {} }])).toBe('low');
+    expect(subagentEffortFromHistory([])).toBeUndefined();
+  });
+
+  it('没收到过程（历史 / 未登录报错）：结果当回答，去掉 conversation_id 页脚', () => {
+    const h = fromHistory([
+      { type: 'user', timestamp: '2026-11-16T10:00:00.000Z', sessionId: 'S', message: { role: 'user', content: '让 agy 看看' } },
+      { ...callMsg, timestamp: '2026-11-16T10:00:01.000Z' },
+      { ...result('有 3 个依赖\n\n[conversation_id: conv-1234-abcd]'), timestamp: '2026-11-16T10:00:09.000Z' },
+    ]);
+    const run = h.turns[0].subagents[0]!;
+    expect(run).toMatchObject({ title: '查一下依赖', delegate: true, subagentType: 'general-purpose', status: 'done' });
+    expect(run.turn.answer).toBe('有 3 个依赖');
+    let s = applyEvents(initState(), [user('x'), callMsg, result('委派后端未登录：请先在终端运行 agy 完成登录', true)], 2_000_000);
+    const bad = s.turns[0].subagents[0]!;
+    expect(bad.status).toBe('error');
+    expect(bad.turn.answer).toContain('未登录');
+  });
+
+  it('delegate 的 agent 字段决定 subagentType，缺省为 general-purpose；流式输入也更新', () => {
+    const withAgent = {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { id: 'm2', role: 'assistant', content: [{ type: 'tool_use', id: 'D_exp', name: 'mcp__cosyee__delegate', input: { description: '搜代码', prompt: '找入口', agent: 'Explore' } }] },
+    };
+    const s1 = applyEvents(initState(), [user('x'), withAgent], 2_000_000);
+    expect(s1.turns[0].subagents[0]).toMatchObject({ toolUseId: 'D_exp', delegate: true, subagentType: 'Explore' });
+
+    // 缺省 agent → general-purpose
+    const s2 = applyEvents(initState(), [user('x'), callMsg], 2_000_000);
+    expect(s2.turns[0].subagents[0]).toMatchObject({ toolUseId: D, delegate: true, subagentType: 'general-purpose' });
+
+    // 流式输入：content_block_start 时 input 为空，JSON 到达后 agent 更新 subagentType
+    const s3 = applyEvents(initState(), [
+      user('x'),
+      { type: 'stream_event', event: { type: 'message_start', message: { id: 'm3' } } },
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'D_str', name: 'mcp__cosyee__delegate', input: {} } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"description":"流式","prompt":"p","agent":"Explore"}' } } },
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+    ], 2_000_000);
+    expect(s3.turns[0].subagents[0]).toMatchObject({ toolUseId: 'D_str', delegate: true, subagentType: 'Explore' });
+  });
+
+  it('旧历史里带 model / effort 且没有 agent 的 delegate 仍识别为委派运行', () => {
+    const oldCall = {
+      type: 'assistant',
+      timestamp: '2026-11-16T10:00:01.000Z',
+      parent_tool_use_id: null,
+      message: {
+        id: 'm_old',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'D_old', name: 'mcp__cosyee__delegate', input: { description: '旧委派', prompt: '做点事', model: 'gemini-3-pro', effort: 'high' } }],
+      },
+    };
+    const oldRes = {
+      type: 'user',
+      timestamp: '2026-11-16T10:00:09.000Z',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'D_old', content: '完成了', is_error: false }] },
+    };
+    const h = fromHistory([
+      { type: 'user', timestamp: '2026-11-16T10:00:00.000Z', sessionId: 'S', message: { role: 'user', content: 'hi' } },
+      oldCall,
+      oldRes,
+    ]);
+    expect(h.turns[0].subagents[0]).toMatchObject({
+      toolUseId: 'D_old',
+      title: '旧委派',
+      delegate: true,
+      subagentType: 'general-purpose',
+      model: 'gemini-3-pro',
+      effort: 'high',
+      status: 'done',
+    });
+  });
+
+  it('原生 Agent（subagent_type = Explore）不是委派运行', () => {
+    const nativeCall = {
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { id: 'm_nat', role: 'assistant', content: [{ type: 'tool_use', id: 'A_exp', name: 'Agent', input: { description: '原生探索', prompt: '找文件', subagent_type: 'Explore' } }] },
+    };
+    const s = applyEvents(initState(), [user('x'), nativeCall], 2_000_000);
+    const run = s.turns[0].subagents[0]!;
+    expect(run).toMatchObject({ toolUseId: 'A_exp', title: '原生探索', subagentType: 'Explore' });
+    expect(run.delegate).toBeUndefined();
+  });
+
+  it('其它 mcp__cosyee__ 工具（含 delegate_agents）仍是普通工具步骤', () => {
+    const s = applyEvents(initState(), [user('x'), { ...callMsg, message: { ...callMsg.message, content: [
+      { type: 'tool_use', id: 'T2', name: 'mcp__cosyee__other', input: {} },
+      { type: 'tool_use', id: 'T3', name: 'mcp__cosyee__delegate_agents', input: { query: 'Explore' } },
+    ] } }], 2_000_000);
+    expect(s.turns[0].subagents).toHaveLength(0);
+    expect(s.turns[0].steps.some((x) => x.kind === 'tool' && x.id === 'T2' && x.summary === 'other')).toBe(true);
+    expect(s.turns[0].steps.some((x) => x.kind === 'tool' && x.id === 'T3' && x.summary === 'delegate_agents: Explore')).toBe(true);
+  });
 });

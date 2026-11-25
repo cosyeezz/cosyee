@@ -2,8 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { SkillLoad } from '@cosyee/shared';
-import { SkillPanel } from './SkillPanel';
+import type { SkillLoad, Turn } from '@cosyee/shared';
+import { SessionDock } from './SessionDock';
 import { FlowMetaContext } from './flowContext';
 import { FilesContext } from '../files/FileContext';
 
@@ -18,6 +18,18 @@ afterEach(() => {
 });
 
 const load = (p: Partial<SkillLoad> & { id: string; name: string }): SkillLoad => ({ source: 'model', status: 'loaded', ...p });
+const mkTurn = (skills: SkillLoad[]): Turn => ({
+  id: 't1',
+  userText: 'hi',
+  attachments: [],
+  status: 'running',
+  statusText: '',
+  steps: [],
+  answer: '',
+  subagents: [],
+  skills,
+  startedAt: 1,
+});
 
 async function mount(skills: SkillLoad[], loadSkill = vi.fn()) {
   host = document.createElement('div');
@@ -27,7 +39,7 @@ async function mount(skills: SkillLoad[], loadSkill = vi.fn()) {
     root!.render(
       <FilesContext.Provider value={{ cwd: '/proj', open: () => {} }}>
         <FlowMetaContext.Provider value={{ mcpServers: [], loadSkill }}>
-          <SkillPanel skills={skills} />
+          <SessionDock turns={[mkTurn(skills)]} sessionKey="s1" />
         </FlowMetaContext.Provider>
       </FilesContext.Provider>,
     );
@@ -37,10 +49,10 @@ async function mount(skills: SkillLoad[], loadSkill = vi.fn()) {
 const rows = () => [...host!.querySelectorAll<HTMLButtonElement>('.cz-flow__pitem-row')];
 const click = async (el: Element) => act(async () => void el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
-describe('SkillPanel', () => {
+describe('SkillList（经 SessionDock 展示）', () => {
   it('同名合并为 ×N，头部按不同名字计数', async () => {
     await mount([load({ id: '1', name: 'a' }), load({ id: '2', name: 'b' }), load({ id: '3', name: 'a' })]);
-    expect(host!.textContent).toContain('已加载 2 个技能');
+    expect(host!.textContent).toContain('2 个技能');
     expect(rows()).toHaveLength(2);
     expect(rows()[0].textContent).toContain('×2');
     expect(rows()[1].textContent).not.toContain('×');
@@ -55,6 +67,7 @@ describe('SkillPanel', () => {
   it('加载中：头部流光，图标不静止', async () => {
     await mount([load({ id: '1', name: 'a', status: 'loading' })]);
     expect(host!.querySelector('.cz-st-compacting')?.textContent).toContain('正在加载技能');
+    expect(host!.querySelector('.cz-ss-skill')?.classList.contains('is-still')).toBe(false);
     expect(host!.querySelector('.cz-st-tool')).not.toBeNull();
   });
 

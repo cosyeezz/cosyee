@@ -104,7 +104,7 @@ export function removeDiskSkill(name: string, configDir: string, cwd: string | n
 }
 
 /** 拆出 SKILL.md 的 frontmatter（--- 包起来的头）与正文；没有 frontmatter 时 head 为空 */
-function splitFrontmatter(text: string): { head: string; body: string } {
+export function splitFrontmatter(text: string): { head: string; body: string } {
   const src = text.replace(/^﻿/, '');
   const m = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(src);
   if (!m) return { head: '', body: src };
@@ -112,7 +112,7 @@ function splitFrontmatter(text: string): { head: string; body: string } {
 }
 
 /** frontmatter 里的 description：支持单行（可带引号）与 `>` / `|` 多行块 */
-function frontmatterDescription(head: string): string | undefined {
+export function frontmatterDescription(head: string): string | undefined {
   const lines = head.split(/\r?\n/);
   const i = lines.findIndex((l) => /^description\s*:/.test(l));
   if (i < 0) return undefined;
@@ -150,4 +150,66 @@ export function readSkillContent(
   const { head, body } = splitFrontmatter(text);
   const description = frontmatterDescription(head);
   return { name, ...(description ? { description } : {}), body, dir: hit.dir };
+}
+
+/** 读一个 .md 文件 frontmatter 里的 description（SKILL.md / 智能体定义通用）；读不到为 undefined */
+export function fileDescription(file: string): string | undefined {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > 512 * 1024) return undefined;
+    return frontmatterDescription(splitFrontmatter(fs.readFileSync(file, 'utf8')).head);
+  } catch {
+    return undefined;
+  }
+}
+
+/** 某个 skill 目录下 SKILL.md 的 description */
+export const skillDescription = (dir: string): string | undefined => fileDescription(path.join(dir, 'SKILL.md'));
+
+/** 智能体定义：frontmatter 的 name（没有就用文件名）与 description */
+function scanAgentsDir(root: string, prefix: string, out: Map<string, string>): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (!e.name.endsWith('.md') || e.name.startsWith('.')) continue;
+    const file = path.join(root, e.name);
+    let head: string;
+    try {
+      const st = fs.statSync(file);
+      if (!st.isFile() || st.size > 512 * 1024) continue;
+      head = splitFrontmatter(fs.readFileSync(file, 'utf8')).head;
+    } catch {
+      continue;
+    }
+    const desc = frontmatterDescription(head);
+    if (!desc) continue;
+    const m = /^name\s*:\s*(.+)$/m.exec(head);
+    const raw = (m?.[1] ?? e.name.slice(0, -3)).trim().replace(/^(["'])(.*)\1$/, '$2');
+    const name = prefix + raw;
+    if (raw && !out.has(name)) out.set(name, desc);
+  }
+}
+
+/**
+ * 磁盘上自定义智能体的描述（名字 → description）：项目级（<cwd>/.claude/agents）优先于用户级，再加已安装插件里的。
+ * 已关闭的智能体不在 init 里，靠它也能显示说明。
+ */
+export function listDiskAgentDescriptions(configDir: string, cwd: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (cwd) scanAgentsDir(path.join(cwd, '.claude', 'agents'), '', out);
+  scanAgentsDir(path.join(configDir, 'agents'), '', out);
+  let json: { plugins?: Record<string, { installPath?: unknown }[]> } = {};
+  try {
+    json = JSON.parse(fs.readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'));
+  } catch { /* 没装插件 */ }
+  for (const [key, installs] of Object.entries(json.plugins ?? {})) {
+    const plugin = key.split('@')[0] ?? '';
+    if (!plugin || !Array.isArray(installs)) continue;
+    for (const inst of installs) if (typeof inst?.installPath === 'string') scanAgentsDir(path.join(inst.installPath, 'agents'), `${plugin}:`, out);
+  }
+  return out;
 }

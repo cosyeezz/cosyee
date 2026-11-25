@@ -93,7 +93,7 @@
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
-  main { width: 100%; max-width: 580px; }
+  main { width: 100%; max-width: 580px; min-width: 0; }
 
   /* ───── 头部 ───── */
   .head { display: flex; align-items: center; gap: 16px; margin-bottom: 32px; }
@@ -294,6 +294,8 @@
 
   /* ───── 本机服务 ───── */
   #local .card { padding: 18px 18px 6px; }
+  #local .card + .card { margin-top: 12px; }
+  #local .card.sub-card { padding: 18px; }
   .local-head { display: flex; align-items: center; gap: 12px; }
   .local-head .ico {
     flex: none; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px;
@@ -311,6 +313,7 @@
   .pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
   .pill.ok i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
   .pill.bad { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .pill.info { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
 
   .checks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 16px 0 16px;
     background: var(--border); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
@@ -328,15 +331,53 @@
   .local-addr a { color: var(--accent); text-decoration: none; }
   .local-addr a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .divider { height: 1px; background: var(--border); margin: 14px 0 2px; }
-  #local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; margin: 0 0 12px; }
-  #local-msg:empty { display: none; }
-  #local-msg.error { color: var(--danger); }
-  #local-log {
+  #local-msg, .local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; margin: 0 0 12px; }
+  #local-msg:empty, .local-msg:empty { display: none; }
+  #local-msg.error, .local-msg.error { color: var(--danger); }
+  #local-log, .local-log {
     display: none; margin: 0 0 14px; max-height: 200px; overflow: auto; padding: 10px 12px;
     background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: var(--r-md);
     font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap;
   }
-  #local-log.show { display: block; }
+  #local-log.show, .local-log.show { display: block; }
+  .sub-card .local-msg { margin: 12px 0 0; }
+  .sub-card .local-log { margin: 12px 0 0; }
+  .kiro-update {
+    margin: 0 0 14px; padding: 8px 11px; border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+    font-size: 12px; line-height: 1.5; color: var(--text-2);
+    word-break: break-word;
+  }
+  .kiro-update code { margin-right: 6px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; }
+  .sub-hint:empty { display: none; }
+  .sub-hint.error { color: var(--danger); }
+  .sub-hint.warn { color: var(--warn); }
+  .sub-confirm {
+    margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--warn) 10%, var(--bg-elev));
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border));
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .sub-confirm p { margin: 0; font-size: 12.5px; color: var(--text); flex: 1 1 200px; min-width: 0; }
+  .admin-picker {
+    margin-top: 10px; border: 1px solid var(--border); border-radius: var(--r-md);
+    background: var(--bg-elev); overflow: hidden; display: flex; flex-direction: column;
+  }
+  .admin-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; padding: 9px 12px; border: 0; border-top: 1px solid var(--border);
+    background: none; color: var(--text); font: 13px/1.4 var(--font-sans); text-align: left; cursor: pointer;
+    transition: background-color .15s;
+  }
+  .admin-item:first-child { border-top: 0; }
+  .admin-item:hover:not(:disabled) { background: var(--bg-hover); }
+  .admin-item:disabled { opacity: .45; cursor: default; }
+  .admin-item .a-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .admin-item .a-state { flex: none; font-size: 11.5px; color: var(--text-3); }
+  .admin-item .a-state.ok { color: var(--ok); }
+  .admin-item .a-state.bad { color: var(--warn); }
 
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 12px; line-height: 2; }
   footer p { margin: 0; }
@@ -347,6 +388,7 @@
 
   @media (max-width: 520px) {
     .checks { grid-template-columns: 1fr; }
+    .local-head { flex-wrap: wrap; }
     .head { margin-bottom: 24px; }
     .adder-open kbd { display: none; }
   }
@@ -374,6 +416,9 @@
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4.5v11M7 11l5 5 5-5M5 19.5h14"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M13.5 5.5h5v5M18.5 5.5l-8 8M16.5 13.5v4a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h4"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 2 5.3M20 4.5V11h-6.5"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 4 8.5 4.5L12 13 3.5 8.5 12 4ZM3.5 12.5 12 17l8.5-4.5M3.5 16.5 12 21l8.5-4.5"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m8 10 3 2.5L8 15M12.5 15H16"/></symbol>
 </svg>
 <main>
   <header class="head enter" style="--i:0">
@@ -444,6 +489,66 @@
       <label class="toggle"><span>允许手机和其它电脑通过 Tailscale 连接（启动时生效）</span><input type="checkbox" role="switch" id="l-tailnet"></label>
       <div id="local-msg"></div>
       <pre id="local-log"></pre>
+    </div>
+    <div class="card spot sub-card" id="kiro-card">
+      <span class="beam" aria-hidden="true"></span>
+      <div class="local-head">
+        <span class="ico"><svg class="i"><use href="#i-layers"/></svg></span>
+        <div class="t"><b>kiro.rs 服务</b><small>用 Kiro 订阅运行 Claude Code。原样编译上游 hank9999/kiro.rs，跟随它更新。</small></div>
+        <span class="pill" id="k-pill"><i></i><span>检查中</span></span>
+      </div>
+      <dl class="checks">
+        <div><dt>编译工具</dt><dd id="k-tools" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+        <div><dt>引擎</dt><dd id="k-engine" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+        <div><dt>账号代理</dt><dd id="k-proxy" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+      </dl>
+      <p class="kiro-update" id="k-update" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn primary" id="k-start"><svg class="i"><use href="#i-play"/></svg>启动</button>
+        <button type="button" class="btn danger" id="k-stop" hidden><svg class="i"><use href="#i-stop"/></svg>停止</button>
+        <button type="button" class="btn" id="k-restart" hidden><svg class="i"><use href="#i-refresh"/></svg>重启</button>
+        <button type="button" class="btn" id="k-admin" aria-expanded="false" aria-controls="k-admin-list"><svg class="i"><use href="#i-open"/></svg>管理页面</button>
+        <button type="button" class="btn ghost" id="k-engine-btn"><svg class="i"><use href="#i-down"/></svg><span>安装引擎</span></button>
+      </div>
+      <div class="admin-picker" id="k-admin-list" hidden></div>
+      <div class="sub-confirm" id="k-confirm" role="alert" hidden>
+        <p id="k-confirm-text"></p>
+        <div class="actions">
+          <button type="button" class="btn danger" id="k-confirm-ok">仍然停止</button>
+          <button type="button" class="btn ghost" id="k-confirm-cancel">取消</button>
+        </div>
+      </div>
+      <div class="sub-hint" id="k-hint"></div>
+      <div class="local-msg" id="k-msg" role="status" aria-live="polite"></div>
+      <pre class="local-log" id="k-log"></pre>
+    </div>
+    <div class="card spot sub-card" id="agy-card">
+      <span class="beam" aria-hidden="true"></span>
+      <div class="local-head">
+        <span class="ico"><svg class="i"><use href="#i-terminal"/></svg></span>
+        <div class="t"><b>Antigravity CLI（agy）</b><small>委派任务用的 Antigravity CLI。</small></div>
+        <span class="pill" id="a-pill"><i></i><span>检查中</span></span>
+      </div>
+      <dl class="checks">
+        <div><dt>版本</dt><dd id="a-ver" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+        <div><dt>最新版</dt><dd id="a-latest" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+        <div><dt>常驻进程</dt><dd id="a-proc" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
+      </dl>
+      <div class="actions">
+        <button type="button" class="btn primary" id="a-update-btn"><svg class="i"><use href="#i-down"/></svg><span>安装</span></button>
+        <button type="button" class="btn ghost" id="a-check-btn"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
+        <button type="button" class="btn" id="a-restart-btn"><svg class="i"><use href="#i-refresh"/></svg>重启进程</button>
+      </div>
+      <div class="sub-confirm" id="a-confirm" role="alert" hidden>
+        <p id="a-confirm-text"></p>
+        <div class="actions">
+          <button type="button" class="btn danger" id="a-confirm-ok">仍然重启</button>
+          <button type="button" class="btn ghost" id="a-confirm-cancel">取消</button>
+        </div>
+      </div>
+      <div class="sub-hint" id="a-hint"></div>
+      <div class="local-msg" id="a-msg" role="status" aria-live="polite"></div>
+      <pre class="local-log" id="a-log"></pre>
     </div>
   </section>
 
@@ -717,6 +822,10 @@
     try { lst = await invoke('local_status'); } catch (e) { return; }
     $('local').hidden = false;
     lrender();
+    subCards.forEach(function (c) {
+      if (!lst.running) c.setOffline();
+      else if (!c.st && !c.inFlight && !c.busy) c.refresh();
+    });
   }
   function errText(e) { return typeof e === 'string' ? e : (e && e.message) || String(e); }
   async function lrun(label, fn) {
@@ -757,8 +866,592 @@
       box.scrollTop = box.scrollHeight;
     }
   }
+  // ───── 共用远程服务卡片控制器（kiro.rs 与 Antigravity CLI 共用请求、日志轮询、离线/404/409 渲染） ─────
+  function fmtDate(ms) {
+    if (!ms || typeof ms !== 'number') return '';
+    var d = new Date(ms);
+    if (isNaN(d.getTime())) return '';
+    var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function apiErrInfo(e) {
+    if (e && typeof e === 'object' && typeof e.kind === 'string') return e;
+    return { kind: 'other', error: errText(e) };
+  }
+  function createServiceCard(cfg) {
+    var logTimer = null, logFrom = 0, logInFlight = false;
+    var card = {
+      st: null,
+      err: null,
+      busy: false,
+      inFlight: false,
+      confirm: null,
+      msg: function (text, isError) {
+        var m = $(cfg.msgId);
+        m.textContent = text || '';
+        m.className = 'local-msg' + (isError ? ' error' : '');
+      },
+      pollLogOnce: async function () {
+        if (logInFlight) return;
+        logInFlight = true;
+        try {
+          var res = await invoke(cfg.logCmd, { from: logFrom });
+          // 服务端开始了新的任务、日志重新编号：从头取
+          if (res && typeof res.next === 'number' && res.next < logFrom) {
+            logFrom = 0;
+            $(cfg.logId).textContent = '';
+            return;
+          }
+          if (res && Array.isArray(res.lines) && res.lines.length) {
+            var box = $(cfg.logId);
+            box.classList.add('show');
+            box.textContent += res.lines.join('\n') + '\n';
+            box.scrollTop = box.scrollHeight;
+            logFrom = typeof res.next === 'number' ? res.next : logFrom + res.lines.length;
+          } else if (res && typeof res.next === 'number') {
+            logFrom = res.next;
+          }
+        } catch (e) { /* 忽略增量轮询瞬时错误 */ }
+        finally { logInFlight = false; }
+      },
+      startLog: function (reset) {
+        var box = $(cfg.logId);
+        if (reset) { box.textContent = ''; logFrom = 0; }
+        box.classList.add('show');
+        if (!logTimer) {
+          card.pollLogOnce();
+          logTimer = setInterval(card.pollLogOnce, 500);
+        }
+      },
+      stopLog: function (flush) {
+        if (logTimer) { clearInterval(logTimer); logTimer = null; }
+        if (flush) card.pollLogOnce();
+      },
+      setOffline: function () {
+        card.st = null;
+        card.err = { kind: 'offline', error: '服务端未运行' };
+        card.confirm = null;
+        card.stopLog(false);
+        if (cfg.onReset) cfg.onReset();
+        card.render();
+      },
+      applyStatus: function (st) {
+        card.st = st;
+        card.err = null;
+        if (cfg.isJobRunning(st)) {
+          if (!logTimer) card.startLog(false);
+        } else if (logTimer) {
+          card.stopLog(true);
+        }
+        if (cfg.onStatus) cfg.onStatus(card, st);
+        card.render();
+      },
+      refresh: async function () {
+        if (card.inFlight) return;
+        card.inFlight = true;
+        try {
+          card.applyStatus(await invoke(cfg.statusCmd));
+        } catch (e) {
+          var info = apiErrInfo(e);
+          if (info.kind === 'offline') card.setOffline();
+          else {
+            card.err = info;
+            if (info.kind === 'unsupported') {
+              card.st = null;
+              card.confirm = null;
+              card.stopLog(false);
+              if (cfg.onReset) cfg.onReset();
+            }
+            card.render();
+          }
+        } finally {
+          card.inFlight = false;
+        }
+      },
+      renderUnavailable: function () {
+        var offline = card.err && card.err.kind === 'offline';
+        var unsupported = card.err && card.err.kind === 'unsupported';
+        if (card.st && !offline && !unsupported) return false;
+        cfg.checkIds.forEach(function (id) { setCheck(id, '…', 'wait'); });
+        var pill = $(cfg.pillId);
+        pill.className = 'pill' + (unsupported || (card.err && !offline) ? ' bad' : '');
+        pill.querySelector('span').textContent = offline ? '服务端未运行' : unsupported ? '需更新服务端' : card.err ? '读取失败' : '检查中';
+        $(cfg.cardId).classList.remove('busy');
+        $(cfg.confirmIds.box).hidden = true;
+        var hint = $(cfg.hintId);
+        if (offline) {
+          hint.className = 'sub-hint';
+          hint.textContent = '服务端未运行，请先启动上方的 Cosyee 服务端。';
+        } else if (unsupported) {
+          hint.className = 'sub-hint warn';
+          hint.textContent = cfg.unsupportedText;
+        } else if (card.err) {
+          hint.className = 'sub-hint error';
+          hint.textContent = card.err.error || '无法读取状态';
+        } else {
+          hint.className = 'sub-hint';
+          hint.textContent = '';
+        }
+        cfg.renderOfflineControls();
+        return true;
+      },
+      renderConfirm: function (busy) {
+        var ids = cfg.confirmIds;
+        if (!card.confirm) { $(ids.box).hidden = true; return; }
+        $(ids.text).textContent = card.confirm.text;
+        $(ids.ok).textContent = card.confirm.okLabel;
+        $(ids.ok).disabled = busy;
+        $(ids.cancel).disabled = busy;
+        $(ids.box).hidden = false;
+      },
+      render: function () {
+        if (!card.renderUnavailable()) cfg.renderOnline(card);
+      },
+      runAction: async function (label, fn, opts) {
+        opts = opts || {};
+        card.busy = true;
+        if (opts.clearConfirm) card.confirm = null;
+        card.render();
+        card.msg(opts.startMsg || (label + '中…'));
+        if (opts.withLog) card.startLog(true);
+        try {
+          var res = await fn();
+          if (opts.clearConfirm !== false) card.confirm = null;
+          if (opts.onResult) opts.onResult(card, res);
+          else {
+            card.msg(opts.doneMsg || '');
+            if (res && typeof res === 'object') card.applyStatus(res);
+          }
+        } catch (e) {
+          var info = apiErrInfo(e);
+          if (opts.withLog) card.stopLog(false);
+          if (opts.onConflict && info.kind === 'conflict' && typeof info.running === 'number' && info.running > 0) {
+            card.confirm = opts.onConflict(info.running);
+            card.msg('');
+            card.render();
+          } else {
+            if (info.kind === 'offline') card.setOffline();
+            card.msg(label + '失败：' + (info.error || errText(e)), true);
+          }
+        } finally {
+          card.busy = false;
+          card.render();
+        }
+      },
+    };
+    return card;
+  }
+
+  // ───── kiro.rs 服务 ─────
+  var kEngineMode = 'build';
+  var kAdminOpen = false;
+  var PROXY_LABELS = { ready: '运行中', starting: '启动中', failed: '失败', stopped: '已停止' };
+
+  var kiroCard = createServiceCard({
+    cardId: 'kiro-card',
+    pillId: 'k-pill',
+    checkIds: ['k-tools', 'k-engine', 'k-proxy'],
+    hintId: 'k-hint',
+    msgId: 'k-msg',
+    logId: 'k-log',
+    confirmIds: { box: 'k-confirm', text: 'k-confirm-text', ok: 'k-confirm-ok', cancel: 'k-confirm-cancel' },
+    statusCmd: 'kiro_status',
+    logCmd: 'kiro_log',
+    unsupportedText: '当前服务端版本不支持 kiro.rs 服务管理，请先更新上方的服务端。',
+    isJobRunning: function (st) { return !!(st && st.engine && st.engine.build && st.engine.build.state === 'running'); },
+    onReset: function () { kAdminOpen = false; },
+    onStatus: function (c, st) {
+      if (c.confirm && (!st || !st.service || st.service.running === 0)) c.confirm = null;
+      var items = st && st.service && Array.isArray(st.service.items) ? st.service.items : [];
+      if (items.length <= 1 || !st.engine || !st.engine.adminUi || st.service.enabled === false) kAdminOpen = false;
+    },
+    renderOfflineControls: function () {
+      $('k-update').hidden = true;
+      $('k-start').hidden = false;
+      $('k-start').className = 'btn';
+      $('k-start').disabled = true;
+      $('k-stop').hidden = true;
+      $('k-restart').hidden = true;
+      $('k-admin').disabled = true;
+      $('k-admin').setAttribute('aria-expanded', 'false');
+      $('k-admin-list').hidden = true;
+      $('k-engine-btn').className = 'btn ghost';
+      $('k-engine-btn').querySelector('span').textContent = '安装引擎';
+      $('k-engine-btn').querySelector('use').setAttribute('href', '#i-down');
+      $('k-engine-btn').disabled = true;
+    },
+    renderOnline: function (c) {
+      var st = c.st;
+      var eng = st.engine || {};
+      var svc = st.service || {};
+      var missing = Array.isArray(eng.missingTools) ? eng.missingTools : [];
+      var build = eng.build || { state: 'idle', step: null, error: null };
+      var building = build.state === 'running';
+      var buildFailed = build.state === 'failed';
+      var busy = c.busy || building;
+      var installed = eng.source && eng.source !== 'none';
+      var isEnv = eng.source === 'env';
+      var running = (svc.running || 0) > 0;
+      var failed = (svc.failed || 0) > 0;
+      var accounts = svc.accounts || 0;
+      var outdated = svc.outdated || 0;
+      var hasAccounts = accounts > 0;
+      var canBuild = missing.length === 0;
+      var items = Array.isArray(svc.items) ? svc.items : [];
+      var adminUi = eng.adminUi === true;
+      var adminReady = svc.enabled !== false && hasAccounts && items.length > 0 && adminUi;
+
+      setCheck('k-tools', canBuild ? '已就绪' : '缺少 ' + missing.join('、'), canBuild ? 'ok' : 'bad');
+
+      if (isEnv) {
+        setCheck('k-engine', '自定义', 'ok');
+        if (eng.current && eng.current.commit) $('k-engine').title = '自定义（' + eng.current.commit.slice(0, 7) + '）';
+      } else if (installed) {
+        var sha = eng.current && eng.current.commit ? eng.current.commit.slice(0, 7) : '';
+        var dt = eng.current && eng.current.date ? fmtDate(eng.current.date) : '';
+        setCheck('k-engine', sha ? (dt ? sha + ' ' + dt : sha) : '已安装', 'ok');
+      } else {
+        setCheck('k-engine', '未安装', 'bad');
+      }
+
+      if (!hasAccounts) {
+        setCheck('k-proxy', '0 / 0', 'wait');
+      } else {
+        var pText = (svc.running || 0) + ' / ' + accounts;
+        if (outdated > 0) pText += '（' + outdated + ' 个旧版）';
+        else if (failed && !running) pText += '（失败）';
+        var pState = failed && !running ? 'bad' : running ? (outdated > 0 ? 'bad' : 'ok') : '';
+        setCheck('k-proxy', pText, pState);
+      }
+
+      var pill = $('k-pill');
+      if (building) {
+        pill.className = 'pill';
+        pill.querySelector('span').textContent = '编译中';
+      } else if (!installed) {
+        pill.className = 'pill bad';
+        pill.querySelector('span').textContent = '未安装';
+      } else if (running) {
+        pill.className = 'pill ok';
+        pill.querySelector('span').textContent = '运行中（' + svc.running + ' 个代理）';
+      } else if (failed) {
+        pill.className = 'pill bad';
+        pill.querySelector('span').textContent = '启动失败';
+      } else if (svc.enabled === false) {
+        pill.className = 'pill';
+        pill.querySelector('span').textContent = '已停止';
+      } else {
+        pill.className = 'pill';
+        pill.querySelector('span').textContent = '未启动';
+      }
+
+      $('kiro-card').classList.toggle('busy', !!busy);
+
+      var upd = $('k-update');
+      if (!isEnv && eng.updateAvailable && eng.latest && eng.latest.commit) {
+        var lSha = eng.latest.commit.slice(0, 7);
+        var lTitle = eng.latest.title || '';
+        var lDate = eng.latest.date ? fmtDate(eng.latest.date) : '';
+        upd.textContent = '';
+        var codeEl = document.createElement('code');
+        codeEl.textContent = lSha;
+        var restParts = [];
+        if (lTitle) restParts.push(lTitle);
+        if (lDate) restParts.push(lDate);
+        upd.appendChild(document.createTextNode('有新版本：'));
+        upd.appendChild(codeEl);
+        upd.appendChild(document.createTextNode(restParts.join(' · ')));
+        upd.title = '有新版本：' + lSha + (restParts.length ? ' ' + restParts.join(' · ') : '');
+        upd.hidden = false;
+      } else {
+        upd.hidden = true;
+      }
+
+      $('k-start').hidden = running;
+      $('k-start').className = 'btn' + (installed && hasAccounts ? ' primary' : '');
+      // 停止后即使没有账号也要能重新启用，否则添加不了 Kiro 账号
+      $('k-start').disabled = busy || !installed || (!hasAccounts && svc.enabled !== false);
+
+      $('k-stop').hidden = !running;
+      $('k-stop').disabled = busy || !running;
+
+      $('k-restart').hidden = !running;
+      $('k-restart').className = 'btn' + (outdated > 0 ? ' primary' : '');
+      $('k-restart').disabled = busy || !running;
+
+      $('k-admin').disabled = busy || !adminReady;
+      $('k-admin').setAttribute('aria-expanded', String(kAdminOpen && adminReady && items.length > 1));
+
+      var picker = $('k-admin-list');
+      if (kAdminOpen && adminReady && items.length > 1) {
+        picker.textContent = '';
+        items.forEach(function (it) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'admin-item';
+          btn.disabled = busy;
+          var nameEl = document.createElement('span');
+          nameEl.className = 'a-name';
+          nameEl.textContent = it.label || it.id;
+          var stateEl = document.createElement('span');
+          stateEl.className = 'a-state' + (it.proxy === 'ready' ? ' ok' : it.proxy === 'failed' ? ' bad' : '');
+          stateEl.textContent = PROXY_LABELS[it.proxy] || it.proxy || '';
+          btn.appendChild(nameEl);
+          btn.appendChild(stateEl);
+          btn.onclick = function () { kAdminOpen = false; kOpenAdmin(it.id); };
+          picker.appendChild(btn);
+        });
+        picker.hidden = false;
+      } else {
+        picker.hidden = true;
+      }
+
+      var eb = $('k-engine-btn');
+      if (!installed) {
+        kEngineMode = 'build';
+        eb.querySelector('span').textContent = '安装引擎';
+        eb.querySelector('use').setAttribute('href', '#i-down');
+        eb.className = 'btn ' + (canBuild ? 'primary' : 'ghost');
+        eb.disabled = busy || !canBuild;
+      } else if (!isEnv && eng.adminUi === false) {
+        kEngineMode = 'build';
+        eb.querySelector('span').textContent = '重新构建';
+        eb.querySelector('use').setAttribute('href', '#i-refresh');
+        eb.className = 'btn ' + (!running && canBuild ? 'primary' : 'ghost');
+        eb.disabled = busy || !canBuild;
+      } else if (!isEnv && eng.updateAvailable) {
+        kEngineMode = 'build';
+        eb.querySelector('span').textContent = '更新引擎';
+        eb.querySelector('use').setAttribute('href', '#i-down');
+        eb.className = 'btn ' + (!running && canBuild ? 'primary' : 'ghost');
+        eb.disabled = busy || !canBuild;
+      } else {
+        kEngineMode = 'check';
+        eb.querySelector('span').textContent = '检查更新';
+        eb.querySelector('use').setAttribute('href', '#i-refresh');
+        eb.className = 'btn ghost';
+        eb.disabled = busy;
+      }
+
+      c.renderConfirm(busy);
+
+      var hints = [];
+      var hintLevel = '';
+      if (buildFailed && build.error) {
+        hints.push('编译失败：' + build.error);
+        hintLevel = 'error';
+      } else if (building && build.step) {
+        hints.push('正在编译：' + build.step);
+      }
+      if (installed && eng.adminUi === false && eng.adminUiError) {
+        hints.push('管理页面不可用：' + eng.adminUiError);
+        if (!hintLevel) hintLevel = 'warn';
+      }
+      if (missing.indexOf('cargo') !== -1) {
+        hints.push('缺少 cargo，请先安装 Rust（https://rustup.rs）。');
+        if (!hintLevel) hintLevel = 'warn';
+      }
+      if (missing.indexOf('git') !== -1) {
+        hints.push('缺少 git，请先安装 Git。');
+        if (!hintLevel) hintLevel = 'warn';
+      }
+      if (!hasAccounts) {
+        hints.push('还没有 Kiro 账号。先打开 Cosyee，在账号菜单里添加 Kiro 账号。');
+      }
+      if (outdated > 0) {
+        hints.push('有 ' + outdated + ' 个代理仍在使用旧版引擎，点击「重启」后生效。');
+        if (!hintLevel) hintLevel = 'warn';
+      }
+      var hint = $('k-hint');
+      hint.className = 'sub-hint' + (hintLevel ? ' ' + hintLevel : '');
+      hint.textContent = hints.join('\n');
+    },
+  });
+
+  function kDoService(action, force) {
+    var label = action === 'start' ? '启动' : action === 'stop' ? '停止' : '重启';
+    kiroCard.runAction(label, function () { return invoke('kiro_service', { action: action, force: !!force }); }, {
+      clearConfirm: !!force,
+      onConflict: (action === 'stop' || action === 'restart') ? function (running) {
+        var verb = action === 'restart' ? '重启' : '停止';
+        return {
+          action: action,
+          text: '有 ' + running + ' 个 Kiro 会话正在执行，' + verb + '会中断它们。',
+          okLabel: '仍然' + verb,
+        };
+      } : null,
+    });
+  }
+
+  function kOpenAdmin(accountId) {
+    kiroCard.runAction('打开管理页面', function () { return invoke('kiro_admin', { account: accountId }); }, {
+      startMsg: '正在打开管理页面…',
+      clearConfirm: false,
+      onResult: function (c) { c.msg(''); },
+    });
+  }
+
+  function kDoEngine() {
+    if (kEngineMode === 'check') {
+      kiroCard.runAction('检查更新', function () { return invoke('kiro_check'); }, {
+        startMsg: '正在检查上游更新…',
+        onResult: function (c, st) {
+          c.applyStatus(st);
+          c.msg(st && st.engine && st.engine.updateAvailable ? '发现新版本，可以点击「更新引擎」。' : '已是最新版本。');
+        },
+      });
+      return;
+    }
+    var eng = kiroCard.st && kiroCard.st.engine;
+    var label = !eng || eng.source === 'none' ? '安装引擎' : eng.adminUi === false ? '重新构建' : '更新引擎';
+    kiroCard.runAction(label, function () { return invoke('kiro_build'); }, {
+      startMsg: label + '：正在启动编译…',
+      clearConfirm: true,
+      withLog: true,
+    });
+  }
+
+  // ───── Antigravity CLI（agy） ─────
+  var agyCard = createServiceCard({
+    cardId: 'agy-card',
+    pillId: 'a-pill',
+    checkIds: ['a-ver', 'a-latest', 'a-proc'],
+    hintId: 'a-hint',
+    msgId: 'a-msg',
+    logId: 'a-log',
+    confirmIds: { box: 'a-confirm', text: 'a-confirm-text', ok: 'a-confirm-ok', cancel: 'a-confirm-cancel' },
+    statusCmd: 'agy_status',
+    logCmd: 'agy_log',
+    unsupportedText: '当前服务端版本不支持 Antigravity CLI 管理，请先更新上方的服务端。',
+    isJobRunning: function (st) { return !!(st && st.job && st.job.state === 'running'); },
+    onStatus: function (c, st) {
+      if (c.confirm && (!st || !st.processes)) c.confirm = null;
+    },
+    renderOfflineControls: function () {
+      $('a-update-btn').hidden = false;
+      $('a-update-btn').className = 'btn';
+      $('a-update-btn').querySelector('span').textContent = '安装';
+      $('a-update-btn').disabled = true;
+      $('a-check-btn').disabled = true;
+      $('a-restart-btn').disabled = true;
+    },
+    renderOnline: function (c) {
+      var st = c.st;
+      var job = st.job || null;
+      var runningJob = !!(job && job.state === 'running');
+      var failedJob = !!(job && job.state === 'failed');
+      var busy = c.busy || runningJob;
+      var installed = !!st.installed;
+      var custom = !!st.custom;
+      var updateAvail = !!st.updateAvailable;
+      var processes = st.processes || 0;
+      var busyProc = st.busy || 0;
+
+      if (custom) {
+        setCheck('a-ver', '自定义程序（COSYEE_AGY）', 'ok');
+        if (st.version) $('a-ver').title = st.version + ' · 自定义程序（COSYEE_AGY）';
+      } else if (installed) {
+        setCheck('a-ver', st.version || '已安装', 'ok');
+      } else {
+        setCheck('a-ver', '未安装', 'bad');
+      }
+
+      if (st.checkError) {
+        setCheck('a-latest', st.checkError, 'bad');
+      } else if (st.latest) {
+        setCheck('a-latest', st.latest, updateAvail ? 'bad' : 'ok');
+      } else {
+        setCheck('a-latest', '未检查', 'wait');
+      }
+
+      if (processes === 0) {
+        setCheck('a-proc', '0', 'wait');
+      } else {
+        var procText = busyProc > 0 ? processes + '（' + busyProc + ' 个执行中）' : String(processes);
+        setCheck('a-proc', procText, 'ok');
+      }
+
+      var pill = $('a-pill');
+      if (runningJob) {
+        pill.className = 'pill';
+        pill.querySelector('span').textContent = '更新中';
+      } else if (failedJob) {
+        pill.className = 'pill bad';
+        pill.querySelector('span').textContent = '失败';
+      } else if (!installed) {
+        pill.className = 'pill bad';
+        pill.querySelector('span').textContent = '未安装';
+      } else if (updateAvail) {
+        pill.className = 'pill info';
+        pill.querySelector('span').textContent = '可更新';
+      } else if (st.latest) {
+        pill.className = 'pill ok';
+        pill.querySelector('span').textContent = '已是最新';
+      } else {
+        pill.className = 'pill ok';
+        pill.querySelector('span').textContent = '已安装';
+      }
+
+      $('agy-card').classList.toggle('busy', !!busy);
+
+      var ubtn = $('a-update-btn');
+      if (!installed) {
+        ubtn.hidden = false;
+        ubtn.querySelector('span').textContent = '安装';
+        ubtn.className = 'btn ' + (custom ? '' : 'primary');
+        ubtn.disabled = busy || custom;
+      } else if (updateAvail) {
+        ubtn.hidden = false;
+        ubtn.querySelector('span').textContent = '更新';
+        ubtn.className = 'btn ' + (custom ? '' : 'primary');
+        ubtn.disabled = busy || custom;
+      } else {
+        ubtn.hidden = true;
+      }
+
+      $('a-check-btn').disabled = busy;
+      $('a-restart-btn').disabled = busy || !installed || processes === 0;
+
+      c.renderConfirm(busy);
+
+      var hints = [];
+      var hintLevel = '';
+      if (failedJob && job.error) {
+        hints.push((job.kind === 'install' ? '安装' : '更新') + '失败：' + job.error);
+        hintLevel = 'error';
+      }
+      if (custom) {
+        hints.push('当前使用自定义程序（COSYEE_AGY），不支持在此安装或更新。');
+      }
+      if (st.checkError) {
+        hints.push('检查更新失败：' + st.checkError);
+        if (!hintLevel) hintLevel = 'warn';
+      }
+      hints.push('账号登录与切换在 Cosyee 的账号菜单里管理。');
+      var hint = $('a-hint');
+      hint.className = 'sub-hint' + (hintLevel ? ' ' + hintLevel : '');
+      hint.textContent = hints.join('\n');
+    },
+  });
+
+  function aDoRestart(force) {
+    agyCard.runAction('重启进程', function () { return invoke('agy_restart', { force: !!force }); }, {
+      clearConfirm: !!force,
+      onConflict: function (running) {
+        return {
+          text: '有 ' + running + ' 个委派任务正在执行，重启会中断它们。',
+          okLabel: '仍然重启',
+        };
+      },
+    });
+  }
+
+  var subCards = [kiroCard, agyCard];
+
   if (invoke) {
     spotlight($('local-card'), 0);
+    spotlight($('kiro-card'), 0);
+    spotlight($('agy-card'), 0);
     $('l-install').onclick = function () { lrun(lst && lst.installed ? '更新' : '安装', linstall); };
     $('l-start').onclick = function () {
       lrun('启动', async function () { await invoke('local_start', { tailnet: tailnet.checked }); ensureLocalEntry(); });
@@ -766,11 +1459,51 @@
     $('l-stop').onclick = function () { lrun('停止', function () { return invoke('local_stop'); }); };
     $('l-open').onclick = function () { connect(ensureLocalEntry()); };
     $('l-link').onclick = function (e) { e.preventDefault(); connect(ensureLocalEntry()); };
+
+    $('k-start').onclick = function () { kDoService('start', false); };
+    $('k-stop').onclick = function () { kDoService('stop', false); };
+    $('k-restart').onclick = function () { kDoService('restart', false); };
+    $('k-admin').onclick = function () {
+      var items = kiroCard.st && kiroCard.st.service && Array.isArray(kiroCard.st.service.items) ? kiroCard.st.service.items : [];
+      if (items.length === 1) { kOpenAdmin(items[0].id); }
+      else if (items.length > 1) { kAdminOpen = !kAdminOpen; kiroCard.render(); }
+    };
+    $('k-engine-btn').onclick = function () { kDoEngine(); };
+    $('k-confirm-ok').onclick = function () { if (kiroCard.confirm) kDoService(kiroCard.confirm.action, true); };
+    $('k-confirm-cancel').onclick = function () { kiroCard.confirm = null; kiroCard.render(); };
+
+    $('a-update-btn').onclick = function () {
+      var label = agyCard.st && agyCard.st.installed ? '更新' : '安装';
+      agyCard.runAction(label, function () { return invoke('agy_update'); }, {
+        startMsg: label + '：正在执行…',
+        clearConfirm: true,
+        withLog: true,
+      });
+    };
+    $('a-check-btn').onclick = function () {
+      agyCard.runAction('检查更新', function () { return invoke('agy_check'); }, {
+        startMsg: '正在检查官方最新版…',
+        onResult: function (c, st) {
+          c.applyStatus(st);
+          if (st && st.checkError) c.msg('检查更新失败：' + st.checkError, true);
+          else c.msg(st && st.updateAvailable ? '发现新版本：' + (st.latest || '') : '已是最新版本。');
+        },
+      });
+    };
+    $('a-restart-btn').onclick = function () { aDoRestart(false); };
+    $('a-confirm-ok').onclick = function () { if (agyCard.confirm) aDoRestart(true); };
+    $('a-confirm-cancel').onclick = function () { agyCard.confirm = null; agyCard.render(); };
+
     // 标题栏菜单「停止本机服务」会带 ?stop=1 回到这里
     if (params.get('stop') === '1') lrefresh().then(function () { lrun('停止', function () { return invoke('local_stop'); }); });
     else lrefresh();
-    // 停止等操作可能是在页面外做的，定时刷新
-    setInterval(function () { if (!lbusy && !document.hidden) lrefresh(); }, 3000);
+    // 停止等操作可能是在页面外做的，定时刷新（各子卡片独立刷新，不卡住本机服务且不重叠）
+    setInterval(function () {
+      if (!lbusy && !document.hidden) lrefresh();
+      if (lst && lst.running && !document.hidden) {
+        subCards.forEach(function (c) { if (!c.busy && !c.inFlight) c.refresh(); });
+      }
+    }, 3000);
   }
 
   // 启动时自动连接（从服务端页面回来时带 ?list=1，不自动连接）

@@ -18,8 +18,18 @@ describe('toolIconName', () => {
     ['WebSearch', 'tool-web'],
     ['Agent', 'tool-agent'],
     ['Task', 'tool-agent'],
+    ['SendMessage', 'tool-agent'],
+    ['ListAgents', 'tool-agent'],
+    ['TaskStop', 'tool-agent'],
+    ['TaskOutput', 'tool-agent'],
     ['mcp__github__create_issue', 'tool-mcp'],
     ['mcp__x', 'tool-mcp'],
+    ['mcp__cosyee__delegate', 'tool-agent'],
+    ['mcp__cosyee__delegate_send', 'tool-agent'],
+    ['mcp__cosyee__delegate_stop', 'tool-agent'],
+    ['mcp__cosyee__delegate_result', 'tool-agent'],
+    ['mcp__cosyee__delegate_status', 'tool-agent'],
+    ['mcp__cosyee__other', 'tool-agent'],
     ['TodoWrite', 'tool-todo'],
     ['TaskCreate', 'tool-todo'],
     ['TaskUpdate', 'tool-todo'],
@@ -36,8 +46,8 @@ describe('toolIconName', () => {
     expect(toolIconName('TaskCreate')).toBe('tool-todo');
   });
 
-  it('其他工具走兜底图标，包括后台任务工具和原型链上的名字', () => {
-    for (const n of ['Skill', 'TaskOutput', 'TaskStop', 'KillShell', 'toString', 'constructor', '', 'mcp_single']) {
+  it('其他工具走兜底图标，包括原型链上的名字', () => {
+    for (const n of ['Skill', 'KillShell', 'SendToProject', 'toString', 'constructor', '', 'mcp_single']) {
       expect(toolIconName(n)).toBe('tool-generic');
     }
   });

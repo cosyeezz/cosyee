@@ -1,6 +1,5 @@
-// 技能面板：本轮加载过的技能，样式同子代理面板（图标 + 摘要，下方缩进列出各技能）。
-// 点击一行在其下方展开技能正文（模型实际看到的注入正文；没有则读磁盘 SKILL.md 兜底）。
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+// 技能列表（供 SessionDock 使用）：展示会话中加载过的技能，点击一行在其下方展开技能正文（没有则读磁盘 SKILL.md 兜底）。
+import { memo, useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { SkillContent, SkillLoad } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { skillInfo } from '../context/skillCatalog';
@@ -8,7 +7,6 @@ import { useFiles } from '../files/FileContext';
 import { useFlowMeta, type SkillLoader } from './flowContext';
 import { Markdown } from './Markdown';
 import { PanelDetail } from './PanelDetail';
-import { SkillIcon } from './StatusIcons';
 
 export interface SkillGroup {
   name: string;
@@ -122,29 +120,14 @@ const SkillRow = memo(function SkillRow({ group, cwd, loader }: { group: SkillGr
   );
 });
 
-export const SkillPanel = memo(function SkillPanel({ skills, active = true }: { skills: readonly SkillLoad[]; active?: boolean }) {
-  // 本轮已结束（中断 / 出错）时，还在 loading 的按已加载显示，免得图标一直转
-  const groups = useMemo(() => {
-    const gs = groupSkills(skills);
-    return active ? gs : gs.map((g) => (g.status === 'loading' ? { ...g, status: 'loaded' as const } : g));
-  }, [skills, active]);
+export const SkillList = memo(function SkillList({ groups }: { groups: readonly SkillGroup[] }) {
   const cwd = useFiles()?.cwd;
   const { loadSkill } = useFlowMeta();
-  if (groups.length === 0) return null;
-  const loading = groups.some((g) => g.status === 'loading');
   return (
-    <div className="cz-flow__agents cz-flow__skills">
-      <div className="cz-flow__agents-head">
-        <SkillIcon size={16} className={loading ? undefined : 'is-still'} />
-        <span className={loading ? 'cz-st cz-st-compacting' : undefined}>
-          {loading ? `正在加载技能 … 共 ${groups.length} 个` : `已加载 ${groups.length} 个技能`}
-        </span>
-      </div>
-      <ul className="cz-flow__agents-list">
-        {groups.map((g) => (
-          <SkillRow key={g.name} group={g} cwd={cwd} loader={loadSkill} />
-        ))}
-      </ul>
-    </div>
+    <ul className="cz-flow__agents-list">
+      {groups.map((g) => (
+        <SkillRow key={g.name} group={g} cwd={cwd} loader={loadSkill} />
+      ))}
+    </ul>
   );
 });

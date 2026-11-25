@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Step, Turn } from '@cosyee/shared';
-import { agentRows, callsOf, skillCallCounts, skillCallsOf, toolCallCounts, toolRows, totalCallsOf, totalSkillCallsOf } from './tools';
+import { agentRows, callsOf, skillCallCounts, skillCallsOf, toolCallCounts, toolLabel, toolRows, totalCallsOf, totalSkillCallsOf } from './tools';
 
 describe('toolRows', () => {
+  it('Cosyee 自带的 mcp__cosyee__* 工具归到工具列表，其它 MCP 工具仍排除', () => {
+    expect(toolRows(['Bash', 'mcp__cosyee__delegate', 'mcp__github__search'], ['mcp__cosyee__other', 'mcp__x__y'])).toEqual([
+      { name: 'Bash', enabled: true },
+      { name: 'mcp__cosyee__delegate', enabled: true },
+      { name: 'mcp__cosyee__other', enabled: false },
+    ]);
+  });
+
   it('init 工具在前、仅停用的在后；去重；排除 mcp__ 与非法名字', () => {
     expect(
       toolRows(['Bash', 'mcp__a__b', 'Read', 'Bash', 'bad name'], ['Read', 'Notebook', 'mcp__x__y', 'Notebook', '']),
@@ -34,6 +42,19 @@ describe('toolCallCounts / callsOf', () => {
     expect(c.get('Agent')).toEqual({ main: 1, sub: 0 });
     expect(callsOf(c, 'Task')).toEqual({ main: 1, sub: 0 });
     expect(callsOf(c, 'Write')).toEqual({ main: 0, sub: 0 });
+  });
+  it('委派子代理记作 mcp__cosyee__delegate，不算进 Agent，也不把其内部步骤计入 Claude 工具', () => {
+    const sub = turn([tool('Read'), tool('Bash')]);
+    const c = toolCallCounts([turn([], [{ toolUseId: 'd', title: 'd', delegate: true, subagentType: 'Explore', status: 'done', turn: sub }])]);
+    expect(c.get('mcp__cosyee__delegate')).toEqual({ main: 1, sub: 0 });
+    expect(c.get('Agent')).toBeUndefined();
+    expect(c.get('Read')).toBeUndefined();
+    expect(c.get('Bash')).toBeUndefined();
+  });
+  it('toolLabel 去掉 mcp__cosyee__ 前缀，其余原样', () => {
+    expect(toolLabel('mcp__cosyee__delegate')).toBe('delegate');
+    expect(toolLabel('mcp__github__search')).toBe('mcp__github__search');
+    expect(toolLabel('Bash')).toBe('Bash');
   });
   it('没有会话流时为空', () => {
     expect(toolCallCounts(undefined).size).toBe(0);

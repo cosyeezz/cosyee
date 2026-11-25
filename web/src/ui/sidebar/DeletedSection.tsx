@@ -2,11 +2,12 @@
 // 软删除只是从列表隐藏；这里可以恢复，或「永久删除」（真正删除会话记录文件，不可撤销）。
 // 标题行悬停出现两个批量操作：全部恢复 / 全部永久删除。作用于当前显示的那些——搜索时只是匹配的，
 // 收起时清空搜索词，所以收起状态下就是全部。
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { DeletedSession, Workspace } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
 import { ActionButton, ConfirmActionButton } from './ActionButtons';
 import { SearchRow } from './SearchRow';
+import { useSessionCard, useSessionCardTarget, type SessionCardTarget } from './SessionCard';
 import { displayTitle, filterByTitle, workspaceName } from './sidebarUtil';
 
 export interface DeletedSectionProps {
@@ -72,34 +73,67 @@ export function DeletedSection({ deleted, workspaces, onRestore, onPurge, onRest
             ) : shown.length === 0 ? (
               <div className="cz-sidebar__empty">没有匹配的会话</div>
             ) : (
-              shown.map((d) => {
-                const ws = workspaceName(d.cwd, workspaces);
-                return (
-                  <div key={d.id} role="listitem" className="cz-sidebar__row has-sub is-deleted">
-                    <div className="cz-sidebar__row-main cz-sidebar__row-main--static" title={`${displayTitle(d.title)}\n${ws}`}>
-                      <span className="cz-sidebar__row-body">
-                        <span className="cz-sidebar__row-title">{displayTitle(d.title)}</span>
-                        <span className="cz-sidebar__row-sub">{ws}</span>
-                      </span>
-                    </div>
-                    <div className="cz-sidebar__actions">
-                      <ActionButton icon="restore" label="恢复" onClick={() => onRestore(d.id)} />
-                      <ConfirmActionButton
-                        icon="trash"
-                        label="永久删除"
-                        confirmText="永久删除此会话？"
-                        note="会话记录将被彻底删除，无法撤销"
-                        confirmLabel="永久删除"
-                        onConfirm={() => onPurge(d.id)}
-                      />
-                    </div>
-                  </div>
-                );
-              })
+              shown.map((d) => (
+                <DeletedRow
+                  key={d.id}
+                  item={d}
+                  ws={workspaceName(d.cwd, workspaces)}
+                  onRestore={onRestore}
+                  onPurge={onPurge}
+                />
+              ))
             )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function DeletedRow({
+  item: d,
+  ws,
+  onRestore,
+  onPurge,
+}: {
+  item: DeletedSession;
+  ws: string;
+  onRestore: (id: string) => void;
+  onPurge: (id: string) => void;
+}) {
+  const card = useSessionCard();
+  const target = useMemo<SessionCardTarget>(() => ({
+    kind: 'deleted',
+    id: d.id,
+    cwd: d.cwd,
+    title: d.title,
+    lastActiveAt: d.deletedAt,
+    dot: null,
+    pinned: null,
+    workspaceLabel: ws,
+  }), [d.id, d.cwd, d.title, d.deletedAt, ws]);
+  const cardProps = useSessionCardTarget(target);
+
+  return (
+    <div role="listitem" className="cz-sidebar__row has-sub is-deleted">
+      <div className="cz-sidebar__row-main cz-sidebar__row-main--static" tabIndex={0} {...cardProps}>
+        <span className="cz-sidebar__row-body">
+          <span className="cz-sidebar__row-title">{displayTitle(d.title)}</span>
+          <span className="cz-sidebar__row-sub">{ws}</span>
+        </span>
+      </div>
+      {/* 移过操作按钮是去卡片的必经之路，只在按下时关卡片 */}
+      <div className="cz-sidebar__actions" onPointerDown={() => card?.closeNow()}>
+        <ActionButton icon="restore" label="恢复" onClick={() => onRestore(d.id)} />
+        <ConfirmActionButton
+          icon="trash"
+          label="永久删除"
+          confirmText="永久删除此会话？"
+          note="会话记录将被彻底删除，无法撤销"
+          confirmLabel="永久删除"
+          onConfirm={() => onPurge(d.id)}
+        />
+      </div>
     </div>
   );
 }

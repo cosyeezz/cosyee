@@ -53,6 +53,11 @@ export function cosyeeHome(): string {
   return process.env.COSYEE_HOME || path.join(os.homedir(), '.cosyee');
 }
 
+/** Antigravity（agy）额外账号的数据目录（每个账号一个子目录）。可用 COSYEE_AGY_ACCOUNTS_DIR 覆盖（测试用）。 */
+export function agyAccountsRoot(): string {
+  return process.env.COSYEE_AGY_ACCOUNTS_DIR || path.join(cosyeeHome(), 'agy-accounts');
+}
+
 /**
  * cwd -> ~/.claude/projects 下的目录名：每个非 ASCII 字母数字字符各换成一个 `-`。
  * 有损且不可逆（见 spike/FINDINGS2.md B2 §1）。

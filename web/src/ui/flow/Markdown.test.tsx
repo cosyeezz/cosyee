@@ -113,3 +113,52 @@ describe('Markdown 行内代码路径', () => {
     expect(el.querySelector('pre code')!.hasAttribute('title')).toBe(false);
   });
 });
+
+describe('代码块运行按钮', () => {
+  const runBtn = (el: HTMLElement) =>
+    [...el.querySelectorAll<HTMLButtonElement>('button.cz-flow__code-copy')].find((b) => b.textContent === '运行' || b.textContent === '停止');
+
+  it('shell 类语言显示「运行」，其它语言 / 没有 exec / 预览里的 .md 不显示', () => {
+    const exec = vi.fn();
+    const files = { ...makeFiles(), platform: 'win32', exec };
+    expect(runBtn(mount('```powershell\nstart ms-settings:\n```', files))).toBeDefined();
+    act(() => root?.unmount());
+    expect(runBtn(mount('```python\nprint(1)\n```', files))).toBeUndefined();
+    act(() => root?.unmount());
+    expect(runBtn(mount('```powershell\nls\n```', makeFiles()))).toBeUndefined();
+    act(() => root?.unmount());
+    expect(runBtn(mount('```powershell\nls\n```', files, 'F:\\proj\\README.md'))).toBeUndefined();
+    act(() => root?.unmount());
+    expect(runBtn(mount('```cmd\ndir\n```', { ...files, platform: 'linux' }))).toBeUndefined();
+  });
+
+  it('点「运行」调用 exec，结果显示在代码块下方，可收起', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'hello\n', stderr: 'warn!', timedOut: false, truncated: false, durationMs: 42 }));
+    const el = mount('```powershell\nstart ms-settings:easeofaccess-visualeffects\n```', { ...makeFiles(), platform: 'win32', exec });
+    const btn = runBtn(el)!;
+    expect(btn.title).toContain('F:\\proj');
+    expect(btn.title).toContain('PowerShell');
+    await act(async () => btn.click());
+    expect(exec).toHaveBeenCalledWith('powershell', 'start ms-settings:easeofaccess-visualeffects', expect.any(AbortSignal));
+    expect(el.querySelector('.cz-flow__run-out')?.textContent).toBe('hello');
+    expect(el.querySelector('.cz-flow__run-err')?.textContent).toBe('warn!');
+    expect(el.querySelector('.cz-flow__run-status')?.textContent).toBe('退出码 0');
+    act(() => el.querySelector<HTMLButtonElement>('[aria-label="收起运行结果"]')!.click());
+    expect(el.querySelector('.cz-flow__run')).toBeNull();
+  });
+
+  it('运行中按钮变「停止」，点了中止请求并显示「已停止」', async () => {
+    let signal: AbortSignal | undefined;
+    const exec = vi.fn((_l: string, _c: string, s: AbortSignal) => {
+      signal = s;
+      return new Promise<never>((_, reject) => s.addEventListener('abort', () => reject(new Error('aborted'))));
+    });
+    const el = mount('```bash\nsleep 100\n```', { ...makeFiles(), platform: 'linux', exec });
+    await act(async () => runBtn(el)!.click());
+    expect(runBtn(el)!.textContent).toBe('停止');
+    await act(async () => runBtn(el)!.click());
+    expect(signal?.aborted).toBe(true);
+    expect(runBtn(el)!.textContent).toBe('运行');
+    expect(el.querySelector('.cz-flow__run-status')?.textContent).toBe('已停止');
+  });
+});

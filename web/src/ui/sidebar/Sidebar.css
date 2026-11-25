@@ -179,7 +179,7 @@
 /* 悬停时给 4 个操作按钮留位置（4 × 24 + 间距） */
 .cz-sidebar__menu-item:hover .cz-sidebar__menu-main,
 .cz-sidebar__menu-item:focus-within .cz-sidebar__menu-main,
-.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__menu-main { padding-right: 108px; }
+.cz-sidebar__menu-item:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__menu-main { padding-right: 108px; }
 
 /* ───── 置顶区 ───── */
 .cz-sidebar__pinned {
@@ -229,10 +229,10 @@
   cursor: pointer;
 }
 .cz-sidebar__group-bar:hover .cz-sidebar__group-head,
-.cz-sidebar__group-bar:has(.cz-sidebar__confirm) .cz-sidebar__group-head { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__group-bar:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__group-head { background: var(--bg-hover); color: var(--text); }
 /* 悬停时给 1 个操作按钮留位置（折叠箭头左移，不被盖住） */
 .cz-sidebar__group-bar.has-actions:is(:hover, :focus-within) .cz-sidebar__group-head,
-.cz-sidebar__group-bar.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__group-head { padding-right: 32px; }
+.cz-sidebar__group-bar.has-actions:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__group-head { padding-right: 32px; }
 .cz-sidebar__group-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-sidebar__group-body { display: flex; flex-direction: column; gap: 2px; }
 .cz-sidebar__empty {
@@ -307,10 +307,10 @@
 /* 悬停 / 键盘聚焦 / 确认气泡打开时：隐藏时间，给 2 个操作按钮留位置 */
 .cz-sidebar__row:hover .cz-sidebar__row-time,
 .cz-sidebar__row:focus-within .cz-sidebar__row-time,
-.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__row-time { display: none; }
+.cz-sidebar__row:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__row-time { display: none; }
 .cz-sidebar__row:hover .cz-sidebar__row-main,
 .cz-sidebar__row:focus-within .cz-sidebar__row-main,
-.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__row-main { padding-right: 58px; }
+.cz-sidebar__row:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__row-main { padding-right: 58px; }
 
 /* ───── 行内操作按钮（会话行 / 工作空间行 / 已删除行共用） ───── */
 .cz-sidebar__actions {
@@ -327,14 +327,14 @@
 }
 .cz-sidebar__row:hover .cz-sidebar__actions,
 .cz-sidebar__row:focus-within .cz-sidebar__actions,
-.cz-sidebar__row:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__row:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__actions,
 .cz-sidebar__menu-item:hover .cz-sidebar__actions,
 .cz-sidebar__menu-item:focus-within .cz-sidebar__actions,
-.cz-sidebar__menu-item:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__menu-item:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__actions,
 .cz-sidebar__group-bar:is(:hover, :focus-within) .cz-sidebar__actions,
-.cz-sidebar__group-bar:has(.cz-sidebar__confirm) .cz-sidebar__actions,
+.cz-sidebar__group-bar:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__actions,
 .cz-sidebar__deleted-bar:is(:hover, :focus-within) .cz-sidebar__actions,
-.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm) .cz-sidebar__actions {
+.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -411,9 +411,9 @@
   cursor: pointer;
 }
 .cz-sidebar__deleted-bar:hover .cz-sidebar__deleted-head,
-.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm) .cz-sidebar__deleted-head { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__deleted-bar:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__deleted-head { background: var(--bg-hover); color: var(--text); }
 .cz-sidebar__deleted-bar.has-actions:is(:hover, :focus-within) .cz-sidebar__deleted-head,
-.cz-sidebar__deleted-bar.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__deleted-head { padding-right: 58px; }
+.cz-sidebar__deleted-bar.has-actions:has(.cz-sidebar__confirm-wrap:where(.is-open)) .cz-sidebar__deleted-head { padding-right: 58px; }
 .cz-sidebar__deleted-body { display: flex; flex-direction: column; gap: 2px; }
 .cz-sidebar__deleted-list {
   max-height: 180px;
@@ -438,16 +438,19 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
+  gap: 10px;
+  padding: 6px 8px;
   border: 0;
   border-radius: var(--r-md);
   background: transparent;
   color: var(--text-2);
   text-align: left;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .cz-sidebar__account-main:hover { background: var(--bg-hover); color: var(--text); }
+.cz-sidebar__account-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 头像：由名字算出的底色（--av）做成从左上提亮的渐变球 + 顶部内高光；没登录是虚线空圈 */
 .cz-sidebar__avatar {
   flex: none;
   width: 28px;
@@ -456,21 +459,46 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text);
+  background: linear-gradient(145deg, color-mix(in oklab, var(--av, var(--bg-hover)) 70%, #fff) 0%, var(--av, var(--bg-hover)) 72%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .24), inset 0 0 0 1px rgb(255 255 255 / .06), 0 1px 2px rgb(0 0 0 / .18);
+  color: #fff;
   font-size: var(--fs-sm);
   font-weight: 600;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgb(0 0 0 / .2);
+  transition: box-shadow var(--dur) var(--ease);
 }
-.cz-sidebar__avatar--empty { background: var(--bg-hover); color: var(--text-3); }
+.cz-sidebar__avatar--md { width: 30px; height: 30px; }
+.cz-sidebar__avatar--empty {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--text-3);
+  text-shadow: none;
+}
 .cz-sidebar__account-text {
   flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cz-sidebar__account-name,
+.cz-sidebar__account-plan {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-sm);
-  color: var(--text);
 }
-.cz-sidebar__account-text--muted { color: var(--text-3); }
+.cz-sidebar__account-name { font-size: var(--fs-sm); font-weight: 550; line-height: 1.3; color: var(--text); }
+.cz-sidebar__account-plan { font-size: 11px; line-height: 1.3; color: var(--text-3); }
+.cz-sidebar__account-text--muted { font-size: var(--fs-sm); color: var(--text-3); }
+/* 一个向上的箭头，打开时转半圈 */
+.cz-sidebar__account-chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+  transition: transform 220ms var(--ease-out), color var(--dur-fast) var(--ease);
+}
+.cz-sidebar__account-chev.is-open { transform: rotate(180deg); color: var(--text-2); }
 
 /* ───── 账号模式：账号菜单顶部的分段切换（两段等宽，选中的一段像「被按下的标签」） ───── */
 .cz-sidebar__mode { padding: var(--sp-1) var(--sp-1) var(--sp-2); }
@@ -489,7 +517,7 @@
   flex: 1 1 0;
   min-width: 0;
   height: 26px;
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-1);
   border: 0;
   border-radius: calc(var(--r-md) - 3px);
   background: transparent;
@@ -515,6 +543,10 @@
 .cz-sidebar__mode .cz-sidebar__acct-note { margin-top: var(--sp-1); }
 .cz-sidebar__theme { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
 .cz-sidebar__theme-label { padding: 0 2px var(--sp-1); font-size: var(--fs-xs); color: var(--text-3); }
+/* 菜单里一行「外观 [跟随系统|浅色|深色]」；侧栏太窄放不下 160px 的分段时整段换到第二行 */
+.cz-sidebar__menu--up .cz-sidebar__theme { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; row-gap: 4px; padding: 2px; }
+.cz-sidebar__menu--up .cz-sidebar__theme-label { flex: none; padding: 0 0 0 8px; }
+.cz-sidebar__menu--up .cz-sidebar__theme > .cz-sidebar__seg { flex: 1 1 160px; min-width: 0; }
 
 /* ───── 账号切换菜单（从账户栏向上弹出） ───── */
 .cz-sidebar__account-wrap {
@@ -526,7 +558,14 @@
 .cz-sidebar__account-main.is-open { background: var(--bg-hover); color: var(--text); }
 .cz-sidebar__menu--up {
   top: auto;
-  bottom: calc(100% + var(--sp-1));
+  bottom: calc(100% + 6px);
+  padding: 6px;
+  border-color: color-mix(in srgb, var(--border-strong) 75%, transparent);
+  border-radius: var(--r-lg);
+  /* 左上角一团很淡的主题色光，玻璃底不再是一块平的灰 */
+  background:
+    radial-gradient(130% 70% at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 62%),
+    var(--mat-pop);
   /* left: 0 + right: 0（来自基础 .cz-sidebar__menu）撑满侧栏宽度，
      不用固定 280px——否则侧栏窄时菜单被 overflow: hidden 裁掉右侧 */
   right: 0;
@@ -536,19 +575,346 @@
 /* 矮屏跟着缩：扣掉账户栏、模式 / 主题开关和顶部留白 */
 .cz-sidebar__menu--up .cz-sidebar__menu-list { max-height: min(420px, calc(var(--center-h, 100dvh) - 300px)); }
 .cz-sidebar__menu--up .cz-sidebar__menu-main:disabled { cursor: default; opacity: .7; }
-/* 账号行最多一个操作按钮：只有可移除的行悬停时才留位置 */
 .cz-sidebar__menu--up .cz-sidebar__menu-item .cz-sidebar__menu-main { padding-right: var(--sp-2); }
-.cz-sidebar__menu--up .cz-sidebar__menu-item.has-actions:is(:hover, :focus-within) .cz-sidebar__menu-main,
-.cz-sidebar__menu--up .cz-sidebar__menu-item.has-actions:has(.cz-sidebar__confirm) .cz-sidebar__menu-main { padding-right: 36px; }
-.cz-sidebar__avatar--sm { width: 24px; height: 24px; font-size: var(--fs-xs); }
-/* 账号行下面还挂着用量条：头像和勾选对齐到「名字 + 副标题」那两行，而不是整行的竖直中心（否则头像会掉到用量条旁边） */
-.cz-sidebar__menu--up .cz-sidebar__menu-main:has(> .cz-sidebar__avatar--sm) { align-items: flex-start; }
-.cz-sidebar__menu--up .cz-sidebar__menu-main > .cz-sidebar__avatar--sm { margin-top: 5px; }
-.cz-sidebar__menu--up .cz-sidebar__menu-main:has(> .cz-sidebar__avatar--sm) > :is(.cz-sidebar__acct-check, .cz-sidebar__acct-tag) { margin-top: 2px; }
-.cz-sidebar__acct-check { flex: none; display: inline-flex; color: var(--accent); }
+.cz-sidebar__menu--up .cz-sidebar__menu-item { border-radius: var(--r-md); }
+/* 分隔线两端渐隐 */
+.cz-sidebar__menu--up .cz-sidebar__menu-sep {
+  margin: 6px 6px;
+  background: linear-gradient(90deg, transparent, var(--border) 14%, var(--border) 86%, transparent);
+}
+.cz-sidebar__avatar--sm { width: 26px; height: 26px; font-size: var(--fs-xs); }
+
+/* 账号卡片：每个账号的全部内容（头像、名字、套餐、到期时间、额度）框成一张完整卡片，
+   未选中用 1px 发丝内描边 + 极淡抬起底色，选中用 ::before 的主题色渐变底 + 主题色描边（opacity 交叉淡化，不引起 1px 位移，不过渡 background）。
+   网格「头像 | 名字 + 副标题 | 勾选」，到期时间排在名字列下方（不与悬停操作按钮重叠、不引起重排），额度块横跨卡片内边距 */
+.cz-acct-row {
+  position: relative;
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-strong) 82%, transparent);
+}
+.cz-acct-row:hover {
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.cz-acct-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* 选中：主题色从左上到右下渐淡的底 + 一圈 1px 主题色细边 */
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, transparent), color-mix(in srgb, var(--accent) 4%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.cz-acct-row.is-active,
+.cz-acct-row.is-active:hover { background: transparent; box-shadow: none; }
+.cz-acct-row.is-active::before { opacity: 1; }
+.cz-acct-row.is-active .cz-sidebar__avatar:not(.cz-sidebar__avatar--empty) {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .24), 0 0 0 2px var(--bg-menu), 0 0 0 3.5px color-mix(in srgb, var(--accent) 75%, transparent);
+}
+.cz-sidebar__menu--up .cz-acct-row .cz-acct-row__main { padding: 8px 10px; }
+.cz-acct-row > .cz-acct-row__main { position: relative; z-index: 1; }
+.cz-acct-row__main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cz-acct-row > .cz-sidebar__actions { z-index: 2; }
+.cz-acct-row__main {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: start;
+  row-gap: 0;
+}
+.cz-acct-row__main > .cz-sidebar__avatar--sm { margin-top: 2px; }
+/* 头像比单行名字高：跨到日期行，免得没有副标题时名字和日期之间空出一截 */
+.cz-acct-row__main:has(> .cz-acct-row__dates) > .cz-sidebar__avatar--sm { grid-row: 1 / span 2; }
+/* 名字行：名字（可截断）+ 套餐小标签 */
+.cz-acct-row__title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cz-acct-row__title > .cz-sidebar__menu-name { flex: 0 1 auto; min-width: 0; font-weight: 500; }
+.cz-acct-chip {
+  flex: none;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 7%, transparent);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.cz-acct-row.is-active .cz-acct-chip {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* 副标题常有带下沿的字母（Google），行高 1.3 会裁掉 g 的下半截 */
+.cz-acct-row__head > .cz-sidebar__menu-path { line-height: 1.5; }
+.cz-acct-row__status { grid-column: 3; margin-top: 2px; transition: opacity var(--dur-fast) var(--ease); }
+/* 到期时间行：排在名字 / 副标题下方，不跟随悬停按钮缩窄，避免悬停压住或引起重排 */
+.cz-acct-row__dates {
+  grid-column: 2 / -1;
+  min-width: 0;
+  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  row-gap: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  /* 间隔点画在每项左侧的留白里、行首的裁掉：换行后不会在行尾剩一个点 */
+  margin-left: -14px;
+  clip-path: inset(0 0 0 14px);
+}
+.cz-acct-row__date { position: relative; padding-left: 14px; white-space: normal; overflow-wrap: anywhere; }
+.cz-acct-row__date::before { content: '·'; position: absolute; left: 0; width: 14px; text-align: center; font-family: system-ui, sans-serif; color: var(--text-3); font-weight: 400; }
+.cz-acct-row__date.is-warn { color: var(--warn); font-weight: 500; }
+.cz-acct-row__date.is-danger { color: var(--danger); font-weight: 500; }
+.cz-acct-row__date-sep { font-size: 0; }
+/* 额度 / 说明占卡片底部区域，左右与卡片内边距对齐 */
+.cz-acct-row__extra { grid-column: 1 / -1; min-width: 0; container-type: inline-size; }
+.cz-acct-row__extra > .cz-acctq { margin-top: 8px; }
+.cz-acct-row__extra > .cz-acctq__hint { padding-left: 36px; }
+/* 展开时行错开淡入上移（每行 24ms，最多 6 行，总时长 ≤ 280ms）；收起不错开 */
+.cz-reveal:not(.is-leaving) .cz-acct-row {
+  animation: cz-acct-row-in 160ms var(--ease-out) calc(var(--row-i, 0) * 24ms) both;
+}
+@keyframes cz-acct-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+}
+/* 选中勾：平滑缩放淡入 */
+.cz-sidebar__acct-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .25), 0 1px 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: cz-acct-check-in var(--dur-fast) var(--ease-out);
+}
+@keyframes cz-acct-check-in {
+  from { opacity: 0; transform: scale(.6); }
+}
+/* 行内改备注名 */
+.cz-acct-row--editing {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px var(--sp-1) 4px var(--sp-2);
+}
+.cz-acct-row__edit-input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+
+/* ───── 账号分组（Claude / Antigravity） ───── */
+.cz-acct-grp { display: flex; flex-direction: column; }
+.cz-acct-grp__bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  border-radius: var(--r-sm);
+}
+.cz-acct-grp__head {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-acct-grp__head:hover { background: var(--bg-hover); color: var(--text); }
+.cz-acct-grp__head:focus-visible,
+.cz-acct-grp__add:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cz-acct-grp__chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+  transition: transform 220ms var(--ease-out);
+}
+.cz-acct-grp__chev.is-open { transform: rotate(90deg); }
+.cz-acct-grp__badge {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: linear-gradient(145deg, color-mix(in oklab, var(--brand) 78%, #fff), var(--brand));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .28), 0 1px 3px color-mix(in srgb, var(--brand) 35%, transparent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.cz-acct-grp__badge--claude { --brand: var(--new-chat); }
+.cz-acct-grp__badge--agy { --brand: var(--accent); }
+.cz-acct-grp__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+}
+.cz-acct-grp__count {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.cz-acct-grp__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.cz-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* 折叠态当前账号摘要：与展开态交叉淡化，标题高度不变 */
+.cz-acct-grp__summary {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.cz-acct-grp__summary.is-hidden {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+}
+.cz-acct-grp__mini-av {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, color-mix(in oklab, var(--av, var(--bg-hover)) 70%, #fff), var(--av, var(--bg-hover)) 72%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .2);
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+}
+.cz-acct-grp__mini-av.is-empty { background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text-3); }
+.cz-acct-grp__summary-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.cz-acct-grp__add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-acct-grp__add:hover { background: var(--bg-hover); color: var(--text); }
+/* 账号卡片之间留 7px 间距，四周留 3px 内边距避免 focus-visible 外描边被裁剪 */
+.cz-acct-grp__body > .cz-reveal__in { display: flex; flex-direction: column; gap: 7px; padding: 3px 3px 4px; }
+
+/* 操作按钮只盖住名字行（不再竖直居中到整行中间、压在到期时间或额度条上）；
+   出现时只给名字行让位（名字截断得早一点），到期时间与额度条不重排，悬停时整行不跳 */
+.cz-sidebar__menu--up .cz-acct-row .cz-sidebar__actions { top: 6px; bottom: auto; height: 30px; }
+.cz-acct-row.has-actions:is(:hover, :focus-within, :has(.cz-sidebar__confirm-wrap:where(.is-open))) .cz-acct-row__head {
+  padding-right: calc(var(--acts, 1) * 26px - var(--sp-2) + 2px);
+}
+.cz-acct-row.has-actions:is(:hover, :focus-within, :has(.cz-sidebar__confirm-wrap:where(.is-open))) .cz-acct-row__status { opacity: 0; }
+/* 触屏没有悬停：操作按钮常驻并放大到 32px，名字行一直留位置，勾选让给按钮 */
+@media (hover: none), (pointer: coarse) {
+  .cz-sidebar__menu--up .cz-acct-row .cz-sidebar__actions { opacity: 1; pointer-events: auto; top: 4px; height: 34px; }
+  .cz-sidebar__menu--up .cz-acct-row .cz-sidebar__act { width: 32px; height: 32px; }
+  .cz-acct-row.has-actions .cz-acct-row__head { padding-right: calc(var(--acts, 1) * 34px - var(--sp-2) + 2px); }
+  .cz-acct-row.has-actions .cz-acct-row__status { opacity: 0; }
+  .cz-sidebar__menu--up .cz-sidebar__menu-main { min-height: 44px; }
+  .cz-acct-grp__bar { height: 36px; }
+  .cz-acct-grp__add { width: 32px; height: 32px; }
+}
 .cz-sidebar__acct-tag { flex: none; font-size: var(--fs-xs); color: var(--text-3); }
 .cz-sidebar__acct-note { padding: 6px var(--sp-2); font-size: var(--fs-xs); line-height: 1.5; color: var(--text-3); }
 .cz-sidebar__acct-note--error { color: var(--danger); }
+.cz-acct-dup { display: flex; flex-direction: column; gap: 2px; }
+.cz-acct-dup__line { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
+.cz-acct-dup__btn {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.cz-acct-dup__btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.cz-acct-dup__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-acct-dup__btn:disabled { opacity: .6; cursor: default; }
+@media (pointer: coarse) { .cz-acct-dup__btn { min-height: 32px; padding: 0 12px; } }
 .cz-sidebar__acct-confirm {
   margin: var(--sp-1) 0 0;
   padding: var(--sp-2);
@@ -612,7 +978,53 @@
   outline: none;
 }
 .cz-acct-dlg__input:focus { border-color: var(--accent); }
-.cz-acct-dlg__btns { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+/* 字段是纵向 flex：上面的 flex: 1 1 0 会把输入框高度压成 0 再按内容撑开（只剩约 20px），这里恢复固定高度 */
+.cz-acct-dlg__field > .cz-acct-dlg__input { flex: none; }
+.cz-acct-dlg__btns { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--sp-2); }
+
+/* 拆分布局：标题、按钮栏固定，只有中间内容滚动（映射表很长时也随时能保存）；
+   内容区左右用负外边距贴到面板边，滚动条在面板边缘，输入框的聚焦描边不会被裁 */
+.cz-acct-dlg--split { overflow: hidden; }
+.cz-acct-dlg--split > .cz-acct-dlg__title,
+.cz-acct-dlg--split > .cz-acct-dlg__btns { flex: none; }
+.cz-acct-dlg__body {
+  container: acct-dlg / inline-size;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-4)) 0;
+  padding: var(--sp-1) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.cz-acct-dlg__body > * { flex: none; }
+/* 有内容滚到标题下 / 按钮栏下时才画分隔线 */
+.cz-acct-dlg--split > .cz-acct-dlg__title,
+.cz-acct-dlg--split > .cz-acct-dlg__btns {
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 0 0 transparent;
+  transition: box-shadow var(--dur) var(--ease);
+}
+.cz-acct-dlg--split > .cz-acct-dlg__title { padding-bottom: var(--sp-1); margin-bottom: calc(-1 * var(--sp-1)); }
+.cz-acct-dlg--split > .cz-acct-dlg__title.is-scrolled { box-shadow: 0 1px 0 var(--border); }
+.cz-acct-dlg--split > .cz-acct-dlg__btns { padding-top: var(--sp-3); margin-top: calc(-1 * var(--sp-3)); }
+.cz-acct-dlg--split > .cz-acct-dlg__btns.is-scrolled { box-shadow: 0 -1px 0 var(--border); }
+/* 窄屏按钮栏：按钮各占一半，点得到 */
+@container acct-dlg (max-width: 420px) {
+  .cz-acct-dlg__btns > .cz-acct-dlg__btn { flex: 1 1 0; }
+}
+@media (max-width: 480px) {
+  .cz-acct-dlg--split > .cz-acct-dlg__btns > .cz-acct-dlg__btn { flex: 1 1 0; height: 40px; }
+}
+
+/* 基本字段：窄时一列；对话框够宽时两列（备注名 | Base URL，API Key | 认证方式） */
+.cz-acct-dlg__grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); align-items: start; }
+@container acct-dlg (min-width: 600px) {
+  .cz-acct-dlg__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--sp-4); }
+}
 .cz-acct-dlg__btn {
   height: 32px;
   padding: 0 var(--sp-3);
@@ -627,64 +1039,155 @@
 .cz-acct-dlg__btn:disabled { opacity: .5; cursor: not-allowed; }
 .cz-acct-dlg__btn--primary { border-color: transparent; background: var(--accent); color: var(--on-accent); }
 .cz-acct-dlg__btn--primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+/* 添加到分段选择 + 内容切换淡入 + Antigravity 两步登录 */
+.cz-acct-dlg__target { display: flex; flex-direction: column; gap: var(--sp-1); }
+.cz-acct-dlg__target-note { font-size: var(--fs-xs); color: var(--text-3); }
+.cz-acct-dlg__pane { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cz-acct-dlg__swap { animation: cz-dlg-swap 160ms var(--ease-out); }
+@keyframes cz-dlg-swap { from { opacity: 0; } }
+.cz-agy-steps { display: flex; flex-direction: column; gap: var(--sp-3); }
+.cz-agy-step { display: flex; flex-direction: column; gap: var(--sp-2); }
+.cz-agy-step__head { font-size: var(--fs-xs); font-weight: 600; color: var(--text-2); }
+.cz-agy-step__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.cz-agy-step__link { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.cz-agy-step__copy { display: inline-flex; align-items: center; gap: 5px; }
+:root[data-motion="reduce"] :is(.cz-acct-row, .cz-sidebar__acct-check, .cz-acct-dlg__swap),
+:root[data-motion="reduce"] .cz-acct-grp__chev,
+:root[data-motion="reduce"] .cz-acct-grp__summary,
+:root[data-motion="reduce"] .cz-acct-row::before,
+:root[data-motion="reduce"] :is(.cz-sidebar__account-chev, .cz-acctq__fill) { animation: none; transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cz-acct-row, .cz-sidebar__acct-check, .cz-acct-dlg__swap { animation: none; }
+  .cz-acct-grp__chev, .cz-acct-grp__summary, .cz-acct-row::before { transition: none; }
+  .cz-sidebar__account-chev, .cz-acctq__fill { transition: none; }
+}
 
-/* 模型映射表（API 账号对话框内） */
-.cz-mmap { display: flex; flex-direction: column; gap: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--border); }
-.cz-mmap__head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
-.cz-mmap__title { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: 600; }
-.cz-mmap__info {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: 50%;
-  color: var(--text-3);
-  font-size: 10px;
-  font-weight: 400;
-  cursor: help;
+/* 模型映射表（API 账号对话框内）
+   宽：五列表格「角色 | 显示名称 | 实际请求模型 | 1M | 删除」，所有行共用 --mmap-cols，上下对齐；
+   窄（容器 < 560px）：每行一个小块，角色 + 1M 一行，输入框各带可见的小标题（data-label） */
+.cz-mmap {
+  --mmap-cols: minmax(76px, 104px) minmax(0, 1fr) minmax(0, 1.4fr) 44px 28px;
+  container: mmap / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
 }
-.cz-mmap__actions { display: flex; gap: var(--sp-2); }
-.cz-mmap__btn { height: 28px; padding: 0 var(--sp-2); font-size: var(--fs-xs); white-space: nowrap; }
+.cz-mmap__head { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); }
+.cz-mmap__intro { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cz-mmap__title { font-size: var(--fs-sm); font-weight: 600; }
+.cz-mmap__desc { font-size: var(--fs-xs); line-height: 1.5; color: var(--text-3); }
+.cz-mmap__actions { flex: none; display: flex; gap: var(--sp-2); margin-left: auto; }
+.cz-mmap__btn { height: 28px; padding: 0 var(--sp-3); font-size: var(--fs-xs); white-space: nowrap; }
+.cz-mmap__hint { font-size: var(--fs-xs); overflow-wrap: anywhere; }
 .cz-mmap__grid, .cz-mmap__extra { display: flex; flex-direction: column; gap: 6px; }
-.cz-mmap__extra { padding-top: var(--sp-2); border-top: 1px dashed var(--border); }
-.cz-mmap__th { font-size: var(--fs-xs); color: var(--text-3); }
-.cz-mmap__grid > .cz-mmap__th { display: none; }
-.cz-mmap__row { display: grid; grid-template-columns: 92px minmax(0, 1fr) minmax(0, 1.2fr) 34px; align-items: center; gap: var(--sp-2); }
-.cz-mmap__row--extra { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 34px 28px; }
-.cz-mmap__row--add { grid-template-columns: minmax(0, 1.2fr) auto; }
-.cz-mmap__role {
-  padding: 0 var(--sp-2);
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg-hover);
-  color: var(--text-2);
+.cz-mmap__extra { padding-top: var(--sp-3); border-top: 1px dashed var(--border); }
+.cz-mmap__sub { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px var(--sp-2); }
+.cz-mmap__subtitle { font-size: var(--fs-sm); font-weight: 600; }
+.cz-mmap__row { display: grid; grid-template-columns: var(--mmap-cols); align-items: center; gap: var(--sp-2); }
+.cz-mmap__row--th { padding-bottom: 2px; }
+.cz-mmap__th { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+.cz-mmap__th--1m { text-align: center; cursor: help; }
+/* 子代理 / 兜底和四个别名之间留一道细线 */
+.cz-mmap__row--sep { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+/* 自定义条目：显示名称占「角色 + 显示名称」两列，其余列与上面对齐 */
+.cz-mmap__row--extra > .cz-mmap__cell--name { grid-column: 1 / 3; }
+.cz-mmap__row--add > .cz-mmap__cell--add { grid-column: 1 / 4; }
+.cz-mmap__row--add > .cz-mmap__add { grid-column: 4 / 6; padding: 0; }
+.cz-mmap__role { font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cz-mmap__muted {
+  min-width: 0;
   font-size: var(--fs-xs);
+  color: var(--text-3);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.cz-mmap__muted { font-size: var(--fs-xs); color: var(--text-3); }
-.cz-mmap__input { height: 30px; font-size: var(--fs-xs); }
-.cz-mmap__1m { display: inline-flex; align-items: center; justify-content: center; }
+.cz-mmap__cell { min-width: 0; }
+.cz-mmap__input { width: 100%; height: 30px; font-size: var(--fs-xs); }
+.cz-mmap__1m { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; cursor: pointer; }
+.cz-mmap__1m input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: inherit; }
+.cz-mmap__1m:has(input:disabled) { cursor: not-allowed; opacity: .45; }
+.cz-mmap__1m-text { display: none; font-size: var(--fs-xs); color: var(--text-2); white-space: nowrap; }
 .cz-mmap__del {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-3);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .cz-mmap__del:hover { background: var(--bg-hover); color: var(--danger); }
-.cz-mmap__hint { font-size: var(--fs-xs); }
+.cz-mmap__del:focus-visible, .cz-mmap__1m:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-sm); }
+
+@container mmap (max-width: 559px) {
+  .cz-mmap__row--th { display: none; }
+  .cz-mmap__grid, .cz-mmap__extra { gap: 0; }
+  .cz-mmap__sub { margin-bottom: var(--sp-1); }
+  .cz-mmap__row,
+  .cz-mmap__row--sep {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "role m1 del"
+      "name name name"
+      "target target target";
+    gap: 6px var(--sp-2);
+    margin: 0;
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+  }
+  .cz-mmap__grid > .cz-mmap__row--th + .cz-mmap__row { border-top: 0; padding-top: 2px; }
+  .cz-mmap__row:has(> .cz-mmap__muted) { grid-template-areas: "role role role" "desc desc desc" "target target target"; }
+  .cz-mmap__row--extra { grid-template-areas: "name m1 del" "target target target"; }
+  .cz-mmap__row--extra > .cz-mmap__cell--name { grid-column: auto; }
+  .cz-mmap__row--add { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "add btn"; border-top: 0; }
+  .cz-mmap__row--add > .cz-mmap__cell--add { grid-area: add; }
+  .cz-mmap__row--add > .cz-mmap__add { grid-area: btn; padding: 0 var(--sp-3); }
+  .cz-mmap__role { grid-area: role; font-weight: 500; }
+  .cz-mmap__muted { grid-area: desc; white-space: normal; }
+  .cz-mmap__cell--name { grid-area: name; }
+  .cz-mmap__cell--target { grid-area: target; }
+  .cz-mmap__1m { grid-area: m1; justify-content: flex-end; }
+  .cz-mmap__del { grid-area: del; }
+  .cz-mmap__gap { display: none; }
+  .cz-mmap__1m-text { display: inline; }
+  /* 自定义条目第一行是显示名称输入框：1M 文字缩短，留宽给输入框 */
+  .cz-mmap__row--extra .cz-mmap__1m-text { font-size: 0; }
+  .cz-mmap__row--extra .cz-mmap__1m-text::after { content: "1M"; font-size: var(--fs-xs); }
+  .cz-mmap__cell:is(.cz-mmap__cell--name, .cz-mmap__cell--target)::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+  }
+  .cz-mmap__row--extra .cz-mmap__cell--name::before { content: none; }
+  /* 触屏：输入框、勾选框加大到能点准 */
+  .cz-mmap__input { height: 36px; }
+  .cz-mmap__1m { height: 32px; }
+  .cz-mmap__del { width: 32px; height: 32px; }
+}
+@container mmap (max-width: 559px) and (min-width: 400px) {
+  /* 稍宽一点的窄屏：显示名称和实际请求模型并排 */
+  .cz-mmap__row:not(.cz-mmap__row--extra):not(.cz-mmap__row--add) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+    grid-template-areas:
+      "role role m1"
+      "name target target";
+  }
+  /* 类名写两遍：优先级要压过上面带两个 :not 的规则 */
+  .cz-mmap__row.cz-mmap__row:has(> .cz-mmap__muted) { grid-template-areas: "role role role" "desc desc desc" "target target target"; }
+}
 
 /* 实际请求模型：输入框 + 下拉 */
 .cz-mmap__picker { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cz-mmap__picker > .cz-mmap__input { flex: 1 1 0; width: auto; min-width: 0; }
 .cz-mmap__caret {
   flex: 0 0 auto;
   width: 24px;
@@ -705,8 +1208,9 @@
   position: absolute;
   z-index: 10;
   top: calc(100% + 4px);
+  left: 0;
   right: 0;
-  width: min(320px, 90vw);
+  min-width: 0;
   padding: var(--sp-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
@@ -742,40 +1246,172 @@
   cursor: pointer;
   word-break: break-all;
 }
-.cz-mmap__opt:hover { background: var(--bg-hover); }
+.cz-mmap__drop.is-up { top: auto; bottom: calc(100% + 4px); }
+/* 叠在对话框（本身已是玻璃）里面：嵌套的 backdrop-filter 取不到对话框后面的内容，半透明底会透出下面的表格，改用实底 */
+.cz-acct-dlg .cz-mmap__drop { background: var(--bg-menu); -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: var(--mat-hi), var(--shadow); }
+.cz-mmap__opt:hover, .cz-mmap__opt:focus-visible { background: var(--bg-hover); outline: none; }
 .cz-mmap__opt.is-on { color: var(--accent); }
 .cz-mmap__empty { padding: 6px var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
 
-/* 账号行里的额度：进度条颜色阈值与输入框的额度面板一致（normal / warning / critical） */
-.cz-acctq { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
-.cz-acctq__row { --meter: var(--accent); display: flex; flex-direction: column; gap: 3px; }
-.cz-acctq__row.is-warning { --meter: var(--warn); }
-.cz-acctq__row.is-critical { --meter: var(--danger); }
-.cz-acctq__text { font-size: var(--fs-xs); line-height: 1.3; color: var(--text-2); }
-.cz-acctq__row.is-critical .cz-acctq__text { color: var(--danger); }
+/* 账号卡片里的额度区：外框已成为主边界，这里去掉小卡片描边避免「框套框」，只用极淡底色与间距分栏。
+   两列排布（单数时最后一块占满一行；额度区不足 300px 时改成一列）。
+   每条额度一律「名称 ━━━━ 百分比」一行，下方直接显示 11px 重置说明（允许换行，不截断省略）；
+   颜色阈值与输入框的额度面板一致（normal / warning / critical → 主题色 / 警告色 / 危险色）；
+   进度条 3px，填充用 transform: scaleX(--p)，第一次出现从 0 长到目标值（@starting-style，600ms ease-out），刷新时从当前值过渡。
+   container-type 加在 .cz-acct-row__extra 上（里面没有 position: fixed 的元素） */
+.cz-acctq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 4px; }
+@container (max-width: 299px) { .cz-acctq { grid-template-columns: minmax(0, 1fr); } }
+.cz-acctq__row {
+  --meter: var(--accent);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 3.2%, transparent);
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-2);
+}
+.cz-acctq__row:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.cz-acctq__row.is-warning {
+  --meter: var(--warn);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+}
+.cz-acctq__row.is-critical {
+  --meter: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+/* 一行式：Claude 的一条限制、Antigravity 的一个窗口共用。名称列定宽，两列里的进度条左端对齐 */
+.cz-acctq__line {
+  --meter: inherit;
+  display: grid;
+  grid-template-columns: minmax(2.4em, max-content) minmax(16px, 1fr) 3em;
+  align-items: center;
+  column-gap: 7px;
+  min-width: 0;
+}
+.cz-acctq__line.is-normal { --meter: var(--accent); }
+.cz-acctq__line.is-warning { --meter: var(--warn); }
+.cz-acctq__line.is-critical { --meter: var(--danger); }
+.cz-acctq__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 仅隐藏读屏分隔符（空格与「 · 」），重置说明本身直接显示；font-size: 0 避免 1px 盒触发横向滚动溢出检测 */
+.cz-acctq__gap, .cz-acctq__dot { position: absolute; width: 1px; height: 1px; font-size: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.cz-acctq__reset {
+  display: block;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.cz-acctq__pct { text-align: right; white-space: nowrap; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cz-acctq__row:not(.cz-acctq__grp).is-warning .cz-acctq__pct, .cz-acctq__line.is-warning > .cz-acctq__pct { color: var(--warn); }
+.cz-acctq__row:not(.cz-acctq__grp).is-critical .cz-acctq__pct, .cz-acctq__line.is-critical > .cz-acctq__pct { color: var(--danger); }
+.cz-acctq__line.is-normal > .cz-acctq__pct { color: var(--text); }
 .cz-acctq__track {
   position: relative;
   display: block;
-  height: 4px;
+  height: 3px;
   border-radius: 2px;
-  background: color-mix(in srgb, var(--meter) 14%, transparent);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
   overflow: hidden;
 }
 .cz-acctq__fill {
   position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 2px;
-  background: var(--meter);
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--meter) 55%, transparent), var(--meter));
+  transform-origin: left center;
+  transform: scaleX(var(--p, 0));
+  transition: transform 600ms var(--ease-out);
 }
+@starting-style { .cz-acctq__fill { transform: scaleX(0); } }
+/* Antigravity：一组模型一块，组名 + 每个窗口（进度行 + 下方重置说明） */
+.cz-acctq__grp { gap: 5px; }
+.cz-acctq__grp-name { font-weight: 600; color: var(--text-2); }
+.cz-acctq__win-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cz-acctq__win-name { color: var(--text-3); }
 .cz-acctq__hint { display: block; margin-top: 3px; font-size: var(--fs-xs); line-height: 1.3; color: var(--text-3); opacity: .8; }
+.cz-acctq__hint--error { color: var(--danger); opacity: 1; }
+.cz-acctq__line--kiro { grid-template-columns: minmax(2.4em, max-content) minmax(16px, 1fr) auto; }
+/* Kiro 引擎状态与更新入口（账号菜单 Claude 组底部） */
+.cz-kiro-eng { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border); padding-top: 8px; }
+.cz-kiro-eng__line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.cz-kiro-eng__ver { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cz-kiro-eng__acts { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cz-kiro-eng__acts > .cz-acct-dup__btn { margin-left: 0; }
+.cz-kiro-eng__badge { color: var(--warn); font-weight: 500; }
+.cz-kiro-eng__step { margin-left: auto; color: var(--accent); overflow-wrap: anywhere; }
+.cz-kiro-eng__err { color: var(--danger); overflow-wrap: anywhere; }
+/* Kiro 添加 / 重新登录对话框：登录方式列表、共享令牌警告、设备码展示 */
+.cz-kiro-methods { display: flex; flex-direction: column; gap: 6px; }
+.cz-kiro-method {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.cz-kiro-method:hover:not(:disabled):not(.is-on) { background: var(--bg-hover); }
+.cz-kiro-method.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.cz-kiro-method:disabled { opacity: .5; cursor: not-allowed; }
+.cz-kiro-method:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-kiro-method__head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cz-kiro-method__label { font-size: var(--fs-sm); font-weight: 500; color: var(--text); }
+.cz-kiro-method__miss { font-size: var(--fs-xs); color: var(--text-3); }
+.cz-kiro-method__desc { font-size: var(--fs-xs); line-height: 1.4; color: var(--text-3); }
+.cz-kiro-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.cz-kiro-warn a { color: var(--accent); }
+.cz-kiro-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.cz-kiro-code__val {
+  flex: 1 1 auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  color: var(--text);
+}
 .cz-acctq--loading { gap: 6px; }
 .cz-acctq__skel {
   display: block;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--bg-hover);
+  height: 44px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
   animation: cz-acctq-pulse 1.4s var(--ease) infinite;
 }
-.cz-acctq__skel--short { width: 60%; }
 @keyframes cz-acctq-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .cz-acctq__skel { animation: none; } }
+:root[data-motion="reduce"] .cz-acctq__skel { animation: none; }

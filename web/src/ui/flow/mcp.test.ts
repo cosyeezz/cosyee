@@ -45,4 +45,20 @@ describe('groupMcpCalls', () => {
   it('没有 MCP 调用时为空', () => {
     expect(groupMcpCalls([tool('1', 'Read')])).toEqual([]);
   });
+  it('排除 Cosyee 自带工具，外部 MCP 行为不变；parseMcpName 仍纯解析', () => {
+    expect(parseMcpName('mcp__cosyee__delegate_send')).toEqual({ server: 'cosyee', tool: 'delegate_send' });
+    expect(groupMcpCalls([
+      tool('1', 'mcp__cosyee__delegate'),
+      tool('2', 'mcp__cosyee__delegate_send'),
+      tool('3', 'mcp__cosyee__delegate_agents'),
+    ])).toEqual([]);
+    const mixed = groupMcpCalls([
+      tool('1', 'mcp__cosyee__delegate_send'),
+      tool('2', 'mcp__github__search', { content: 'ok', isError: false }),
+      tool('3', 'mcp__cosyee__delegate_result'),
+    ]);
+    expect(mixed.map((x) => x.server)).toEqual(['github']);
+    expect(mixed[0]!.tools.map((t) => t.tool)).toEqual(['search']);
+    expect(mixed[0]!.callCount).toBe(1);
+  });
 });

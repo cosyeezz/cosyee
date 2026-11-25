@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { Attachment } from '@cosyee/shared';
 import { UserMessage, pasteName } from './UserMessage';
+import { setFlowZoom } from './flowZoom';
 import { api } from '../../core/api';
 import { FilesContext } from '../files/FileContext';
 import { prepareUserMarkdown } from './userMarkdown';
@@ -243,5 +244,97 @@ describe('UserMessage 附件标签预览（与输入框标签同一个浮窗）'
     await flush();
     expect(document.querySelector('.cz-preview__path')?.textContent).toBe('/x/dir');
     expect(document.querySelector('.cz-preview__thumb')).toBeNull();
+  });
+});
+
+describe('UserMessage 长气泡折叠', () => {
+  const click = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  let mockHeight = 0;
+  let roCb: (() => void) | null = null;
+  const origScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+  const origRO = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+
+  afterEach(() => {
+    mockHeight = 0;
+    roCb = null;
+    if (origScrollHeight) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScrollHeight);
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = origRO;
+    act(() => setFlowZoom(1));
+    vi.restoreAllMocks();
+  });
+
+  function stubHeight(h: number) {
+    mockHeight = h;
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('cz-flow__bubble') ? mockHeight : 0;
+      },
+    });
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      constructor(cb: () => void) { roCb = cb; }
+      observe() {}
+      disconnect() {}
+    };
+  }
+
+  it('高度不超过 320px 时不折叠且不渲染展开按钮', () => {
+    stubHeight(320);
+    const h = render('短消息');
+    expect(h.querySelector('.cz-flow__bubble')!.classList.contains('is-collapsed')).toBe(false);
+    expect(h.querySelector('.cz-flow__bubble-toggle')).toBeNull();
+  });
+
+  it('高度超过 320px 时默认折叠，可展开 / 收起；复制全文与附件标签点击均可用', async () => {
+    stubHeight(420);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const h = render('很长的任务提示 file1', [att('file', 'file1', '/a/b.ts')]);
+    const bubble = h.querySelector('.cz-flow__bubble')!;
+    const toggle = () => h.querySelector<HTMLButtonElement>('.cz-flow__bubble-toggle')!;
+
+    expect(bubble.classList.contains('is-collapsed')).toBe(true);
+    expect(toggle().textContent).toBe('展开全文');
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    expect(bubble.querySelector('.cz-flow__bubble-fade')).not.toBeNull();
+
+    // 折叠态附件标签仍可点开预览
+    click(h.querySelector('.cz-flow__tag')!);
+    expect(document.querySelector('.cz-preview__path')?.textContent).toBe('/a/b.ts');
+    click(h.querySelector('.cz-flow__tag')!);
+
+    // 复制按钮复制完整原文
+    click(h.querySelector('.cz-flow__acts .cz-flow__icon-btn')!);
+    await act(async () => { await Promise.resolve(); });
+    expect(writeText).toHaveBeenCalledWith('很长的任务提示 @"\/a/b.ts"'.replace('\\/', '/'));
+
+    // 展开 / 收起切换
+    click(toggle());
+    expect(bubble.classList.contains('is-collapsed')).toBe(false);
+    expect(toggle().textContent).toBe('收起');
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    expect(bubble.querySelector('.cz-flow__bubble-fade')).toBeNull();
+
+    click(toggle());
+    expect(bubble.classList.contains('is-collapsed')).toBe(true);
+    expect(toggle().textContent).toBe('展开全文');
+  });
+
+  it('缩放变化时重新测量，越过阈值自动切换折叠态', () => {
+    stubHeight(280);
+    const h = render('中等长度消息');
+    expect(h.querySelector('.cz-flow__bubble-toggle')).toBeNull();
+
+    // 放大字号后内容增高超过阈值
+    mockHeight = 360;
+    act(() => setFlowZoom(1.3));
+    expect(h.querySelector('.cz-flow__bubble')!.classList.contains('is-collapsed')).toBe(true);
+    expect(h.querySelector('.cz-flow__bubble-toggle')?.textContent).toBe('展开全文');
+
+    // 缩小或 ResizeObserver 通知高度回落到阈值以下
+    mockHeight = 280;
+    act(() => roCb?.());
+    expect(h.querySelector('.cz-flow__bubble')!.classList.contains('is-collapsed')).toBe(false);
+    expect(h.querySelector('.cz-flow__bubble-toggle')).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 // 侧栏行内的操作按钮：普通图标按钮、带「确认气泡」的危险操作按钮。
 // 所有行内按钮用同一个尺寸（方形 24px）和同一个图标大小，视觉等高。
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon, type IconName } from '../icons/Icon';
 import { leavingProps, usePresence } from '../motion/usePresence';
 import { useDismiss } from './useDismiss';
@@ -67,7 +68,7 @@ interface PopPos {
 /**
  * 危险操作按钮：单击弹出确认气泡（锚定在按钮上），双击跳过确认直接执行（requireConfirm 时不允许跳过）。
  * 单击的动作延迟约 250ms，双击到来时取消它；所有点击都 stopPropagation，避免触发整行的选中。
- * 气泡用 position: fixed，不会被列表的滚动容器裁掉。
+ * 气泡 portal 到 body 再 position: fixed：不被列表的滚动容器裁掉，也不会因为外层菜单是玻璃（backdrop-filter 会成为 fixed 的参照）而错位。
  */
 export function ConfirmActionButton({
   icon,
@@ -95,7 +96,12 @@ export function ConfirmActionButton({
   const { mounted, leaving } = usePresence(open, popRef);
 
   const close = useCallback(() => setPos(null), []);
-  useDismiss(open, wrapRef, close);
+  // 键盘收起（Esc）时焦点还在气泡里：还给按钮
+  const dismiss = useCallback(() => {
+    if (popRef.current?.contains(document.activeElement)) btnRef.current?.focus({ preventScroll: true });
+    setPos(null);
+  }, []);
+  useDismiss(open, [wrapRef, popRef], dismiss);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
@@ -112,7 +118,7 @@ export function ConfirmActionButton({
   }, [open]);
 
   useEffect(() => {
-    if (open) cancelRef.current?.focus();
+    if (open) cancelRef.current?.focus({ preventScroll: true });
   }, [open]);
 
   const showPopover = () => {
@@ -144,7 +150,7 @@ export function ConfirmActionButton({
   };
 
   return (
-    <span className="cz-sidebar__confirm-wrap" ref={wrapRef}>
+    <span className={`cz-sidebar__confirm-wrap${mounted ? ' is-open' : ''}`} ref={wrapRef}>
       <button
         ref={btnRef}
         type="button"
@@ -159,7 +165,7 @@ export function ConfirmActionButton({
       >
         <Icon name={icon} size={ACTION_ICON_SIZE} />
       </button>
-      {mounted && shown && (
+      {mounted && shown && createPortal(
         <div
           ref={popRef}
           className={`cz-sidebar__confirm cz-pop${leaving ? ' is-leaving' : ''}`}
@@ -194,7 +200,8 @@ export function ConfirmActionButton({
               {confirmLabel}
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );

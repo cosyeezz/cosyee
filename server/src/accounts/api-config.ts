@@ -3,10 +3,17 @@
 // 密钥绝不下发前端，列表里只给 Base URL 与密钥末 4 位。
 import fs from 'node:fs';
 import path from 'node:path';
-import { type AccountApiInfo, type ApiAuthType, type ApiModelMap, type ApiModelTarget, MODEL_ALIASES, type ModelAlias } from '@cosyee/shared';
+import { type AccountApiInfo, type ApiAuthType, type ApiModelMap, type ApiModelTarget, type KiroLoginMethod, MODEL_ALIASES, type ModelAlias } from '@cosyee/shared';
 
 export const API_FILE = 'cosyee-api.json';
 export const OFFICIAL_HOST = 'api.anthropic.com';
+
+const KIRO_METHODS = new Set<string>(['builderId', 'idc', 'kiroIde', 'kiroCli', 'apiKey']);
+
+export interface KiroAccountMeta {
+  method: KiroLoginMethod;
+  port: number;
+}
 
 export interface ApiConfig {
   /** 空 = 官方地址 */
@@ -16,6 +23,16 @@ export interface ApiConfig {
   authType: ApiAuthType;
   /** 模型映射；没配 = 不介入 */
   models?: ApiModelMap;
+  /** Kiro 账号元数据（本机 kiro.rs 代理）；普通 API 账号没有 */
+  kiro?: KiroAccountMeta;
+}
+
+function parseKiroMeta(v: unknown): KiroAccountMeta | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.method !== 'string' || !KIRO_METHODS.has(o.method)) return null;
+  if (typeof o.port !== 'number' || !Number.isInteger(o.port) || o.port < 1 || o.port > 65535) return null;
+  return { method: o.method as KiroLoginMethod, port: o.port };
 }
 
 /** 账号目录里的 API 配置；不是 API 账号（或读不到）返回 null */
@@ -25,11 +42,13 @@ export function readApiConfig(dir: string | null | undefined): ApiConfig | null 
     const j = JSON.parse(fs.readFileSync(path.join(dir, API_FILE), 'utf8')) as Record<string, unknown>;
     if (!j || typeof j !== 'object' || typeof j.apiKey !== 'string' || !j.apiKey) return null;
     const models = normalizeModelMap(j.models);
+    const kiro = parseKiroMeta(j.kiro);
     return {
       baseUrl: typeof j.baseUrl === 'string' ? j.baseUrl : '',
       apiKey: j.apiKey,
       authType: j.authType === 'authToken' ? 'authToken' : 'apiKey',
       ...(models ? { models } : {}),
+      ...(kiro ? { kiro } : {}),
     };
   } catch {
     return null;

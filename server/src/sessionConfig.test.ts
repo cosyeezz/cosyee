@@ -121,12 +121,13 @@ describe('state.json 清洗', () => {
         '../x': { model: 'opus', effort: 'high' },
         [B]: { model: 'opus', effort: 'bogus' },
       },
-      disabledTools: ['WebFetch', 'mcp__a__b', 'bad name', 'WebFetch', 3],
-      knownTools: ['Bash', 'mcp__a__b', 'Read', 'Bash', null],
+      disabledTools: ['WebFetch', 'mcp__a__b', 'bad name', 'WebFetch', 3, 'mcp__cosyee__delegate'],
+      knownTools: ['Bash', 'mcp__a__b', 'Read', 'Bash', null, 'mcp__cosyee__delegate'],
     }));
     const s = new StateStore(f).state;
     expect(Object.keys(s.sessionConfigs)).toEqual([A]);
-    expect(s.disabledTools).toEqual(['WebFetch']);
-    expect(s.knownTools).toEqual(['Bash', 'Read']);
+    // Cosyee 自带的 mcp__cosyee__* 归工具面板管，其它 mcp__ 不收
+    expect(s.disabledTools).toEqual(['WebFetch', 'mcp__cosyee__delegate']);
+    expect(s.knownTools).toEqual(['Bash', 'Read', 'mcp__cosyee__delegate']);
   });
 });

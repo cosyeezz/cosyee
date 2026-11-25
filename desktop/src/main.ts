@@ -614,8 +614,12 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   void app.whenReady().then(async () => {
-    // 默认拒绝所有权限请求（摄像头 / 麦克风 / 通知等）；剪贴板写入不需要权限
-    session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+    // 默认拒绝所有权限请求（摄像头 / 通知等）；剪贴板写入不需要权限。
+    // 唯一例外：自己的页面要麦克风（语音输入），只放行纯音频，不给摄像头
+    session.defaultSession.setPermissionRequestHandler((wc, perm, cb, details) => {
+      const audioOnly = perm === 'media' && 'mediaTypes' in details && (details.mediaTypes ?? []).every((t) => t === 'audio');
+      cb(audioOnly && isOwnUrl(wc.getURL()));
+    });
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
     fixMacPath();
     registerIpc();

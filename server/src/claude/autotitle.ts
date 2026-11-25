@@ -61,6 +61,18 @@ export function eventText(e: unknown): string | null {
   return null;
 }
 
+/**
+ * 素材以斜杠命令开头（"/skill 参数"）时改写成 "skill: 参数"。
+ * CLI 处理 generate_session_title(persist: true) 时会先过一遍首条消息过滤：识别成斜杠命令后要求来源是 human，
+ * 而 control_request 不带来源，于是直接返回 null，模型都不调。去掉开头的 "/" 就会按普通文本处理。
+ */
+export function titleMaterial(text: string): string {
+  const m = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(text);
+  if (!m) return text;
+  const args = m[2]?.trim();
+  return args ? `${m[1]}: ${args}` : m[1]!;
+}
+
 export class AutoTitle {
   private states = new Map<string, State>();
 
@@ -119,7 +131,7 @@ export class AutoTitle {
       }
       // 读不到会话文件：非 eager 时下一轮再看
       if (has === null && !eager) return;
-      const description = s.material || (await this.deps.firstPrompt(id, cwd))?.trim() || '';
+      const description = titleMaterial(s.material || (await this.deps.firstPrompt(id, cwd))?.trim() || '');
       if (!description || !r.alive) return;
       s.attempts++;
       const res = await r.request('generate_session_title', { description, persist: true }, TITLE_TIMEOUT_MS);

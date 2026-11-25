@@ -446,7 +446,7 @@ function FeedLoading() {
   return (
     <>
       <div className="mx-feed">
-        {!loading && <ConversationView turns={SKEL_TURNS} onOpenSubagent={() => {}} reveal={skeleton.reveal} />}
+        {!loading && <ConversationView turns={SKEL_TURNS} reveal={skeleton.reveal} />}
         {skeleton.phase !== 'off' && <FlowSkeleton leaving={skeleton.phase === 'leaving'} />}
       </div>
       <button type="button" className="mx-btn" disabled={loading} onClick={() => setLoading(true)}>重新加载</button>

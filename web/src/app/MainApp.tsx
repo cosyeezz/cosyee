@@ -1,16 +1,19 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BUILTIN_PRICES, hasModelMapping,
-  type Account, type AccountList, type Attachment, type Bootstrap, type CliModelList, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
-  type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace,
+  type Account, type AccountList, type AgentModelConfig, type Attachment, type Bootstrap, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace, type Turn,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
+import { upgradeToHttps } from '../core/speech/https';
+import * as call from '../core/speech/call';
+import { CallBar } from '../ui/call/CallBar';
 import { resolveSessionConfig } from '../core/sessionConfig';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { uuid } from '../core/browser';
 import { expandLabels } from '../core/composer';
-import { rewindTo, subagentModelFromHistory, subagentTurnFromHistory } from '../core/reducer';
+import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
@@ -18,12 +21,14 @@ import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import type { Billing } from '../ui/context/CostSection';
-import { isHiddenTurn } from '../ui/flow/format';
+import { getLiveText, isHiddenTurn, isTurnActive } from '../ui/flow/format';
 import { scrollBehavior } from '../ui/flow/motion';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
+import { SessionDock } from '../ui/flow/SessionDock';
 import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
 import { FlowMetaContext, defaultSkillLoader, type FlowMeta } from '../ui/flow/flowContext';
+import { DelegateContext, type DelegateActions } from '../ui/flow/delegateContext';
 import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/FileContext';
 import { FilePreview } from '../ui/files/FilePreview';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
@@ -44,6 +49,8 @@ function startSocket() {
 
 const FALLBACK_CONFIG: SessionConfig = { model: 'sonnet', effort: 'medium' };
 const NO_PROMPTS: PendingPrompt[] = [];
+const NO_JOBS: DelegateJobInfo[] = [];
+const NO_TURNS: Turn[] = [];
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -176,6 +183,7 @@ export function MainApp() {
   useEffect(() => {
     api.bootstrap()
       .then((b) => {
+        if (b.httpsUrl) void upgradeToHttps(b.httpsUrl);
         setBoot(b);
         setConfig(b.defaults);
         startSocket();
@@ -270,6 +278,11 @@ export function MainApp() {
         setAccountVersion((v) => v + 1);
         refreshSidebar();
       }
+    } else if (m.t === 'agy.changed') {
+      // Antigravity 账号变化：让开着的账号菜单重读列表，并清空已缓存的委派模型列表（不整页刷新）
+      setAccountVersion((v) => v + 1);
+      delegateSeq.current += 1;
+      setDelegate({ list: null, error: null, loading: false });
     } else if (m.t === 'error') flash(m.message);
   }), [cwd, loadSessions, loadPins, refreshSidebar, flash]);
 
@@ -281,7 +294,7 @@ export function MainApp() {
 
   // ───────────── 当前会话派生数据 ─────────────
 
-  const turns = view?.conv.turns ?? [];
+  const turns = view?.conv.turns ?? NO_TURNS;
   // 会话流里真正显示的轮：本地命令（/compact、/model 等）整轮不渲染，判断「空会话」也按这个数
   const shownTurns = useMemo(() => turns.filter((t) => !isHiddenTurn(t)), [turns]);
   // 加载会话：骨架屏 → 骨架淡出、内容逐块浮现
@@ -291,8 +304,23 @@ export function MainApp() {
   if (view && !view.loading && !view.loadError) lastFlow.current = shownTurns.length > 0 ? { key: view.id, turns } : null;
   const heldFlow = view?.loading && motionOK() ? lastFlow.current : null;
   const meta = view?.conv.meta;
-  if (meta?.slashCommands?.length) lastMeta.current.slash = meta.slashCommands;
-  if (meta?.skills?.length) lastMeta.current.skills = meta.skills;
+  // 未发过消息的新会话草稿与刚打开的历史会话不会收到 system/init，用探测进程采到的 context.skills / slashCommands 兜底
+  const ctxSkills = useMemo(
+    () => (view?.context?.skills ? view.context.skills.filter((s) => s.mode !== 'off').map((s) => s.name) : []),
+    [view?.context?.skills],
+  );
+  const slashCommands = meta?.slashCommands?.length
+    ? meta.slashCommands
+    : view?.context?.slashCommands?.length
+      ? view.context.slashCommands
+      : lastMeta.current.slash;
+  const skills = meta?.skills?.length
+    ? meta.skills
+    : ctxSkills.length
+      ? ctxSkills
+      : lastMeta.current.skills;
+  if (slashCommands.length) lastMeta.current.slash = slashCommands;
+  if (skills.length) lastMeta.current.skills = skills;
   const running = view?.status === 'running' || view?.status === 'starting';
   const current = sel ? allSessions.find((s) => s.id === sel.id) ?? pins.find((s) => s.id === sel.id) ?? null : null;
   /** 工作空间列表里实际显示的会话（已置顶的在「置顶」里） */
@@ -475,6 +503,65 @@ export function MainApp() {
   const onInterrupt = useCallback(() => {
     if (sel) socket.send({ t: 'interrupt', sessionId: sel.id });
   }, [sel]);
+  const onRetryNow = useCallback(() => {
+    if (sel) socket.send({ t: 'retry.now', sessionId: sel.id });
+  }, [sel]);
+  const onRetryCancel = useCallback(() => {
+    if (sel) socket.send({ t: 'retry.cancel', sessionId: sel.id });
+  }, [sel]);
+
+  // 委派任务：停止 / 追加消息（子代理行与浮层里的按钮）
+  const selId0 = sel?.id ?? null;
+  const onDelegateStop = useCallback((toolUseId: string) => {
+    if (selId0) socket.send({ t: 'delegate.stop', sessionId: selId0, toolUseId });
+  }, [selId0]);
+  const onDelegateSend = useCallback((toolUseId: string, text: string, mode: DelegateSendMode) => {
+    if (selId0) socket.send({ t: 'delegate.send', sessionId: selId0, toolUseId, text, mode });
+  }, [selId0]);
+  const delegateActions = useMemo<DelegateActions>(() => ({ stop: onDelegateStop }), [onDelegateStop]);
+
+  // ───────────── 通话模式 ─────────────
+  // 说完自动发送 → 执行完念交付 → 再听。控制逻辑在 core/speech/call.ts，这里只负责发消息和判断「这一轮结束了」。
+
+  const callState = useSyncExternalStore(call.subscribe, call.getState);
+  /** 发出这句话时的最后一轮：之后出现的、已结束的新一轮就是这句话的结果 */
+  const callBaseline = useRef<string | null>(null);
+  const callLive = useRef({ sendText, running, lastTurnId: null as string | null, canSend: !!selCwd });
+  callLive.current = { sendText, running, lastTurnId: shownTurns[shownTurns.length - 1]?.id ?? null, canSend: !!selCwd };
+
+  const onCall = useCallback(() => {
+    if (call.inCall()) { call.hangup(); return; }
+    const live = callLive.current;
+    // 打开时正在执行：等这一轮结束、念它的结果
+    callBaseline.current = live.running ? null : live.lastTurnId;
+    void call.start({
+      send: (text) => {
+        const cur = callLive.current;
+        if (!cur.canSend) return false;
+        callBaseline.current = cur.lastTurnId;
+        cur.sendText(text);
+        return true;
+      },
+      running: () => callLive.current.running,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (callState.phase !== 'waiting' || running) return;
+    const t = shownTurns[shownTurns.length - 1];
+    if (!t || isTurnActive(t) || t.id === callBaseline.current) return;
+    callBaseline.current = t.id;
+    const text = getLiveText(t, false) || (t.status === 'error' ? '执行出错了，请看屏幕。' : '执行完了。');
+    void call.turnFinished(t.id, text);
+  }, [callState.phase, running, shownTurns]);
+
+  // 离开页面（切走工作空间不算）时挂断，释放麦克风
+  useEffect(() => () => call.hangup(), []);
+
+  // 通话出错（如无法打开麦克风）时在顶部提示一下
+  useEffect(() => {
+    if (callState.phase === 'off' && callState.error) flash(callState.error);
+  }, [callState, flash]);
 
   const onConfigChange = useCallback((c: SessionConfig) => {
     setConfig(c);
@@ -617,12 +704,34 @@ export function MainApp() {
     if (!modelAccount) return;
     storeModels(modelAccount, await api.cliModels({ account: modelAccount, refresh: true }));
   }, [modelAccount, storeModels]);
+  // 子代理模型（全局）：老服务端没有这个接口时不显示这一节
+  const [agentModels, setAgentModels] = useState<AgentModelConfig | null>(null);
+  useEffect(() => {
+    api.agentModels().then(setAgentModels).catch(() => {});
+  }, []);
+  const changeAgentModels = useCallback((c: AgentModelConfig) => {
+    setAgentModels(c);
+    api.saveAgentModels(c).catch((e) => {
+      flash(`保存子代理模型失败：${errText(e)}`);
+      api.agentModels().then(setAgentModels).catch(() => {});
+    });
+  }, [flash]);
+  // agy 的模型列表要启动 agy 才能拿到，打开菜单时才拉
+  const delegateSeq = useRef(0);
+  const [delegate, setDelegate] = useState<{ list: DelegateModelList | null; error: string | null; loading: boolean }>({ list: null, error: null, loading: false });
+  const loadDelegate = useCallback((refresh: boolean) => {
+    const seq = ++delegateSeq.current;
+    setDelegate((d) => ({ ...d, loading: true, error: null }));
+    api.delegateModels(refresh)
+      .then((list) => { if (seq === delegateSeq.current) setDelegate({ list, error: null, loading: false }); })
+      .catch((e) => { if (seq === delegateSeq.current) setDelegate((d) => ({ ...d, error: errText(e), loading: false })); });
+  }, []);
   // 点花费图的柱子：滚到会话流里的这一轮，并短暂高亮
   const jumpToTurn = useCallback((index: number) => {
     const t = view?.conv.turns[index];
     if (!t) return;
     const id = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(t.id) : t.id;
-    const el = document.querySelector<HTMLElement>(`.cz-flow__item[data-turn-id="${id}"]`);
+    const el = document.querySelector<HTMLElement>(`.cz-app__flow .cz-flow__item[data-turn-id~="${id}"]`);
     if (!el) return;
     if (narrow) setDrawer(null);
     el.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
@@ -729,6 +838,26 @@ export function MainApp() {
     }
     api.setAgent(name, enabled).catch((e) => {
       flash(`${enabled ? '开启' : '关闭'}智能体失败：${errText(e)}`);
+      refreshContext();
+    });
+  }, [sel, patch, flash, refreshContext]);
+
+  // 原生子代理开关（全局）：乐观更新；失败则回滚、提示并重新采集
+  const toggleNativeAgents = useCallback((enabled: boolean) => {
+    const id = sel?.id;
+    if (id) {
+      patch((v) => {
+        if (v.id !== id || !v.context) return;
+        v.context = { ...v.context, nativeAgents: enabled };
+      });
+    }
+    api.setNativeAgents(enabled).catch((e) => {
+      if (id) {
+        patch((v) => {
+          if (v.id === id && v.context) v.context = { ...v.context, nativeAgents: !enabled };
+        });
+      }
+      flash(`${enabled ? '开启' : '关闭'}原生子代理失败：${errText(e)}`);
       refreshContext();
     });
   }, [sel, patch, flash, refreshContext]);
@@ -858,7 +987,7 @@ export function MainApp() {
   // 历史里的子代理只有一条 Agent 调用，过程在单独的 jsonl 里，按需加载
   useEffect(() => {
     setLoadedSub(null);
-    if (!liveRun || !sel) return;
+    if (!liveRun || !sel || liveRun.delegate === true) return;
     const empty = liveRun.turn.steps.length === 0 && !liveRun.turn.answer;
     if (!empty || liveRun.status === 'running') return;
     let alive = true;
@@ -867,14 +996,47 @@ export function MainApp() {
         if (!alive) return;
         const turn = subagentTurnFromHistory(entries, { title: liveRun.title, toolUseId: liveRun.toolUseId });
         const model = subagentModelFromHistory(entries) ?? liveRun.model;
-        setLoadedSub(model ? { ...liveRun, turn, model } : { ...liveRun, turn });
+        const effort = subagentEffortFromHistory(entries) ?? liveRun.effort;
+        setLoadedSub({ ...liveRun, turn, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
       })
       .catch(() => { /* 没有子代理记录就显示空 */ });
     return () => { alive = false; };
     // 只在打开的目标变化时加载
   }, [openSub?.turnId, openSub?.toolUseId, sel?.id, sel?.cwd, liveRun?.status]);
 
-  const overlayRun = loadedSub && liveRun && loadedSub.toolUseId === liveRun.toolUseId ? loadedSub : liveRun;
+  // 委派的过程：会话记录里没有，刷新 / 重启后从服务端的过程记录补。
+  // 运行中且页面上的不全（中途刷新过）就轮询；从头看着的只查一次，之后用实时推送
+  const [delegateRec, setDelegateRec] = useState<{ id: string; turn: Turn; model?: string; effort?: string } | null>(null);
+  const liveRunRef = useRef(liveRun);
+  liveRunRef.current = liveRun;
+  const recId = liveRun?.delegate === true ? liveRun.toolUseId : null;
+  useEffect(() => {
+    if (!recId || !sel) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      api.subagent(sel.id, recId, sel.cwd)
+        .then(({ entries }) => {
+          const run = liveRunRef.current;
+          if (!alive || run?.toolUseId !== recId) return;
+          const turn = subagentTurnFromHistory(entries, { title: run.title, toolUseId: recId });
+          setDelegateRec({ id: recId, turn, model: subagentModelFromHistory(entries), effort: subagentEffortFromHistory(entries) });
+          if (run.status === 'running' && recordFuller(run, turn)) timer = setTimeout(load, 1500);
+        })
+        .catch(() => { /* 没有过程记录（旧的委派）就只显示结果 */ });
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [recId, sel?.id, sel?.cwd, liveRun?.status]);
+
+  const overlayRun = useMemo(() => {
+    if (loadedSub && liveRun && loadedSub.toolUseId === liveRun.toolUseId) return loadedSub;
+    if (!liveRun || delegateRec?.id !== liveRun.toolUseId) return liveRun;
+    const run = withRecord(liveRun, delegateRec.turn);
+    const model = run.model ?? delegateRec.model;
+    const effort = run.effort ?? delegateRec.effort;
+    return model === run.model && effort === run.effort ? run : { ...run, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+  }, [loadedSub, liveRun, delegateRec]);
   const onOpenSubagent = useCallback((turnId: string, toolUseId: string) => setOpenSub({ turnId, toolUseId }), []);
   const closeSub = useCallback(() => setOpenSub(null), []);
 
@@ -908,12 +1070,14 @@ export function MainApp() {
       cwd: selDir,
       session: selId,
       open: openPreview,
+      platform: boot?.platform,
+      exec: (lang: string, code: string, signal: AbortSignal) => api.execSnippet({ session: selId, cwd: selDir, lang, code }, signal),
       ...(remote ? {} : {
         reveal: (path: string) => { api.revealFile({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开文件管理器失败：${errText(e)}`)); },
         terminal: (path: string) => { api.openTerminalAt({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开终端失败：${errText(e)}`)); },
       }),
     };
-  }, [selId, selDir, openPreview, flash, remote]);
+  }, [selId, selDir, openPreview, flash, remote, boot?.platform]);
 
   // 技能 / MCP 面板用：MCP 服务器名（解析 mcp__ 工具名）
   const mcpKey = JSON.stringify(meta?.mcpServers?.map((m) => m.name) ?? []);
@@ -952,7 +1116,6 @@ export function MainApp() {
           <ConversationView
             key={heldFlow.key}
             turns={heldFlow.turns}
-            onOpenSubagent={onOpenSubagent}
             sessionKey={heldFlow.key}
           />
         ) : view?.loading ? null : view?.loadError ? (
@@ -963,11 +1126,17 @@ export function MainApp() {
           <ConversationView
             key={view?.id ?? 'none'}
             turns={turns}
-            onOpenSubagent={onOpenSubagent}
             onReply={onReply}
             onFork={onFork}
             sessionKey={sel?.id ?? null}
             reveal={skeleton.reveal}
+            stop={view?.stop ?? null}
+            onRetryNow={onRetryNow}
+            onRetryCancel={onRetryCancel}
+            footer={
+              // 会话活动区（子代理 / 技能 / MCP）放在会话流末尾，跟着内容一起滚动
+              <SessionDock turns={turns} sessionKey={sel?.id ?? null} onOpenSubagent={onOpenSubagent} />
+            }
           />
         )}
         {/* 骨架固定在这个位置渲染：加载中 → 淡出是同一个元素，不会重新挂载闪一下 */}
@@ -978,6 +1147,13 @@ export function MainApp() {
       <div className="cz-app__composer" ref={composerWrapRef}>
         {/* 一直挂着：空了以后自己先播完退场再消失 */}
         <PromptPanel items={view?.prompts ?? NO_PROMPTS} onReply={onPromptReply} />
+        <CallBar
+          state={callState}
+          needsAttention={!!view?.prompts?.length}
+          onHangup={call.hangup}
+          onSkip={call.skipSpeaking}
+          onInterrupt={onInterrupt}
+        />
         <Composer
           ref={composerRef}
           quotes={quotes}
@@ -992,14 +1168,16 @@ export function MainApp() {
           onRewind={onRewind}
           onInterrupt={onInterrupt}
           running={running}
+          onCall={onCall}
+          callActive={callState.phase !== 'off'}
           sessionKey={view?.id ?? null}
           pick={pickFiles}
           paste={api.paste}
           supportsMixed={boot.supportsMixedPick}
           previewInfo={api.previewInfo}
           previewRawUrl={api.previewRawUrl}
-          slashCommands={meta?.slashCommands ?? lastMeta.current.slash}
-          skills={meta?.skills ?? lastMeta.current.skills}
+          slashCommands={slashCommands}
+          skills={skills}
           config={config}
           onConfigChange={onConfigChange}
           loadUsage={loadUsage}
@@ -1028,6 +1206,7 @@ export function MainApp() {
   return (
     <FilesContext.Provider value={filesApi}>
     <FlowMetaContext.Provider value={flowMeta}>
+    <DelegateContext.Provider value={delegateActions}>
       <AppShell
         narrow={narrow}
         onDismiss={closeDrawer}
@@ -1056,7 +1235,7 @@ export function MainApp() {
             onPurgeSessions={purgeSessions}
           />
         }
-        header={selCwd ? <SessionHeader title={current?.title ?? null} cwd={selCwd} branch={branch} onRename={onRename} /> : null}
+        header={selCwd ? <SessionHeader title={current?.title ?? null} cwd={selCwd} branch={branch} session={current} onRename={onRename} /> : null}
         main={main}
         context={
           <ContextPanel
@@ -1086,14 +1265,34 @@ export function MainApp() {
             pricing={pricing}
             billing={billing}
             onJumpTurn={jumpToTurn}
+            agentModels={agentModels && {
+              config: agentModels,
+              onChange: changeAgentModels,
+              modelList,
+              modelMap,
+              delegate: delegate.list,
+              delegateError: delegate.error,
+              delegateLoading: delegate.loading,
+              onLoadDelegate: loadDelegate,
+              nativeAgents: sel && view?.id === sel.id ? view.context?.nativeAgents : undefined,
+              onNativeAgents: toggleNativeAgents,
+            }}
           />
         }
       />
       {webPick && <PickerDialog mode={webPick.mode} title={webPick.title} onDone={finishWebPick} />}
-      <SubagentOverlay run={overlayRun} onClose={closeSub} sessionEffort={config.effort} />
+      <SubagentOverlay
+        run={overlayRun}
+        onClose={closeSub}
+        agentModels={agentModels}
+        delegates={view?.delegates ?? NO_JOBS}
+        onDelegateStop={onDelegateStop}
+        onDelegateSend={onDelegateSend}
+      />
       {preview && selId && selDir && (
         <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />
       )}
+    </DelegateContext.Provider>
     </FlowMetaContext.Provider>
     </FilesContext.Provider>
   );

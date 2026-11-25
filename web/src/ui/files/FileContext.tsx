@@ -1,6 +1,7 @@
 // 本地文件预览的上下文：会话里的路径链接 / 工具行 / 头部路径通过它打开预览、在文件管理器显示、打开终端。
 // 没有 Provider（例如 dev 页面、单元测试里单独渲染组件）时 useFiles() 返回 null，各处退化为不可点击的纯文本。
 import { createContext, useContext } from 'react';
+import type { ExecResult } from '@cosyee/shared';
 
 export interface FileOpenRequest {
   /** 路径：绝对路径 / 相对会话工作目录 / `~/`（已解码，原样的文件系统路径） */
@@ -21,6 +22,10 @@ export interface FilesApi {
    */
   reveal?: (path: string) => void;
   terminal?: (path: string) => void;
+  /** 服务端平台（决定哪些代码块语言能运行，例如 cmd 只在 Windows 上） */
+  platform?: string;
+  /** 在会话工作目录里运行代码块（远程连接也有：输出回显在页面上） */
+  exec?: (lang: string, code: string, signal: AbortSignal) => Promise<ExecResult>;
 }
 
 export const FilesContext = createContext<FilesApi | null>(null);

@@ -1,4 +1,5 @@
 // 定位 claude 可执行文件、构造干净的环境变量、生成 spawn 参数。
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,22 +19,33 @@ export function cleanEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
   return env;
 }
 
+type BeforeClaudeEnvHook = (dir: string) => void;
+let beforeClaudeEnvHook: BeforeClaudeEnvHook | null = null;
+
+/** 启动 claude 构造环境变量前的钩子（供 server.ts 注册 Kiro 代理按需拉起；默认无操作，测试不意外启进程） */
+export function setBeforeClaudeEnv(hook: BeforeClaudeEnvHook | null): void {
+  beforeClaudeEnvHook = hook;
+}
+
 /**
  * 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。
- * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）。
+ * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）；
+ * Kiro 账号在读取配置前先触发钩子确保本地代理已启动并完成端口同步。
  */
 export function claudeEnv(dir: string | null = activeConfigDir()): NodeJS.ProcessEnv {
   const env = cleanEnv();
   if (dir) {
     for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k];
     env.CLAUDE_CONFIG_DIR = dir;
-    const api = readApiConfig(dir);
+    const api0 = readApiConfig(dir);
+    if (api0?.kiro) beforeClaudeEnvHook?.(dir);
+    const api = api0?.kiro ? readApiConfig(dir) : api0;
     if (api) applyApiEnv(env, api);
   }
   return env;
 }
 
-function isFile(p: string): boolean {
+export function isFile(p: string): boolean {
   try {
     return fs.statSync(p).isFile();
   } catch {
@@ -76,4 +88,30 @@ export function spawnSpec(claudePath: string, args: string[]): SpawnSpec {
     return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
   }
   return { command: claudePath, args, verbatim: false };
+}
+
+/** 杀进程树（Windows 用 taskkill /T，其它平台 SIGKILL）；失败忽略。 */
+export function killTree(pid: number): void {
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
+    } catch { /* ignore */ }
+  } else {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch { /* ignore */ }
+  }
+}
+
+/** 同步版（进程退出钩子里用）。 */
+export function killTreeSync(pid: number): void {
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore', timeout: 5000 });
+    } catch { /* ignore */ }
+  } else {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch { /* ignore */ }
+  }
 }

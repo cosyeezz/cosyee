@@ -1,13 +1,10 @@
-// MCP 面板：本轮调用过的 MCP 服务（来自 mcp__<服务>__<工具> 的工具步骤），样式同子代理面板。
-// 每个服务一行，行内列出各工具（可点击）；点击工具在该服务行下方展开每次调用的入参与结果。
-import { memo, useCallback, useMemo, useState } from 'react';
-import type { ToolStep, Turn } from '@cosyee/shared';
+// MCP 服务列表（供 SessionDock 使用）：每个服务一行，行内列出各工具，点击工具在其下方展开每次调用的入参与结果。
+import { memo, useCallback, useState } from 'react';
+import type { ToolStep } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
-import { useFlowMeta } from './flowContext';
 import { toolContentToText } from './format';
-import { groupMcpCalls, type McpServerGroup, type McpToolGroup } from './mcp';
+import type { McpServerGroup, McpToolGroup } from './mcp';
 import { PanelDetail } from './PanelDetail';
-import { McpIcon } from './StatusIcons';
 
 function pretty(v: unknown): string {
   if (typeof v === 'string') return v;
@@ -103,22 +100,12 @@ const ServerRow = memo(function ServerRow({ group: g0, turnActive }: { group: Mc
   );
 });
 
-export const McpPanel = memo(function McpPanel({ steps, active = true }: { steps: Turn['steps']; active?: boolean }) {
-  const { mcpServers } = useFlowMeta();
-  const groups = useMemo(() => groupMcpCalls(steps, mcpServers), [steps, mcpServers]);
-  if (groups.length === 0) return null;
-  const running = active && groups.some((g) => g.running);
+export const McpList = memo(function McpList({ groups, active = true }: { groups: readonly McpServerGroup[]; active?: boolean }) {
   return (
-    <div className="cz-flow__agents cz-flow__mcp">
-      <div className="cz-flow__agents-head">
-        <McpIcon size={16} className={running ? undefined : 'is-still'} />
-        <span className={running ? 'cz-st cz-st-compacting' : undefined}>调用了 {groups.length} 个 MCP 服务</span>
-      </div>
-      <ul className="cz-flow__agents-list">
-        {groups.map((g) => (
-          <ServerRow key={g.server} group={g} turnActive={active} />
-        ))}
-      </ul>
-    </div>
+    <ul className="cz-flow__agents-list">
+      {groups.map((g) => (
+        <ServerRow key={g.server} group={g} turnActive={active} />
+      ))}
+    </ul>
   );
 });

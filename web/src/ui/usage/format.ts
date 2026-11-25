@@ -57,3 +57,59 @@ export function limitLine(l: UsageLimit, now = Date.now()): string {
   const r = resetShort(l.resetsAt, now);
   return `${limitShortTitle(l)} ${l.percent}%${r ? ` · ${r}` : ''}`;
 }
+
+const DAY_MS = 24 * 3_600_000;
+
+function clampMonthDay(year: number, month: number, day: number): Date {
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return new Date(year, month, Math.min(day, lastDay));
+}
+
+/** 按订阅开始日的月度周年推算下一个到期日期（本地时区；日号超过当月天数取月末） */
+export function nextBillingDate(subscribedAt: number, now = Date.now()): Date | null {
+  if (!Number.isFinite(subscribedAt) || subscribedAt <= 0) return null;
+  const start = new Date(subscribedAt);
+  const day = start.getDate();
+  const cur = new Date(now);
+  const today = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate());
+  const cand = clampMonthDay(cur.getFullYear(), cur.getMonth(), day);
+  if (cand.getTime() > today.getTime()) return cand;
+  return clampMonthDay(cur.getFullYear(), cur.getMonth() + 1, day);
+}
+
+export interface SubscriptionEstimate {
+  text: string;
+  title: string;
+}
+
+/** 推算的订阅到期说明（明确标明是按月推算，不冒充官方到期日） */
+export function subscriptionEstimate(subscribedAt: number | null | undefined, now = Date.now()): SubscriptionEstimate | null {
+  if (subscribedAt == null || !Number.isFinite(subscribedAt) || subscribedAt <= 0) return null;
+  const next = nextBillingDate(subscribedAt, now);
+  if (!next) return null;
+  const start = new Date(subscribedAt);
+  const startStr = `${start.getFullYear()}/${pad(start.getMonth() + 1)}/${pad(start.getDate())}`;
+  const nextStr = `${pad(next.getMonth() + 1)}/${pad(next.getDate())}`;
+  return {
+    text: `订阅约 ${nextStr} 到期`,
+    title: `按订阅开始日 ${startStr} 每月推算；官方未提供准确到期日，年付、已取消等情况以账单为准`,
+  };
+}
+
+export interface LoginExpiryInfo {
+  text: string;
+  tone: 'normal' | 'warn' | 'danger';
+}
+
+/** 登录凭据失效说明（准确值）：7 天内警告，已过期标红 */
+export function loginExpiry(expiresAt: number | null | undefined, now = Date.now()): LoginExpiryInfo | null {
+  if (expiresAt == null || !Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  const diff = expiresAt - now;
+  if (diff <= 0) return { text: '登录已失效', tone: 'danger' };
+  if (diff <= 7 * DAY_MS) {
+    const days = Math.max(1, Math.ceil(diff / DAY_MS));
+    return { text: `登录 ${days} 天后失效`, tone: 'warn' };
+  }
+  const d = new Date(expiresAt);
+  return { text: `登录至 ${pad(d.getMonth() + 1)}/${pad(d.getDate())}`, tone: 'normal' };
+}

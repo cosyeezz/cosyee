@@ -6,7 +6,8 @@ import { createPortal } from 'react-dom';
 import type { AccountLogin } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { useMorph } from '../motion/morph';
-import { AddKindSeg } from './ApiAccountDialog';
+import { useFocusTrap } from './useFocusTrap';
+import { AddKindSeg, type AddKind } from './ApiAccountDialog';
 
 export interface AccountDialogProps {
   /** 重新登录的账号；不传 = 添加新账号 */
@@ -18,9 +19,13 @@ export interface AccountDialogProps {
   onDone: (accountId: string | null) => void;
   /** 成功后点「切换到该账号」 */
   onSwitch: (accountId: string) => void;
-  /** 添加时改用 API Key（还没开始登录时显示切换） */
+  /** 添加时切换其它方式（还没开始登录时显示切换） */
+  onChangeKind?: (kind: AddKind) => void;
+  /** 添加时改用 API Key（旧回调，优先用 onChangeKind） */
   onUseApi?: () => void;
-  /** false = 不播入场（从 API Key 方式切换过来时） */
+  /** 顶部的「添加到」分组选择（添加新账号且未开始登录时显示） */
+  targetSeg?: ReactNode;
+  /** false = 不播入场（从 API Key 方式或分组切换过来时） */
   enter?: boolean;
 }
 
@@ -28,11 +33,13 @@ const POLL_MS = 1000;
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const pending = (l: AccountLogin | null) => !!l && (l.status === 'starting' || l.status === 'waiting');
 
-export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch, onUseApi, enter }: AccountDialogProps) {
+export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch, onChangeKind, onUseApi, targetSeg, enter }: AccountDialogProps) {
+  const changeKind = onChangeKind ?? (onUseApi ? (k: AddKind) => { if (k === 'api') onUseApi(); } : undefined);
   const scrimRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // 从触发它的按钮原位长出，关闭时缩回去；fn 在收回动画播完后执行
   const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true, enter });
+  useFocusTrap(panelRef);
   const close = (fn: () => void = onClose) => requestClose(fn);
   const [label, setLabel] = useState('');
   const [login, setLogin] = useState<AccountLogin | null>(resume ?? null);
@@ -113,24 +120,27 @@ export function AccountDialog({ relogin, resume, onClose, onDone, onSwitch, onUs
       <p className="cz-acct-dlg__text">{busy ? '正在启动登录…' : '登录没有启动。'}</p>
     ) : (
       <>
-        {onUseApi && <AddKindSeg kind="login" onChange={onUseApi} />}
-        <p className="cz-acct-dlg__text">
-          点「登录」后会打开浏览器，用另一个账号登录即可。skill、MCP、设置、CLAUDE.md 和会话历史所有账号通用。
-        </p>
-        <label className="cz-acct-dlg__field">
-          <span>备注名（可选）</span>
-          <input
-            ref={labelRef}
-            className="cz-acct-dlg__input"
-            value={label}
-            maxLength={40}
-            placeholder="例如：工作 / 个人"
-            onChange={(e) => setLabel(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !busy) void start();
-            }}
-          />
-        </label>
+        {targetSeg}
+        <div className={`cz-acct-dlg__pane${enter === false ? ' cz-acct-dlg__swap' : ''}`}>
+          {changeKind && <AddKindSeg kind="login" onChange={changeKind} />}
+          <p className="cz-acct-dlg__text">
+            点「登录」后会打开浏览器，用另一个账号登录即可。skill、MCP、设置、CLAUDE.md 和会话历史所有账号通用。
+          </p>
+          <label className="cz-acct-dlg__field">
+            <span>备注名（可选）</span>
+            <input
+              ref={labelRef}
+              className="cz-acct-dlg__input"
+              value={label}
+              maxLength={40}
+              placeholder="例如：工作 / 个人"
+              onChange={(e) => setLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !busy) void start();
+              }}
+            />
+          </label>
+        </div>
       </>
     );
     buttons = (

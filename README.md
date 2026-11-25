@@ -140,8 +140,21 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 | `COSYEE_PORT` | 后端端口，默认 7878 |
 | `COSYEE_WEB_PORT` | 开发模式前端（Vite）端口，默认 5273；前后端都读这个变量 |
 | `COSYEE_CLAUDE` | `claude` 可执行文件的路径，默认从 PATH 查找 |
+| `COSYEE_KIRO_RS` | 手动指定 `kiro-rs` 代理可执行文件路径（默认使用 `~/.cosyee/kiro-rs` 里编译的版本） |
 | `COSYEE_ACCOUNTS_DIR` | 添加的账号的配置目录放在哪里，默认 `~/.claude-accounts`（主要供测试用） |
 | `COSYEE_DESKTOP_DEV` | 仅桌面版开发：设为 1 时窗口加载 Vite 地址并连接已运行的后端（由 `npm run dev:desktop` 设置） |
+| `COSYEE_SPEECH` | 设为 `0` 时启动后不预先下载语音模型（默认在后台下载朗读、识别模型到 `~/.cosyee/speech`，各约 175MB） |
+| `COSYEE_TS_HTTPS` | 设为 `0` 时 Tailscale 模式不自动配置 `tailscale serve` HTTPS 入口（远程语音输入、通话需要 HTTPS） |
+| `COSYEE_SPEECH_MIRROR` | 语音模型下载镜像，替换 `https://github.com/k2-fsa/sherpa-onnx/releases/download` |
+| `COSYEE_NPM_REGISTRY` | 语音运行库（sherpa-onnx-node）优先使用的 npm 仓库，失败再试 npmjs、npmmirror |
+
+## 语音
+
+- **朗读**：交付文字下方的小喇叭，点一下念给你听（再点停止）；旁边是复制按钮。
+- **语音输入**：输入框里的麦克风，点一下开始录、再点一下识别，文字插到光标处，不自动发送。
+- **通话模式**：输入框里的电话按钮。说完停顿约 1 秒自动识别并发送，执行完把交付念给你，念完接着听；执行和朗读时不收音。通话条上可以「打断」朗读、「停止执行」、「挂断」。
+- 都在服务端本机 CPU 上跑（sherpa-onnx：MeloTTS 中英朗读、SenseVoice 识别），不调用云服务。
+- 浏览器只在 HTTPS 或本机页面里允许麦克风。Tailscale 模式启动时会自动执行 `tailscale serve --bg http://127.0.0.1:<端口>`（仅 tailnet 内可见，`tailscale serve` 原本没有任何配置时才写入），经 http 远程打开时网页自动跳到 `https://<机器名>.<tailnet>.ts.net`。撤销：`tailscale serve --https=443 off`。
 
 ## 多账号
 
@@ -166,6 +179,7 @@ npm run pack:desktop   # 打包 Windows x64 安装程序（NSIS），输出到 d
 - **移除**：只能移除添加的账号（不能移除默认账号和当前账号；并行模式下有执行中会话的账号也不能移除）；先解除共享链接，再删除该账号目录里的私有内容，不会碰共享的内容。
 - 在终端里用某个添加的账号：`CLAUDE_CONFIG_DIR=~/.claude-accounts/<id> claude`。
 - 列表只显示名字、套餐和备注名，不显示、不下发邮箱和账号 uuid（前端拿到的 id 只是本地目录名）。
+- **Kiro 账号**：通过本机 [kiro.rs](https://github.com/hank9999/kiro.rs)（未修改的上游源码，需本机 `git` 与 `cargo` 在 `~/.cosyee/kiro-rs/` 下编译，或用 `COSYEE_KIRO_RS` 指定）将 Anthropic API 转发为 Kiro API。每个 Kiro 账号运行独立的本地代理（`127.0.0.1`，配置与凭据隔离在账号目录的 `kiro/` 子目录），支持 AWS Builder ID / IAM Identity Center 设备码登录、只读导入本机 Kiro IDE / Kiro CLI 登录，或使用 `ksk_` API Key。
 
 ## 安全
 

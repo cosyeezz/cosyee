@@ -6,6 +6,7 @@ import { isSessionUuid, projectsDir } from './paths.js';
 import type { Pins } from './pins.js';
 import type { LocatedSession } from './sessions.js';
 import type { DotState } from './state.js';
+import type { StopStore } from './stops.js';
 import { HttpError, type StateStore } from './workspaces.js';
 
 export class Trash {
@@ -14,6 +15,7 @@ export class Trash {
     private readonly dots: DotState,
     private readonly pins: Pins,
     private readonly now: () => number = Date.now,
+    private readonly stops?: StopStore,
   ) {}
 
   isDeleted(id: string): boolean {
@@ -26,11 +28,12 @@ export class Trash {
       .sort((a, b) => b.deletedAt - a.deletedAt);
   }
 
-  /** 软删除：写入 deleted，清掉置顶；不碰会话记录文件。执行中的会话不允许删除。 */
+  /** 软删除：写入 deleted，清掉置顶与停止记录；不碰会话记录文件。执行中的会话不允许删除。 */
   softDelete(id: string, cwd: string, title: string): void {
     if (this.dots.isRunning(id)) throw new HttpError(409, '会话正在执行，不能删除');
     this.store.state.deleted[id] = { cwd, title, deletedAt: this.now() };
     this.pins.clear(id);
+    this.stops?.clear(id);
     this.store.save();
   }
 
@@ -49,6 +52,7 @@ export class Trash {
       }
       this.store.state.deleted[it.id] = { cwd: it.cwd, title: it.title, deletedAt: at };
       this.pins.clear(it.id);
+      this.stops?.clear(it.id);
       deleted.push(it.id);
     }
     if (deleted.length) this.store.save();
@@ -119,6 +123,7 @@ export class Trash {
     delete st.unread[id];
     delete st.forks[id];
     this.pins.clear(id);
+    this.stops?.clear(id);
     this.store.save();
   }
 }

@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  Account, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ClientMsg, ContextUsage, DeletedSession, FilePreview, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionSummary, SkillContent, SkillMode, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgentModelConfig, AgyAccountList, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -52,6 +52,22 @@ const q = (o: Record<string, string>) => new URLSearchParams(o).toString();
 
 export const api = {
   bootstrap: () => req<Bootstrap>('GET', '/api/bootstrap'),
+  /** 语音：模型状态 / 触发下载 / 朗读准备 / 音频地址 / 识别 */
+  speechStatus: () => req<SpeechStatus>('GET', '/api/speech/status'),
+  speechPrepare: (kind: SpeechKind) => req<SpeechStatus>('POST', '/api/speech/prepare', { kind }),
+  ttsPrepare: (text: string) => req<TtsPrepared>('POST', '/api/tts', { text }),
+  ttsAudioUrl: (id: string, i: number) => `/api/tts/${encodeURIComponent(id)}/${i}`,
+  /** 请求体是原始 PCM 而不是 JSON，所以不走 req */
+  stt: async (pcm: Int16Array, rate: number): Promise<{ text: string }> => {
+    const res = await fetch(`/api/stt?rate=${rate}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Blob([pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer]),
+    });
+    const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return { text: data.text ?? '' };
+  },
   workspaces: () => req<{ current: string | null; list: Workspace[] }>('GET', '/api/workspaces'),
   pickWorkspace: () => req<{ workspace: Workspace | null }>('POST', '/api/workspaces/pick'),
   /** 远程连接：网页版选择窗口里选好的工作空间文件夹 */
@@ -76,6 +92,7 @@ export const api = {
   purgeDeleted: (ids: string[]) =>
     req<{ purged: number; failed: number; error: string | null }>('POST', '/api/deleted/purge', { ids }),
   sessions: (cwd: string) => req<SessionSummary[]>('GET', `/api/sessions?${q({ cwd })}`),
+  sessionDetail: (id: string, cwd: string) => req<SessionDetail>('GET', `/api/sessions/${id}/detail?${q({ cwd })}`),
   history: (id: string, cwd: string, since?: string) =>
     req<{ version?: string; entries?: unknown[]; unchanged?: true }>('GET', `/api/sessions/${id}/history?${q(since ? { cwd, since } : { cwd })}`),
   subagent: (id: string, toolUseId: string, cwd: string) =>
@@ -106,6 +123,11 @@ export const api = {
     const qs = q(p);
     return req<CliModelList | null>('GET', `/api/models${qs ? `?${qs}` : ''}`);
   },
+  /** 子代理的模型 / 强度（全局，Claude 子代理与委派） */
+  agentModels: () => req<AgentModelConfig>('GET', '/api/agent-models'),
+  saveAgentModels: (c: AgentModelConfig) => req<{ ok: true; config: AgentModelConfig }>('POST', '/api/agent-models', c),
+  /** 委派后端的可用模型；后端未安装 / 未登录时抛错 */
+  delegateModels: (refresh = false) => req<DelegateModelList>('GET', `/api/delegate/models${refresh ? '?refresh=1' : ''}`),
   /** 记住模型与思考强度（全局） */
   saveDefaults: (c: SessionConfig) => req<{ ok: true }>('POST', '/api/defaults', { model: c.model, effort: c.effort }),
   account: () => req<Account | null>('GET', '/api/account'),
@@ -119,6 +141,8 @@ export const api = {
   cancelAccountLogin: (loginId: string) => req<{ ok: true }>('POST', `/api/accounts/login/${encodeURIComponent(loginId)}/cancel`, {}),
   /** 移除账号：该账号有执行中的会话时抛 ApiError 409 */
   removeAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/accounts/remove', { id }),
+  /** 删掉列表里被隐藏的重复账号（同一个账号添加了多次）；默认 / 当前 / 忙碌的条目跳过 */
+  dedupeAccounts: () => req<AccountDedupeResult>('POST', '/api/accounts/dedupe', {}),
   /** 切换模式 / 并行模式；回到切换模式时其它账号有执行中的会话抛 ApiError 409（data.running），force 强制停止 */
   setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
   setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
@@ -128,6 +152,26 @@ export const api = {
   /** 拉取服务商的模型列表（服务端代发）；apiKey 留空 = 用该账号已存的密钥 */
   apiModelList: (o: { id?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType }) =>
     req<ApiModelListing>('POST', '/api/accounts/api/models', o),
+  /** Kiro 账号（本机 kiro.rs 代理）：引擎状态 / 检查更新 / 编译安装 / 登录 / 额度 */
+  kiroStatus: () => req<KiroStatus>('GET', '/api/kiro'),
+  kiroCheck: () => req<KiroStatus>('POST', '/api/kiro/engine/check', {}),
+  kiroBuild: () => reqDetailed<KiroStatus>('POST', '/api/kiro/engine/build', {}),
+  kiroLogin: (o: { method: KiroLoginMethod; label?: string; accountId?: string; startUrl?: string; region?: string; apiKey?: string }) =>
+    reqDetailed<AccountLogin>('POST', '/api/kiro/login', o),
+  kiroLoginStatus: (loginId: string) => reqDetailed<AccountLogin>('GET', `/api/kiro/login/${encodeURIComponent(loginId)}`),
+  kiroLoginCancel: (loginId: string) => req<{ ok: true }>('POST', `/api/kiro/login/${encodeURIComponent(loginId)}/cancel`, {}),
+  kiroBalance: (account: string) => req<KiroBalance>('GET', `/api/kiro/balance?${q({ account })}`),
+  /** Antigravity（agy）多账号：列表、切换、登录、授权码、取消、移除、改备注名 */
+  agyAccounts: (refresh = false) => req<AgyAccountList>('GET', '/api/agy-accounts' + (refresh ? '?refresh=1' : '')),
+  switchAgyAccount: (id: string) => req<{ ok: true }>('POST', '/api/agy-accounts/switch', { id }),
+  startAgyLogin: (o: { label?: string; accountId?: string }) => reqDetailed<AccountLogin>('POST', '/api/agy-accounts/login', o),
+  agyLogin: (loginId: string) => reqDetailed<AccountLogin>('GET', `/api/agy-accounts/login/${encodeURIComponent(loginId)}`),
+  submitAgyCode: (loginId: string, code: string) =>
+    req<{ ok: true }>('POST', `/api/agy-accounts/login/${encodeURIComponent(loginId)}/code`, { code }),
+  cancelAgyLogin: (loginId: string) => req<{ ok: true }>('POST', `/api/agy-accounts/login/${encodeURIComponent(loginId)}/cancel`, {}),
+  removeAgyAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/agy-accounts/remove', { id }),
+  dedupeAgyAccounts: () => req<AccountDedupeResult>('POST', '/api/agy-accounts/dedupe', {}),
+  setAgyLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/agy-accounts/label', { id, label }),
   pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
   /** 远程连接的网页版选择窗口：列出服务端目录（path 为空 = 当前工作空间）/ 登记选好的路径 */
   browse: (path?: string) => req<BrowseDir>('GET', `/api/browse${path ? `?${q({ path })}` : ''}`),
@@ -152,6 +196,13 @@ export const api = {
   /** 在文件管理器中显示（文件会被选中） / 在该路径所在目录打开终端 */
   revealFile: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/reveal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   openTerminalAt: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/terminal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
+  /** 在会话工作目录里运行代码块；signal 中止请求后服务端会杀掉进程 */
+  execSnippet: async (t: { session: string; cwd?: string; lang: string; code: string }, signal?: AbortSignal): Promise<ExecResult> => {
+    const res = await fetch('/api/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(t), signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    return data as ExecResult;
+  },
   context: (id: string) => req<ContextUsage | null>('GET', `/api/context/${id}`),
   /**
    * cwd：会话所在目录（可选；后端没有进程时据此定位会话，省去按 id 全局查找）。
@@ -171,6 +222,7 @@ export const api = {
   /** 自动压缩窗口（全局，token 数；null = 不覆盖）；运行中的会话立即生效，服务端随后推送新的上下文 */
   setCompactWindow: (window: number | null) => req<{ ok: true; window: number | null }>('POST', '/api/compact-window', { window }),
   setAgent: (name: string, enabled: boolean) => req<{ ok: true; disabledAgents: string[] }>('POST', '/api/agents', { name, enabled }),
+  setNativeAgents: (enabled: boolean) => req<{ ok: true; enabled: boolean }>('POST', '/api/native-agents', { enabled }),
   /** 所有会话的工具累计调用次数（服务端增量扫描会话记录）；老服务端没有这个接口时抛错 */
   getToolStats: () => req<ToolStats>('GET', '/api/tools/stats'),
   /** 模型价格表（服务端定期抓官方页面，失败时是内置表） */

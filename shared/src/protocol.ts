@@ -37,6 +37,32 @@ export interface SessionSummary {
   lastModel?: string;
 }
 
+/**
+ * 会话悬浮卡片的详情：悬停时才读（不随列表下发），由会话记录统计得出。
+ * 只统计主线程、当前链（rewind 废弃的分支不算）；文本都已压成单行并截断。读不到的项为 null，不编造。
+ */
+export interface SessionDetail {
+  /** 第一条带时间戳的消息时间，毫秒 */
+  createdAt: number | null;
+  /** 最后一条带时间戳的消息时间，毫秒 */
+  lastMessageAt: number | null;
+  /** 用户真实发送的消息条数（不含工具结果、系统注入） */
+  userMessages: number;
+  /** 工具调用次数 */
+  toolCalls: number;
+  /** 用户的第一条 / 最后一条消息；只有一条时 lastPrompt 为 null */
+  firstPrompt: string | null;
+  lastPrompt: string | null;
+  /** 助手最后一段文字回复 */
+  lastReply: string | null;
+  /** 最后一条 assistant 消息的模型（原始 id） */
+  model: string | null;
+  /** 记录里最后一次出现的 git 分支（detached HEAD 时为 null） */
+  branch: string | null;
+  /** 最近一次请求的上下文占用（输入 + 缓存读写），token */
+  contextTokens: number | null;
+}
+
 /** 「已删除」列表里的一项（软删除：只是从列表隐藏，会话记录文件原样保留） */
 export interface DeletedSession {
   id: string;
@@ -66,8 +92,14 @@ export interface AccountEntry {
   loggedIn: boolean;
   active: boolean;
   isDefault: boolean;
+  /** 订阅开始时间，毫秒（来自登录信息）。官方不提供到期日，前端据此按月推算并标明是推算；读不到为 null / 不带 */
+  subscribedAt?: number | null;
+  /** 登录凭据的失效时间，毫秒（到时需要重新登录）；读不到为 null / 不带 */
+  loginExpiresAt?: number | null;
   /** API 账号（API Key + 可选的自定义 Base URL）才有；claude.ai 登录的账号没有 */
   api?: AccountApiInfo;
+  /** Kiro 账号（本机 kiro.rs 代理）才有；这类账号不下发 api */
+  kiro?: AccountKiroInfo;
 }
 
 /** API 账号的认证方式：apiKey = ANTHROPIC_API_KEY（x-api-key 头）；authToken = ANTHROPIC_AUTH_TOKEN（Authorization: Bearer） */
@@ -142,6 +174,44 @@ export interface CliModelList {
   at: number;
 }
 
+/**
+ * 子代理的模型配置（全局，上下文栏「子代理模型」里设置）。子代理面板直接显示这里的值，不再显示「继承主会话」。
+ * GET /api/agent-models 取；POST /api/agent-models 整体提交，返回 { ok, config }。改动对运行中的会话立即生效。
+ */
+export interface AgentModelConfig {
+  /**
+   * Claude 原生子代理（Agent 工具）：服务端用 PreToolUse hook 给没写 model / effort 的调用补上这里的值，
+   * 因此优先于智能体定义里的 model / effort（CLI 里调用参数 > 定义 > 环境变量）；调用时点名的值不动。
+   * model 只能是别名：Agent 工具的 model 参数是枚举。
+   */
+  claude: { model: ModelAlias; effort: Effort };
+  /** Antigravity（delegate 工具）：model 是基础模型（DelegateModel.value），null = 用 agy 自己的默认 */
+  agy: { model: string | null; effort: Effort | null };
+}
+
+export const DEFAULT_AGENT_MODELS: AgentModelConfig = {
+  claude: { model: 'sonnet', effort: 'medium' },
+  agy: { model: null, effort: null },
+};
+
+/** Antigravity 的一个基础模型；efforts 为空 = 不分思考强度 */
+export interface DelegateModel {
+  value: string;
+  displayName: string;
+  efforts: Effort[];
+}
+
+/**
+ * GET /api/delegate/models（?refresh=1 强制重新拉取）：agy 报告的可用模型。
+ * agy 未安装 / 未登录时返回 503 + 错误信息。
+ */
+export interface DelegateModelList {
+  models: DelegateModel[];
+  /** agy 自己的默认（新会话的 currentModelId 拆出来的） */
+  current: { model: string; effort: Effort | null } | null;
+  at: number;
+}
+
 /** 多账号模式：switch = 同一时间只有一个账号生效（切换时停止所有会话）；parallel = 每个会话绑定自己的账号，多个账号同时生效 */
 export type AccountMode = 'switch' | 'parallel';
 
@@ -150,10 +220,109 @@ export interface AccountList {
   list: AccountEntry[];
   /** 当前正在进行的登录（添加 / 重新登录账号），没有为 null */
   login: AccountLogin | null;
+  /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
+  duplicates?: number;
+}
+
+export interface AccountDedupeResult {
+  /** 删掉的重复条目数 */
+  removed: number;
+  /** 因默认账号 / 当前账号 / 正在登录 / 有执行中会话或委派任务而保留的条目数 */
+  skipped: number;
+}
+
+/** Kiro 账号的登录方式：builderId / idc = 设备码登录；kiroIde / kiroCli = 导入本机已有的登录；apiKey = Kiro API Key（ksk_…） */
+export type KiroLoginMethod = 'builderId' | 'idc' | 'kiroIde' | 'kiroCli' | 'apiKey';
+
+/** Kiro 账号的公开信息：不含令牌、clientSecret、密钥、邮箱 */
+export interface AccountKiroInfo {
+  method: KiroLoginMethod;
+  /** 该账号的 kiro.rs 进程状态（按需启动） */
+  proxy: 'stopped' | 'starting' | 'ready' | 'failed';
+  error: string | null;
+}
+
+export interface KiroBalance {
+  subscription: string | null;
+  used: number;
+  limit: number;
+  /** 重置时间，毫秒时间戳；未知为 null */
+  resetsAt: number | null;
+}
+
+export interface KiroEngineVersion {
+  /** 上游 commit 完整 sha */
+  commit: string;
+  /** commit 时间，毫秒 */
+  date: number | null;
+  /** 提交标题 */
+  title: string | null;
+}
+
+/** kiro.rs 引擎：未修改的上游源码（hank9999/kiro.rs master）在本机编译的产物 */
+export interface KiroEngineStatus {
+  /** env = COSYEE_KIRO_RS 指定；managed = ~/.cosyee/kiro-rs 里编译的；none = 还没有 */
+  source: 'env' | 'managed' | 'none';
+  current: KiroEngineVersion | null;
+  /** 上次检查到的上游最新版；没检查过为 null */
+  latest: KiroEngineVersion | null;
+  updateAvailable: boolean;
+  checkedAt: number | null;
+  /** 编译缺的工具（git / cargo）；空 = 可以编译 */
+  missingTools: string[];
+  build: { state: 'idle' | 'running' | 'failed'; step: string | null; error: string | null };
+  /** 当前引擎是否带上游自带的管理页面（构建要用 pnpm 拉前端依赖；失败不影响引擎本身） */
+  adminUi: boolean;
+  /** 管理页面没构建成功的原因 */
+  adminUiError: string | null;
+}
+
+/** kiro.rs 服务（全部 Kiro 账号的代理进程） */
+export interface KiroServiceStatus {
+  /** 总开关：false = 用户停止了服务，会话也不会再自动拉起代理；默认 true */
+  enabled: boolean;
+  /** Kiro 账号数 */
+  accounts: number;
+  /** 代理在运行 / 启动失败的账号数 */
+  running: number;
+  failed: number;
+  /** 正在执行的 Kiro 会话数（停止 / 重启前确认用） */
+  busySessions: number;
+  /** 在运行但还是旧版引擎的代理数（重启后用新版） */
+  outdated: number;
+  /** 逐个 Kiro 账号的代理（选择打开哪一个的管理页面用） */
+  items: { id: string; label: string; proxy: AccountKiroInfo['proxy'] }[];
+}
+
+/** Antigravity CLI（agy）本体的版本与运行情况；安装 / 升级都走官方渠道，不改它的文件 */
+export interface AgyCliStatus {
+  installed: boolean;
+  /** COSYEE_AGY 指定的程序：只显示，不安装 / 升级 */
+  custom: boolean;
+  version: string | null;
+  /** 官方最新版；没查过或查不到 = null */
+  latest: string | null;
+  updateAvailable: boolean;
+  checkedAt: number | null;
+  checkError: string | null;
+  /** Cosyee 持有的 agy acp 常驻进程数，其中正在执行任务的数量 */
+  processes: number;
+  busy: number;
+  job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
+}
+
+export interface KiroStatus {
+  engine: KiroEngineStatus;
+  service: KiroServiceStatus;
+  /** 本机有没有可导入的登录（只看文件 / 记录是否存在） */
+  imports: { kiroIde: boolean; kiroCli: boolean };
+  login: AccountLogin | null;
 }
 
 /** 添加 / 重新登录账号的进度 */
 export interface AccountLogin {
+  /** 设备码登录（Kiro）时要在网页上核对的验证码 */
+  userCode?: string | null;
   loginId: string;
   status: 'starting' | 'waiting' | 'done' | 'failed';
   /** 浏览器没自动打开时手动打开的登录页 */
@@ -161,6 +330,59 @@ export interface AccountLogin {
   /** 完成后对应的账号 id */
   accountId: string | null;
   error: string | null;
+}
+
+/** Antigravity 一条额度窗口（同组模型共享）：window = '5h' | 'weekly' | 其它原样透传 */
+export interface AgyQuotaBucket {
+  window: string;
+  /** 已用百分比 0–100（agy 给的是剩余比例，这里换算成已用，与 Claude 额度一致） */
+  percent: number;
+  severity: UsageSeverity;
+  /** 重置时间，毫秒时间戳 */
+  resetsAt: number | null;
+}
+
+/** Antigravity 一组共享额度的模型（如「Gemini」「Claude · GPT」） */
+export interface AgyQuotaGroup {
+  name: string;
+  buckets: AgyQuotaBucket[];
+}
+
+export interface AgyQuota {
+  groups: AgyQuotaGroup[];
+  /** 采集时间 */
+  at: number;
+}
+
+/** Antigravity（agy）账号列表里的一项；委派任务用。不含令牌；邮箱只用来显示。 */
+export interface AgyAccountEntry {
+  /** 'default' = 本机 agy 自己的登录（系统凭据库）；其它 = 在 Cosyee 里添加的账号（各自独立的数据目录） */
+  id: string;
+  /** 用户起的备注名；没填时服务端自动起「账号 2」这样的名字；默认账号为空 */
+  label: string;
+  /** 套餐名（如 'Google AI Pro'）；还没读到为 null */
+  plan: string | null;
+  /** null = 正在检测 */
+  loggedIn: boolean | null;
+  /** 新的委派任务用这个账号 */
+  active: boolean;
+  isDefault: boolean;
+  /** 正在用该账号执行的委派任务数 */
+  running: number;
+  /** 登录的 Google 账号邮箱；还没读到为 null。没起备注名时用它当标题 */
+  email?: string | null;
+  /** 各组模型的额度；还没读到 / 读取失败为 null */
+  quota?: AgyQuota | null;
+}
+
+export interface AgyAccountList {
+  /** 本机装了 agy；没装时 list 为空，不能添加 */
+  installed: boolean;
+  list: AgyAccountEntry[];
+  /** 当前正在进行的登录，没有为 null */
+  login: AccountLogin | null;
+  /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
+  duplicates?: number;
 }
 
 export interface PickedItem {
@@ -299,11 +521,20 @@ export interface ContextUsage {
    * 模型看不到 / 派发不了这些智能体；关闭后它们可能不再出现在 init.agents 与 agents 里，前端据此保留在列表上
    */
   disabledAgents?: string[];
+  /** Cosyee 保存的「原生子代理」开关（全局）；false = 有可用委派的会话停用整个 Agent 工具。旧服务端不带 */
+  nativeAgents?: boolean;
+  /** 智能体名 → 描述原文（CLI initialize 的 agents，含内置；已关闭的读磁盘上的定义）。Agent 工具里列给模型的就是它 */
+  agentDescriptions?: Record<string, string>;
   /**
    * 内置工具名（最近一次 system/init 的 tools，不含 mcp__ 工具）。探测进程不发消息、收不到 init，
    * 页面重开也会错过 init，所以服务端记下来随上下文下发：本会话的优先，否则用最近一次见到的（落盘）
    */
   tools?: string[];
+  /**
+   * 可用的斜杠命令名（来自 system/init 的 slash_commands；探测进程收不到 init 时取 initialize 响应的 commands）。
+   * 供输入框 `/` 菜单在会话尚未发过消息、未收到 init 时兜底
+   */
+  slashCommands?: string[];
   /**
    * 单个内置工具定义的 token 占用（get_context_usage 的 systemTools / deferredBuiltinTools）。
    * 目前的 CLI 版本这两项恒为空，只给「System tools」「System tools (deferred)」两个合计；CLI 以后给了才会有。
@@ -338,6 +569,11 @@ export interface ContextSkill {
   source: string | null;
   /** 磁盘上是用户级 / 项目级 skill，可以移除（插件、内置的不行）；读不到磁盘信息时不带 */
   removable?: boolean;
+  /**
+   * 放进系统提示词 skill 清单里的描述原文（CLI initialize 的 commands，取不到时读 SKILL.md 的 description）；
+   * 模型看到的那一行是「- 名字: 描述」。都取不到时不带
+   */
+  description?: string;
 }
 
 /** 磁盘上的 SKILL.md（GET /api/skills/content） */
@@ -358,7 +594,8 @@ export interface ContextMcpServer {
   status: string;
   /** 各工具 token 合计 */
   tokens: number;
-  tools: { name: string; tokens: number | null }[];
+  /** description：mcp_status 报告的工具描述（随工具定义放进上下文）；CLI 没给时不带 */
+  tools: { name: string; tokens: number | null; description?: string }[];
 }
 
 /**
@@ -481,6 +718,34 @@ export interface UsageInfo {
 // POST /api/accounts/label {id, label}      → { ok: true }   修改备注名
 // POST /api/accounts/api {id?, label?, baseUrl?, apiKey?, authType?} → { ok: true, id }   添加（不带 id）或修改 API 账号。
 //                                             baseUrl 空 = 官方地址；修改时 apiKey 留空 = 不变；该账号有执行中的会话时 409，空闲进程会先停掉
+// GET  /api/kiro                            → KiroStatus   kiro.rs 引擎状态、可导入的登录、进行中的登录
+// POST /api/kiro/engine/check               → KiroStatus   查询上游 master 最新 commit
+// POST /api/kiro/engine/build               → KiroStatus   后台拉取上游最新源码并编译（未修改）；仅本机连接，完成后下次启动代理时生效
+// GET  /api/kiro/engine/log?from=<n>        → { lines: string[]; next: number }   本次编译日志的增量
+// POST /api/kiro/service/admin?account=<id>  → { url, key }     kiro.rs 自带的管理页面地址与管理密钥；代理没运行时先启动。仅本机的非浏览器请求（带 Origin / Sec-Fetch-Site 的一律 403），不写日志
+// GET  /api/agy/cli                         → AgyCliStatus
+// POST /api/agy/cli/check                   → AgyCliStatus   查询官方最新版；仅本机连接
+// POST /api/agy/cli/update                  → AgyCliStatus   后台运行 agy update；没安装时走官方安装脚本；仅本机连接；已在进行 409
+// GET  /api/agy/cli/log?from=<n>            → { lines: string[]; next: number }
+// POST /api/agy/cli/restart[?force=1]       → AgyCliStatus   回收常驻的 agy acp 进程（下次委派重新启动）；有执行中任务且没带 force 时 409 { error, running }；仅本机连接
+// POST /api/kiro/service/start              → KiroStatus   打开总开关并启动全部 Kiro 账号的代理；没装引擎 409；仅本机连接
+// POST /api/kiro/service/stop[?force=1]     → KiroStatus   关闭总开关（持久化）并停止全部代理；有执行中的 Kiro 会话且没带 force 时 409 { error, running }；仅本机连接
+// POST /api/kiro/service/restart[?force=1]  → KiroStatus   用当前引擎重启全部代理；409 同上；仅本机连接
+//                                             engine/* 与 service/* 的 POST 都没有请求体
+// POST /api/kiro/login {method, label?, accountId?, startUrl?, region?, apiKey?} → AccountLogin   添加或重新登录 Kiro 账号；同一时间只允许一个
+// GET  /api/kiro/login/:loginId             → AccountLogin
+// POST /api/kiro/login/:loginId/cancel      → { ok: true }
+// GET  /api/kiro/balance?account=<id>       → KiroBalance   Kiro 账号额度（会按需启动代理）
+// GET  /api/agy-accounts                    → AgyAccountList   Antigravity（agy）账号列表与进行中的登录；登录状态 / 套餐 / 邮箱 / 额度后台检测，变化时广播 agy.changed
+//      ?refresh=1：额度超过 90 秒没更新的已登录账号重新检测（账号菜单打开时用）
+// POST /api/agy-accounts/switch {id}        → { ok: true }   新的委派任务改用该账号；执行中的任务和已有的委派会话继续用原来的账号，不停止任何进程
+// POST /api/agy-accounts/login {label?, accountId?} → AccountLogin   添加账号（或重新登录）：后台运行 agy acp --login，不打开本机浏览器，
+//                                             只给出登录链接，登录后把页面上的授权码（或完整网址）交回来；同一时间只允许一个
+// GET  /api/agy-accounts/login/:loginId     → AccountLogin
+// POST /api/agy-accounts/login/:loginId/code {code} → { ok: true }
+// POST /api/agy-accounts/login/:loginId/cancel → { ok: true }
+// POST /api/agy-accounts/remove {id}        → { ok: true }   移除添加的账号并删除它的数据目录；默认账号、当前账号、有执行中任务的账号不能移除（409）
+// POST /api/agy-accounts/label {id, label}  → { ok: true }   修改备注名
 // POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }   系统对话框，仅本机连接
 // GET  /api/browse?path=                    → BrowseDir   网页版选择窗口（远程连接）：列出服务端目录
 // POST /api/pick/paths {paths: string[]}    → { items: PickedItem[]; supportsMixed: true }   登记网页里选好的路径
@@ -514,6 +779,38 @@ export interface Bootstrap {
    * 改用网页版选择窗口（/api/browse），在远端浏览服务端的文件。
    */
   remote: boolean;
+  /**
+   * 服务端的 Tailscale HTTPS 入口（https://<机器名>.<tailnet>.ts.net，tailscale serve 反代）。
+   * 浏览器只在 HTTPS / 本机页面里允许用麦克风：经 http 远程访问时网页自动跳到这里。没有时 null。
+   */
+  httpsUrl?: string | null;
+}
+
+// ───────────── 语音：朗读交付文字（TTS）/ 语音输入（STT），都在服务端用本地模型 ─────────────
+// 模型和运行库首次使用时下载到 ~/.cosyee/speech，之后离线可用。
+//   GET  /api/speech/status            → SpeechStatus
+//   POST /api/speech/prepare { kind }  → SpeechStatus（未就绪则开始下载；已在下载 / 已就绪时不重复）
+//   POST /api/tts { text }             → TtsPrepared（未就绪 409；text 是交付文字原文 Markdown，服务端清洗、分句）
+//   GET  /api/tts/:id/:i               → 第 i 段音频（audio/wav）
+//   POST /api/stt?rate=16000           → { text }（请求体：单声道 16 位小端 PCM，application/octet-stream；未就绪 409）
+
+export type SpeechKind = 'tts' | 'stt';
+
+export interface SpeechAssetStatus {
+  /** missing = 未下载；downloading = 下载 / 解压中；ready = 可用；error = 上次准备失败（可再次 prepare 重试） */
+  phase: 'missing' | 'downloading' | 'ready' | 'error';
+  /** 下载进度（字节，包含运行库），phase = downloading 时有；total 未知时为 0 */
+  received?: number;
+  total?: number;
+  error?: string;
+}
+
+export type SpeechStatus = Record<SpeechKind, SpeechAssetStatus>;
+
+/** 朗读准备结果：count 段音频，按 /api/tts/:id/0..count-1 依次播放；没有可朗读的内容时 count = 0 */
+export interface TtsPrepared {
+  id: string;
+  count: number;
 }
 
 // ───────────── WebSocket ─────────────
@@ -557,7 +854,37 @@ export type ClientMsg =
   /** 修改模型、强度等，下一轮生效 */
   | { t: 'config'; sessionId: string; config: SessionConfig }
   /** 回应一个待处理的请求（id = PendingPrompt.id）。已不存在（被取消 / 已回应）时忽略 */
-  | { t: 'prompt.reply'; sessionId: string; id: string; reply: PromptReply };
+  | { t: 'prompt.reply'; sessionId: string; id: string; reply: PromptReply }
+  /** 停止一个委派任务（toolUseId = DelegateJobInfo.toolUseId）。前台任务的工具调用返回「用户已停止」 */
+  | { t: 'delegate.stop'; sessionId: string; toolUseId: string }
+  /** 给委派任务追加消息：steer=打断当前 prompt 立即带上这条重新执行（缺省）；queue=当前 prompt 结束后再执行 */
+  | { t: 'delegate.send'; sessionId: string; toolUseId: string; text: string; mode?: DelegateSendMode }
+  /** 立即重试一次因错误停止的会话（同样要求会话空闲）；没有停止记录时忽略 */
+  | { t: 'retry.now'; sessionId: string }
+  /** 取消自动重试：停止记录保留（state=stopped）用于显示原因 */
+  | { t: 'retry.cancel'; sessionId: string };
+
+/**
+ * 会话因错误停止的记录（服务端落盘，切换会话 / 重启后仍在）。
+ * rate_limit：额度用尽，到 retryAt（额度重置时间之后）自动重试；transient：过载 / 5xx / 网络 / 进程异常退出，按退避自动重试；
+ * fatal：安全拦截、未登录、上下文过长等，不自动重试，只用于显示原因。
+ * state：waiting = 等待自动重试；retrying = 已发出重试消息、这一轮在执行；gave_up = 多次自动重试仍失败；stopped = 用户取消或 fatal。
+ * 用户自己发消息 / 回退 / 删除会话、或重试成功后记录清除。
+ */
+export type StopKind = 'rate_limit' | 'transient' | 'fatal';
+export type StopState = 'waiting' | 'retrying' | 'gave_up' | 'stopped';
+export interface StopInfo {
+  kind: StopKind;
+  /** 错误原文（额度提示 / API Error / 退出原因） */
+  reason: string;
+  /** 下次自动重试的时间（毫秒时间戳）；state 不是 waiting 时没有 */
+  retryAt?: number;
+  /** 已自动重试的次数 */
+  attempts: number;
+  state: StopState;
+  /** 记录时间（毫秒时间戳） */
+  at: number;
+}
 
 /**
  * idle：进程在，等待输入；running：一轮进行中（含 result 之后仍有后台子代理在跑、CLI 自动续轮的阶段）；
@@ -604,6 +931,93 @@ export interface QueueItem {
   at: number;
 }
 
+// ───────────── 委派任务（cosyee MCP 的 delegate 系列工具） ─────────────
+
+export type DelegateJobState = 'running' | 'done' | 'error' | 'stopped';
+export type DelegateSendMode = 'steer' | 'queue';
+
+/** 一个委派任务（按委派 conversation_id 计；toolUseId 是界面上对应的那次 delegate 调用） */
+export interface DelegateJobInfo {
+  toolUseId: string;
+  conversationId: string;
+  description: string;
+  /** run_in_background 启动（或 delegate_send 续跑）的任务：结束时后端给 CLI 注入完成通知 */
+  background: boolean;
+  state: DelegateJobState;
+  /** 毫秒时间戳 */
+  startedAt: number;
+  endedAt?: number;
+  /** 排队中的追加消息数 */
+  pending: number;
+  /** 最近一次 prompt 的输出尾部（最多约 2KB）；结束后是最终回答的尾部 */
+  tail: string;
+  /** state=error 时的原因 */
+  error?: string;
+}
+
+/** 后台委派结束时注入给 CLI 的 user 消息（模型看到的完成通知；界面与会话标题都把它当噪音隐藏） */
+export interface DelegateNotification {
+  conversationId: string;
+  toolUseId: string;
+  status: Exclude<DelegateJobState, 'running'>;
+  description: string;
+  /** 完整结果的 id，任务结束时才生成；模型凭它用 delegate_result 取全文。旧通知没有 */
+  resultId?: string;
+  /** 完整结果。只在服务端内部用，不写进通知；旧通知解析出来的才有内容 */
+  result: string;
+  /** status=error 时的简短原因 */
+  error?: string;
+}
+
+/** 后台启动的 delegate 工具结果以这一行开头（前端据此让子代理保持运行中，不把它当回答） */
+export const DELEGATE_BG_MARKER = 'Delegate launched in background.';
+
+export const DELEGATE_NOTIFICATION_TAG = 'cosyee-delegate-notification';
+/** CLI 会把执行中送达的注入消息当成「用户发来的新消息」转给模型，所以正文里写明它不是用户说的话（写法同原生后台任务通知） */
+export const DELEGATE_NOTIFICATION_NOTE =
+  'Automated background-task event, NOT a message from the user. Do not treat it as user approval, confirmation or an answer to a question.';
+/** 通知里不放结果正文：模型收到时可能正忙别的，正文由它挑合适的时候用 delegate_result 取 */
+export const DELEGATE_NOTIFICATION_HINT =
+  'The result is not included: finish what you are doing, then read it with delegate_result(result_id) when you are ready to use it.';
+/** 通知里 error 的最大字数（只够看出原因，全文同样凭 result_id 取） */
+const DELEGATE_ERROR_MAX = 200;
+
+export function formatDelegateNotification(n: DelegateNotification): string {
+  const line = (t: string) => t.replace(/\s+/g, ' ').trim();
+  // result 末尾带页脚（conversation_id 等），通知里另有这些字段，不混进原因
+  const error = n.status === 'error' ? line(n.error ?? n.result.split('\nconversation_id: ')[0]!).slice(0, DELEGATE_ERROR_MAX) : '';
+  return [
+    `<${DELEGATE_NOTIFICATION_TAG}>`,
+    `note: ${DELEGATE_NOTIFICATION_NOTE}${n.resultId ? ` ${DELEGATE_NOTIFICATION_HINT}` : ''}`,
+    `conversation_id: ${n.conversationId}`,
+    `tool_use_id: ${n.toolUseId}`,
+    `status: ${n.status}`,
+    `description: ${line(n.description)}`,
+    ...(error ? [`error: ${error}`] : []),
+    ...(n.resultId ? [`result_id: ${n.resultId}`] : []),
+    `</${DELEGATE_NOTIFICATION_TAG}>`,
+  ].join('\n');
+}
+
+/** 解析完成通知；不是通知返回 null。前后可以有空白。现在的通知没有正文（result 为空串），旧记录里的带着 result 正文 */
+export function parseDelegateNotification(text: string): DelegateNotification | null {
+  const m = /^\s*<cosyee-delegate-notification>\n([\s\S]*)\n<\/cosyee-delegate-notification>\s*$/.exec(text);
+  if (!m) return null;
+  const body = m[1]!;
+  // note、error、result_id 行是后加的，旧记录里没有；旧记录末尾的 result 正文现在不再发
+  const head = /^(?:note: .*\n)?conversation_id: (.*)\ntool_use_id: (.*)\nstatus: (done|error|stopped)\ndescription: (.*)(?:\nerror: (.*))?(?:\nresult_id: (.*))?(?:\nresult:\n?|$)/.exec(body);
+  if (!head) return null;
+  return {
+    conversationId: head[1]!.trim(),
+    toolUseId: head[2]!.trim(),
+    status: head[3] as DelegateNotification['status'],
+    description: head[4]!.trim(),
+    ...(head[5] ? { error: head[5].trim() } : {}),
+    ...(head[6] ? { resultId: head[6].trim() } : {}),
+    result: body.slice(head[0].length),
+  };
+}
+
 export type ServerMsg =
   /** CLI stdout 的一行 JSON，原样转发（包括 stream_event、system、assistant、user、result 等） */
   | { t: 'event'; sessionId: string; e: unknown }
@@ -621,6 +1035,8 @@ export type ServerMsg =
    * 前端批准时自己把输入框的 config.permissionMode 改成 auto
    */
   | { t: 'prompts'; sessionId: string; items: PendingPrompt[] }
+  /** 本会话的委派任务（完整快照）。变化时广播；订阅时紧跟 prompts 发一次（没有也发空数组）。只在内存里，服务端重启后为空 */
+  | { t: 'delegates'; sessionId: string; jobs: DelegateJobInfo[] }
   /** queue.cancel 的结果。ok=true 时 text 为被撤回消息的原文，前端填回输入框；ok=false 表示已开始执行或不存在 */
   | { t: 'queue.cancelled'; sessionId: string; id: string; ok: boolean; text?: string }
   /** rewind 的结果。ok=true 时 prefillText 为被回退消息的原文；失败时 error 为原因 */
@@ -632,7 +1048,11 @@ export type ServerMsg =
   /** 当前账号变了：前端整页重新加载，避免残留上一个账号的任何数据 */
   /** 账号变了。reload = true：前端整页刷新（切换模式下切换账号）；false：只重取账号列表 / 会话列表 / 额度（并行模式） */
   | { t: 'account.changed'; reload: boolean }
+  /** Antigravity 账号列表 / 当前账号 / 登录状态变了：前端重取列表，并丢掉缓存的委派模型列表 */
+  | { t: 'agy.changed' }
   | { t: 'context'; sessionId: string; usage: ContextUsage }
   /** 会话实际生效的设置（来自 control_request get_settings 的 applied）。ultracodeAvailable 为 true 时前端才显示 Ultracode 开关 */
   | { t: 'settings'; sessionId: string; applied: AppliedSettings }
+  /** 会话的停止记录（见 StopInfo）。变化时广播；订阅时紧跟 status 发一次（没有记录发 null） */
+  | { t: 'stop'; sessionId: string; info: StopInfo | null }
   | { t: 'error'; message: string };

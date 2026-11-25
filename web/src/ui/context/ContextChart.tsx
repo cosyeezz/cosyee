@@ -4,6 +4,7 @@
 import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import type { CachePoint, Turn } from '@cosyee/shared';
 import { CountUp } from '../motion/CountUp';
+import { ChartTip } from './ChartTip';
 import { formatTokens } from './formatTokens';
 import { growthOf, inputOf } from './contextGrowth';
 
@@ -82,7 +83,7 @@ export function ContextChart({
     `上下文走势，共 ${list.length} 次请求，最新 ${formatTokens(geo.vals[last]!)}` +
     (top > 0 ? `，最大增长 ${signed(geo.deltas[top]!)}（第 ${top + 1} 次请求）` : '') +
     '。左右键选择，回车查看这次增长来自哪些工具';
-  const tipLeft = hover === null ? 0 : Math.min(Math.max((geo.cx[hover]! / W) * 100, 18), 82);
+  const tipAt = hover === null ? 0 : geo.cx[hover]! / W;
   const growth = sel >= 0 ? growthOf(list, sel, turns ?? []) : null;
 
   return (
@@ -135,14 +136,14 @@ export function ContextChart({
           })}
         </svg>
         {hover !== null && (
-          <div className="cz-ctx__cache-tip" role="status" style={{ left: `${tipLeft}%` }} data-testid="ctx-tip">
+          <ChartTip at={tipAt} testId="ctx-tip">
             <div className="cz-ctx__cache-tip-title">
               第 {list[hover]!.turn + 1} 轮 · 第 {hover + 1} 次请求
             </div>
             <div className="cz-ctx__cache-tip-row">输入 {formatTokens(geo.vals[hover]!)}</div>
             {hover > 0 && <div className="cz-ctx__cache-tip-row">较上次 {signed(geo.deltas[hover]!)}</div>}
             <div className="cz-ctx__cache-tip-row is-total">点击查看来自哪些工具</div>
-          </div>
+          </ChartTip>
         )}
       </div>
 

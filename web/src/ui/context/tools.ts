@@ -1,9 +1,15 @@
-// 内置工具列表：init.tools 里去掉 MCP 工具（mcp__ 开头，另有 MCP 一节管理），再并上已停用的名单。
+// 工具列表：init.tools 里的内置工具 + Cosyee 自带的 mcp__cosyee__* 工具（其它 MCP 工具另有 MCP 一节管理），再并上已停用的名单。
 // 已停用的工具在新启动的会话里不会出现在 init.tools，必须靠 disabledTools 保留在列表上，否则无法重新启用。
 import type { Turn } from '@cosyee/shared';
+import { DELEGATE_TOOL, toolLabel } from '../../core/reducer/util';
 
 /** 与服务端 TOOL_NAME_RE 一致：不合法的名字服务端会拒绝，所以也不列出 */
-const TOOL_NAME_RE = /^(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const TOOL_NAME_RE = /^(?:(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}|mcp__cosyee__[A-Za-z][A-Za-z0-9_]{0,63})$/;
+
+/** Cosyee 自带 MCP 服务器的名字：它的工具归到「工具」一节，MCP 一节不再列这个服务器 */
+export const COSYEE_MCP_SERVER = 'cosyee';
+
+export { toolLabel };
 
 export interface ToolRow {
   name: string;
@@ -45,7 +51,10 @@ export function toolCallCounts(turns: readonly Turn[] | undefined): Map<string, 
   for (const t of turns ?? []) {
     for (const s of t.steps) if (s.kind === 'tool') add(s.name, 'main');
     for (const run of t.subagents) {
-      add('Agent', 'main');
+      const isDelegate = run.delegate === true;
+      add(isDelegate ? DELEGATE_TOOL : 'Agent', 'main');
+      // 委派子代理内部跑的是委派后端自己的工具，不计入 Claude 工具的 sub 次数
+      if (isDelegate) continue;
       for (const s of run.turn.steps) if (s.kind === 'tool') add(s.name, 'sub');
     }
   }

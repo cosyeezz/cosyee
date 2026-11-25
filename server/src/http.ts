@@ -5,11 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList } from '@cosyee/shared';
+import { EXEC_CODE_LIMIT, SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
+import type { AgyAccounts } from './accounts/agy.js';
 import { type Accounts, RunningError } from './accounts/index.js';
+import type { KiroService } from './kiro/index.js';
 import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
+import { runSnippet } from './exec.js';
 import { openRaw, previewFile, resolveForAction } from './files.js';
 import { gitBranch } from './git.js';
 import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
@@ -21,9 +24,11 @@ import type { Previews } from './preview.js';
 import { type Spawner, defaultSpawner, openTerminal, revealFolder, revealPath } from './reveal.js';
 import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAuthorized, tokenOk } from './security.js';
 import type { Sessions } from './sessions.js';
+import { MAX_STT_SECONDS, type Speech, SpeechNotReady } from './speech/index.js';
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
-import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, sanitizeCompactWindow } from './workspaces.js';
+import { type AgyCli, agyCliRoutes } from './delegate/agyCli.js';
+import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
 
@@ -39,10 +44,18 @@ export interface HttpDeps {
   account: { get(): Promise<Account | null> };
   /** 多账号；不传则账号相关接口返回 404（旧测试） */
   accounts?: Accounts;
+  /** Antigravity（agy）多账号；不传则 agy 账号相关接口返回 404（旧测试） */
+  agyAccounts?: AgyAccounts;
+  /** Antigravity CLI（agy）版本与升级；不传则 /api/agy/cli 返回 404（旧测试） */
+  agyCli?: AgyCli;
+  /** Kiro 账号与 kiro.rs 引擎 / 代理；不传则 /api/kiro 接口返回 404（旧测试） */
+  kiro?: KiroService;
   /** 额度：传 session 时取该会话所用账号的额度，否则取当前账号的 */
   usage: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<UsageInfo | null> };
   /** CLI 报告的可用模型（模型菜单用）；账号解析同 usage。不传 = 返回 null（旧测试） */
   cliModels?: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<CliModelList | null> };
+  /** Antigravity 的可用模型；不传则 GET /api/delegate/models 返回 404（旧测试） */
+  delegateModels?: (cwd: string, refresh: boolean) => Promise<DelegateModelList>;
   store: StateStore;
   previews: Previews;
   pins: Pins;
@@ -61,6 +74,10 @@ export interface HttpDeps {
   compactStats?: { get(): Promise<CompactStats> };
   /** POST /api/shutdown（只接受本机回环连接）时调用；不传则该接口 404。客户端用它停止后台运行的本地服务。 */
   onShutdown?: () => void;
+  /** 朗读 / 语音输入（见 speech/）；不传则语音接口 404 */
+  speech?: Speech;
+  /** Tailscale HTTPS 入口（https://<机器名>.<tailnet>.ts.net），没有时 null */
+  httpsUrl?: () => string | null;
 }
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -87,7 +104,7 @@ const GZIP_MIN = 64 * 1024;
 export async function sendJsonMaybeGzip(req: IncomingMessage, res: ServerResponse, status: number, body: unknown): Promise<void> {
   const s = JSON.stringify(body ?? null);
   const accepts = /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
-  if (s.length < GZIP_MIN || !accepts || isLoopbackAddr(req.socket.remoteAddress)) return writeJson(res, status, s);
+  if (s.length < GZIP_MIN || !accepts || fromLocal(req)) return writeJson(res, status, s);
   const z = await gzip(s, { level: 4 });
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -124,15 +141,15 @@ async function readJson(req: IncomingMessage): Promise<Json> {
 }
 
 /** 读原始请求体（二进制），超过 limit 返回 413。先看 Content-Length，免得白读一大堆。 */
-async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
+async function readRaw(req: IncomingMessage, limit: number, tooBig = '图片超过 20MB'): Promise<Buffer> {
   const declared = Number(req.headers['content-length']);
-  if (Number.isFinite(declared) && declared > limit) throw new HttpError(413, '图片超过 20MB');
+  if (Number.isFinite(declared) && declared > limit) throw new HttpError(413, tooBig);
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     const b = c as Buffer;
     size += b.length;
-    if (size > limit) throw new HttpError(413, '图片超过 20MB');
+    if (size > limit) throw new HttpError(413, tooBig);
     chunks.push(b);
   }
   return Buffer.concat(chunks);
@@ -181,6 +198,19 @@ class PickLock {
   busy = false;
 }
 
+/**
+ * 请求是否来自服务端本机。tailscale serve 反代过来的请求 TCP 层也是 127.0.0.1，但带着它加的
+ * Tailscale-User-Login / X-Forwarded-For 头——那其实是 tailnet 里的别的设备，按远程处理
+ * （不能关服务、不能在服务器桌面上开窗口）。本机程序伪造这些头只会把自己降成远程，没有风险。
+ */
+export function fromLocal(req: IncomingMessage): boolean {
+  if (!isLoopbackAddr(req.socket.remoteAddress)) return false;
+  const h = req.headers;
+  if (h['tailscale-user-login']) return false;
+  const xff = String(h['x-forwarded-for'] ?? '').split(',')[0]?.trim();
+  return !xff || isLoopbackAddr(xff);
+}
+
 export function createHandler(deps: HttpDeps) {
   const lock = new PickLock();
 
@@ -220,6 +250,9 @@ export function createHandler(deps: HttpDeps) {
       await accounts.remove(body.id);
       return sendJson(res, 200, { ok: true });
     }
+    if (method === 'POST' && p === '/api/accounts/dedupe') {
+      return sendJson(res, 200, await accounts.dedupe());
+    }
     if (method === 'POST' && p === '/api/accounts/mode') {
       const body = await readJson(req);
       try {
@@ -251,6 +284,164 @@ export function createHandler(deps: HttpDeps) {
     throw new HttpError(404, '未找到');
   }
 
+  async function agyAccountRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string): Promise<void> {
+    const agy = deps.agyAccounts;
+    if (!agy) throw new HttpError(404, '未找到');
+    let m: RegExpExecArray | null;
+    if (method === 'GET' && p === '/api/agy-accounts') {
+      const refresh = new URL(req.url ?? '/', 'http://x').searchParams.get('refresh') === '1';
+      return sendJson(res, 200, agy.list({ refresh }));
+    }
+    if (method === 'POST' && p === '/api/agy-accounts/switch') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      await agy.switchTo(body.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/agy-accounts/login') {
+      const body = await readJson(req);
+      return sendJson(res, 200, agy.startLogin({ label: body.label, accountId: body.accountId }));
+    }
+    if (method === 'GET' && (m = /^\/api\/agy-accounts\/login\/([a-z0-9]{1,32})$/.exec(p))) return sendJson(res, 200, agy.getLogin(m[1]!));
+    if (method === 'POST' && (m = /^\/api\/agy-accounts\/login\/([a-z0-9]{1,32})\/code$/.exec(p))) {
+      const body = await readJson(req);
+      agy.submitCode(m[1]!, body.code);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && (m = /^\/api\/agy-accounts\/login\/([a-z0-9]{1,32})\/cancel$/.exec(p))) {
+      agy.cancelLogin(m[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/agy-accounts/remove') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      await agy.remove(body.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/agy-accounts/dedupe') {
+      return sendJson(res, 200, await agy.dedupe());
+    }
+    if (method === 'POST' && p === '/api/agy-accounts/label') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      agy.setLabel(body.id, body.label);
+      return sendJson(res, 200, { ok: true });
+    }
+    throw new HttpError(404, '未找到');
+  }
+
+  async function kiroRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string, q: URLSearchParams): Promise<void> {
+    const kiro = deps.kiro;
+    if (!kiro) throw new HttpError(404, '未找到');
+    let m: RegExpExecArray | null;
+    if (method === 'GET' && p === '/api/kiro') return sendJson(res, 200, kiro.status());
+    // engine/* 与 service/* 的 POST 都不读请求体（客户端用 Content-Length: 0 的 HTTP/1.0 请求调用）
+    if (method === 'POST' && p === '/api/kiro/engine/check') return sendJson(res, 200, await kiro.checkEngine());
+    if (method === 'POST' && p === '/api/kiro/engine/build') {
+      if (!fromLocal(req)) throw new HttpError(403, '只能从本机编译 kiro.rs 引擎');
+      return sendJson(res, 200, kiro.buildEngine());
+    }
+    if (method === 'GET' && p === '/api/kiro/engine/log') {
+      const raw = q.get('from');
+      const from = raw !== null && /^\d+$/.test(raw) ? Number(raw) : 0;
+      return sendJson(res, 200, kiro.engineLog(from));
+    }
+    if (method === 'POST' && p === '/api/kiro/service/start') {
+      if (!fromLocal(req)) throw new HttpError(403, '只能从本机启动 kiro.rs 服务');
+      return sendJson(res, 200, kiro.startService());
+    }
+    if (method === 'POST' && p === '/api/kiro/service/stop') {
+      if (!fromLocal(req)) throw new HttpError(403, '只能从本机停止 kiro.rs 服务');
+      try {
+        return sendJson(res, 200, await kiro.stopService(q.get('force') === '1'));
+      } catch (e) {
+        if (e instanceof RunningError) return sendJson(res, 409, { error: e.message, running: e.running });
+        throw e;
+      }
+    }
+    if (method === 'POST' && p === '/api/kiro/service/restart') {
+      if (!fromLocal(req)) throw new HttpError(403, '只能从本机重启 kiro.rs 服务');
+      try {
+        return sendJson(res, 200, await kiro.restartService(q.get('force') === '1'));
+      } catch (e) {
+        if (e instanceof RunningError) return sendJson(res, 409, { error: e.message, running: e.running });
+        throw e;
+      }
+    }
+    if (method === 'POST' && p === '/api/kiro/service/admin') {
+      if (!fromLocal(req)) throw new HttpError(403, '只能从本机获取 kiro.rs 管理页面信息');
+      // 管理密钥只允许本机原生客户端读取：浏览器请求必带 Origin 或 Sec-Fetch-Site / Sec-Fetch-Mode，一律拒绝
+      const h = req.headers;
+      if (h.origin || h['sec-fetch-site'] || h['sec-fetch-mode']) {
+        throw new HttpError(403, '浏览器网页不能读取 kiro.rs 管理密钥');
+      }
+      const id = q.get('account');
+      if (!id) throw new HttpError(400, '缺少 account');
+      return sendJson(res, 200, await kiro.adminAccess(id));
+    }
+    if (method === 'POST' && p === '/api/kiro/login') {
+      const body = await readJson(req);
+      return sendJson(res, 200, kiro.startLogin({
+        method: body.method,
+        label: body.label,
+        accountId: body.accountId,
+        startUrl: body.startUrl,
+        region: body.region,
+        apiKey: body.apiKey,
+      }));
+    }
+    if (method === 'GET' && (m = /^\/api\/kiro\/login\/([a-z0-9]{1,32})$/.exec(p))) {
+      return sendJson(res, 200, kiro.getLogin(m[1]!));
+    }
+    if (method === 'POST' && (m = /^\/api\/kiro\/login\/([a-z0-9]{1,32})\/cancel$/.exec(p))) {
+      kiro.cancelLogin(m[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'GET' && p === '/api/kiro/balance') {
+      const id = q.get('account');
+      if (!id) throw new HttpError(400, '缺少 account');
+      return sendJson(res, 200, await kiro.balance(id));
+    }
+    throw new HttpError(404, '未找到');
+  }
+
+  async function speechRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string, q: URLSearchParams): Promise<void> {
+    const speech = deps.speech;
+    if (!speech) throw new HttpError(404, '未找到');
+    try {
+      if (method === 'GET' && p === '/api/speech/status') return sendJson(res, 200, speech.status());
+      if (method === 'POST' && p === '/api/speech/prepare') {
+        const kind = (await readJson(req)).kind;
+        if (kind !== 'tts' && kind !== 'stt') throw new HttpError(400, 'kind 只能是 tts 或 stt');
+        return sendJson(res, 200, speech.prepare(kind));
+      }
+      if (method === 'POST' && p === '/api/tts') {
+        const text = (await readJson(req)).text;
+        if (typeof text !== 'string') throw new HttpError(400, '缺少 text');
+        return sendJson(res, 200, speech.ttsPrepare(text));
+      }
+      const m = /^\/api\/tts\/([0-9a-f]{16})\/(\d+)$/.exec(p);
+      if (method === 'GET' && m) {
+        const job = speech.ttsAudio(m[1]!, Number(m[2]));
+        if (!job) throw new HttpError(404, '朗读内容已过期，请重新点击朗读');
+        const wav = await job;
+        res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length, 'cache-control': 'private, max-age=3600' });
+        res.end(wav);
+        return;
+      }
+      if (method === 'POST' && p === '/api/stt') {
+        const rate = Number(q.get('rate') ?? 16000);
+        if (!Number.isInteger(rate) || rate < 8000 || rate > 48000) throw new HttpError(400, 'rate 不合法');
+        const pcm = await readRaw(req, rate * 2 * MAX_STT_SECONDS + 4096, `录音超过 ${MAX_STT_SECONDS / 60} 分钟`);
+        return sendJson(res, 200, { text: await speech.transcribe(pcm, rate) });
+      }
+    } catch (e) {
+      if (e instanceof SpeechNotReady) throw new HttpError(409, e.message);
+      throw e;
+    }
+    throw new HttpError(404, '未找到');
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const method = req.method ?? 'GET';
     const p = url.pathname;
@@ -264,7 +455,8 @@ export function createHandler(deps: HttpDeps) {
         homeDir: os.homedir(),
         supportsMixedPick: supportsMixed,
         defaults: deps.store.state.defaults ?? { model: 'sonnet', effort: 'medium' },
-        remote: !isLoopbackAddr(req.socket.remoteAddress),
+        remote: !fromLocal(req),
+        httpsUrl: deps.httpsUrl?.() ?? null,
       };
       if (b.remote) b.supportsMixedPick = true; // 远程用网页版选择窗口，文件和文件夹可以一起选
       return sendJson(res, 200, b);
@@ -273,9 +465,13 @@ export function createHandler(deps: HttpDeps) {
     // 桌面版退出前询问：有几个会话正在执行
     if (method === 'GET' && p === '/api/running') return sendJson(res, 200, { count: deps.manager.runningCount() });
 
+    if (p.startsWith('/api/speech/') || p === '/api/tts' || p.startsWith('/api/tts/') || p === '/api/stt') {
+      return speechRoutes(req, res, method, p, q);
+    }
+
     // 客户端「停止本地服务」：只认本机回环来的请求（Tailscale 模式下 tailnet 设备不能关掉服务）
     if (method === 'POST' && p === '/api/shutdown' && deps.onShutdown) {
-      if (!isLoopbackAddr(req.socket.remoteAddress)) return sendJson(res, 403, { error: '只能从本机停止服务' });
+      if (!fromLocal(req)) return sendJson(res, 403, { error: '只能从本机停止服务' });
       sendJson(res, 200, { ok: true });
       setImmediate(deps.onShutdown);
       return;
@@ -357,6 +553,7 @@ export function createHandler(deps: HttpDeps) {
 
     if (method === 'POST' && p === '/api/deleted/purge') {
       const r = await deps.trash.purgeMany(needIds((await readJson(req)).ids), (sid, cwd) => deps.sessions.locate(sid, cwd));
+      for (const sid of r.purged) deps.manager.forgetSession?.(sid);
       if (r.purged.length) deps.manager.notifySidebar();
       return sendJson(res, 200, { purged: r.purged.length, failed: r.failed.length, error: r.failed[0]?.error ?? null });
     }
@@ -372,6 +569,7 @@ export function createHandler(deps: HttpDeps) {
         deps.trash.restore(id);
       } else if (action === 'purge') {
         await deps.trash.purge(id, (sid, cwd) => deps.sessions.locate(sid, cwd));
+        deps.manager.forgetSession?.(id);
       } else {
         const cwd = needCwd(body.cwd);
         const row = await deps.sessions.get(id, cwd);
@@ -387,6 +585,10 @@ export function createHandler(deps: HttpDeps) {
 
     if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/history$/.exec(p))) {
       return sendJsonMaybeGzip(req, res, 200, await deps.sessions.historyVersioned(decodeURIComponent(m[1]!), needCwd(q.get('cwd')), q.get('since')));
+    }
+
+    if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/detail$/.exec(p))) {
+      return sendJson(res, 200, await deps.sessions.detail(decodeURIComponent(m[1]!), needCwd(q.get('cwd'))));
     }
 
     if (method === 'GET' && (m = /^\/api\/sessions\/([^/]+)\/subagent\/([^/]+)$/.exec(p))) {
@@ -430,6 +632,13 @@ export function createHandler(deps: HttpDeps) {
     if (method === 'GET' && p === '/api/account') return sendJson(res, 200, await deps.account.get());
 
     if (p === '/api/accounts' || p.startsWith('/api/accounts/')) return accountRoutes(req, res, method, p);
+    if (p === '/api/agy-accounts' || p.startsWith('/api/agy-accounts/')) return agyAccountRoutes(req, res, method, p);
+    if (deps.agyCli && (p === '/api/agy/cli' || p.startsWith('/api/agy/cli/'))) {
+      const r = await agyCliRoutes(deps.agyCli, { method, pathname: p, query: q, fromLocal: fromLocal(req) });
+      if (!r) throw new HttpError(404, '未找到');
+      return sendJson(res, r.status, r.body);
+    }
+    if (p === '/api/kiro' || p.startsWith('/api/kiro/')) return kiroRoutes(req, res, method, p, q);
 
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
     if (method === 'GET' && p === '/api/models') {
@@ -490,6 +699,14 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true, disabledAgents });
     }
 
+    // 开启 / 关闭原生子代理（全局保存；关闭时有可用委派的会话停用整个 Agent 工具）
+    if (method === 'POST' && p === '/api/native-agents') {
+      const body = await readJson(req);
+      if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
+      const enabled = await deps.manager.setNativeAgents(body.enabled);
+      return sendJson(res, 200, { ok: true, enabled });
+    }
+
     // 自动压缩窗口（全局；null = 不覆盖）。运行中的会话立即生效，新启动的会话经 --settings 带上
     if (method === 'POST' && p === '/api/compact-window') {
       const body = await readJson(req);
@@ -497,6 +714,27 @@ export function createHandler(deps: HttpDeps) {
       if (body.window !== null && w === null) throw new HttpError(400, `窗口需在 ${COMPACT_WINDOW_MIN}–${COMPACT_WINDOW_MAX} token 之间`);
       const window = await deps.manager.setCompactWindow(w);
       return sendJson(res, 200, { ok: true, window });
+    }
+
+    // 子代理的模型 / 强度（全局）。Claude 子代理经 PreToolUse hook 生效，对运行中的会话也立即起作用
+    if (p === '/api/agent-models') {
+      if (method === 'GET') return sendJson(res, 200, deps.store.state.agentModels);
+      if (method === 'POST') {
+        const config = parseAgentModels(await readJson(req));
+        if (!config) throw new HttpError(400, '子代理模型配置不合法');
+        deps.store.state.agentModels = config;
+        deps.store.save();
+        return sendJson(res, 200, { ok: true, config });
+      }
+    }
+    if (method === 'GET' && p === '/api/delegate/models' && deps.delegateModels) {
+      const raw = q.get('cwd');
+      const cwd = raw && raw.trim() ? needCwd(raw) : os.homedir();
+      try {
+        return sendJson(res, 200, await deps.delegateModels(cwd, q.get('refresh') === '1'));
+      } catch (e) {
+        throw new HttpError(503, e instanceof Error ? e.message : String(e));
+      }
     }
 
     // 跨会话的压缩效果统计（扫描主会话记录，文件没变的走缓存）
@@ -647,6 +885,24 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true });
     }
 
+    // 会话里代码块的「运行」：远程连接也允许（远程本来就能让 Claude 跑 Bash，输出回显在页面上）
+    if (method === 'POST' && p === '/api/exec') {
+      const body = await readJson(req);
+      const cwd = await sessionCwd(body.session, body.cwd);
+      const lang = typeof body.lang === 'string' ? body.lang : '';
+      const code = typeof body.code === 'string' ? body.code : '';
+      if (!code.trim()) throw new HttpError(400, '代码为空');
+      if (code.length > EXEC_CODE_LIMIT) throw new HttpError(400, '代码过长');
+      const ac = new AbortController();
+      const onClose = () => { if (!res.writableEnded) ac.abort(); }; // 客户端点「停止」或断开：杀掉进程
+      res.on('close', onClose);
+      try {
+        return sendJson(res, 200, await runSnippet({ lang, code, cwd, signal: ac.signal }));
+      } finally {
+        res.off('close', onClose);
+      }
+    }
+
     if (method === 'GET' && (m = /^\/api\/context\/([^/]+)$/.exec(p))) {
       const id = decodeURIComponent(m[1]!);
       if (!isSafe(id)) throw new HttpError(400, '会话 id 不合法');
@@ -697,7 +953,7 @@ export function createHandler(deps: HttpDeps) {
 
   /** 在服务端桌面上弹窗口的操作只接受本机连接：远程设备看不到这些窗口（前端远程时也不显示这些按钮） */
   function onlyLocal(req: IncomingMessage): void {
-    if (!isLoopbackAddr(req.socket.remoteAddress)) throw new HttpError(403, '远程连接不能在服务器桌面上打开窗口');
+    if (!fromLocal(req)) throw new HttpError(403, '远程连接不能在服务器桌面上打开窗口');
   }
 
   /**

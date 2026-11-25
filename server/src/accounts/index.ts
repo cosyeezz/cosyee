@@ -10,7 +10,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AccountEntry, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing } from '@cosyee/shared';
+import type { AccountDedupeResult, AccountEntry, AccountKiroInfo, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing } from '@cosyee/shared';
 import { nameFromOauth, planLabel, readClaudeJson } from '../account.js';
 import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
@@ -40,14 +40,34 @@ export interface AccountsDeps {
   onChanged(e: { reset?: string; notify?: 'reload' | 'refresh' }): void;
   /** 测试替换：启动登录进程 */
   spawnLogin?: (env: NodeJS.ProcessEnv) => ChildProcess;
+  /** Kiro 账号代理状态查询（供 list() 下发 AccountKiroInfo） */
+  kiroProxyState?: (dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error'>;
+  /** 移除 Kiro 账号前停止它的代理进程 */
+  stopKiroProxy?: (dir: string) => Promise<void>;
 }
 
 interface LocalInfo {
   name: string | null;
   plan: string | null;
   loggedIn: boolean;
+  /** 订阅开始时间（毫秒）；读不到 / 非法值 / API 或未登录为 null */
+  subscribedAt: number | null;
+  /** 登录凭据失效时间（毫秒）；读不到 / 非法值 / API 或未登录为 null */
+  loginExpiresAt: number | null;
   /** 只在服务端用于判重，绝不下发 */
   uuid: string | null;
+  /** 邮箱 sha256 哈希，只在服务端用于 uuid 缺失时的兜底判重，绝不下发 */
+  emailHash: string | null;
+}
+
+/** 重新登录前备份的原凭据，撞车时用于无损恢复 */
+interface LoginBackup {
+  credsPath: string;
+  credsRaw: Buffer | null;
+  claudeJsonPath: string;
+  claudeJsonExisted: boolean;
+  hadOauthAccount: boolean;
+  prevOauthAccount: unknown;
 }
 
 interface LoginJob {
@@ -59,6 +79,7 @@ interface LoginJob {
   label: string;
   output: string;
   timer: NodeJS.Timeout | null;
+  backup: LoginBackup | null;
 }
 
 function readJson(file: string): Record<string, unknown> | null {
@@ -70,10 +91,87 @@ function readJson(file: string): Record<string, unknown> | null {
   }
 }
 
-/** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程。API 账号有密钥就算已登录，名字是主机名 */
+/** 邮箱转小写后做 sha256 哈希，仅在内存用于判重，不暴露原文 */
+function hashEmail(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const norm = raw.trim().toLowerCase();
+  if (!norm) return null;
+  return crypto.createHash('sha256').update(norm).digest('hex');
+}
+
+/** 判断两个 Claude 本地账号是否为同一个真实账号：优先比对 accountUuid，任一方缺 uuid 时用邮箱哈希兜底 */
+function sameClaudeIdentity(a: Pick<LocalInfo, 'uuid' | 'emailHash'>, b: Pick<LocalInfo, 'uuid' | 'emailHash'>): boolean {
+  if (a.uuid && b.uuid) return a.uuid === b.uuid;
+  if (a.emailHash && b.emailHash) return a.emailHash === b.emailHash;
+  return false;
+}
+
+/** 原子写回文件（临时文件 + rename） */
+function writeFileAtomic(file: string, data: string | Buffer, mode?: number): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, data, mode !== undefined ? { mode } : undefined);
+  fs.renameSync(tmp, file);
+}
+
+/** 重新登录前备份原目录的登录凭据（.credentials.json 原文 + .claude.json 的 oauthAccount） */
+function captureLoginBackup(dir: string | null): LoginBackup {
+  const realDir = dir ?? baseClaudeHome();
+  const credsPath = path.join(realDir, '.credentials.json');
+  let credsRaw: Buffer | null = null;
+  try {
+    credsRaw = fs.readFileSync(credsPath);
+  } catch { /* 原来没有凭据文件 */ }
+  const cJsonPath = claudeJsonPath(dir);
+  const claudeJsonExisted = fs.existsSync(cJsonPath);
+  const j = readClaudeJson(dir);
+  const hadOauthAccount = !!(j && Object.prototype.hasOwnProperty.call(j, 'oauthAccount'));
+  const prevOauthAccount = hadOauthAccount ? structuredClone(j!.oauthAccount) : undefined;
+  return { credsPath, credsRaw, claudeJsonPath: cJsonPath, claudeJsonExisted, hadOauthAccount, prevOauthAccount };
+}
+
+/** 重新登录撞车后恢复原凭据：只还原 .credentials.json 与 .claude.json 的 oauthAccount，不破坏其它配置 */
+function restoreLoginBackup(backup: LoginBackup): void {
+  if (backup.credsRaw !== null) {
+    writeFileAtomic(backup.credsPath, backup.credsRaw, 0o600);
+  } else {
+    try {
+      fs.rmSync(backup.credsPath, { force: true });
+    } catch { /* 忽略 */ }
+  }
+  const cur = readJson(backup.claudeJsonPath);
+  if (backup.hadOauthAccount) {
+    const next: Record<string, unknown> = cur ? { ...cur } : {};
+    next.oauthAccount = backup.prevOauthAccount;
+    writeFileAtomic(backup.claudeJsonPath, JSON.stringify(next, null, 2) + '\n');
+  } else if (cur) {
+    const next: Record<string, unknown> = { ...cur };
+    delete next.oauthAccount;
+    if (!backup.claudeJsonExisted && Object.keys(next).length === 0) {
+      try {
+        fs.rmSync(backup.claudeJsonPath, { force: true });
+      } catch { /* 忽略 */ }
+    } else {
+      writeFileAtomic(backup.claudeJsonPath, JSON.stringify(next, null, 2) + '\n');
+    }
+  }
+}
+
+function parseIsoMs(raw: unknown): number | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const t = Date.parse(raw);
+  return Number.isFinite(t) && t > 0 ? t : null;
+}
+
+function parseEpochMs(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程。API / Kiro 账号有配置就算已登录 */
 export function localInfo(dir: string | null): LocalInfo {
   const api = readApiConfig(dir);
-  if (api) return { name: apiHost(api.baseUrl), plan: 'API', loggedIn: true, uuid: null };
+  if (api?.kiro) return { name: 'Kiro', plan: 'Kiro', loggedIn: true, subscribedAt: null, loginExpiresAt: null, uuid: null, emailHash: null };
+  if (api) return { name: apiHost(api.baseUrl), plan: 'API', loggedIn: true, subscribedAt: null, loginExpiresAt: null, uuid: null, emailHash: null };
   const j = readClaudeJson(dir);
   const oauth = j?.oauthAccount as Record<string, unknown> | undefined;
   const credsFile = path.join(dir ?? baseClaudeHome(), '.credentials.json');
@@ -83,12 +181,17 @@ export function localInfo(dir: string | null): LocalInfo {
   if (creds) loggedIn = !!(ai && (typeof ai.refreshToken === 'string' || typeof ai.accessToken === 'string'));
   // macOS 的凭据在钥匙串里，读不到文件时以账号状态里有没有 oauthAccount 为准
   else loggedIn = process.platform === 'darwin' && !!oauth;
-  const uuid = typeof oauth?.accountUuid === 'string' ? oauth.accountUuid : null;
+  const rawUuid = typeof oauth?.accountUuid === 'string' ? oauth.accountUuid.trim().toLowerCase() : '';
+  const uuid = rawUuid || null;
+  const emailHash = hashEmail(oauth?.emailAddress ?? oauth?.email);
   return {
     name: loggedIn || oauth ? nameFromOauth(oauth) : null,
     plan: loggedIn ? (planLabel(ai?.subscriptionType) ?? planLabel(oauth?.organizationType)) : null,
     loggedIn,
+    subscribedAt: loggedIn ? parseIsoMs(oauth?.subscriptionCreatedAt) : null,
+    loginExpiresAt: loggedIn ? parseEpochMs(ai?.refreshTokenExpiresAt) : null,
     uuid,
+    emailHash,
   };
 }
 
@@ -265,21 +368,86 @@ export class Accounts {
     } catch { /* 下次再同步 */ }
   }
 
-  list(): AccountList {
+  /** 把所有账号按真实身份分为「列表保留项」与「去重隐藏项」；优先级 当前账号 > 默认账号 > 最早添加 */
+  private partition(): { kept: AccountEntry[]; hiddenIds: string[] } {
     const active = this.activeId();
     const def = localInfo(null);
-    const out: AccountEntry[] = [
-      { id: DEFAULT_ID, label: '', name: def.name, plan: def.plan, loggedIn: def.loggedIn, active: active === DEFAULT_ID, isDefault: true },
+    type Row = {
+      idx: number;
+      createdAt: number;
+      entry: AccountEntry;
+      info: LocalInfo;
+      apiKeyId: string | null;
+    };
+    const timeFields = (info: LocalInfo): Pick<AccountEntry, 'subscribedAt' | 'loginExpiresAt'> => ({
+      ...(info.subscribedAt !== null ? { subscribedAt: info.subscribedAt } : {}),
+      ...(info.loginExpiresAt !== null ? { loginExpiresAt: info.loginExpiresAt } : {}),
+    });
+    const rows: Row[] = [
+      {
+        idx: 0,
+        createdAt: -1,
+        entry: { id: DEFAULT_ID, label: '', name: def.name, plan: def.plan, loggedIn: def.loggedIn, active: active === DEFAULT_ID, isDefault: true, ...timeFields(def) },
+        info: def,
+        apiKeyId: null,
+      },
     ];
-    for (const a of this.s.list) {
+    for (let k = 0; k < this.s.list.length; k++) {
+      const a = this.s.list[k]!;
       const i = localInfo(a.dir);
-      const e: AccountEntry = { id: a.id, label: a.label, name: i.name, plan: i.plan, loggedIn: i.loggedIn, active: active === a.id, isDefault: false };
       const api = readApiConfig(a.dir);
-      // API 账号没有登录名：标题用备注名，没有备注名用主机名
-      if (api) Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
-      out.push(e);
+      const e: AccountEntry = {
+        id: a.id,
+        label: a.label,
+        name: i.name,
+        plan: i.plan,
+        loggedIn: i.loggedIn,
+        active: active === a.id,
+        isDefault: false,
+        ...(api ? {} : timeFields(i)),
+      };
+      // Kiro 账号不下发 api，改下发 kiro；普通 API 账号标题用备注名或主机名
+      if (api?.kiro) {
+        const ps = this.deps.kiroProxyState?.(a.dir) ?? { proxy: 'stopped' as const, error: null };
+        Object.assign(e, { name: a.label || 'Kiro', plan: 'Kiro', kiro: { method: api.kiro.method, proxy: ps.proxy, error: ps.error } });
+      } else if (api) {
+        Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
+      }
+      rows.push({
+        idx: k + 1,
+        createdAt: a.createdAt,
+        entry: e,
+        info: i,
+        apiKeyId: api && !api.kiro ? `${api.baseUrl}\0${api.apiKey}` : null,
+      });
     }
-    return { mode: this.s.mode, list: out, login: this.login ? { ...this.login.state } : null };
+
+    // 历史重复条目去重显示（不静默删目录）：优先级 当前账号 > 默认账号 > 最早添加
+    const rank = (r: Row): number => (r.entry.active ? 0 : r.entry.isDefault ? 1 : 2);
+    const ordered = [...rows].sort((a, b) => rank(a) - rank(b) || a.createdAt - b.createdAt || a.idx - b.idx);
+    const kept: Row[] = [];
+    const hiddenIds: string[] = [];
+    for (const r of ordered) {
+      const dup = kept.some((k) => {
+        if (r.apiKeyId && k.apiKeyId) return r.apiKeyId === k.apiKeyId;
+        if (r.apiKeyId || k.apiKeyId) return false;
+        return sameClaudeIdentity(r.info, k.info);
+      });
+      if (dup) hiddenIds.push(r.entry.id);
+      else kept.push(r);
+    }
+    kept.sort((a, b) => a.idx - b.idx);
+    return { kept: kept.map((r) => r.entry), hiddenIds };
+  }
+
+  list(): AccountList {
+    const { kept, hiddenIds } = this.partition();
+    return {
+      mode: this.s.mode,
+      list: kept,
+      login: this.login ? { ...this.login.state } : null,
+      ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length } : {}),
+    };
   }
 
   /** 串行执行切换类操作 */
@@ -352,9 +520,74 @@ export class Accounts {
     this.names = null;
   }
 
-  /** 是否 API 账号（没有订阅额度，也不需要 claude.ai 登录） */
+  /** 是否 API 账号（含 Kiro 账号：没有 Claude 订阅额度，也不需要 claude.ai 登录） */
   isApi(id: string): boolean {
     return !!readApiConfig(this.dirFor(id));
+  }
+
+  /** 是否 Kiro 账号 */
+  isKiro(id: string): boolean {
+    return !!readApiConfig(this.dirFor(id))?.kiro;
+  }
+
+  /** 全部 Kiro 账号列表（供 KiroService 管理代理和总状态） */
+  listKiroAccounts(): Array<{ id: string; dir: string; label: string }> {
+    const out: Array<{ id: string; dir: string; label: string }> = [];
+    for (const a of this.s.list) {
+      if (readApiConfig(a.dir)?.kiro) out.push({ id: a.id, dir: a.dir, label: a.label || 'Kiro' });
+    }
+    return out;
+  }
+
+  /** 为新 Kiro 账号分配并准备目录（建共享链接与 MCP 同步） */
+  allocateKiroDir(): { id: string; dir: string } {
+    let id = newId();
+    while (this.find(id) || fs.existsSync(path.join(accountsRoot(), id))) id = newId();
+    const dir = path.join(accountsRoot(), id);
+    if (ensureLinks(baseClaudeHome(), dir).includes('projects')) {
+      this.discardDir(dir);
+      throw new HttpError(500, '无法在账号目录里创建共享链接');
+    }
+    this.sync(dir);
+    return { id, dir };
+  }
+
+  /** 校验并返回已有 Kiro 账号的目录 */
+  existingKiroDir(id: string): string {
+    if (id === DEFAULT_ID) throw new HttpError(400, '默认账号不是 Kiro 账号');
+    const a = this.find(id);
+    if (!a) throw new HttpError(404, '账号不存在');
+    if (!readApiConfig(a.dir)?.kiro) throw new HttpError(400, '该账号不是 Kiro 账号');
+    return a.dir;
+  }
+
+  /** 停止单个账号的空闲 claude 进程（供 Kiro 重新登录前调用） */
+  async stopAccountProcesses(id: string): Promise<void> {
+    if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
+  }
+
+  /** Kiro 新账号登录成功后登记 */
+  commitNewKiro(id: string, dir: string, label: string): void {
+    this.s.list.push({ id, label: cleanLabel(label), dir, createdAt: Date.now() });
+    this.deps.store.save();
+    this.names = null;
+    this.deps.onChanged({ notify: 'refresh' });
+  }
+
+  /** Kiro 重新登录成功后更新备注并重置缓存 */
+  commitReloginKiro(id: string, label?: string): void {
+    const a = this.find(id);
+    if (a && label !== undefined) {
+      a.label = cleanLabel(label);
+      this.deps.store.save();
+    }
+    this.names = null;
+    this.deps.onChanged({ reset: id, notify: 'refresh' });
+  }
+
+  /** Kiro 登录失败时清理未登记的新目录 */
+  discardKiroDir(dir: string): void {
+    this.discardDir(dir);
   }
 
   /**
@@ -403,11 +636,19 @@ export class Accounts {
         if (!a) throw new HttpError(404, '账号不存在');
         const old = readApiConfig(a.dir);
         if (!old) throw new HttpError(400, '该账号不是 API 账号');
+        if (old.kiro) throw new HttpError(400, 'Kiro 账号不能通过 API 账号接口修改');
         const running = this.deps.running(a.id);
         if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再修改`);
+        const nextKey = apiKey ?? old.apiKey;
+        const dupOther = this.s.list.some((x) => {
+          if (x.id === a.id) return false;
+          const c = readApiConfig(x.dir);
+          return !!c && c.apiKey === nextKey && c.baseUrl === baseUrl;
+        });
+        if (dupOther) throw new HttpError(409, '这个 Base URL 和 API Key 已经添加过了');
         if ((this.deps.processes?.(a.id) ?? 0) > 0) await this.deps.stop((x) => x === a.id);
         const keep = opts.models === undefined ? old.models : models;
-        writeApiConfig(a.dir, { baseUrl, authType, apiKey: apiKey ?? old.apiKey, ...(keep ? { models: keep } : {}) });
+        writeApiConfig(a.dir, { baseUrl, authType, apiKey: nextKey, ...(keep ? { models: keep } : {}) });
         if (opts.label !== undefined) a.label = cleanLabel(opts.label);
         this.deps.store.save();
         this.names = null;
@@ -440,26 +681,60 @@ export class Accounts {
     });
   }
 
+  /** 实际移除单个账号（需在 serial 内调用；不落盘、不发通知） */
+  private async removeOne(id: string): Promise<void> {
+    if (id === DEFAULT_ID) throw new HttpError(400, '默认账号不能移除');
+    const a = this.find(id);
+    if (!a) throw new HttpError(404, '账号不存在');
+    if (id === this.activeId()) throw new HttpError(409, '不能移除当前账号，请先切换到其它账号');
+    if (this.login && this.login.target === id && this.busy()) throw new HttpError(409, '该账号正在登录');
+    const running = this.deps.running(id);
+    if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再移除`);
+    if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
+    if (readApiConfig(a.dir)?.kiro) await this.deps.stopKiroProxy?.(a.dir);
+    this.removeDir(a.dir);
+    this.s.list = this.s.list.filter((x) => x.id !== id);
+    for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];
+  }
+
   /**
    * 移除添加的账号：先解除共享链接，再删配置目录（只删 accountsRoot 下的目录）。
    * 并行模式下该账号有执行中的会话时不能移除，空闲的进程先停掉；绑定它的会话之后改用当前账号。
    */
   remove(id: string): Promise<void> {
     return this.serial(async () => {
-      if (id === DEFAULT_ID) throw new HttpError(400, '默认账号不能移除');
-      const a = this.find(id);
-      if (!a) throw new HttpError(404, '账号不存在');
-      if (id === this.activeId()) throw new HttpError(409, '不能移除当前账号，请先切换到其它账号');
-      if (this.login && this.login.target === id && this.busy()) throw new HttpError(409, '该账号正在登录');
-      const running = this.deps.running(id);
-      if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再移除`);
-      if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
-      this.removeDir(a.dir);
-      this.s.list = this.s.list.filter((x) => x.id !== id);
-      for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];
+      await this.removeOne(id);
       this.deps.store.save();
       this.names = null;
       this.deps.onChanged({ reset: id, notify: 'refresh' });
+    });
+  }
+
+  /**
+   * 清理 list() 去重时隐藏的重复账号条目：按与 remove() 相同的规则逐条移除，
+   * 默认账号 / 当前账号 / 正在登录 / 有执行中会话等不可删的跳过并计入 skipped，不抛错。
+   */
+  dedupe(): Promise<AccountDedupeResult> {
+    return this.serial(async () => {
+      const { hiddenIds } = this.partition();
+      const removedIds: string[] = [];
+      let skipped = 0;
+      for (const id of hiddenIds) {
+        try {
+          await this.removeOne(id);
+          removedIds.push(id);
+        } catch {
+          skipped++;
+        }
+      }
+      if (removedIds.length > 0) {
+        this.deps.store.save();
+        this.names = null;
+        for (let i = 0; i < removedIds.length; i++) {
+          this.deps.onChanged({ reset: removedIds[i]!, ...(i === removedIds.length - 1 ? { notify: 'refresh' } : {}) });
+        }
+      }
+      return { removed: removedIds.length, skipped };
     });
   }
 
@@ -497,7 +772,9 @@ export class Accounts {
       if (typeof opts.accountId !== 'string') throw new HttpError(400, 'accountId 不合法');
       target = opts.accountId;
       const d = this.dirOf(target);
-      if (readApiConfig(d)) throw new HttpError(400, 'API 账号不需要登录，请直接修改它的 API Key');
+      const existingApi = readApiConfig(d);
+      if (existingApi?.kiro) throw new HttpError(400, 'Kiro 账号请通过 Kiro 登录');
+      if (existingApi) throw new HttpError(400, 'API 账号不需要登录，请直接修改它的 API Key');
       dir = d ?? baseClaudeHome();
     } else {
       let id = newId();
@@ -511,8 +788,9 @@ export class Accounts {
       this.sync(dir);
     }
 
+    const backup = target ? captureLoginBackup(target === DEFAULT_ID ? null : dir) : null;
     const state: AccountLogin = { loginId: newId(), status: 'starting', url: null, accountId: target, error: null };
-    const job: LoginJob = { state, proc: null, dir, target, label: cleanLabel(opts.label), output: '', timer: null };
+    const job: LoginJob = { state, proc: null, dir, target, label: cleanLabel(opts.label), output: '', timer: null, backup };
     const env = claudeEnv(target === DEFAULT_ID ? null : dir);
     let proc: ChildProcess;
     try {
@@ -587,15 +865,22 @@ export class Accounts {
     const isDefault = job.target === DEFAULT_ID;
     const info = localInfo(isDefault ? null : job.dir);
     if (!info.loggedIn) return fail('登录没有完成');
-    // 同一个账号不重复添加
-    if (info.uuid) {
+    // 同一个账号不重复添加（优先 accountUuid，缺失时用邮箱哈希兜底）
+    if (info.uuid || info.emailHash) {
       const others: (string | null)[] = [];
       if (!isDefault) others.push(null);
       for (const a of this.s.list) if (a.id !== job.target) others.push(a.dir);
-      if (others.some((d) => localInfo(d).uuid === info.uuid)) {
+      if (others.some((d) => sameClaudeIdentity(localInfo(d), info))) {
         if (!job.target) return fail('该账号已经添加过了');
-        // 重新登录成了另一个已存在的账号：凭据已经写进这个目录，只能提示
-        st.error = '注意：登录的是另一个已添加的账号';
+        // 重新登录成了另一个已存在的账号：拒绝并回滚恢复原凭据，不产生重复条目也不丢原账号
+        if (job.backup) {
+          try {
+            restoreLoginBackup(job.backup);
+          } catch {
+            return fail('该账号已经添加过了，恢复原登录状态失败');
+          }
+        }
+        return fail('该账号已经添加过了，已恢复原登录状态');
       }
     }
     if (!job.target) {

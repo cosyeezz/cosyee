@@ -134,6 +134,44 @@
   font-size: var(--fs-md);
   line-height: var(--lh);
 }
+/* 长用户消息（如子代理任务提示）默认折叠到 240px，底部渐隐不挡选中与标签点击 */
+.cz-flow__bubble.is-collapsed {
+  position: relative;
+  max-height: 240px;
+  overflow: hidden;
+}
+/* 渐隐用独立元素：气泡的 ::before / ::after 已被 .cz-spot 光效占用 */
+.cz-flow__bubble-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 80px;
+  background: linear-gradient(to bottom, transparent, var(--bg-elev) 58%);
+  pointer-events: none;
+}
+.cz-flow__bubble-toggle {
+  display: block;
+  margin: var(--sp-2) auto 0;
+  padding: 2px var(--sp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  cursor: pointer;
+}
+.cz-flow__bubble-toggle:hover { background: var(--bg-hover); color: var(--text); }
+.cz-flow__bubble-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-flow__bubble.is-collapsed .cz-flow__bubble-toggle {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  margin: 0;
+  z-index: 1;
+}
 /* 选中回复带来的引用：左竖线 + 灰色文字，最多 3 行 */
 .cz-flow__quote {
   margin: 0 0 var(--sp-2);
@@ -347,7 +385,13 @@
 .cz-flow__tool-path:hover { color: var(--accent); text-decoration: underline; }
 .cz-flow__tool-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-sm); }
 .cz-flow__tool.is-error .cz-flow__tool-path { color: var(--danger); }
-@media (hover: none), (pointer: coarse) { .cz-flow__tool-path { min-height: 44px; } }
+/* 触屏：所有步骤行统一加高、行距收紧。只加高带路径的行会让它和命令等普通行混排时间隙忽大忽小 */
+@media (hover: none), (pointer: coarse) {
+  .cz-flow__steps { gap: 2px; }
+  .cz-flow__steps .cz-flow__row-btn,
+  .cz-flow__steps .cz-flow__tool-path { min-height: 36px; }
+  .cz-flow__steps .cz-flow__note { padding-block: 8px; }
+}
 .cz-flow__tool.is-error .cz-flow__tool-summary,
 .cz-flow__tool.is-error .cz-flow__tool-icon { color: var(--danger); }
 .cz-flow__badge {
@@ -374,7 +418,7 @@
 }
 .cz-flow__more:hover { background: var(--bg-hover); }
 
-/* ---------- 子代理面板 ---------- */
+/* ---------- 子代理 / 技能 / MCP 列表（SessionDock 内使用） ---------- */
 .cz-flow__agents {
   padding: var(--sp-2) 0;
   font-size: var(--fs-sm);
@@ -404,6 +448,11 @@
   text-align: left;
   cursor: pointer;
 }
+.cz-flow__agent-item { display: flex; align-items: center; gap: var(--sp-1); }
+.cz-flow__agent-item > .cz-flow__agent-row { flex: 1; width: auto; min-width: 0; }
+.cz-flow__agent-stop { flex: none; width: 24px; height: 24px; color: var(--text-3); }
+.cz-flow__agent-stop:hover { color: var(--danger); }
+.cz-flow__agent-bg { flex: none; }
 .cz-flow__agent-row:hover { background: var(--bg-hover); }
 .cz-flow__agent-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cz-flow__agent-row > svg { flex: none; }
@@ -569,6 +618,38 @@
   cursor: pointer;
 }
 .cz-flow__code-copy:hover { background: var(--bg-hover); color: var(--text); }
+.cz-flow__code-actions { display: inline-flex; align-items: center; gap: 2px; }
+.cz-flow__code-run { color: var(--accent); }
+.cz-flow__code-run.is-running { color: var(--danger); }
+/* 代码块的运行结果 */
+.cz-flow__run { border-top: 1px solid var(--border); background: var(--bg-elev); }
+.cz-flow__run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px var(--sp-2) 2px var(--sp-3);
+  color: var(--text-3);
+  font-size: 11px;
+  user-select: none;
+}
+.cz-flow__run-meta { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 20px; }
+.cz-flow__run-status.is-ok { color: var(--dot-running); }
+.cz-flow__run-status.is-bad { color: var(--danger); }
+.cz-flow__run-out, .cz-flow__run-err {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-2);
+}
+.cz-flow__run-err { color: var(--danger); }
+.cz-flow__run-out + .cz-flow__run-err { border-top: 1px dashed var(--border); }
+.cz-flow__run-empty { padding: var(--sp-2) var(--sp-3); color: var(--text-3); font-size: var(--fs-xs); }
 .cz-flow__code-pre {
   margin: 0;
   padding: var(--sp-3);
@@ -622,25 +703,63 @@
 .cz-flow__panel-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .cz-flow__panel-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; font-size: var(--fs-md); }
 .cz-flow__panel-meta { color: var(--text-3); font-size: var(--fs-xs); }
-.cz-flow__panel-scroll { flex: 1; min-height: 0; overflow-y: auto; }
-.cz-flow__panel-body { padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
-
-.cz-flow__task {
+/* 头部的文字按钮（停止委派） */
+.cz-flow__head-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 26px;
+  padding: 0 var(--sp-2);
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-flow__head-btn:hover { color: var(--danger); border-color: var(--danger); }
+.cz-flow__head-btn:focus-visible, .cz-flow__append-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 面板底部：追加消息 */
+.cz-flow__append {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.cz-flow__append-input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 var(--sp-3);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 2px 0;
-}
-.cz-flow__task .cz-flow__row-btn { padding: 4px var(--sp-3); }
-.cz-flow__task-label { font-weight: 500; }
-.cz-flow__task-body {
-  padding: var(--sp-1) var(--sp-3) var(--sp-3);
-  max-height: 240px;
-  overflow-y: auto;
-  color: var(--text-2);
+  color: var(--text);
+  font: inherit;
   font-size: var(--fs-sm);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+}
+.cz-flow__append-input:focus { outline: none; border-color: var(--accent); }
+.cz-flow__append-btn {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.cz-flow__append-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.cz-flow__append-btn:disabled, .cz-flow__append-send:disabled { opacity: 0.4; cursor: default; }
+.cz-flow__append-send { width: 32px; height: 32px; color: var(--accent); }
+.cz-flow__panel-flow { flex: 1; min-height: 0; }
+.cz-flow__no-record {
+  margin-top: var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 /* AskUserQuestion / ExitPlanMode 展开区 */
@@ -653,3 +772,110 @@
 .cz-flow__ask-ans { margin-top: 4px; font-size: var(--fs-xs); color: var(--accent); }
 .cz-flow__plan-status { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
 .cz-flow__plan-status.is-no { color: var(--warn); }
+
+/* ---------- 交付文字下方的操作行（朗读 / 复制） ---------- */
+.cz-flow__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: var(--sp-1);
+  min-width: 0;
+}
+.cz-flow__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.cz-flow__action:hover, .cz-flow__action.is-playing { background: var(--bg-hover); color: var(--text); }
+.cz-flow__action-hint {
+  margin-left: var(--sp-2);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+/* ---------- 出错轮下方的停止 / 自动重试提示条（StopNotice） ---------- */
+.cz-flow__stop {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: 6px var(--sp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.cz-flow__stop.is-waiting {
+  border-color: color-mix(in srgb, var(--warn) 38%, var(--border));
+}
+.cz-flow__stop.is-gave_up,
+.cz-flow__stop.is-stopped {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+}
+.cz-flow__stop-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+.cz-flow__stop.is-waiting .cz-flow__stop-dot {
+  background: var(--warn);
+}
+.cz-flow__stop-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cz-flow__stop-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.cz-flow__stop-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.cz-flow__stop-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-flow__stop-btn--primary {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong));
+}
+.cz-flow__stop-btn--primary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.cz-flow__stop-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

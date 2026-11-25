@@ -2,6 +2,7 @@
 // 虚线 = 这一轮压缩过会话；悬停看明细，点击跳到会话流里的这一轮。框架与上下文走势共用 cz-ctx__cache-* 样式。
 import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { costTotal, type CompactMark, type Turn } from '@cosyee/shared';
+import { ChartTip } from './ChartTip';
 import { COST_KINDS, formatUsd, type TurnCost } from './cost';
 
 const W = 280;
@@ -86,7 +87,7 @@ export function CostChart({
     `每轮花费，共 ${n} 轮，最近一轮 ${formatUsd(geo.vals[last]!)}，最贵的是第 ${top + 1} 轮 ${formatUsd(geo.vals[top]!)}` +
     (marks.size > 0 ? `，压缩过 ${[...marks.values()].reduce((s, l) => s + l.length, 0)} 次` : '') +
     (onJump ? '。左右键选择，回车跳到这一轮' : '');
-  const tipLeft = hover === null ? 0 : Math.min(Math.max((geo.cx[hover]! / W) * 100, 18), 82);
+  const tipAt = hover === null ? 0 : geo.cx[hover]! / W;
   const row = hover !== null ? rows[hover]! : null;
   const userText = hover !== null ? flow?.[hover]?.userText : undefined;
   const hoverMarks = hover !== null ? marks.get(hover) : undefined;
@@ -141,7 +142,7 @@ export function CostChart({
           })}
         </svg>
         {row && hover !== null && (
-          <div className="cz-ctx__cache-tip" role="status" style={{ left: `${tipLeft}%` }} data-testid="cost-tip">
+          <ChartTip at={tipAt} testId="cost-tip">
             <div className="cz-ctx__cache-tip-title">
               第 {hover + 1} 轮 · {formatUsd(geo.vals[hover]!)}
             </div>
@@ -168,7 +169,7 @@ export function CostChart({
               </div>
             )}
             {onJump && <div className="cz-ctx__cache-tip-row is-total">点击跳到这一轮</div>}
-          </div>
+          </ChartTip>
         )}
       </div>
     </div>

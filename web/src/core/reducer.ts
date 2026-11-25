@@ -11,6 +11,7 @@ import { isObj, str, toolSummary } from './reducer/util';
 import { parseUserText } from './composer';
 
 export type { ConvState } from './reducer/core';
+export { applyDelegates, applyDelegateNotification } from './reducer/delegate';
 export { toolSummary };
 
 export function initState(): ConvState {
@@ -99,6 +100,16 @@ export function rewindTo(s: ConvState, userId: string): ConvState {
 /** 子代理 jsonl 条目 → 它自己的一轮（浮层打开历史会话里的子代理时用；实时子代理直接取 turn.subagents[i].turn） */
 export function subagentTurnFromHistory(entries: unknown[], opts: { title: string; toolUseId: string }): Turn {
   return buildSubagentTurn(entries, opts);
+}
+
+export { recordFuller, withRecord } from './reducer/delegate';
+
+/** 子代理 jsonl 里实际使用的思考强度（第一条带 effort 的 assistant 消息）；没有返回 undefined */
+export function subagentEffortFromHistory(entries: unknown[]): string | undefined {
+  for (const e of entries) {
+    if (isObj(e) && e.type === 'assistant' && str(e.effort)) return str(e.effort);
+  }
+  return undefined;
 }
 
 /** 子代理 jsonl 里实际使用的模型（第一条带 model 的 assistant 消息）；没有返回 undefined */

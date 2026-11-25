@@ -1,4 +1,4 @@
-// 一轮回复：状态行 + 展开区 + 子代理面板 + 模型文字。
+// 一轮回复：状态行 + 展开区 + 模型文字（子代理 / 技能 / MCP 面板移至会话流末尾的 SessionDock 展示）。
 // 状态行只由模型最近一次「输出」决定，委派子代理与文字同等对待、谁新显示谁（见 format.ts 的 getStatusLine）：
 //   没有输出 → 星轨 + 「正在理解问题」；
 //   有输出 → 神经脉冲 + 最近一段文本或「委派子代理：…」（单行省略号）；
@@ -6,17 +6,17 @@
 // 整行可点击展开；展开后状态行吸顶，点击吸顶的行收起并滚回原位。工具行只在展开区出现。
 // 状态行下方只放交付：执行中不显示任何正文（过程全部在状态行与展开区里），回合结束才出现最终答复（见 getLiveText）。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { SubagentRun, Turn } from '@cosyee/shared';
-import { Icon, type IconName } from '../icons/Icon';
+import type { Turn } from '@cosyee/shared';
+import { AnswerActions } from './AnswerActions';
 import { Markdown } from './Markdown';
 import { NeuralIcon } from './NeuralIcon';
-import { CompactingIcon, DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
-import { McpPanel } from './McpPanel';
-import { SkillPanel } from './SkillPanel';
+import { DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
 import { StepView } from './Steps';
-import { getLiveText, getStatusLine, isTurnActive, subagentProgress, type StatusLine } from './format';
+import { getLiveText, getStatusLine, isTurnActive, type StatusLine } from './format';
 import './flow.css';
 import './status.css';
+
+export { SUBAGENT_TITLE_CLASS } from './SubagentList';
 
 const STATUS_SIZE = 20;
 
@@ -110,67 +110,11 @@ const StatusRow = memo(function StatusRow({
   );
 });
 
-const SUBAGENT_ICON: Record<SubagentRun['status'], IconName> = {
-  running: 'agent-running',
-  done: 'done',
-  error: 'error',
-};
-
-// 子代理标题文字特效：执行中流光（同状态行）；出错标红；完成保持正文色（图标已表示完成）
-export const SUBAGENT_TITLE_CLASS: Record<SubagentRun['status'], string> = {
-  running: 'cz-st-tool',
-  done: '',
-  error: 'cz-st-error',
-};
-
-const SubagentPanel = memo(function SubagentPanel({
-  turnId,
-  subagents,
-  onOpenSubagent,
-}: {
-  turnId: string;
-  subagents: SubagentRun[];
-  onOpenSubagent?: (turnId: string, toolUseId: string) => void;
-}) {
-  const { total, finished, allDone } = subagentProgress(subagents);
-  // 头部：液滴图标 + 紫粉慢速流光；全部完成后动画停下（文字不变）
-  return (
-    <div className="cz-flow__agents">
-      <div className="cz-flow__agents-head">
-        <CompactingIcon size={16} className={allDone ? 'is-still' : undefined} />
-        <span className={allDone ? undefined : 'cz-st cz-st-compacting'}>
-          {allDone ? `${total} 个子代理已完成` : `${total} 个子代理执行中 ${finished}/${total}`}
-        </span>
-      </div>
-      <ul className="cz-flow__agents-list">
-        {subagents.map((s) => (
-          <li key={s.toolUseId}>
-            <button
-              type="button"
-              className="cz-flow__agent-row"
-              title={`${s.title}（点击查看子代理会话）`}
-              onClick={() => onOpenSubagent?.(turnId, s.toolUseId)}
-            >
-              <Icon name={SUBAGENT_ICON[s.status]} size={14} />
-              <span className="cz-flow__agent-title">
-                <span className={SUBAGENT_TITLE_CLASS[s.status]}>{s.title}</span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-});
-
 export interface TurnViewProps {
   turn: Turn;
-  onOpenSubagent?: (turnId: string, toolUseId: string) => void;
-  /** 子代理浮层里复用：不显示子代理面板 */
-  isSubagentView?: boolean;
 }
 
-export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagentView }: TurnViewProps) {
+export const TurnView = memo(function TurnView({ turn }: TurnViewProps) {
   const [expanded, setExpanded] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLElement>(null);
@@ -213,13 +157,8 @@ export const TurnView = memo(function TurnView({ turn, onOpenSubagent, isSubagen
         </div>
       )}
 
-      {!isSubagentView && turn.subagents.length > 0 && (
-        <SubagentPanel turnId={turn.id} subagents={turn.subagents} onOpenSubagent={onOpenSubagent} />
-      )}
-      {turn.skills && turn.skills.length > 0 && <SkillPanel skills={turn.skills} active={active} />}
-      <McpPanel steps={turn.steps} active={active} />
-
       {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
+      {delivered && !active && <AnswerActions turnId={turn.id} text={delivered} />}
     </div>
   );
 });

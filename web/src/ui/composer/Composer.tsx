@@ -5,7 +5,11 @@ import type { ApiModelMap, CliModel, PickedItem, PreviewInfo, QueueItem, QueueMo
 import type { Attachment } from '@cosyee/shared';
 import { itemKind, labelChips, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
 import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
+import { api } from '../../core/api';
+import { ensureSpeech } from '../../core/speech/ensure';
+import { micSupport, startRecording, type Recorder } from '../../core/speech/recorder';
 import { Icon } from '../icons/Icon';
+import { TOUCH_QUERY, useMediaQuery } from '../layout/useMediaQuery';
 import { ModelMenu } from '../menus/ModelMenu';
 import { ModeMenu } from '../menus/ModeMenu';
 import { UsageMeter } from '../usage/UsageMeter';
@@ -32,6 +36,9 @@ export interface ComposerProps {
   onSend: (text: string, attachments: Attachment[], mode?: QueueMode) => void;
   onInterrupt: () => void;
   running: boolean;
+  /** 通话模式：点电话按钮开始 / 挂断；不传则不显示按钮 */
+  onCall?: () => void;
+  callActive?: boolean;
   /** 当前会话：换会话时流光直接消失（不带着绕圈的光头淡出，否则会闪一道蓝光） */
   sessionKey?: string | null;
   pick: (mode?: 'mixed' | 'files' | 'folders') => Promise<{ items: PickedItem[]; supportsMixed: boolean }>;
@@ -467,6 +474,94 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, []);
   useEffect(() => () => { if (hintTimer.current) clearTimeout(hintTimer.current); }, []);
 
+  // ───────────── 语音输入 ─────────────
+  // 点一下开始录音，再点一下停止 → 必要时下载识别模型 → 上传识别 → 文字插到光标处（不自动发送）
+  const [mic, setMic] = useState<{ phase: 'idle' | 'recording' | 'downloading' | 'recognizing'; pct?: number | null }>({ phase: 'idle' });
+  const [micSecs, setMicSecs] = useState(0);
+  const recorder = useRef<Recorder | null>(null);
+  const micTick = useRef<ReturnType<typeof setInterval> | null>(null);
+  const micAlive = useRef(true);
+  const MAX_REC_SECS = 120;
+  const clearTick = () => { if (micTick.current) { clearInterval(micTick.current); micTick.current = null; } };
+  useEffect(() => {
+    micAlive.current = true;
+    return () => { micAlive.current = false; clearTick(); recorder.current?.cancel(); recorder.current = null; };
+  }, []);
+
+  const insertRecognized = (text: string) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.focus();
+    const sel = window.getSelection();
+    if (savedRange.current && sel && !ed.contains(sel.anchorNode)) {
+      sel.removeAllRanges();
+      sel.addRange(savedRange.current);
+    }
+    if (!document.execCommand('insertText', false, text)) {
+      insertNodesAt(ed, savedRange.current, [document.createTextNode(text)]);
+    }
+    afterChange();
+  };
+
+  const finishRecording = async () => {
+    const rec = recorder.current;
+    if (!rec) return;
+    recorder.current = null;
+    clearTick();
+    try {
+      const { pcm, rate } = await rec.stop();
+      if (!micAlive.current) return;
+      if (pcm.length < rate / 4) { setMic({ phase: 'idle' }); showHint('没有识别到语音'); return; } // 不足 0.25 秒
+      setMic({ phase: 'downloading', pct: null });
+      await ensureSpeech('stt', (pct) => { if (micAlive.current) setMic({ phase: 'downloading', pct }); });
+      if (!micAlive.current) return;
+      setMic({ phase: 'recognizing' });
+      const { text } = await api.stt(pcm, rate);
+      if (!micAlive.current) return;
+      const t = text.trim();
+      if (t) insertRecognized(t);
+      else showHint('没有识别到语音');
+    } catch (err) {
+      if (micAlive.current) showHint(`语音识别失败：${err instanceof Error ? err.message : err}`);
+    } finally {
+      if (micAlive.current) setMic({ phase: 'idle' });
+    }
+  };
+
+  const onMicClick = async () => {
+    if (disabled) return;
+    if (mic.phase === 'recording') { void finishRecording(); return; }
+    if (mic.phase !== 'idle') return; // 下载 / 识别中
+    const sup = micSupport();
+    if (!sup.ok) { showHint(sup.reason); return; }
+    try {
+      setMic({ phase: 'recording' }); // 先占位，防止授权弹窗期间重复点击
+      const rec = await startRecording();
+      if (!micAlive.current) { rec.cancel(); return; }
+      recorder.current = rec;
+      setMicSecs(0);
+      const t0 = Date.now();
+      micTick.current = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        setMicSecs(s);
+        if (s >= MAX_REC_SECS) void finishRecording(); // 录音上限，到点自动停止并识别
+      }, 250);
+    } catch (err) {
+      if (micAlive.current) {
+        setMic({ phase: 'idle' });
+        showHint(`无法录音：${err instanceof Error ? err.message : err}`);
+      }
+    }
+  };
+  const touch = useMediaQuery(TOUCH_QUERY);
+  const micSup = micSupport();
+  const micBusy = mic.phase === 'downloading' || mic.phase === 'recognizing';
+  const micLabel =
+    mic.phase === 'recording' ? `${Math.floor(micSecs / 60)}:${String(micSecs % 60).padStart(2, '0')}`
+    : mic.phase === 'downloading' ? (mic.pct != null ? `下载识别模型 ${mic.pct}%` : '下载识别模型…')
+    : mic.phase === 'recognizing' ? '识别中…'
+    : null;
+
   /** 上传剪贴板里的图片，按顺序在粘贴时的光标处插入标签。 */
   const pasteImages = useCallback(async (files: File[], at: Range | null) => {
     const ed = editorRef.current;
@@ -601,7 +696,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               suppressContentEditableWarning
               spellCheck={false}
               data-empty={empty ? 'true' : 'false'}
-              data-placeholder={running ? 'Enter 插话 · Ctrl+Enter 排队' : '输入 / 以使用命令'}
+              data-placeholder={!running ? '输入 / 以使用命令' : touch ? '输入以插话' : 'Enter 插话 · Ctrl+Enter 排队'}
               onInput={(e) => afterChange(composing.current || (e.nativeEvent as InputEvent).isComposing === true)}
               onKeyDown={onKeyDown}
               onKeyUp={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') evalSlash(); }}
@@ -639,7 +734,30 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               <Icon name="send" size={18} />
             </button>
           )}
-          <button type="button" className="cz-composer__btn" title="语音输入（暂未实现）" aria-label="语音输入" onMouseDown={keepFocus}>
+          {micLabel && <span className="cz-composer__mic-label" role="status">{micLabel}</span>}
+          {props.onCall && (
+            <button
+              type="button"
+              className={`cz-composer__btn${props.callActive ? ' is-calling' : ''}`}
+              title={props.callActive ? '挂断' : '通话模式：说完自动发送，执行完念给你听'}
+              aria-label={props.callActive ? '挂断' : '通话模式'}
+              aria-pressed={!!props.callActive}
+              onMouseDown={keepFocus}
+              onClick={props.onCall}
+            >
+              <Icon name="phone" size={18} />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`cz-composer__btn${mic.phase === 'recording' ? ' is-recording' : ''}`}
+            title={mic.phase === 'recording' ? '停止录音并识别' : micBusy ? '识别中…' : '语音输入'}
+            aria-label={mic.phase === 'recording' ? '停止录音并识别' : '语音输入'}
+            aria-disabled={!micSup.ok || micBusy || undefined}
+            disabled={disabled}
+            onMouseDown={keepFocus}
+            onClick={() => void onMicClick()}
+          >
             <Icon name="mic" size={18} />
           </button>
         </div>

@@ -47,13 +47,17 @@ export interface SubagentRun {
   /** Agent 工具调用的 description */
   title: string;
   subagentType?: string;
+  /** delegate 工具发起的委派（不是 claude 原生子代理） */
+  delegate?: boolean;
   /** 子代理的 agent id（= 后台任务的 task_id）；SendMessage 恢复时靠它找回原来的子代理 */
   taskId?: string;
   /** 实际使用的模型：子代理 assistant 消息里的 model；还没有输出时取 Agent 调用参数里的 model（如 sonnet） */
   model?: string;
-  /** Agent 调用参数里指定的思考等级；未指定时为空，UI 显示「继承主会话」 */
+  /** 思考等级：调用时点名的、服务端按「子代理模型」设置补上的，或子代理记录里的；为空时 UI 显示设置里的值 */
   effort?: string;
   status: 'running' | 'done' | 'error';
+  /** 后台运行（delegate run_in_background / delegate_send 续跑）：主轮结束不影响它，状态由委派任务快照或完成通知决定 */
+  background?: boolean;
   /**
    * 委派时所在轮的 steps.length：它排在 steps[afterStep - 1] 之后。
    * 状态行把委派当作模型输出，与文字比先后、显示最新的那个；旧数据没有时视为排在最前。

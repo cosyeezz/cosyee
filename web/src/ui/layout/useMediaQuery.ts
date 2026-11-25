@@ -16,3 +16,5 @@ export function useMediaQuery(query: string): boolean {
 
 /** 窄屏（手机）：两侧栏改为浮层抽屉 */
 export const NARROW_QUERY = '(max-width: 760px)';
+/** 触屏为主（手机 / 平板）：没有 Ctrl 等组合键 */
+export const TOUCH_QUERY = '(pointer: coarse)';

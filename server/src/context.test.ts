@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { toContextUsage } from './context.js';
+import type { SkillMode } from '@cosyee/shared';
 
 const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../shared/fixtures');
 
@@ -128,6 +129,29 @@ describe('toContextUsage', () => {
     expect(r.skills.find((s) => s.name === 'ghost')).toMatchObject({ mode: 'on', tokens: null });
   });
 
+  it('skills：cosyeeOverrides 里的裸键若已有同名带前缀 skill 则不重复列出，无对应带前缀条目时仍列出', () => {
+    // 1. init 里已有带前缀名：裸键只作设置回退，不作为独立条目列出
+    const r1 = toContextUsage({ skills: { skillFrontmatter: [] } }, 1, {
+      initSkills: ['anthropic-skills:xlsx'],
+      cosyeeOverrides: { xlsx: 'user-invocable-only' },
+    });
+    expect(r1.skills).toEqual([{ name: 'anthropic-skills:xlsx', mode: 'user-invocable-only', tokens: null, source: 'plugin' }]);
+
+    // 2. cosyeeOverrides 里裸键排在带前缀键之前：仍只列出带前缀条目
+    const r2 = toContextUsage({ skills: { skillFrontmatter: [] } }, 1, {
+      initSkills: [],
+      cosyeeOverrides: { docs: 'off', 'anthropic-skills:docs': 'off' },
+    });
+    expect(r2.skills).toEqual([{ name: 'anthropic-skills:docs', mode: 'off', tokens: null, source: 'plugin' }]);
+
+    // 3. 没有对应带前缀条目的裸键：仍然列出
+    const r3 = toContextUsage({ skills: { skillFrontmatter: [] } }, 1, {
+      initSkills: [],
+      cosyeeOverrides: { schedule: 'user-invocable-only' },
+    });
+    expect(r3.skills).toEqual([{ name: 'schedule', mode: 'user-invocable-only', tokens: null, source: null }]);
+  });
+
   it('mcpServers：以 mcp_status 为准，工具 token 按规范化名匹配', () => {
     const r = toContextUsage(
       {
@@ -195,5 +219,137 @@ describe('toContextUsage', () => {
       { name: 'WebFetch', tokens: 300, deferred: true },
       { name: 'Monitor', tokens: 200 },
     ]);
+  });
+  it('描述原文：skill 按完整名或去前缀名取，智能体整表下发，过长截断；没有就不带', () => {
+    const raw = { skills: { skillFrontmatter: [{ name: 'pdf', tokens: 10 }, { name: 'impeccable', tokens: 5 }, { name: 'none', tokens: 1 }] } };
+    const u = toContextUsage(raw, 1, {
+      initSkills: ['anthropic-skills:pdf', 'impeccable', 'none'],
+      skillDescriptions: new Map([['pdf', 'PDF 工具'], ['impeccable', 'x'.repeat(5000)]]),
+      agentDescriptions: new Map([['Explore', '只读搜索']]),
+    });
+    const by = Object.fromEntries(u.skills.map((s) => [s.name, s]));
+    expect(by['anthropic-skills:pdf']!.description).toBe('PDF 工具');
+    expect(by.impeccable!.description!.length).toBe(4001);
+    expect('description' in by.none!).toBe(false);
+    expect(u.agentDescriptions).toEqual({ Explore: '只读搜索' });
+    expect('agentDescriptions' in toContextUsage(raw, 1, {})).toBe(false);
+  });
+
+  it('mcpServers：带上 mcp_status 的工具描述；cosyee 自带工具缺描述时补上注册的定义', () => {
+    const u = toContextUsage({ mcpTools: [{ name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 900 }] }, 1, {
+      mcpStatus: {
+        mcpServers: [
+          { name: 'gh', status: 'connected', tools: [{ name: 'search', description: '  搜索仓库 ' }, { name: 'plain' }] },
+          { name: 'cosyee', status: 'connected', tools: [{ name: 'delegate' }] },
+        ],
+      },
+    });
+    const gh = u.mcpServers.find((s) => s.name === 'gh')!;
+    expect(gh.tools).toEqual([{ name: 'search', tokens: null, description: '搜索仓库' }, { name: 'plain', tokens: null }]);
+    const co = u.mcpServers.find((s) => s.name === 'cosyee')!;
+    expect(co.tools[0]!.tokens).toBe(900);
+    expect(co.tools[0]!.description).toMatch(/^Launch a delegate agent[\s\S]*input_schema: \{/);
+  });
+
+  it('分类明细：把 cosyee 工具的常驻与延迟 token 从 MCP tools 挪到 System tools，总和不变', () => {
+    const u = toContextUsage({
+      maxTokens: 10000,
+      totalTokens: 3000,
+      categories: [
+        { name: 'System tools', tokens: 1000, kind: 'used', color: 'c-sys' },
+        { name: 'MCP tools', tokens: 1500, kind: 'used', color: 'c-mcp' },
+        { name: 'Messages', tokens: 500, kind: 'used' },
+        { name: 'MCP tools (deferred)', tokens: 400, kind: 'deferred' },
+        { name: 'System tools (deferred)', tokens: 600, kind: 'deferred' },
+      ],
+      mcpTools: [
+        { name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 900 },
+        { name: 'mcp__cosyee__delegate_agents', server: 'cosyee', tokens: 250, isLoaded: false },
+        { name: 'mcp__github__search', serverName: 'github', tokens: 600 },
+        { name: 'mcp__github__list', serverName: 'github', tokens: 150, isLoaded: false },
+      ],
+    }, 1);
+    expect(u.categories).toEqual([
+      { name: 'System tools', tokens: 1900, percent: 19, color: 'c-sys' },
+      { name: 'MCP tools', tokens: 600, percent: 6, color: 'c-mcp' },
+      { name: 'Messages', tokens: 500, percent: 5 },
+    ]);
+    expect(u.categories.reduce((s, c) => s + c.tokens, 0)).toBe(3000);
+    expect(u.deferred).toEqual([
+      { name: 'MCP tools (deferred)', tokens: 150 },
+      { name: 'System tools (deferred)', tokens: 850 },
+    ]);
+    expect(u.deferred.reduce((s, d) => s + d.tokens, 0)).toBe(1000);
+  });
+
+  it('分类明细：源项归零则去掉；目标项不存在则在源项原位置新建并沿用 color', () => {
+    const u = toContextUsage({
+      maxTokens: 10000,
+      totalTokens: 2000,
+      categories: [
+        { name: 'System prompt', tokens: 500, kind: 'used' },
+        { name: 'MCP tools', tokens: 900, kind: 'used', color: 'c-mcp' },
+        { name: 'Messages', tokens: 600, kind: 'used' },
+        { name: 'MCP tools (deferred)', tokens: 300, kind: 'deferred' },
+      ],
+      mcpTools: [
+        { name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 900 },
+        { name: 'mcp__cosyee__delegate_agents', serverName: 'cosyee', tokens: 300, isLoaded: false },
+      ],
+    }, 1);
+    expect(u.categories).toEqual([
+      { name: 'System prompt', tokens: 500, percent: 5 },
+      { name: 'System tools', tokens: 900, percent: 9, color: 'c-mcp' },
+      { name: 'Messages', tokens: 600, percent: 6 },
+    ]);
+    expect(u.deferred).toEqual([{ name: 'System tools (deferred)', tokens: 300 }]);
+  });
+
+  it('分类明细：超量截断、无源项、无 cosyee 工具时的边界行为', () => {
+    // 超量截断：cosyee 声称 2000，但 MCP tools 只有 500 -> 最多挪 500，总和不变
+    const capped = toContextUsage({
+      maxTokens: 10000,
+      totalTokens: 1500,
+      categories: [
+        { name: 'System tools', tokens: 1000, kind: 'used' },
+        { name: 'MCP tools', tokens: 500, kind: 'used' },
+        { name: 'MCP tools (deferred)', tokens: 100, kind: 'deferred' },
+      ],
+      mcpTools: [
+        { name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 2000 },
+        { name: 'mcp__cosyee__delegate_agents', serverName: 'cosyee', tokens: 500, isLoaded: false },
+      ],
+    }, 1);
+    expect(capped.categories).toEqual([{ name: 'System tools', tokens: 1500, percent: 15 }]);
+    expect(capped.deferred).toEqual([{ name: 'System tools (deferred)', tokens: 100 }]);
+
+    // 无源项：不新建 System tools，结果不变
+    const noSrc = toContextUsage({
+      maxTokens: 10000,
+      totalTokens: 500,
+      categories: [{ name: 'Messages', tokens: 500, kind: 'used' }],
+      mcpTools: [{ name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 900 }],
+    }, 1);
+    expect(noSrc.categories).toEqual([{ name: 'Messages', tokens: 500, percent: 5 }]);
+    expect(noSrc.deferred).toEqual([]);
+
+    // 目标项不存在但源项未归零：在源项原位置新建目标项，源项保留在后
+    const partial = toContextUsage({
+      maxTokens: 10000,
+      totalTokens: 1000,
+      categories: [{ name: 'MCP tools', tokens: 1000, kind: 'used' }],
+      mcpTools: [{ name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 400 }],
+    }, 1);
+    expect(partial.categories).toEqual([
+      { name: 'System tools', tokens: 400, percent: 4 },
+      { name: 'MCP tools', tokens: 600, percent: 6 },
+    ]);
+  });
+
+  it('slashCommands：有值时透传副本，空或未给时不带字段', () => {
+    const withCmds = toContextUsage({}, 1, { slashCommands: ['compact', 'clear'] });
+    expect(withCmds.slashCommands).toEqual(['compact', 'clear']);
+    expect(toContextUsage({}, 1, { slashCommands: [] }).slashCommands).toBeUndefined();
+    expect(toContextUsage({}, 1, { slashCommands: null }).slashCommands).toBeUndefined();
   });
 });

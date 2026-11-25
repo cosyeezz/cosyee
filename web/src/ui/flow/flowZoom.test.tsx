@@ -28,7 +28,7 @@ function mount(): HTMLElement {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() => root!.render(<ConversationView turns={[]} onOpenSubagent={() => {}} />));
+  act(() => root!.render(<ConversationView turns={[]} />));
   return host.querySelector('.cz-flow__wrap') as HTMLElement;
 }
 
@@ -85,5 +85,57 @@ describe('flowZoom', () => {
     expect(getFlowZoom()).toBe(1);
     wheel(wrap, -20);
     expect(getFlowZoom()).toBe(1.1);
+  });
+
+  it('双 ConversationView 并存时 Ctrl+0 只触发一次，且悬停优先于焦点', () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() =>
+      root!.render(
+        <>
+          <ConversationView turns={[]} />
+          <ConversationView turns={[]} />
+        </>,
+      ),
+    );
+    const [w1, w2] = [...host.querySelectorAll<HTMLElement>('.cz-flow__wrap')];
+    const p1 = w1.querySelector<HTMLElement>('.cz-flow__zoom')!;
+    const p2 = w2.querySelector<HTMLElement>('.cz-flow__zoom')!;
+    const s1 = w1.querySelector<HTMLElement>('.cz-flow__scroll')!;
+    const s2 = w2.querySelector<HTMLElement>('.cz-flow__scroll')!;
+
+    // 场景 1：w1 有焦点，但 w2 被悬停 → 只有 w2 响应 Ctrl+0
+    act(() => setFlowZoom(1.3));
+    s1.focus();
+    const orig1 = w1.matches.bind(w1);
+    const orig2 = w2.matches.bind(w2);
+    w1.matches = (sel) => (sel === ':hover' ? false : orig1(sel));
+    w2.matches = (sel) => (sel === ':hover' ? true : orig2(sel));
+
+    const e1 = new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true });
+    act(() => { window.dispatchEvent(e1); });
+    expect(e1.defaultPrevented).toBe(true);
+    expect(getFlowZoom()).toBe(1);
+    expect(p1.classList.contains('is-shown')).toBe(false);
+    expect(p2.classList.contains('is-shown')).toBe(true);
+
+    // 场景 2：两个都没悬停，焦点在 w1 → 只有 w1 响应
+    w2.matches = (sel) => (sel === ':hover' ? false : orig2(sel));
+    act(() => setFlowZoom(1.2));
+    s1.focus();
+    const e2 = new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true });
+    act(() => { window.dispatchEvent(e2); });
+    expect(e2.defaultPrevented).toBe(true);
+    expect(getFlowZoom()).toBe(1);
+    expect(p1.classList.contains('is-shown')).toBe(true);
+
+    // 场景 3：焦点切到 w2、已被 preventDefault 的事件不再触发
+    act(() => setFlowZoom(1.4));
+    s2.focus();
+    const e3 = new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true });
+    e3.preventDefault();
+    act(() => { window.dispatchEvent(e3); });
+    expect(getFlowZoom()).toBe(1.4);
   });
 });

@@ -1,7 +1,9 @@
 // 会话行：主按钮（状态点 + 标题 + 时间）+ 悬停时出现的操作（置顶 / 取消置顶、删除）。
+import { useMemo } from 'react';
 import type { SessionSummary } from '@cosyee/shared';
 import { ActionButton, ConfirmActionButton } from './ActionButtons';
 import { formatLastActive } from './formatTime';
+import { useSessionCard, useSessionCardTarget, type SessionCardTarget } from './SessionCard';
 import { displayTitle } from './sidebarUtil';
 
 export interface SessionRowProps {
@@ -20,6 +22,22 @@ export function SessionRow({ session: s, active, now, workspaceLabel, onSelect, 
   const running = s.dot === 'running';
   // 标题下方的小字：工作空间（置顶区）· 账号名（只有并行模式下后端才给 account）
   const sub = [workspaceLabel, s.account].filter(Boolean).join(' · ');
+  const card = useSessionCard();
+  const target = useMemo<SessionCardTarget>(() => ({
+    kind: 'session',
+    id: s.id,
+    cwd: s.cwd,
+    title: s.title,
+    lastActiveAt: s.lastActiveAt,
+    dot: s.dot,
+    pinned: s.pinned,
+    account: s.account,
+    config: s.config,
+    lastModel: s.lastModel,
+    workspaceLabel,
+  }), [s.id, s.cwd, s.title, s.lastActiveAt, s.dot, s.pinned, s.account, s.config, s.lastModel, workspaceLabel]);
+  const cardProps = useSessionCardTarget(target);
+
   return (
     <div
       role="listitem"
@@ -28,8 +46,11 @@ export function SessionRow({ session: s, active, now, workspaceLabel, onSelect, 
       <button
         type="button"
         className="cz-sidebar__row-main"
-        onClick={() => onSelect(s.id)}
-        title={sub ? `${displayTitle(s.title)}\n${sub}` : displayTitle(s.title)}
+        {...cardProps}
+        onClick={() => {
+          cardProps.onClick?.();
+          onSelect(s.id);
+        }}
         aria-current={active ? 'true' : undefined}
       >
         {/* 状态点位置始终保留，保证标题对齐 */}
@@ -42,7 +63,8 @@ export function SessionRow({ session: s, active, now, workspaceLabel, onSelect, 
         </span>
         <span className="cz-sidebar__row-time">{formatLastActive(s.lastActiveAt, now)}</span>
       </button>
-      <div className="cz-sidebar__actions">
+      {/* 移过操作按钮是去卡片的必经之路，只在按下时关卡片 */}
+      <div className="cz-sidebar__actions" onPointerDown={() => card?.closeNow()}>
         <ActionButton
           icon={pinned ? 'pin-on' : 'pin'}
           label={pinned ? '取消置顶' : '置顶'}

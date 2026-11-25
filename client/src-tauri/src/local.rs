@@ -4,7 +4,7 @@
 // 启动时直接 `node <npm 全局目录>/cosyee-server/server.mjs`，作为独立后台进程运行（关掉客户端不影响服务）；
 // 停止走服务端的 POST /api/shutdown（只接受本机回环，Windows 后台进程收不到信号）。
 // 这些命令只对客户端自己的本地页面开放：Tauri 不允许远程页面（服务端网页）调用自定义命令。
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const PACKAGE_URL: &str = "https://codeload.github.com/cosyeezz/cosyee/tar.gz/refs/heads/server-dist";
 const PORT: u16 = 7878;
@@ -316,4 +317,444 @@ pub async fn local_stop() -> Result<(), String> {
         Ok(())
     })
     .await?
+}
+
+// ───────────── 本机服务端扩展接口（kiro.rs / Antigravity CLI） ─────────────
+
+#[derive(Debug, PartialEq, Eq)]
+struct HttpResponse {
+    status: u16,
+    body: String,
+}
+
+/// 返回给页面的结构化错误，便于区分服务端未运行、旧版服务端（404）、403、409（带 running 数）等。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LocalApiError {
+    Offline { error: String },
+    Unsupported { error: String },
+    Forbidden { error: String },
+    Conflict { error: String, running: Option<u64> },
+    Other { status: Option<u16>, error: String },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KiroServiceAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+fn decode_chunked(input: &str) -> Result<String, String> {
+    let mut rest = input;
+    let mut out = String::new();
+    loop {
+        let (size_line, after_size) = rest
+            .split_once("\r\n")
+            .or_else(|| rest.split_once('\n'))
+            .ok_or_else(|| "分块响应格式不完整".to_string())?;
+        let hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(hex, 16).map_err(|_| "分块响应长度无效".to_string())?;
+        if size == 0 {
+            break;
+        }
+        // 用 get 而不是 split_at：边界落在多字节字符中间时报错，不 panic
+        let (Some(chunk), Some(tail)) = (after_size.get(..size), after_size.get(size..)) else {
+            return Err("分块响应内容被截断".into());
+        };
+        out.push_str(chunk);
+        rest = tail
+            .strip_prefix("\r\n")
+            .or_else(|| tail.strip_prefix('\n'))
+            .unwrap_or(tail);
+    }
+    Ok(out)
+}
+
+fn parse_http_response(raw: &str) -> Result<HttpResponse, String> {
+    let (head, body_raw) = raw
+        .split_once("\r\n\r\n")
+        .or_else(|| raw.split_once("\n\n"))
+        .ok_or_else(|| "服务端响应格式无效".to_string())?;
+    let status_line = head.lines().next().ok_or_else(|| "服务端响应缺少状态行".to_string())?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or_else(|| "无法解析服务端响应状态码".to_string())?;
+    let chunked = head.lines().skip(1).any(|line| {
+        line.split_once(':')
+            .is_some_and(|(k, v)| k.trim().eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"))
+    });
+    let body = if chunked { decode_chunked(body_raw)? } else { body_raw.to_string() };
+    Ok(HttpResponse { status, body })
+}
+
+fn decode_api_response(resp: HttpResponse) -> Result<serde_json::Value, LocalApiError> {
+    if (200..300).contains(&resp.status) {
+        return serde_json::from_str(&resp.body).map_err(|e| LocalApiError::Other {
+            status: Some(resp.status),
+            error: format!("服务端返回的数据格式无法解析：{e}"),
+        });
+    }
+    let parsed = serde_json::from_str::<serde_json::Value>(&resp.body).ok();
+    let msg = parsed
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let running = parsed.as_ref().and_then(|v| v.get("running")).and_then(|v| v.as_u64());
+    match resp.status {
+        404 => Err(LocalApiError::Unsupported {
+            error: msg.unwrap_or_else(|| "当前服务端版本不支持该功能，请先更新服务端".into()),
+        }),
+        403 => Err(LocalApiError::Forbidden {
+            error: msg.unwrap_or_else(|| "服务端拒绝了该请求（403）".into()),
+        }),
+        409 => Err(LocalApiError::Conflict {
+            error: msg.unwrap_or_else(|| "当前状态无法执行该操作（409）".into()),
+            running,
+        }),
+        code => Err(LocalApiError::Other {
+            status: Some(code),
+            error: msg.unwrap_or_else(|| format!("服务端返回错误（HTTP {code}）")),
+        }),
+    }
+}
+
+/// 发 HTTP/1.0 请求到本机服务端，读到 EOF，返回解析后的状态码与响应体。
+fn http_local_with_timeout(method: &str, path: &str, timeout: Duration) -> Result<HttpResponse, LocalApiError> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800)).map_err(|e| match e.kind() {
+        ErrorKind::ConnectionRefused | ErrorKind::TimedOut | ErrorKind::AddrNotAvailable | ErrorKind::NotConnected => {
+            LocalApiError::Offline {
+                error: "服务端未运行".into(),
+            }
+        }
+        _ => LocalApiError::Offline {
+            error: format!("无法连接本机服务端：{e}"),
+        },
+    })?;
+    let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = s.set_read_timeout(Some(timeout));
+    write!(
+        s,
+        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{PORT}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    )
+    .map_err(|e| LocalApiError::Other {
+        status: None,
+        error: format!("向服务端发送请求失败：{e}"),
+    })?;
+    let mut bytes = Vec::new();
+    s.read_to_end(&mut bytes).map_err(|e| match e.kind() {
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => LocalApiError::Other {
+            status: None,
+            error: format!("等待服务端响应超时（{} 秒）", timeout.as_secs()),
+        },
+        ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof if bytes.is_empty() => LocalApiError::Offline {
+            error: "服务端连接中断".into(),
+        },
+        _ => LocalApiError::Other {
+            status: None,
+            error: format!("读取服务端响应失败：{e}"),
+        },
+    })?;
+    let raw = String::from_utf8_lossy(&bytes);
+    parse_http_response(&raw).map_err(|error| LocalApiError::Other { status: None, error })
+}
+
+async fn local_api_request(method: &'static str, path: String, timeout: Duration) -> Result<serde_json::Value, LocalApiError> {
+    blocking(move || {
+        let resp = http_local_with_timeout(method, &path, timeout)?;
+        decode_api_response(resp)
+    })
+    .await
+    .map_err(|error| LocalApiError::Other { status: None, error })?
+}
+
+fn validate_account_id(account: &str) -> Result<(), String> {
+    if account.is_empty() || account.len() > 64 {
+        return Err("账号标识长度无效".into());
+    }
+    if !account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err("账号标识包含非法字符".into());
+    }
+    Ok(())
+}
+
+/// 严格校验 kiro.rs 管理页面地址：必须为 http://127.0.0.1:<port>/admin，无多余路径、查询参数或用户信息。
+fn validate_kiro_admin_url(url_str: &str) -> Result<(tauri::Url, String), String> {
+    let parsed = tauri::Url::parse(url_str).map_err(|_| "服务端返回的管理页面地址无效".to_string())?;
+    if parsed.scheme() != "http"
+        || parsed.host_str() != Some("127.0.0.1")
+        || parsed.port().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/admin"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("管理页面地址不在允许的本机路径范围内".into());
+    }
+    let origin = parsed.origin().ascii_serialization();
+    Ok((parsed, origin))
+}
+
+/// 构造管理页面初始化脚本：仅当 location.origin 匹配时写入上游 admin-ui 的 adminApiKey，所有字面量用 serde_json 编码。
+fn build_admin_init_script(origin: &str, key: &str) -> Result<String, String> {
+    let origin_lit = serde_json::to_string(origin).map_err(|e| e.to_string())?;
+    let key_lit = serde_json::to_string(key).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "(function(){{try{{if(location.origin==={origin_lit}){{localStorage.setItem(\"adminApiKey\",{key_lit});}}}}catch(e){{}}}})();"
+    ))
+}
+
+#[tauri::command]
+pub async fn kiro_status() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("GET", "/api/kiro".into(), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn kiro_check() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("POST", "/api/kiro/engine/check".into(), Duration::from_secs(30)).await
+}
+
+#[tauri::command]
+pub async fn kiro_build() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("POST", "/api/kiro/engine/build".into(), Duration::from_secs(15)).await
+}
+
+#[tauri::command]
+pub async fn kiro_log(from: usize) -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("GET", format!("/api/kiro/engine/log?from={from}"), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn kiro_service(action: KiroServiceAction, force: Option<bool>) -> Result<serde_json::Value, LocalApiError> {
+    let path = match (action, force.unwrap_or(false)) {
+        (KiroServiceAction::Start, _) => "/api/kiro/service/start",
+        (KiroServiceAction::Stop, false) => "/api/kiro/service/stop",
+        (KiroServiceAction::Stop, true) => "/api/kiro/service/stop?force=1",
+        (KiroServiceAction::Restart, false) => "/api/kiro/service/restart",
+        (KiroServiceAction::Restart, true) => "/api/kiro/service/restart?force=1",
+    };
+    local_api_request("POST", path.into(), Duration::from_secs(30)).await
+}
+
+/// 打开 kiro.rs 自带的管理页面独立窗口：密钥仅在 Rust 内部经 initialization_script 注入，绝不返回给主页面、不写日志。
+/// 新窗口 label 为 `kiro-admin-<account>`，不在任何 capabilities/*.json 中，调不到任何 Tauri 命令；导航限制在同 origin。
+#[tauri::command]
+pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), LocalApiError> {
+    validate_account_id(&account).map_err(|error| LocalApiError::Other { status: None, error })?;
+    let val = local_api_request(
+        "POST",
+        format!("/api/kiro/service/admin?account={account}"),
+        Duration::from_secs(30),
+    )
+    .await?;
+    let url_str = val
+        .get("url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| LocalApiError::Other {
+            status: None,
+            error: "服务端未返回管理页面地址".into(),
+        })?;
+    let key = val
+        .get("key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| LocalApiError::Other {
+            status: None,
+            error: "服务端未返回管理密钥".into(),
+        })?;
+    let (parsed_url, expected_origin) =
+        validate_kiro_admin_url(url_str).map_err(|error| LocalApiError::Other { status: None, error })?;
+    let init_script =
+        build_admin_init_script(&expected_origin, key).map_err(|error| LocalApiError::Other { status: None, error })?;
+
+    let label = format!("kiro-admin-{account}");
+    if let Some(existing) = app.get_webview_window(&label) {
+        let same_origin = existing
+            .url()
+            .ok()
+            .is_some_and(|u| u.origin().ascii_serialization() == expected_origin);
+        if same_origin {
+            let _ = existing.unminimize();
+            let _ = existing.set_focus();
+            return Ok(());
+        }
+        // 代理重启后端口可能变化，销毁旧窗口再重建
+        let _ = existing.destroy();
+    }
+
+    let allowed_origin = expected_origin.clone();
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
+        .title("kiro.rs 管理页面")
+        .inner_size(1180.0, 780.0)
+        .min_inner_size(640.0, 480.0)
+        .decorations(true)
+        .incognito(true)
+        .initialization_script(&init_script)
+        .on_navigation(move |u| u.origin().ascii_serialization() == allowed_origin)
+        .build()
+        .map_err(|e| LocalApiError::Other {
+            status: None,
+            error: format!("无法打开管理页面窗口：{e}"),
+        })?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agy_status() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("GET", "/api/agy/cli".into(), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn agy_check() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("POST", "/api/agy/cli/check".into(), Duration::from_secs(30)).await
+}
+
+#[tauri::command]
+pub async fn agy_update() -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("POST", "/api/agy/cli/update".into(), Duration::from_secs(15)).await
+}
+
+#[tauri::command]
+pub async fn agy_log(from: usize) -> Result<serde_json::Value, LocalApiError> {
+    local_api_request("GET", format!("/api/agy/cli/log?from={from}"), Duration::from_secs(5)).await
+}
+
+#[tauri::command]
+pub async fn agy_restart(force: Option<bool>) -> Result<serde_json::Value, LocalApiError> {
+    let path = if force.unwrap_or(false) {
+        "/api/agy/cli/restart?force=1"
+    } else {
+        "/api/agy/cli/restart"
+    };
+    local_api_request("POST", path.into(), Duration::from_secs(30)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_standard_http11_json() {
+        let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+        let resp = parse_http_response(raw).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, "{\"ok\":true}");
+    }
+
+    #[test]
+    fn parse_http10_lf_only() {
+        let raw = "HTTP/1.0 404 Not Found\nContent-Type: application/json\n\n{\"error\":\"not found\"}";
+        let resp = parse_http_response(raw).unwrap();
+        assert_eq!(resp.status, 404);
+        assert_eq!(resp.body, "{\"error\":\"not found\"}");
+    }
+
+    #[test]
+    fn parse_chunked_response() {
+        let raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"a\":1,\r\n6\r\n\"b\":2}\r\n0\r\n\r\n";
+        let resp = parse_http_response(raw).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, "{\"a\":1,\"b\":2}");
+    }
+
+    #[test]
+    fn parse_malformed_response_fails() {
+        assert!(parse_http_response("HTTP/1.1 200 OK").is_err());
+        assert!(parse_http_response("INVALID\r\n\r\n{}").is_err());
+    }
+
+    #[test]
+    fn decode_409_with_running_and_error() {
+        let resp = HttpResponse {
+            status: 409,
+            body: r#"{"error":"有 2 个会话正在执行","running":2}"#.into(),
+        };
+        let err = decode_api_response(resp).unwrap_err();
+        assert_eq!(
+            err,
+            LocalApiError::Conflict {
+                error: "有 2 个会话正在执行".into(),
+                running: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn decode_404_and_403_and_500() {
+        assert!(matches!(
+            decode_api_response(HttpResponse { status: 404, body: "Not Found".into() }),
+            Err(LocalApiError::Unsupported { .. })
+        ));
+        assert_eq!(
+            decode_api_response(HttpResponse {
+                status: 403,
+                body: r#"{"error":"仅允许本机操作"}"#.into(),
+            }),
+            Err(LocalApiError::Forbidden {
+                error: "仅允许本机操作".into(),
+            })
+        );
+        assert_eq!(
+            decode_api_response(HttpResponse {
+                status: 500,
+                body: r#"{"error":"内部错误"}"#.into(),
+            }),
+            Err(LocalApiError::Other {
+                status: Some(500),
+                error: "内部错误".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn decode_200_json_body() {
+        let val = decode_api_response(HttpResponse {
+            status: 200,
+            body: r#"{"lines":["a","b"],"next":2}"#.into(),
+        })
+        .unwrap();
+        assert_eq!(val["next"], 2);
+        assert_eq!(val["lines"][0], "a");
+    }
+
+    #[test]
+    fn validate_account_id_rules() {
+        assert!(validate_account_id("acc_01-AB").is_ok());
+        assert!(validate_account_id("").is_err());
+        assert!(validate_account_id(&"a".repeat(65)).is_err());
+        assert!(validate_account_id("a&b=1").is_err());
+        assert!(validate_account_id("../etc").is_err());
+        assert!(validate_account_id("中文").is_err());
+    }
+
+    #[test]
+    fn validate_kiro_admin_url_strict() {
+        let (u, origin) = validate_kiro_admin_url("http://127.0.0.1:43210/admin").unwrap();
+        assert_eq!(u.as_str(), "http://127.0.0.1:43210/admin");
+        assert_eq!(origin, "http://127.0.0.1:43210");
+
+        assert!(validate_kiro_admin_url("https://127.0.0.1:43210/admin").is_err());
+        assert!(validate_kiro_admin_url("http://localhost:43210/admin").is_err());
+        assert!(validate_kiro_admin_url("http://127.0.0.1/admin").is_err());
+        assert!(validate_kiro_admin_url("http://127.0.0.1:43210/admin?x=1").is_err());
+        assert!(validate_kiro_admin_url("http://127.0.0.1:43210/other").is_err());
+        assert!(validate_kiro_admin_url("http://user@127.0.0.1:43210/admin").is_err());
+        assert!(validate_kiro_admin_url("http://evil.com:43210/admin").is_err());
+    }
+
+    #[test]
+    fn admin_init_script_safely_encodes_values() {
+        let s = build_admin_init_script("http://127.0.0.1:8080", "k\"'\n</script>").unwrap();
+        assert!(s.contains(r#"location.origin==="http://127.0.0.1:8080""#));
+        assert!(s.contains(r#"localStorage.setItem("adminApiKey","k\"'\n</script>")"#));
+    }
 }

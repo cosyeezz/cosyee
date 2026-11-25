@@ -47,6 +47,8 @@ export function resolveRun(s: ConvState, d: Draft, k: RunKey): SubagentRun | und
   }
   if (k.taskId && !run.taskId) run.taskId = k.taskId;
   if (run.status !== 'running') {
+    // 已结束的 delegate 又有进度：只会是 delegate_send 让服务端在后台续跑，主轮不等它
+    if (run.delegate === true) run.background = true;
     run.status = 'running';
     run.turn.status = 'running';
     delete run.turn.endedAt;

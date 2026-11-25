@@ -86,7 +86,10 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
       onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose(); // 只关浮窗，不动输入内容
+      if (e.key === 'Escape' && !e.defaultPrevented && !e.isComposing) {
+        e.preventDefault();
+        onClose(); // 只关浮窗，不动输入内容与外层浮层
+      }
     };
     document.addEventListener('mousedown', onDown, true);
     document.addEventListener('keydown', onKey, true);

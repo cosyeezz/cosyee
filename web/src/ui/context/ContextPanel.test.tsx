@@ -160,6 +160,21 @@ describe('ContextPanel Skills', () => {
       vi.useRealTimers();
     }
   });
+
+  it('去掉前缀后撞名的 skill 显示完整名，不撞名的仍显示短名', () => {
+    const usage: ContextUsage = {
+      ...mockContextUsage,
+      skills: [
+        { name: 'anthropic-skills:skill-creator', mode: 'on', tokens: 80, source: 'plugin' },
+        { name: 'skill-creator:skill-creator', mode: 'on', tokens: 90, source: 'plugin' },
+        { name: 'anthropic-skills:pdf', mode: 'on', tokens: 50, source: 'plugin' },
+      ],
+    };
+    const el = mount2({ usage });
+    openFold(el, 'Skills');
+    const names = [...el.querySelectorAll('.cz-ctx__skill .cz-ctx__item-name')].map((n) => n.textContent);
+    expect(names).toEqual(['anthropic-skills:skill-creator', 'skill-creator:skill-creator', 'pdf']);
+  });
 });
 
 describe('ContextPanel MCP', () => {
@@ -205,6 +220,18 @@ describe('ContextPanel MCP', () => {
     act(() => root!.render(<ContextPanel {...props} mcpBusy={null} />));
     const switches = [...el.querySelectorAll<HTMLButtonElement>('[role="switch"]')];
     expect(switches.map((s) => s.disabled)).toEqual([false, false, false, false, true]);
+  });
+
+  it('仅有 cosyee 一台 MCP 服务器时，MCP 小节等同没有 MCP', () => {
+    const usage: ContextUsage = {
+      ...mockContextUsage,
+      mcpServers: [{ name: 'cosyee', status: 'connected', tokens: 900, tools: [{ name: 'delegate', tokens: 900 }] }],
+    };
+    const el = render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />);
+    const fold = [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__fold')].find((b) => b.querySelector('.cz-ctx__fold-title')?.textContent === 'MCP')!;
+    expect(fold.disabled).toBe(true);
+    expect(fold.querySelector('.cz-ctx__fold-count')?.textContent).toBe('0');
+    expect(fold.querySelector('.cz-ctx__fold-extra')).toBeNull();
   });
 });
 
@@ -675,5 +702,47 @@ describe('ContextPanel 工具', () => {
     // 本会话的 init 优先
     act(() => root!.render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={['Glob']} />));
     expect([...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent)).toEqual(['Glob', 'WebFetch']);
+  });
+
+  it('Cosyee 工具的悬浮提示不带 mcp__cosyee__ 原名，未收录工具也不显示为 MCP', () => {
+    const usage: ContextUsage = {
+      ...mockContextUsage,
+      mcpServers: [
+        { name: 'cosyee', status: 'connected', tokens: 900, tools: [{ name: 'delegate', tokens: 900 }, { name: 'custom_tool', tokens: 100 }] },
+      ],
+    };
+    const el = render(
+      <ContextPanel
+        usage={usage}
+        loading={false}
+        onRefresh={() => undefined}
+        onCompact={() => undefined}
+        tools={['mcp__cosyee__delegate', 'mcp__cosyee__custom_tool']}
+      />,
+    );
+    openFold(el, '工具');
+    vi.useFakeTimers();
+    try {
+      const hover = (name: string) => {
+        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === name)!;
+        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+        act(() => { vi.advanceTimersByTime(400); });
+        const tip = document.querySelector('.cz-ctx__tip')!;
+        const text = tip.textContent ?? '';
+        const hasFull = tip.querySelector('.cz-ctx__tip-full') !== null;
+        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); });
+        return { text, hasFull };
+      };
+      const d = hover('delegate');
+      expect(d.hasFull).toBe(false);
+      expect(d.text).not.toContain('mcp__cosyee__');
+      const c = hover('custom_tool');
+      expect(c.hasFull).toBe(false);
+      expect(c.text).toContain('Cosyee 自带的工具 custom_tool。');
+      expect(c.text).not.toContain('MCP');
+      expect(c.text).not.toContain('mcp__cosyee__');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

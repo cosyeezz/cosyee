@@ -13,6 +13,7 @@ import {
   originAllowed,
   readCookie,
   requestAuthorized,
+  setTailscaleNames,
   tailscaleAddrs,
   tokenOk,
 } from './security.js';
@@ -132,6 +133,19 @@ describe('Tailscale 模式', () => {
   it('监听 0.0.0.0', () => {
     expect(listenAddress(TAILSCALE_MODE)).toBe('0.0.0.0');
     expect(listenAddress('127.0.0.1')).toBe('127.0.0.1');
+  });
+  it('Tailscale 机器名跟系统主机名不同（后台改过名）时也放行，其它单段名仍拒绝', () => {
+    setTailscaleNames(['My-Server']);
+    try {
+      expect(hostAllowed('my-server:7878', 7878, TAILSCALE_MODE)).toBe(true);
+      expect(originAllowed('http://my-server:7878', 7878, TAILSCALE_MODE)).toBe(true);
+      expect(hostAllowed('evil:7878', 7878, TAILSCALE_MODE)).toBe(false);
+      expect(hostAllowed('my-server:7878', 7878, '127.0.0.1')).toBe(false);
+      expect(originAllowed('http://my-server:7878', 7878, '0.0.0.0')).toBe(false);
+    } finally {
+      setTailscaleNames([]);
+    }
+    expect(hostAllowed('my-server:7878', 7878, TAILSCALE_MODE)).toBe(os.hostname().toLowerCase() === 'my-server');
   });
   it('Host：Tailscale 地址、本机名、*.ts.net 通过；局域网 IP 和其它域名拒绝', () => {
     const ip = tailscaleAddrs().find((a) => !a.includes(':'));

@@ -153,6 +153,18 @@ describe('AutoTitle', () => {
     expect(t2.reqs).toHaveLength(0);
   });
 
+  it('素材以斜杠命令开头：改写成 "skill: 参数"（CLI 对无来源的斜杠命令素材直接返回 null）', async () => {
+    const t = setup();
+    t.at.collect('s1', user('/interaction-motion 优化一下账号模块'));
+    t.at.collect('s1', asst('好的'));
+    await t.at.ensure(t.r, 'c');
+    expect(t.reqs[0]!.description).toBe('interaction-motion: 优化一下账号模块\n\n好的');
+
+    const t2 = setup({ first: '/review' });
+    await t2.at.ensure(t2.r, 'c');
+    expect(t2.reqs[0]!.description).toBe('review');
+  });
+
   it('素材截断到 MATERIAL_MAX', async () => {
     const t = setup();
     t.at.collect('s1', user('a'.repeat(MATERIAL_MAX - 10)));

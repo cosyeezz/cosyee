@@ -62,6 +62,16 @@ describe('Composer 发送模式', () => {
     const m = mount({ running: true });
     expect(m.ed().dataset.placeholder).toBe('Enter 插话 · Ctrl+Enter 排队');
   });
+
+  it('触屏没有组合键：执行中的占位提示用短文案', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(pointer: coarse)', addEventListener() {}, removeEventListener() {} }));
+    try {
+      const m = mount({ running: true });
+      expect(m.ed().dataset.placeholder).toBe('输入以插话');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('Composer 队列列表', () => {

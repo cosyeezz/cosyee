@@ -2,10 +2,10 @@
 // 时序：先挂监听再 subscribe（后端先发 status，若本轮未结束再发 replay），同时拉历史；
 // 历史回来之前收到的 event / replay / status 先排队，历史载入后按顺序应用，避免与历史重复或丢失。
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
-import type { AppliedSettings, ContextUsage, PendingPrompt, QueueItem, RunStatus, ServerMsg } from '@cosyee/shared';
+import type { AppliedSettings, ContextUsage, DelegateJobInfo, PendingPrompt, QueueItem, RunStatus, ServerMsg, StopInfo } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { dropHistory, getHistory, putHistory } from '../core/historyCache';
-import { applyEvent, applyReplay, applyStatus, batch, fromHistory, initState, type ConvState } from '../core/reducer';
+import { applyDelegates, applyEvent, applyReplay, applyStatus, batch, fromHistory, initState, type ConvState } from '../core/reducer';
 
 export interface SessionView {
   id: string;
@@ -20,6 +20,12 @@ export interface SessionView {
   queue: QueueItem[];
   /** 待用户处理的请求（提问 / 计划审批），后端推送的全量快照 */
   prompts: PendingPrompt[];
+  /** 委派任务，后端推送的全量快照 */
+  delegates: DelegateJobInfo[];
+  /** 订阅后收到过 delegates 快照：之后快照里没有的后台委派才算「丢失」（历史刚加载、快照未到时不能这么判） */
+  delegatesKnown: boolean;
+  /** 会话因错误停止与自动重试的状态（后端推送；没有记录为 null） */
+  stop: StopInfo | null;
   /** 历史加载中 */
   loading: boolean;
   loadError?: string;
@@ -44,16 +50,21 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
     let loaded = fresh;
     let pending: SessionMsg[] = [];
     const cur: SessionView = {
-      id: sessionId, conv: initState(), status: null, applied: null, context: null, contextChecked: fresh, queue: [], prompts: [], loading: !fresh,
+      id: sessionId, conv: initState(), status: null, applied: null, context: null, contextChecked: fresh, queue: [], prompts: [], delegates: [], delegatesKnown: false, stop: null, loading: !fresh,
     };
     curRef.current = cur;
     const commit = () => { if (alive) setView({ ...cur }); };
+
+    /** 把委派快照落到会话流上（历史 / replay 重建会话流后要重放一遍） */
+    const applyJobs = () => {
+      if (cur.delegatesKnown) cur.conv = applyDelegates(cur.conv, cur.delegates, Date.now());
+    };
 
     const apply = (m: SessionMsg) => {
       const now = Date.now();
       switch (m.t) {
         case 'event': cur.conv = applyEvent(cur.conv, m.e, now); break;
-        case 'replay': cur.conv = applyReplay(cur.conv, m.events); cur.status = m.status; break;
+        case 'replay': cur.conv = applyReplay(cur.conv, m.events); cur.status = m.status; applyJobs(); break;
         case 'status':
           cur.status = m.status;
           cur.error = m.error;
@@ -63,6 +74,15 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
         case 'context': cur.context = m.usage; break;
         case 'queue': cur.queue = m.items; break;
         case 'prompts': cur.prompts = m.items; break;
+        case 'delegates':
+          cur.delegates = m.jobs;
+          cur.delegatesKnown = true;
+          // 历史还没载入时 conv 会被整体替换，载入后统一重放（见 finally）
+          if (loaded) applyJobs();
+          break;
+        case 'stop':
+          cur.stop = m.info;
+          break;
       }
     };
 
@@ -109,6 +129,7 @@ export function useSessionStream(sessionId: string | null, cwd: string | null, f
           const queued = pending;
           pending = [];
           batch(() => { for (const m of queued) apply(m); });
+          applyJobs(); // 历史载入前就到了的委派快照
           // 整段历史挂载很重（Markdown 解析）：用 transition 分片渲染，期间旧对话的淡出、胶囊流动不掉帧。
           // 每次 commit 都是完整快照，之后到达的实时事件即使抢先提交也不会丢数据
           startTransition(commit);

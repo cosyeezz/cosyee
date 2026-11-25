@@ -1,5 +1,5 @@
 // 状态行 / 子代理面板用的动效图标，取自《会话生命周期动效》：
-// 星轨（还没有文字）、液滴（整理上下文）、完成 / 出错 / 中止。
+// 星轨（还没有文字）、机器人 / 魔法书 / 插头（子代理 / 技能 / MCP 面板）、完成 / 出错 / 中止。
 // 颜色用 icons.css 的 --tk-*，样式与动画在 status.css。同一页有多个实例，渐变 / 滤镜 id 用 useId 区分。
 import { memo, useId } from 'react';
 import './status.css';
@@ -64,36 +64,35 @@ export const OrbitIcon = memo(function OrbitIcon({ size = 20, className }: IconP
   );
 });
 
-/** 液滴：几滴液体绕核心融合又分开。子代理面板头部 */
-export const CompactingIcon = memo(function CompactingIcon({ size = 16, className }: IconProps) {
+/**
+ * 小机器人：圆角脑袋加琥珀色天线。子代理面板头部。
+ * 进行中：眨眼、天线灯一明一暗；全部结束（is-still）：天线常亮、眯眼笑。
+ */
+export const AgentIcon = memo(function AgentIcon({ size = 16, className }: IconProps) {
   const uid = useUid();
   return (
-    <svg viewBox="0 0 64 64" width={size} height={size} className={cls('compacting', className)} aria-hidden focusable="false">
+    <svg viewBox="0 0 64 64" width={size} height={size} className={cls('agent', className)} aria-hidden focusable="false">
       <defs>
-        <filter id={`${uid}-g`} x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="2.6" />
-          <feColorMatrix values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -8" />
-        </filter>
         <linearGradient id={`${uid}-l`} gradientUnits="userSpaceOnUse" x1="8" y1="8" x2="56" y2="56">
           <stop offset="0" style={{ stopColor: 'var(--tk-b)' }} />
           <stop offset=".5" style={{ stopColor: 'var(--tk-a)' }} />
           <stop offset="1" style={{ stopColor: 'var(--tk-c)' }} />
         </linearGradient>
       </defs>
-      <g filter={`url(#${uid}-g)`} fill={`url(#${uid}-l)`}>
-        <circle className="cz-ss-core" cx="32" cy="32" r="9.5" />
-        <g className="cz-ss-o">
-          <circle cx="32" cy="32" r="5.5" />
+      {/* 按整个画布画，再缩到与魔法书相近的视觉大小 */}
+      <g transform="translate(5.12 4.4) scale(.84)">
+        <path className="cz-ss-ant" d="M32 10V20" />
+        <circle className="cz-ss-tip" cx="32" cy="8" r="5.5" />
+        <g fill={`url(#${uid}-l)`}>
+          <rect x="1" y="30" width="9" height="16" rx="4.5" />
+          <rect x="54" y="30" width="9" height="16" rx="4.5" />
+          <rect x="8" y="17" width="48" height="42" rx="14" />
         </g>
-        <g className="cz-ss-o cz-ss-o2">
-          <circle cx="32" cy="32" r="4.5" />
+        <g className="cz-ss-eyes">
+          <rect x="19" y="30" width="8" height="15" rx="4" />
+          <rect x="37" y="30" width="8" height="15" rx="4" />
         </g>
-        <g className="cz-ss-o cz-ss-o3">
-          <circle cx="32" cy="32" r="6" />
-        </g>
-        <g className="cz-ss-o cz-ss-o4">
-          <circle cx="32" cy="32" r="3.5" />
-        </g>
+        <path className="cz-ss-smile" d="M18 40L23 34L28 40M36 40L41 34L46 40" />
       </g>
     </svg>
   );

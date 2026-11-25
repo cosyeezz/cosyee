@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DELEGATION_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, validateConfig } from './claude/runner.js';
+import { BUILTIN_AGENTS } from './delegate/agents.js';
+import type { DelegateBackend } from './delegate/backend.js';
+import { CosyeeMcp, DELEGATE_TOOL_NAMES } from './delegate/mcp.js';
+import { DelegateJobs } from './delegate/jobs.js';
+import { DELEGATE_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, isDenied, validateConfig } from './claude/runner.js';
 
 type Json = Record<string, any>;
 
@@ -82,17 +86,17 @@ describe('buildArgs / validateConfig', () => {
     const c = buildArgs('sid', true, { model: 'haiku', effort: 'low', ultracode: true }, { skillOverrides: { pdf: 'off' } });
     expect(JSON.parse(c[c.indexOf('--settings') + 1]!)).toEqual({ skillOverrides: { pdf: 'off' }, ultracode: true });
   });
-  it('新建与恢复、任意模型都追加路径引用约定与分工约定', () => {
+  it('新建与恢复、任意模型都只追加路径引用约定；没有委派就不加分工提示', () => {
     for (const isNew of [true, false]) {
       for (const model of ['opus', 'sonnet', 'claude-haiku-5-5']) {
         const a = buildArgs('sid', isNew, { model, effort: 'low' });
         const p = a[a.indexOf('--append-system-prompt') + 1]!;
-        expect(p).toBe(`${PATH_PROMPT} ${DELEGATION_PROMPT}`);
+        expect(p).toBe(PATH_PROMPT);
         expect(p).not.toMatch(/[\r\n]/); // .cmd 经 cmd.exe 转发时换行会截断命令行
       }
     }
     expect(PATH_PROMPT).toContain('[filename](path)');
-    expect(DELEGATION_PROMPT).toContain('model "sonnet"');
+    expect(PATH_PROMPT).not.toMatch(/delegat|subagent|sonnet/i);
   });
   it('权限模式：缺省 / auto 为 bypassPermissions，plan 为 plan；始终带 --permission-prompt-tool stdio', () => {
     const val = (a: string[], f: string) => a[a.indexOf(f) + 1];
@@ -188,6 +192,30 @@ describe('Runner 回合状态机', () => {
     r.handleMessage(result);
     expect(r.status).toBe('running');
     r.handleMessage({ type: 'system', subtype: 'task_updated', task_id: 't9', patch: { status: 'completed' } });
+    r.handleMessage(init);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+  });
+
+  it('后台任务变化通过 onBackgroundTasks 通知；limbo 期间新开轮不丢失未结束的后台任务', () => {
+    const counts: number[] = [];
+    const { r, anyR } = make();
+    anyR.hooks.onBackgroundTasks = (n: number) => counts.push(n);
+    r.send('m1', cfg, U1);
+    r.handleMessage(init);
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'x1' });
+    expect(counts).toEqual([1]);
+    // 后台任务仍在跑时排队发新消息，第 1 轮 result → limbo → 排队消息开第 2 轮
+    r.send('m2', cfg, U2, 'later');
+    r.handleMessage(result);
+    r.handleMessage(life(U2, 'started'));
+    r.handleMessage(init);
+    // 第 2 轮结束时 t1 仍在跑，不应提前变成 idle
+    r.handleMessage(result);
+    expect(r.status).toBe('running');
+    // t1 结束后通知 0，续轮 result 才 idle
+    r.handleMessage({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed' });
+    expect(counts).toEqual([1, 0]);
     r.handleMessage(init);
     r.handleMessage(result);
     expect(r.status).toBe('idle');
@@ -668,5 +696,255 @@ describe('排队消息（steering / follow-up / 撤回 / 立即发送 / 回退�
     anyR.onClose(1, undefined);
     expect(r.queueItems()).toEqual([]);
     expect(log.queues.at(-1)).toEqual([]);
+  });
+});
+
+describe('子代理默认模型 / 强度（PreToolUse hook）', () => {
+  const hook = (tool_input: Json, callback_id = 'agent-defaults') => ({
+    type: 'control_request', request_id: 'h1',
+    request: { subtype: 'hook_callback', callback_id, input: { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_a', tool_input } },
+  });
+  const run = (tool_input: Json, d: Json | null = { claude: { model: 'sonnet', effort: 'medium' }, agy: { model: null, effort: null } }) => {
+    const { r, anyR, writes, log } = make();
+    anyR.agentDefaults = () => d;
+    r.handleMessage(hook(tool_input));
+    expect(writes[0]).toMatchObject({ type: 'control_response', response: { subtype: 'success', request_id: 'h1' } });
+    return { res: writes[0]!.response.response, events: log.events.filter((e) => e.subtype === 'cosyee_agent_params') };
+  };
+  it('没写的补上，点名的不动，不带 permissionDecision；并告诉前端实际值', () => {
+    const a = run({ description: 'd', prompt: 'p', subagent_type: 'Explore' });
+    expect(a.res).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { description: 'd', prompt: 'p', subagent_type: 'Explore', model: 'sonnet', effort: 'medium' } } });
+    expect(a.events).toEqual([{ type: 'system', subtype: 'cosyee_agent_params', tool_use_id: 'toolu_a', model: 'sonnet', effort: 'medium' }]);
+    const b = run({ prompt: 'p', model: 'opus', effort: 'max' });
+    expect(b.res.hookSpecificOutput.updatedInput).toEqual({ prompt: 'p', model: 'opus', effort: 'max' });
+  });
+  it('fork / 没有配置：不介入；只配了强度就只补强度', () => {
+    expect(run({ prompt: 'p', subagent_type: 'fork' })).toEqual({ res: {}, events: [] });
+    expect(run({ prompt: 'p' }, null)).toEqual({ res: {}, events: [] });
+    expect(run({ prompt: 'p' }, { claude: { effort: 'low' }, agy: {} }).res.hookSpecificOutput.updatedInput).toEqual({ prompt: 'p', effort: 'low' });
+  });
+  it('SessionStart(compact)：有委派状态就作为 additionalContext 返回，没有则不介入', () => {
+    const compact = { type: 'control_request', request_id: 'c1', request: { subtype: 'hook_callback', callback_id: 'delegate-compact', input: { hook_event_name: 'SessionStart', source: 'compact' } } };
+    const a = make();
+    a.anyR.mcp = {};
+    a.anyR.delegateJobs = { compactNote: () => 'NOTE' };
+    a.r.handleMessage(compact);
+    expect(a.writes[0]).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: 'c1', response: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'NOTE' } } } });
+    const b = make();
+    b.anyR.mcp = {};
+    b.anyR.delegateJobs = { compactNote: () => null };
+    b.r.handleMessage(compact);
+    expect(b.writes[0]!.response.response).toEqual({});
+  });
+  it('不认识的 hook 回错误', () => {
+    const { r, writes } = make();
+    r.handleMessage(hook({}, 'other'));
+    expect(writes[0]).toMatchObject({ response: { subtype: 'error', request_id: 'h1' } });
+  });
+});
+
+describe('delegate（cosyee MCP）', () => {
+  it('buildArgs delegate：带 --mcp-config 与追加提示词；默认不带', () => {
+    const a = buildArgs('sid', true, cfg, {}, { delegate: true });
+    expect(JSON.parse(a[a.indexOf('--mcp-config') + 1]!)).toEqual({ mcpServers: { cosyee: { type: 'sdk', name: 'cosyee' } } });
+    const p = a[a.indexOf('--append-system-prompt') + 1]!;
+    expect(p).toBe(`${PATH_PROMPT} ${DELEGATE_PROMPT}`);
+    expect(p).not.toContain('\n');
+    expect(buildArgs('sid', true, cfg)).not.toContain('--mcp-config');
+  });
+  it('DELEGATE_PROMPT：只讲何时派；无换行、不提后端 / 模型，不讲配套工具怎么用', () => {
+    expect(DELEGATE_PROMPT).not.toMatch(/[\r\n]/);
+    expect(DELEGATE_PROMPT).toContain('mcp__cosyee__delegate');
+    // 原生 Agent 的说明会写「用户不要求就别派」，这里要明说不用等用户开口
+    expect(DELEGATE_PROMPT).toContain('without waiting for the user to ask');
+    expect(DELEGATE_PROMPT).not.toMatch(/Antigravity|Gemini|\bagy\b|Claude|subagent|sonnet|opus|haiku|effort/i);
+    expect(DELEGATE_PROMPT).not.toMatch(/delegate_(send|result|stop|status|agents)|result_id|conversation_id|background/);
+    expect(DELEGATE_PROMPT.length).toBeLessThan(500);
+    expect(buildArgs('sid', true, cfg, {}, { delegate: true }).join(' ').length).toBeLessThan(8191);
+  });
+  it('withNativeDeny：开关关掉且有委派可用才停用整个 Agent；delegate 被停用时不生效；不重复', () => {
+    const { anyR } = make();
+    anyR.nativeAgents = () => false;
+    expect(anyR.withNativeDeny(['Glob'])).toEqual(['Glob']);
+    anyR.mcp = {};
+    expect(anyR.withNativeDeny(['Glob'])).toEqual(['Glob', 'Agent']);
+    expect(anyR.withNativeDeny(['Agent'])).toEqual(['Agent']);
+    expect(anyR.withNativeDeny(['mcp__cosyee__delegate'])).toEqual(['mcp__cosyee__delegate']);
+    anyR.nativeAgents = () => true;
+    expect(anyR.withNativeDeny([])).toEqual([]);
+    anyR.nativeAgents = undefined;
+    expect(anyR.withNativeDeny([])).toEqual([]);
+  });
+  it('isDenied：permissions.deny 里整条停用 delegate 才算（启动时据此不注册 cosyee MCP）', () => {
+    expect(isDenied({ permissions: { deny: ['Bash', 'mcp__cosyee__delegate'] } }, 'mcp__cosyee__delegate')).toBe(true);
+    expect(isDenied({ permissions: { deny: ['Agent(mcp__cosyee__delegate)'] } }, 'mcp__cosyee__delegate')).toBe(false);
+    expect(isDenied({}, 'mcp__cosyee__delegate')).toBe(false);
+  });
+  const mcpReq = (message: Json) => ({ type: 'control_request', request_id: 'm1', request: { subtype: 'mcp_message', server_name: 'cosyee', message } });
+  it('mcp_message 交给 CosyeeMcp 并回 control_response', async () => {
+    const { r, anyR, writes } = make();
+    const fakeBackend: DelegateBackend = {
+      id: 'fake',
+      label: 'Fake',
+      available: () => true,
+      models: async () => ({ models: [], current: null, at: 0 }),
+      run: async () => ({ stopReason: 'end_turn', response: 'r', sessionId: 'conv-x', toolCalls: 0 }),
+    };
+    const jobs = new DelegateJobs({ run: fakeBackend.run });
+    anyR.mcp = new CosyeeMcp({
+      jobs,
+      agents: BUILTIN_AGENTS,
+      ctx: () => ({ cwd: process.cwd(), backend: fakeBackend, agents: { configDir: '', cwd: process.cwd(), disabled: [] } }),
+    });
+    r.handleMessage(mcpReq({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+    await flush();
+    expect(writes).toHaveLength(1);
+    const w = writes[0]!;
+    expect(w.type).toBe('control_response');
+    expect(w.response.subtype).toBe('success');
+    expect(w.response.request_id).toBe('m1');
+    expect(w.response.response.mcp_response.id).toBe(1);
+    expect(w.response.response.mcp_response.result.tools[0].name).toBe('delegate');
+  });
+  it('没有 mcp 时 mcp_message 仍回错误', async () => {
+    const { r, writes } = make();
+    r.handleMessage(mcpReq({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+    await flush();
+    expect(writes).toEqual([{ type: 'control_response', response: { subtype: 'error', request_id: 'm1', error: 'not supported by cosyee host' } }]);
+  });
+});
+
+describe('inject（委派任务完成通知）', () => {
+  const frames = (writes: Json[]) => writes.filter((w) => w.type === 'user');
+  const text = (w: Json) => w.message.content[0].text;
+
+  it('空闲且进程在：只写入 stdin，不进排队列表、不发 cosyee_user；CLI 开轮后才 running', async () => {
+    const { r, log, writes } = make();
+    r.inject('<cosyee-delegate-notification>x</cosyee-delegate-notification>', cfg);
+    await flush();
+    const fs_ = frames(writes);
+    expect(fs_).toHaveLength(1);
+    expect(text(fs_[0]!)).toContain('cosyee-delegate-notification');
+    expect(fs_[0]!.priority).toBeUndefined();
+    expect(r.queueItems()).toEqual([]);
+    expect(log.queues).toEqual([]);
+    expect(users(log.events)).toEqual([]);
+    expect(r.status).toBe('idle');
+    // 回显 / lifecycle 对未知（注入的）uuid 照样被忽略，不产生 cosyee_user
+    r.handleMessage(life(fs_[0]!.uuid, 'started'));
+    r.handleMessage(echo(fs_[0]!.uuid));
+    expect(users(log.events)).toEqual([]);
+    expect(r.status).toBe('idle');
+    // CLI 因此开了一轮
+    r.handleMessage(init);
+    expect(r.status).toBe('running');
+    r.handleMessage(asst);
+    expect(r.snapshot().events).toHaveLength(2);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+    expect(users(log.events)).toEqual([]);
+  });
+
+  it('运行中：priority next；result 先到时不闪 idle，等注入消息开轮', async () => {
+    const { r, log, writes } = make();
+    r.send('go', cfg, U1);
+    await flush();
+    r.handleMessage(init);
+    r.inject('NOTE', cfg);
+    await flush();
+    const inj = frames(writes).find((w) => text(w) === 'NOTE')!;
+    expect(inj.priority).toBe('next');
+    expect(r.queueItems()).toEqual([]);
+    expect(log.queues).toEqual([]);
+    // 第一个 result：注入的消息还没进对话，保持 running
+    r.handleMessage(result);
+    expect(r.status).toBe('running');
+    expect(log.turnEnds).toBe(0);
+    // 它开始执行（回显）：新一轮，没有 cosyee_user
+    r.handleMessage(echo(inj.uuid));
+    expect(r.status).toBe('running');
+    expect(users(log.events).map((e) => e.id)).toEqual([U1]);
+    r.handleMessage(init);
+    r.handleMessage(asst);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+    expect(log.turnEnds).toBe(1);
+  });
+
+  it('运行中：注入的消息已并入当前轮（回显先于 result）则 result 正常结束', async () => {
+    const { r, writes } = make();
+    r.send('go', cfg, U1);
+    await flush();
+    r.handleMessage(init);
+    r.inject('NOTE', cfg);
+    await flush();
+    const inj = frames(writes).find((w) => text(w) === 'NOTE')!;
+    r.handleMessage(echo(inj.uuid));
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+  });
+
+  it('运行中：注入的消息被取消，result 之后在等它的 limbo 直接收尾', async () => {
+    const { r, writes } = make();
+    r.send('go', cfg, U1);
+    await flush();
+    r.handleMessage(init);
+    r.inject('NOTE', cfg);
+    await flush();
+    const inj = frames(writes).find((w) => text(w) === 'NOTE')!;
+    r.handleMessage(result);
+    expect(r.status).toBe('running');
+    r.handleMessage(life(inj.uuid, 'cancelled'));
+    expect(r.status).toBe('idle');
+  });
+
+  it('没有进程：像 send 一样启动并开轮（starting），不发 cosyee_user', async () => {
+    const { r, anyR, log, writes } = make();
+    anyR.proc = null;
+    anyR.probeMode = true;
+    anyR.start = function () {
+      this.proc = { pid: undefined, stdin: { writable: true, destroyed: false, write: (x: string) => writes.push(JSON.parse(x)), end() {} } };
+      this.closed = false;
+      this.intentional = false;
+      if (!this.probeMode) this.setStatus('starting');
+    };
+    r.inject('NOTE', cfg);
+    await flush();
+    expect(r.status).toBe('starting');
+    expect(frames(writes).map(text)).toEqual(['NOTE']);
+    expect(users(log.events)).toEqual([]);
+    expect(r.queueItems()).toEqual([]);
+    r.handleMessage(init);
+    expect(r.status).toBe('running');
+    expect(r.snapshot().events).toHaveLength(1);
+  });
+
+  it('进程正在关闭时抛错', () => {
+    const { r, anyR } = make();
+    anyR.intentional = true;
+    expect(() => r.inject('x', cfg)).toThrow();
+  });
+
+  it('pushExternal 与 CLI 事件同路径：回合内进缓冲并广播', () => {
+    const { r, log } = make();
+    r.handleMessage(init);
+    r.pushExternal({ type: 'system', subtype: 'x' });
+    expect(log.events).toHaveLength(2);
+    expect(r.snapshot().events).toHaveLength(2);
+  });
+
+  it('空闲回收：有后台委派任务时不回收，没有了才回收', () => {
+    vi.useFakeTimers();
+    const { r, anyR } = make({ idleMs: 1000 });
+    let bg = true;
+    anyR.delegateJobs = { hasBackground: () => bg };
+    r.handleMessage(init);
+    r.handleMessage(result); // finishTurn → armIdle(1000)
+    vi.advanceTimersByTime(3500);
+    expect(anyR.intentional).toBe(false);
+    expect(r.alive).toBe(true);
+    bg = false;
+    vi.advanceTimersByTime(1000);
+    expect(anyR.intentional).toBe(true);
   });
 });

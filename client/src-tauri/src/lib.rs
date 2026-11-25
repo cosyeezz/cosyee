@@ -116,7 +116,18 @@ pub fn run() {
         local::local_log,
         local::local_install,
         local::local_start,
-        local::local_stop
+        local::local_stop,
+        local::kiro_status,
+        local::kiro_check,
+        local::kiro_build,
+        local::kiro_log,
+        local::kiro_service,
+        local::kiro_admin,
+        local::agy_status,
+        local::agy_check,
+        local::agy_update,
+        local::agy_log,
+        local::agy_restart
     ]);
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![probe, set_servers]);

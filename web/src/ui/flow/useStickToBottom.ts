@@ -63,7 +63,8 @@ export function useStickToBottom(scrollRef: RefObject<HTMLElement>, contentRef: 
     const ro = new ResizeObserver(() => {
       if (stick.current) toBottom();
     });
-    ro.observe(ct);
+    // 量边框盒：内容列用 padding-bottom 给浮在上面的输入框 / 面板让位，展开面板只改 padding，内容盒不变
+    ro.observe(ct, { box: 'border-box' });
     toBottom();
     return () => {
       sc.removeEventListener('scroll', onScroll);

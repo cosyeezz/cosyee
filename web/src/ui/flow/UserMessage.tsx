@@ -1,6 +1,6 @@
 // 用户消息气泡：正文按 Markdown 渲染；占位名（file1 / img1 / folder1）渲染成内联标签。
 // 气泡左侧悬停浮出两个按钮：复制原文、从这条消息之前分支出新会话。
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,10 +13,14 @@ import { expandLabels } from '../../core/composer';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
 import { Menu } from '../menus/Menu';
+import { useFlowZoom } from './flowZoom';
 import { CodeBlock, copyText, nodeText } from './Markdown';
 import { attachmentIndex, prepareUserMarkdown } from './userMarkdown';
 import './flow.css';
 import './userMessage.css';
+
+/** 气泡内容高度超过该阈值时默认折叠到 240px（flow.css），避免长任务提示把下方内容顶走 */
+const COLLAPSE_THRESHOLD = 320;
 
 const KIND_ICON: Record<Attachment['kind'], IconName> = { file: 'file', img: 'image', folder: 'folder' };
 
@@ -226,13 +230,44 @@ export const UserMessage = memo(function UserMessage({
   };
   // 复制 / 分支预填用的原文：占位名换回 @"绝对路径"，粘到别处可读，填回输入框能解析成标签
   const raw = useMemo(() => expandLabels(text, attachments), [text, attachments]);
+
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const zoom = useFlowZoom();
+  const [overflow, setOverflow] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [prevText, setPrevText] = useState(text);
+  if (text !== prevText) {
+    setPrevText(text);
+    if (expanded) setExpanded(false);
+  }
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+
+  useLayoutEffect(() => {
+    const el = bubbleRef.current;
+    if (!el) return;
+    const measure = () => {
+      // 展开态下按钮在文档流里，扣掉按钮高度避免临界高度来回抖动；折叠态下按钮绝对定位不占 scrollHeight
+      const btnH = expandedRef.current && toggleRef.current ? toggleRef.current.offsetHeight + 8 : 0;
+      setOverflow(el.scrollHeight - btnH > COLLAPSE_THRESHOLD);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, attachments, zoom]);
+
+  const collapsed = overflow && !expanded;
+
   return (
     <div className="cz-flow__user">
       <div className="cz-flow__acts">
         {onFork && <ForkButton onFork={onFork} />}
         <CopyButton text={raw} />
       </div>
-      <div className="cz-flow__bubble cz-spot">
+      <div className={`cz-flow__bubble cz-spot${collapsed ? ' is-collapsed' : ''}`} ref={bubbleRef}>
         {parts
           ? parts.map((p, i) => (
               <div key={i} className="cz-flow__qpart">
@@ -241,6 +276,18 @@ export const UserMessage = memo(function UserMessage({
               </div>
             ))
           : md(text)}
+        {collapsed && <div className="cz-flow__bubble-fade" aria-hidden="true" />}
+        {overflow && (
+          <button
+            ref={toggleRef}
+            type="button"
+            className="cz-flow__bubble-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? '收起' : '展开全文'}
+          </button>
+        )}
       </div>
     </div>
   );

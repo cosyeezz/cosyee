@@ -238,3 +238,29 @@ describe('Composer 草稿', () => {
     set.mockRestore();
   });
 });
+
+describe('Composer / 菜单', () => {
+  it('有命令或 skill 时输入 / 弹出菜单，按 Enter 选中插入', () => {
+    const origScroll = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+    try {
+      const m = mount({ slashCommands: ['compact', 'clear'], skills: ['code-review'] });
+      m.type('/');
+      const menu = host!.querySelector('[role="listbox"].cz-slash');
+      expect(menu).not.toBeNull();
+      expect(menu!.querySelectorAll('[role="option"]').length).toBe(3);
+      expect(m.key('Enter').defaultPrevented).toBe(true);
+      expect(m.onSend).not.toHaveBeenCalled();
+      expect(m.text()).toBe('/compact ');
+      expect(host!.querySelector('[role="listbox"].cz-slash')).toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = origScroll;
+    }
+  });
+
+  it('命令与 skill 都为空时输入 / 不弹出菜单', () => {
+    const m = mount({ slashCommands: [], skills: [] });
+    m.type('/');
+    expect(host!.querySelector('[role="listbox"].cz-slash')).toBeNull();
+  });
+});

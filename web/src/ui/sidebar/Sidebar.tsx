@@ -9,6 +9,7 @@ import { AccountMenu } from './AccountMenu';
 import { ConfirmActionButton } from './ActionButtons';
 import { DeletedSection } from './DeletedSection';
 import { SearchRow } from './SearchRow';
+import { SessionCardProvider, useSessionCard } from './SessionCard';
 import { SessionRow } from './SessionRow';
 import { excludePinned, filterByTitle, groupByWorkspace, samePath, workspaceName } from './sidebarUtil';
 import { LiquidCapsule } from '../motion/LiquidCapsule';
@@ -104,23 +105,16 @@ export function Sidebar({
   const rowProps = { now, onSelect: selectSession, onTogglePin, onDelete: onDeleteSession };
 
   return (
-    <div className="cz-sidebar">
-      {/* 顶部：新建会话 + 收起，同一行 */}
-      <div className="cz-sidebar__top">
-        <button type="button" className="cz-sidebar__nav cz-sidebar__nav--new" onClick={onNewSession}>
-          <Icon name="new-chat" size={16} className="cz-sidebar__new-icon" />
-          <span>新建会话</span>
-        </button>
-        <button
-          type="button"
-          className="cz-sidebar__icon-btn"
-          onClick={onCollapse}
-          title="收起侧栏"
-          aria-label="收起侧栏"
-        >
-          <Icon name="sidebar-collapse" size={18} />
-        </button>
-      </div>
+    <SessionCardProvider workspaces={workspaces} placement="side">
+      <div className="cz-sidebar">
+        {/* 顶部：新建会话 + 收起，同一行 */}
+        <div className="cz-sidebar__top">
+          <button type="button" className="cz-sidebar__nav cz-sidebar__nav--new" onClick={onNewSession}>
+            <Icon name="new-chat" size={16} className="cz-sidebar__new-icon" />
+            <span>新建会话</span>
+          </button>
+          <CollapseButton onCollapse={onCollapse} />
+        </div>
 
       <SearchRow value={query} onChange={setQuery} />
 
@@ -206,7 +200,26 @@ export function Sidebar({
       <div className="cz-sidebar__account">
         <AccountMenu account={account} version={accountVersion} />
       </div>
-    </div>
+      </div>
+    </SessionCardProvider>
+  );
+}
+
+function CollapseButton({ onCollapse }: { onCollapse: () => void }) {
+  const card = useSessionCard();
+  return (
+    <button
+      type="button"
+      className="cz-sidebar__icon-btn"
+      onClick={() => {
+        card?.closeNow();
+        onCollapse();
+      }}
+      title="收起侧栏"
+      aria-label="收起侧栏"
+    >
+      <Icon name="sidebar-collapse" size={18} />
+    </button>
   );
 }
 

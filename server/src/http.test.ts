@@ -83,6 +83,25 @@ describe('Origin', () => {
 });
 
 describe('REST', () => {
+  it('agent-models：默认值；整体提交；不合法 400', async () => {
+    const url = `${base}/api/agent-models`;
+    const post = (b: unknown) => fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(b) });
+    const get = async () => (await fetch(url, { headers: auth })).json();
+    expect(await get()).toEqual({ claude: { model: 'sonnet', effort: 'medium' }, agy: { model: null, effort: null } });
+    const next = { claude: { model: 'opus', effort: 'high' }, agy: { model: 'gemini-4-neon', effort: 'low' } };
+    expect(await (await post(next)).json()).toEqual({ ok: true, config: next });
+    expect(await get()).toEqual(next);
+    expect((await post({ ...next, claude: { model: 'x', effort: 'high' } })).status).toBe(400);
+    expect(await get()).toEqual(next);
+  });
+  it('agy cli：日志接口已接线；未知子路径 404；写操作带转发头（非本机）403', async () => {
+    const log = await fetch(`${base}/api/agy/cli/log?from=0`, { headers: auth });
+    expect(log.status).toBe(200);
+    expect(await log.json()).toEqual({ lines: [], next: 0 });
+    expect((await fetch(`${base}/api/agy/cli/nope`, { headers: auth })).status).toBe(404);
+    const r = await fetch(`${base}/api/agy/cli/update`, { method: 'POST', headers: { ...auth, 'x-forwarded-for': '100.64.0.9' } });
+    expect(r.status).toBe(403);
+  });
   it('bootstrap', async () => {
     const j = (await (await fetch(`${base}/api/bootstrap`, { headers: auth })).json()) as any;
     expect(j.version).toBe('0.1.0');
@@ -120,6 +139,30 @@ describe('REST', () => {
     const cwd = encodeURIComponent(path.join(tmp, 'ws1'));
     expect((await fetch(`${base}/api/sessions/${id}/subagent-costs?cwd=${cwd}`, { headers: auth })).status).toBe(404);
   });
+  it('GET /api/sessions/:id/detail：缺 cwd 400；不存在 404；正常返回且文件变更后更新', async () => {
+    const id = '11111111-2222-4333-8444-888888888888';
+    const ws = path.join(tmp, 'ws1');
+    const cwd = encodeURIComponent(ws);
+    expect((await fetch(`${base}/api/sessions/${id}/detail`, { headers: auth })).status).toBe(400);
+    expect((await fetch(`${base}/api/sessions/${id}/detail?cwd=${cwd}`, { headers: auth })).status).toBe(404);
+
+    const dir = path.join(tmp, 'claude', 'projects', 'detail-http-test');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${id}.jsonl`);
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, timestamp: '2026-01-01T00:00:00Z', gitBranch: 'main', message: { role: 'user', content: '你好' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', timestamp: '2026-01-01T00:00:01Z', message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: '世界' }], usage: { input_tokens: 42 } } }),
+    ].join('\n') + '\n');
+
+    const r1 = await fetch(`${base}/api/sessions/${id}/detail?cwd=${cwd}`, { headers: auth });
+    expect(r1.status).toBe(200);
+    expect(await r1.json()).toMatchObject({ userMessages: 1, firstPrompt: '你好', lastPrompt: null, lastReply: '世界', model: 'claude-sonnet-5-5', branch: 'main', contextTokens: 42 });
+
+    fs.appendFileSync(file, JSON.stringify({ type: 'user', uuid: 'u2', parentUuid: 'a1', timestamp: '2026-01-01T00:00:02Z', message: { role: 'user', content: '再问一句' } }) + '\n');
+    const r2 = await fetch(`${base}/api/sessions/${id}/detail?cwd=${cwd}`, { headers: auth });
+    expect(r2.status).toBe(200);
+    expect(await r2.json()).toMatchObject({ userMessages: 2, firstPrompt: '你好', lastPrompt: '再问一句' });
+  });
   it('context 缓存没有时为 null', async () => {
     const r = await fetch(`${base}/api/context/11111111-2222-4333-8444-555555555555`, { headers: auth });
     expect(await r.json()).toBeNull();
@@ -135,6 +178,22 @@ describe('REST', () => {
     expect((await post(`/api/context/${id}/mcp`, { server: 's', enabled: true, draft: true, cwd: other })).status).toBe(400);
     expect((await post(`/api/context/${id}/refresh`, { cwd: path.join(tmp, 'ws1') })).status).toBe(404);
   });
+  it('POST /api/exec：会话 id 不合法 400；找不到工作目录 404；在工作空间里运行代码块', async () => {
+    const post = (body: unknown) =>
+      fetch(`${base}/api/exec`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const id = '11111111-2222-4333-8444-777777777777';
+    const ws = path.join(tmp, 'ws1');
+    expect((await post({ session: '../x', lang: 'powershell', code: 'echo 1' })).status).toBe(400);
+    expect((await post({ session: id, cwd: path.join(tmp, 'not-a-ws-exec'), lang: 'powershell', code: 'echo 1' })).status).toBe(404);
+    expect((await post({ session: id, cwd: ws, lang: 'powershell', code: '  ' })).status).toBe(400);
+    expect((await post({ session: id, cwd: ws, lang: 'python', code: 'print(1)' })).status).toBe(400);
+    const lang = process.platform === 'win32' ? 'cmd' : 'sh';
+    const r = await post({ session: id, cwd: ws, lang, code: 'echo exec-ok' });
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as { stdout: string; exitCode: number };
+    expect(j.stdout).toContain('exec-ok');
+    expect(j.exitCode).toBe(0);
+  }, 30_000);
   it('请求体超过 1MB 返回 413', async () => {
     const r = await fetch(`${base}/api/workspaces/current`, {
       method: 'POST',
@@ -464,5 +523,25 @@ describe('GET /api/tools/stats', () => {
     const j = (await r.json()) as { counts: Record<string, number>; sessions: number };
     expect(j.counts.Bash).toBeGreaterThanOrEqual(1);
     expect(j.sessions).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('语音接口（未下载模型）', () => {
+  const post = (p: string, body: BodyInit, type = 'application/json') =>
+    fetch(`${base}${p}`, { method: 'POST', headers: { ...auth, 'content-type': type }, body });
+
+  it('状态是 missing，合成 / 识别返回 409，不会触发下载', async () => {
+    const s = (await (await fetch(`${base}/api/speech/status`, { headers: auth })).json()) as Record<string, { phase: string }>;
+    expect(s.tts!.phase).toBe('missing');
+    expect(s.stt!.phase).toBe('missing');
+    expect((await post('/api/tts', JSON.stringify({ text: '你好。' }))).status).toBe(409);
+    expect((await post('/api/stt?rate=16000', new Uint8Array(32000), 'application/octet-stream')).status).toBe(409);
+  });
+
+  it('参数校验', async () => {
+    expect((await post('/api/speech/prepare', JSON.stringify({ kind: 'x' }))).status).toBe(400);
+    expect((await post('/api/tts', JSON.stringify({}))).status).toBe(400);
+    expect((await post('/api/stt?rate=1', new Uint8Array(4), 'application/octet-stream')).status).toBe(400);
+    expect((await fetch(`${base}/api/tts/0123456789abcdef/0`, { headers: auth })).status).toBe(404);
   });
 });

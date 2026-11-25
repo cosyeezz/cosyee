@@ -5,6 +5,7 @@ import { Icon } from '../icons/Icon';
 import { Markdown } from './Markdown';
 import { CodeBlock } from './Markdown';
 import { toolIconName } from './toolIcon';
+import { toolLabel } from '../../core/reducer/util';
 import { useFiles } from '../files/FileContext';
 import { describeToolInput, parseAskAnswers, parseAskQuestions, planOf, planVerdict, toolContentToText, toolFilePath, toolLine, truncateText } from './format';
 import { hasThinkingText, thinkingFirstLine, thinkingTokensLabel } from './thinking';
@@ -174,7 +175,8 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
   const files = useFiles();
   const filePath = toolFilePath(step);
   // 显示摘要里「工具名: 」后面的部分（通常是相对路径，更短）；没有就显示完整路径
-  const prefix = `${step.name}: `;
+  const label = toolLabel(step.name);
+  const prefix = `${label}: `;
   const pathLabel = step.summary?.startsWith(prefix) && step.summary.length > prefix.length ? step.summary.slice(prefix.length) : filePath;
   const line = toolLine(step);
   const interactive = step.name === 'AskUserQuestion' || step.name === 'ExitPlanMode';
@@ -187,7 +189,7 @@ const ToolRow = memo(function ToolRow({ step, turnActive }: { step: ToolStep; tu
         <div className="cz-flow__row-split">
           <button type="button" className="cz-flow__row-btn cz-flow__row-btn--lead" aria-expanded={open} onClick={toggle}>
             {icon}
-            <span className="cz-flow__tool-name">{step.name}:</span>
+            <span className="cz-flow__tool-name">{label}:</span>
           </button>
           <button
             type="button"

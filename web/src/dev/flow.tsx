@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Step, Turn } from '@cosyee/shared';
 import '../styles/tokens.css';
 import { ConversationView } from '../ui/flow/ConversationView';
+import { SessionDock } from '../ui/flow/SessionDock';
 import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
 import { FilesContext, type FilesApi } from '../ui/files/FileContext';
 import { FlowMetaContext, type FlowMeta } from '../ui/flow/flowContext';
@@ -15,7 +16,7 @@ const PANEL_DEMO: Turn = {
   id: 'panel-demo',
   userText: '演示技能与 MCP 面板',
   attachments: [],
-  status: 'done',
+  status: 'running',
   statusText: '',
   steps: [
     { kind: 'tool', id: 'm1', name: 'mcp__playwright__browser_navigate', input: { url: 'https://example.com' }, summary: 'browser_navigate', result: { content: [{ type: 'text', text: 'ok' }], isError: false } },
@@ -32,7 +33,6 @@ const PANEL_DEMO: Turn = {
     { id: 's5', name: 'debug', source: 'model', status: 'loading' },
   ],
   startedAt: Date.now() - 5000,
-  endedAt: Date.now(),
 };
 const DEV_FLOW_META: FlowMeta = {
   mcpServers: ['playwright', 'my-docs'],
@@ -154,7 +154,7 @@ export default function FlowDev() {
   const reset = () => {
     clearTimers();
     setOpenSub(null);
-    setTurns(mockTurns);
+    setTurns([...mockTurns, PANEL_DEMO]);
   };
 
   const run = useMemo(() => {
@@ -201,7 +201,10 @@ export default function FlowDev() {
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <ConversationView turns={turns} onOpenSubagent={onOpen} onReply={(quote, reply) => setLastReply({ quote, reply })} />
+        <ConversationView turns={turns} onReply={(quote, reply) => setLastReply({ quote, reply })} />
+      </div>
+      <div style={{ maxWidth: 'var(--content-max)', width: '100%', margin: '0 auto', padding: '0 var(--sp-4) var(--sp-3)', boxSizing: 'border-box' }}>
+        <SessionDock turns={turns} sessionKey="dev" onOpenSubagent={onOpen} />
       </div>
       <SubagentOverlay run={run} onClose={onClose} />
       {preview && <FilePreview session="dev" cwd={DEV_CWD} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />}

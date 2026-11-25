@@ -2,8 +2,10 @@
 // 约定：对外的 applyXxx 都是不可变更新——先 openDraft 克隆最后一轮，在草稿上随意改，再 commit 生成新状态。
 // 簿记只服务当前这一轮，开新轮时整体重置，所以克隆的开销不随会话长度增长。
 
+import { DELEGATE_BG_MARKER } from '@cosyee/shared';
 import type { SessionMeta, SkillLoad, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
-import { arr, isAgentName, isLocalCommand, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
+import { arr, DELEGATE_TOOL, isLocalCommand, isSubagentTool, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
+import { normalizeForeignTool } from './foreignTool';
 import { parseUserText } from '../composer';
 
 /** 一个内容块（流式 index 对应的块）当前落在哪里 */
@@ -22,8 +24,8 @@ export interface Book {
   blocks: Record<string, BlockRef>;
   /** `${scope}|${messageId}` → 已见到的完整 block 数（完整消息没有 index，按到达顺序对应流式 index） */
   seen: Record<string, number>;
-  /** tool_use id → 位置；agent=true 表示这是主代理的子代理启动，对应 turn.subagents 而不是 steps */
-  tools: Record<string, { scope: string; idx: number; agent?: true }>;
+  /** tool_use id → 位置；agent=true 表示这是主代理的子代理启动，对应 turn.subagents 而不是 steps；foreign 记录归一化前的原始工具名 */
+  tools: Record<string, { scope: string; idx: number; agent?: true; delegate?: true; foreign?: string }>;
   /** 流式工具输入的 JSON 片段缓冲，key 同 blocks */
   bufs: Record<string, string>;
   /** scope → 当前占据 turn.answer 的块 key */
@@ -179,7 +181,8 @@ export function finishTurn(t: Turn, status: Exclude<TurnStatus, 'understanding' 
     if ((s.kind === 'tool' || s.kind === 'thinking') && s.streaming) delete s.streaming;
   }
   for (const r of t.subagents) {
-    if (r.status === 'running') {
+    // 后台委派（background）不随主轮结束：它由委派任务快照或完成通知收尾
+    if (r.status === 'running' && !r.background) {
       r.status = status === 'done' ? 'done' : 'error';
       finishTurn(r.turn, r.status, now, r.status === 'error' ? (reason ?? '已中断') : undefined);
     }
@@ -198,15 +201,20 @@ export function reopen(d: Draft): void {
 
 /** 主代理有内容时调用：重开已结束的轮并标记回合进行中。子代理的内容不影响 inRound */
 export function touch(d: Draft, scope: string): void {
+  // 后台委派的进度可能在主轮结束之后才到：只更新它自己，不重开主轮
+  if (scope !== '' && isDelegateRun(findRun(d, scope))) return;
   reopen(d);
   if (scope === '') d.book.inRound = true;
 }
+
+/** 委派工具发起的子代理运行（含后台委派） */
+export const isDelegateRun = (r: SubagentRun | undefined): boolean => !!r && (r.delegate === true || r.background === true);
 
 /** 有 result 之后、后台任务全部结束且没有新回合时，收尾 */
 export function maybeFinishPending(d: Draft): void {
   const b = d.book;
   if (!b.pending || b.inRound || b.bgTasks > 0) return;
-  if (d.turn.subagents.some((r) => r.status === 'running')) return;
+  if (d.turn.subagents.some((r) => r.status === 'running' && !r.background)) return;
   if (!isActive(d.turn)) return;
   finishTurn(d.turn, 'done', d.now);
   b.pending = false;
@@ -324,7 +332,7 @@ function applyRunParams(run: SubagentRun, o: Record<string, unknown>): void {
   if (str(o.effort)) run.effort = str(o.effort);
 }
 
-function addSubagent(d: Draft, id: string, input: unknown): void {
+function addSubagent(d: Draft, id: string, input: unknown, delegate = false): void {
   if (findRun(d, id)) return;
   const o = isObj(input) ? input : {};
   const run: SubagentRun = {
@@ -346,7 +354,8 @@ function addSubagent(d: Draft, id: string, input: unknown): void {
       startedAt: d.now,
     },
   };
-  const st = str(o.subagent_type);
+  if (delegate) run.delegate = true;
+  const st = delegate ? (str(o.agent) || 'general-purpose') : str(o.subagent_type);
   if (st) run.subagentType = st;
   applyRunParams(run, o);
   d.turn.subagents.push(run);
@@ -362,18 +371,22 @@ export function ensureTool(d: Draft, scope: string, key: string, id: string, nam
   }
   flushAnswer(d, scope);
   markRunning(t);
-  if (scope === '' && isAgentName(name)) {
-    addSubagent(d, id, input);
-    d.book.tools[id] = { scope, idx: -1, agent: true };
+  if (scope === '' && isSubagentTool(name)) {
+    const delegate = name === DELEGATE_TOOL;
+    addSubagent(d, id, input, delegate);
+    d.book.tools[id] = delegate ? { scope, idx: -1, agent: true, delegate: true } : { scope, idx: -1, agent: true };
     d.book.blocks[key] = { scope, kind: 'tool', where: 'step', idx: -1, toolId: id };
     return;
   }
-  if (name === 'Skill') addSkillLoad(t, id, input);
+  const foreign = normalizeForeignTool(name, input);
+  const stepName = foreign ? foreign.name : name;
+  const stepInput = foreign ? foreign.input : input;
+  if (stepName === 'Skill') addSkillLoad(t, id, stepInput);
   const idx = t.steps.length;
-  const step: ToolStep = { kind: 'tool', id, name, input, summary: toolSummary(name, input) };
+  const step: ToolStep = { kind: 'tool', id, name: stepName, input: stepInput, summary: toolSummary(stepName, stepInput) };
   if (streaming) step.streaming = true;
   t.steps.push(step);
-  d.book.tools[id] = { scope, idx };
+  d.book.tools[id] = foreign ? { scope, idx, foreign: name } : { scope, idx };
   d.book.blocks[key] = { scope, kind: 'tool', where: 'step', idx, toolId: id };
 }
 
@@ -386,18 +399,25 @@ export function setToolInput(d: Draft, id: string, input: unknown): void {
     const o = isObj(input) ? input : null;
     if (!run || !o) return;
     if (str(o.description)) run.title = str(o.description);
-    if (str(o.subagent_type)) run.subagentType = str(o.subagent_type);
+    if (ref.delegate) {
+      if (str(o.agent)) run.subagentType = str(o.agent);
+    } else if (str(o.subagent_type)) {
+      run.subagentType = str(o.subagent_type);
+    }
     if (str(o.prompt)) run.turn.userText = str(o.prompt);
     applyRunParams(run, o);
     return;
   }
   const st = getTurn(d, ref.scope)?.steps[ref.idx];
   if (st && st.kind === 'tool') {
-    st.input = input;
-    st.summary = toolSummary(st.name, input);
-    if (st.name === 'Skill' && isObj(input)) {
+    const mapped = ref.foreign ? normalizeForeignTool(ref.foreign, input) : null;
+    if (mapped) st.name = mapped.name;
+    const nextInput = mapped ? mapped.input : input;
+    st.input = nextInput;
+    st.summary = toolSummary(st.name, nextInput);
+    if (st.name === 'Skill' && isObj(nextInput)) {
       const k = findSkill(getTurn(d, ref.scope), id);
-      if (k) fillSkillInput(k, input);
+      if (k) fillSkillInput(k, nextInput);
     }
   }
 }
@@ -474,8 +494,17 @@ export function applyToolResult(d: Draft, id: string, content: unknown, isError:
   if (ref.agent) {
     const run = findRun(d, id);
     const agentId = /agentId:\s*([\w-]+)/.exec(textOf(content))?.[1] ?? (isObj(meta) ? str(meta.agentId) : '');
-    if (run && agentId && !run.taskId) run.taskId = agentId;
-    if (!isError && isAsyncLaunch(content, meta)) {
+    if (run && agentId && !run.taskId && !ref.delegate) run.taskId = agentId;
+    // delegate 后台启动：工具结果只是「已启动」的回执，子代理继续运行（由委派任务快照 / 完成通知收尾），回执不当回答
+    if (ref.delegate && run && !isError && textOf(content).startsWith(DELEGATE_BG_MARKER)) {
+      run.background = true;
+      return;
+    }
+    // delegate：过程只在实时事件里（不落盘）；历史里或没收到过程时，把最终结果当子代理的回答
+    if (ref.delegate && run && run.turn.steps.length === 0 && !run.turn.answer.trim()) {
+      run.turn.answer = textOf(content).replace(/\n*\[conversation_id: [\w-]+\]\s*$/, '');
+    }
+    if (!ref.delegate && !isError && isAsyncLaunch(content, meta)) {
       d.book.asyncSubs[id] = true; // 后台子代理：保持 running，等 task_notification
       return;
     }

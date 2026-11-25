@@ -4,6 +4,7 @@
 import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { CachePoint } from '@cosyee/shared';
 import { CountUp } from '../motion/CountUp';
+import { ChartTip } from './ChartTip';
 import { formatTokens } from './formatTokens';
 
 const W = 280;
@@ -67,7 +68,7 @@ export function CacheChart({ points, intro = false }: { points: CachePoint[] | u
   };
 
   const total = cur.input + cur.create + cur.read;
-  const tipLeft = Math.min(Math.max((geo.xs[active] / W) * 100, 18), 82); // 夹在两侧，避免溢出面板
+  const tipAt = geo.xs[active] / W;
 
   return (
     <div className="cz-ctx__cache">
@@ -100,7 +101,7 @@ export function CacheChart({ points, intro = false }: { points: CachePoint[] | u
           )}
         </svg>
         {hover !== null && (
-          <div className="cz-ctx__cache-tip" role="status" style={{ left: `${tipLeft}%` }} data-testid="cache-tip">
+          <ChartTip at={tipAt} testId="cache-tip">
             <div className="cz-ctx__cache-tip-title">
               第 {cur.turn + 1} 轮 · 第 {active + 1} 次请求 · 命中 {cur.rate.toFixed(1)}%
             </div>
@@ -108,7 +109,7 @@ export function CacheChart({ points, intro = false }: { points: CachePoint[] | u
             <div className="cz-ctx__cache-tip-row">写缓存 {formatTokens(cur.create)}</div>
             <div className="cz-ctx__cache-tip-row">未缓存 {formatTokens(cur.input)}</div>
             <div className="cz-ctx__cache-tip-row is-total">输入合计 {formatTokens(total)}</div>
-          </div>
+          </ChartTip>
         )}
       </div>
     </div>

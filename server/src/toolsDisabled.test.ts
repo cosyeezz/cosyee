@@ -35,10 +35,12 @@ process.stdin.on('data', (d) => {
 
 beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cosyee-tools-'));
-  for (const k of ['CLAUDE_CONFIG_DIR', 'COSYEE_HOME', 'COSYEE_CLAUDE', 'FAKE_LOG']) saved[k] = process.env[k];
+  for (const k of ['CLAUDE_CONFIG_DIR', 'COSYEE_HOME', 'COSYEE_CLAUDE', 'COSYEE_AGY', 'FAKE_LOG']) saved[k] = process.env[k];
   process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'claude');
   process.env.COSYEE_HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
+  // 只为让委派算作可用（结果与本机装没装无关）；这里不派任务，不会真的启动
+  process.env.COSYEE_AGY = path.join(tmp, 'no-such-agy');
   logFile = path.join(tmp, 'log.txt');
   process.env.FAKE_LOG = logFile;
   cwd = path.join(tmp, 'ws');
@@ -161,5 +163,51 @@ describe('POST /api/agents', () => {
     expect(applies().pop()?.permissions.deny).toEqual(['Glob']);
     await post('/api/tools', { name: 'Glob', enabled: true });
     expect(applies().pop()?.permissions.deny).toEqual([]);
+  }, 30_000);
+});
+
+describe('POST /api/native-agents', () => {
+  const lastDeny = () =>
+    (JSON.parse(log().filter((l) => l.startsWith('CTRL apply_flag_settings ')).pop()!.slice('CTRL apply_flag_settings '.length)) as { permissions: { deny: string[] } }).permissions.deny;
+  const savedNative = (want: boolean) =>
+    vi.waitFor(() => expect((JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { nativeAgents?: boolean }).nativeAgents).toBe(want));
+  type Ctx = { nativeAgents?: boolean; disabledTools?: string[]; disabledAgents?: string[] };
+  const refresh = async (sid: string) => (await (await post(`/api/context/${sid}/refresh`, { cwd, draft: true })).json()) as Ctx;
+
+  it('非布尔 enabled 返回 400；默认开，不影响 deny', async () => {
+    expect((await post('/api/native-agents', { enabled: 'no' })).status).toBe(400);
+    expect((await post('/api/native-agents', {})).status).toBe(400);
+    expect((await refresh('0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a14')).nativeAgents).toBe(true);
+  }, 30_000);
+
+  it('关闭后落盘并立即下发整个 Agent；新进程启动就带上；不进停用名单；重新开启后移除', async () => {
+    const r = await post('/api/native-agents', { enabled: false });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true, enabled: false });
+    expect(lastDeny()).toEqual(['Agent']);
+    await savedNative(false);
+
+    const ctx = await refresh('0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a15');
+    expect(ctx.nativeAgents).toBe(false);
+    expect(ctx.disabledTools).toEqual([]);
+    expect(ctx.disabledAgents).toEqual([]);
+    const argv = JSON.parse(log().filter((l) => l.startsWith('ARGS ')).pop()!.slice(5)) as string[];
+    const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]!) as { permissions?: { deny?: string[] } };
+    expect(settings.permissions?.deny).toEqual(['Agent']);
+
+    await post('/api/native-agents', { enabled: true });
+    expect(lastDeny()).toEqual([]);
+    await savedNative(true);
+  }, 30_000);
+
+  it('关闭期间停用 delegate：原生立即回来；重新启用 delegate 后又停用原生', async () => {
+    await post('/api/native-agents', { enabled: false });
+    srv.store.state.disabledTools = ['mcp__cosyee__delegate'];
+    await post('/api/tools', { name: 'Glob', enabled: false });
+    expect(lastDeny()).toEqual(['mcp__cosyee__delegate', 'Glob']);
+    srv.store.state.disabledTools = ['Glob'];
+    await post('/api/tools', { name: 'Glob', enabled: true });
+    expect(lastDeny()).toEqual(['Agent']);
+    await post('/api/native-agents', { enabled: true });
   }, 30_000);
 });

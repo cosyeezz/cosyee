@@ -70,7 +70,12 @@
   content: attr(data-placeholder);
   position: absolute;
   left: var(--sp-1);
+  right: var(--sp-1);
   top: 4px;
+  /* 只占一行：输入区窄（手机、录音提示出现时）放不下就省略，不折行溢出输入框 */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   line-height: 24px;
   color: var(--text-3);
   pointer-events: none;
@@ -299,3 +304,40 @@
 .cz-md-bullet { color: var(--text-2); font-weight: 600; }
 .cz-md-task { color: var(--text-2); font-family: var(--font-mono); font-size: .92em; }
 .cz-md-hr { color: var(--text-3); }
+
+/* 语音输入：录音中红色脉冲；识别 / 下载时只显示文字提示 */
+.cz-composer__mic-label {
+  flex: none;
+  align-self: center;
+  max-width: 140px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cz-composer__btn.is-recording,
+.cz-composer__btn.is-recording:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  animation: cz-mic-pulse 1.2s ease-in-out infinite;
+}
+.cz-composer__btn[aria-disabled="true"] { opacity: .5; }
+@keyframes cz-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 35%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cz-composer__btn.is-recording { animation: none; }
+}
+:root[data-motion="reduce"] .cz-composer__btn.is-recording { animation: none; }
+
+/* 通话中的电话按钮 */
+.cz-composer__btn.is-calling {
+  color: #fff;
+  background: #22a559;
+}
+.cz-composer__btn.is-calling:hover {
+  background: #1c8c4b;
+}

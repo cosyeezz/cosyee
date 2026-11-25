@@ -1,15 +1,21 @@
 // 会话进程管理 + WebSocket 订阅分发。一个会话一个 Runner；订阅者按会话分组。
 import path from 'node:path';
-import type { AppliedSettings, ClientMsg, ContextUsage, ServerMsg, SessionConfig, SkillMode } from '@cosyee/shared';
+import { type AgentModelConfig, type DelegateNotification, formatDelegateNotification, hasModelMapping } from '@cosyee/shared';
+import type { AppliedSettings, ClientMsg, ContextUsage, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
+import { readApiConfig } from '../accounts/api-config.js';
 import { toContextUsage } from '../context.js';
+import type { DelegateBackend } from '../delegate/backend.js';
+import { DelegateJobs } from '../delegate/jobs.js';
+import type { DelegateRecorder } from '../delegate/record.js';
 import { baseClaudeHome, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
 import type { Pins } from '../pins.js';
 import type { Sessions } from '../sessions.js';
-import { type DiskSkill, listDiskSkills, removeDiskSkill } from '../skillsDisk.js';
+import { type DiskSkill, listDiskAgentDescriptions, listDiskSkills, removeDiskSkill, skillDescription } from '../skillsDisk.js';
 import type { DotState } from '../state.js';
-import { HttpError } from '../workspaces.js';
+import { MAX_AUTO_RETRIES, RATE_LIMIT_BUFFER_MS, RATE_LIMIT_FALLBACK_MS, type StopStore, transientRetryDelay } from '../stops.js';
+import { HttpError, TOOL_NAME_RE } from '../workspaces.js';
 import { AutoTitle } from './autotitle.js';
-import { Runner, type RunnerTimings, validateConfig } from './runner.js';
+import { type AgentDefaults, Runner, type RunnerStopInfo, type RunnerTimings, validateConfig } from './runner.js';
 
 /** 一个 WebSocket 连接的抽象，便于测试。 */
 export interface Client {
@@ -21,6 +27,12 @@ export interface ManagerOptions {
   sessions: Sessions;
   /** 置顶：会话开始 / 停止执行时自动置顶、顺延到期时间；不传则不做自动置顶（旧测试） */
   pins?: Pins;
+  /** 会话因错误停止的记录与自动重试存储；不传则关闭该功能（旧测试） */
+  stops?: StopStore;
+  /** 自动重试轮询间隔（毫秒），默认 60 秒；测试可覆盖 */
+  retryPollMs?: number;
+  /** 当前时间函数（测试可注入），默认 Date.now */
+  now?: () => number;
   timings?: Partial<RunnerTimings>;
   claudePath?: string;
   /** skill 状态的存取（全局，Cosyee 自己保存）；不传则不下发 skillOverrides（旧测试） */
@@ -29,12 +41,18 @@ export interface ManagerOptions {
   tools?: ToolStore;
   /** 自动压缩窗口的存取（全局，null = 不覆盖）；不传则不下发（旧测试） */
   compactWindow?: CompactWindowStore;
+  /** 子代理的模型 / 强度的存取（全局）；不传则不介入（旧测试） */
+  agentModels?: AgentModelStore;
   /** 多账号：会话用哪个账号启动；不传则沿用当前账号（旧测试） */
   accounts?: SessionAccounts;
   /** 每个会话最近一次使用的配置（模型 / 强度）的存取；不传则不记录（旧测试） */
   configs?: SessionConfigStore;
   /** 分支关系（新会话 ← 来源会话）的记录；不传则不记录（旧测试），分支仍可用，只是分支点之前的子代理面板打不开 */
   forks?: ForkStore;
+  /** 委派执行过程的落盘；不传则不记（旧测试） */
+  delegateRecord?: DelegateRecorder;
+  /** 委派后端；不传则由 runner 用默认单例（旧测试） */
+  delegateBackend?: DelegateBackend;
 }
 
 export interface ForkStore {
@@ -60,6 +78,10 @@ export interface CompactWindowStore {
   set(window: number | null): void;
 }
 
+export interface AgentModelStore {
+  get(): AgentModelConfig;
+}
+
 export interface ToolStore {
   /** 当前已停用的工具名 */
   get(): string[];
@@ -71,10 +93,10 @@ export interface ToolStore {
   /** 已关闭的智能体名（全局）；以 Agent(名字) 并入 permissions.deny */
   agents?(): string[];
   setAgents?(names: string[]): void;
+  /** 原生子代理（Agent 工具）开关；不传视为开 */
+  nativeAgents?(): boolean;
+  setNativeAgents?(enabled: boolean): void;
 }
-
-/** 内置工具名（与 workspaces.ts 的 TOOL_NAME_RE 一致）；mcp__ 工具另由 MCP 一节管理 */
-const BUILTIN_TOOL_RE = /^(?!mcp__)[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 export interface SkillStore {
   get(): Record<string, SkillMode>;
@@ -92,6 +114,70 @@ const MCP_PENDING_RETRIES = 5;
 const TITLE_MAX_INPUT = 500;
 /** 回合进行中，上下文用量的最小刷新间隔（毫秒）；节流 + 单飞，避免每条消息都打一次 get_context_usage */
 const CONTEXT_LIVE_MS = 3000;
+/** delegate.send 的消息长度上限 */
+const DELEGATE_SEND_MAX = 100_000;
+/** 自动重试轮询默认间隔（毫秒） */
+const DEFAULT_RETRY_POLL_MS = 60_000;
+
+/** 根据错误类型构造重试消息文案 */
+export function retryPromptText(kind: StopKind): string {
+  switch (kind) {
+    case 'rate_limit':
+      return '【自动重试】上一次请求因额度用尽中断，现已恢复。请从中断处继续，不要重复已完成的步骤。';
+    case 'transient':
+      return '【自动重试】上一次请求因网络或服务异常中断。请从中断处继续，不要重复已完成的步骤。';
+    case 'fatal':
+      return '【重试】上一次请求出错中断，请从中断处继续，不要重复已完成的步骤。';
+  }
+}
+
+/** initialize 响应里的描述原文：commands（skill 与斜杠命令）与 agents（含内置） */
+interface InitDescs {
+  commands: [string, string][];
+  /** initialize 响应里全部命令名（不含 description 的也保留，供未收到 system/init 时 `/` 菜单兜底） */
+  commandNames: string[];
+  agents: [string, string][];
+}
+
+/** CLI 在 commands 描述末尾追加的来源标记（不在系统提示词里） */
+const SOURCE_TAG = /\s+\((?:user|project|plugin|bundled|managed|built-in)\)$/;
+
+function pairs(list: unknown, strip: boolean): [string, string][] {
+  const out: [string, string][] = [];
+  for (const x of Array.isArray(list) ? list : []) {
+    const o = x as { name?: unknown; description?: unknown } | null;
+    if (typeof o?.name !== 'string' || typeof o.description !== 'string') continue;
+    const d = (strip ? o.description.replace(SOURCE_TAG, '') : o.description).trim();
+    if (o.name && d) out.push([o.name, d]);
+  }
+  return out;
+}
+
+function commandNamesOf(list: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of Array.isArray(list) ? list : []) {
+    const name = typeof x === 'string' ? x : typeof (x as { name?: unknown } | null)?.name === 'string' ? (x as { name: string }).name : '';
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+/** 取 runner 的 initialize 响应；最多等 3 秒（不拖慢上下文采集），拿不到为 null */
+async function initInfoOf(r: Runner): Promise<InitDescs | null> {
+  if (typeof r.initInfo !== 'function') return null;
+  let timer: NodeJS.Timeout | undefined;
+  const raw = await Promise.race([
+    r.initInfo().catch(() => null),
+    new Promise<null>((res) => { timer = setTimeout(() => res(null), 3000); timer.unref?.(); }),
+  ]);
+  clearTimeout(timer);
+  if (!raw) return null;
+  return { commands: pairs(raw.commands, true), commandNames: commandNamesOf(raw.commands), agents: pairs(raw.agents, false) };
+}
 
 export class Manager {
   private runners = new Map<string, Runner>();
@@ -106,36 +192,61 @@ export class Manager {
   private readonly dots: DotState;
   private readonly sessions: Sessions;
   private readonly pins?: Pins;
+  private readonly stops?: StopStore;
+  private readonly retryPollMs: number;
+  private readonly now: () => number;
   private readonly timings?: Partial<RunnerTimings>;
   private readonly claudePath?: string;
   private readonly skills?: SkillStore;
   private readonly tools?: ToolStore;
   private readonly compactWindow?: CompactWindowStore;
+  private readonly agentModels?: AgentModelStore;
   private readonly accounts?: SessionAccounts;
   private readonly configs?: SessionConfigStore;
   private readonly forks?: ForkStore;
   /** 会话最近一次 system/init 的 skills（带插件前缀），另按 cwd 存一份给探测进程（探测进程不发消息，收不到 init） */
   private initSkills = new Map<string, string[]>();
   private initSkillsByCwd = new Map<string, string[]>();
+  /** 会话最近一次 system/init 的 slash_commands，同样按 cwd 留一份给探测进程 */
+  private initSlash = new Map<string, string[]>();
+  private initSlashByCwd = new Map<string, string[]>();
   /** 会话最近一次 system/init 的内置工具名 */
   private initTools = new Map<string, string[]>();
   /** MCP pending 重采：按会话的计时器与已重试次数 */
   private mcpRetry = new Map<string, { timer: NodeJS.Timeout | null; n: number }>();
+  /** 会话的委派任务表（后台任务）：独立于 claude 进程，进程被空闲回收 / 重启后任务继续 */
+  private delegateJobs = new Map<string, DelegateJobs>();
+  /** 正在补发待送达委派通知的会话 id，避免并发重复投递 */
+  private flushing = new Set<string>();
+  /** 正在执行重试发送的会话 id，避免轮询与手动重试并发重复触发 */
+  private retrying = new Set<string>();
+  private retryTimer: NodeJS.Timeout | null = null;
+  private unsubStops: (() => void) | null = null;
+  private shuttingDown = false;
   /** 没有标题的会话：首条消息被接收后立即让 CLI 生成一个（每轮结束时再兜底重试） */
   private readonly autoTitle: AutoTitle;
+
+  private readonly delegateRecord: DelegateRecorder | undefined;
+  private readonly delegateBackend: DelegateBackend | undefined;
 
   constructor(opts: ManagerOptions) {
     this.dots = opts.dots;
     this.sessions = opts.sessions;
     this.pins = opts.pins;
+    this.stops = opts.stops;
+    this.retryPollMs = opts.retryPollMs ?? DEFAULT_RETRY_POLL_MS;
+    this.now = opts.now ?? Date.now;
     this.timings = opts.timings;
     this.claudePath = opts.claudePath;
     this.skills = opts.skills;
     this.tools = opts.tools;
     this.compactWindow = opts.compactWindow;
+    this.agentModels = opts.agentModels;
     this.accounts = opts.accounts;
     this.configs = opts.configs;
     this.forks = opts.forks;
+    this.delegateRecord = opts.delegateRecord;
+    this.delegateBackend = opts.delegateBackend;
     this.autoTitle = new AutoTitle({
       hasTitle: async (id, cwd) => {
         const s = await this.sessions.scan(id, cwd);
@@ -148,6 +259,10 @@ export class Manager {
         setTimeout(() => this.changed(cwd), 800).unref();
       },
     });
+    if (this.stops) {
+      this.unsubStops = this.stops.onChange((id, info) => this.emit(id, { t: 'stop', sessionId: id, info }));
+      this.startRetryPoller();
+    }
   }
 
   // ───────────── 连接与订阅 ─────────────
@@ -235,6 +350,26 @@ export class Manager {
         case 'prompt.reply':
           this.promptReply(msg);
           break;
+        case 'delegate.stop':
+          this.requireId(msg.sessionId);
+          if (typeof msg.toolUseId !== 'string' || !msg.toolUseId) throw new Error('toolUseId 不合法');
+          this.delegateJobs.get(msg.sessionId)?.stopByToolUse(msg.toolUseId);
+          break;
+        case 'delegate.send':
+          this.requireId(msg.sessionId);
+          if (typeof msg.toolUseId !== 'string' || !msg.toolUseId) throw new Error('toolUseId 不合法');
+          if (typeof msg.text !== 'string' || msg.text.trim() === '' || msg.text.length > DELEGATE_SEND_MAX) throw new Error('消息不合法');
+          if (msg.mode !== undefined && msg.mode !== 'steer' && msg.mode !== 'queue') throw new Error('mode 不合法');
+          this.delegateJobs.get(msg.sessionId)?.sendByToolUse(msg.toolUseId, msg.text, msg.mode);
+          break;
+        case 'retry.now':
+          this.requireId(msg.sessionId);
+          void this.retryNow(client, msg.sessionId);
+          break;
+        case 'retry.cancel':
+          this.requireId(msg.sessionId);
+          this.retryCancel(msg.sessionId);
+          break;
         default:
           throw new Error('未知消息类型');
       }
@@ -297,6 +432,8 @@ export class Manager {
     const r = this.runners.get(id);
     const status = r ? r.status : 'idle';
     this.safeSend(client, { t: 'status', sessionId: id, status });
+    // 停止记录快照（紧跟 status；没有记录发 null）
+    this.safeSend(client, { t: 'stop', sessionId: id, info: this.stops?.get(id) ?? null });
     if (r) {
       const snap = r.snapshot();
       if (snap.events.length > 0) this.safeSend(client, { t: 'replay', sessionId: id, events: snap.events, status: snap.status });
@@ -305,6 +442,8 @@ export class Manager {
     this.safeSend(client, { t: 'queue', sessionId: id, items: r ? r.queueItems() : [] });
     // 待回应请求快照（同上，空数组也发）
     this.safeSend(client, { t: 'prompts', sessionId: id, items: r ? r.promptItems() : [] });
+    // 委派任务快照（同上，空数组也发；有落盘记录时一并恢复展示）
+    this.safeSend(client, { t: 'delegates', sessionId: id, jobs: this.peekJobs(id)?.list() ?? [] });
     const st = this.settingsCache.get(id);
     if (st) this.safeSend(client, { t: 'settings', sessionId: id, applied: st });
     const ctx = this.contextCache.get(id);
@@ -327,6 +466,23 @@ export class Manager {
     if (!set) this.subs.set(id, (set = new Set()));
     set.add(client);
 
+    // 用户手动发送消息：清除之前的错误停止记录
+    this.stops?.clear(id);
+    this.sendInternal(id, cwd, msg.text, msg.config, { isNew: !!msg.isNew, msgId: msg.id, mode: msg.mode });
+    this.dots.viewed(id);
+  }
+
+  /**
+   * 内部发送入口（用户 send 与自动/手动重试共用）：不清除 stops、不修改订阅关系。
+   * 走正常的 r.send() 路径，会发出 cosyee_user 事件。
+   */
+  private sendInternal(
+    id: string,
+    cwd: string,
+    text: string,
+    config: SessionConfig,
+    opts: { isNew?: boolean; msgId?: string; mode?: QueueMode } = {},
+  ): void {
     let r = this.runners.get(id);
     // 并行模式：空闲的进程不是这个会话现在该用的账号（例如新会话草稿的探测进程启动后换了账号）→ 换一个进程
     if (r && this.accounts && r.status === 'idle' && r.accountId !== this.accounts.resolve(id).id) {
@@ -337,20 +493,21 @@ export class Manager {
     }
     const created = !r;
     if (!r) {
-      r = this.createRunner(id, cwd, !!msg.isNew, msg.config, false);
+      r = this.createRunner(id, cwd, !!opts.isNew, config, false);
       this.runners.set(id, r);
     }
     try {
-      r.send(msg.text, msg.config, msg.id, msg.mode);
+      r.send(text, config, opts.msgId, opts.mode);
     } catch (e) {
       if (created && !r.alive) this.runners.delete(id);
       throw e;
     }
-    this.configs?.set(id, msg.config);
+    this.configs?.set(id, config);
     this.cwdOf.set(id, r.cwd);
     if (this.accounts && r.accountId) this.accounts.bind(id, r.accountId);
-    this.dots.viewed(id);
     this.changed(r.cwd);
+    // 进程刚因发送而就绪（新建或探测转正）：补发待送达的委派通知（含重启恢复的中断通知）
+    void this.flushPending(id, { allowSpawn: false });
   }
 
   // ───────────── 排队消息 / 回退 ─────────────
@@ -417,6 +574,7 @@ export class Manager {
       }
       const res = await r.rewind(msg.targetId);
       if (res.rewound === true) {
+        this.stops?.clear(id);
         reply(true, { prefillText: typeof res.prefillText === 'string' ? res.prefillText : '' });
         this.changed(r.cwd);
       } else {
@@ -424,6 +582,149 @@ export class Manager {
       }
     } catch (e) {
       reply(false, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /**
+   * 子代理的默认模型 / 强度。API 账号可能自带子代理模型，或映射表里没有选中的别名（第三方网关不认 Claude 原名），
+   * 这两种情况不补 model。设了 CLAUDE_CODE_EFFORT_LEVEL 时 CLI 全局锁定强度，Agent 工具没有 effort 参数，也不补。
+   */
+  private agentDefaults(accountDir: string | null | undefined): AgentDefaults | null {
+    const cfg = this.agentModels?.get();
+    if (!cfg) return null;
+    const map = readApiConfig(accountDir)?.models;
+    const skipModel = !!map && (!!map.subagent || (hasModelMapping(map) && !map.alias?.[cfg.claude.model]));
+    return {
+      claude: {
+        ...(skipModel ? {} : { model: cfg.claude.model }),
+        ...(process.env.CLAUDE_CODE_EFFORT_LEVEL ? {} : { effort: cfg.claude.effort }),
+      },
+      agy: cfg.agy,
+    };
+  }
+
+  /** 已在内存或磁盘有 jobs.json 时取会话任务表（用于订阅展示，不为空会话凭空建表） */
+  private peekJobs(id: string): DelegateJobs | undefined {
+    const existing = this.delegateJobs.get(id);
+    if (existing) return existing;
+    if (this.delegateRecord?.readJobs(id)) return this.jobsFor(id);
+    return undefined;
+  }
+
+  /** 会话的委派任务表（懒创建）：事件进 runner 的回合缓冲（没有 runner 就直接广播），完成时通知模型 */
+  private jobsFor(id: string): DelegateJobs {
+    let jobs = this.delegateJobs.get(id);
+    if (!jobs) {
+      jobs = new DelegateJobs({
+        onEvents: (evs) => {
+          this.delegateRecord?.write(id, evs);
+          const r = this.runners.get(id);
+          for (const e of evs) {
+            if (r) r.pushExternal(e);
+            else this.emit(id, { t: 'event', sessionId: id, e });
+          }
+        },
+        onChange: (list) => {
+          this.emit(id, { t: 'delegates', sessionId: id, jobs: list });
+          if (!this.dots) return;
+          const active = list.filter((j) => j.state === 'running').length;
+          const wasRunning = this.dots.isRunning(id);
+          let dotChanged = this.dots.setBackground(id, active, 'delegate');
+          // 后台委派全部结束且主进程已空闲：没人订阅时标记未读
+          if (wasRunning && !this.dots.isRunning(id) && this.dots.turnFinished(id, this.hasSubscribers(id))) {
+            dotChanged = true;
+          }
+          const cwd = this.cwdOf.get(id);
+          if (dotChanged && cwd) this.changed(cwd);
+        },
+        onFinish: (n) => void this.notifyDelegate(id, n),
+        ...(this.delegateRecord
+          ? {
+              results: this.delegateRecord,
+              ids: this.delegateRecord,
+              persist: {
+                save: (data) => this.delegateRecord!.saveJobs(id, data),
+                load: () => this.delegateRecord!.readJobs(id),
+              },
+            }
+          : {}),
+      });
+      this.delegateJobs.set(id, jobs);
+    }
+    return jobs;
+  }
+
+  /**
+   * 后台委派任务结束：把结果作为一条用户消息注入 CLI，模型据此收到通知。
+   * 只有 r.inject() 成功后才算送达并移出 pending；任何失败（缺 cwd、进程正在关闭、inject 抛错）都保留在 pending（随 jobs.json 落盘）待重发。
+   */
+  private async notifyDelegate(id: string, n: DelegateNotification): Promise<void> {
+    if (this.shuttingDown) return;
+    await this.deliverNotification(id, n, { allowSpawn: true });
+  }
+
+  private async deliverNotification(id: string, n: DelegateNotification, opts: { allowSpawn: boolean }): Promise<boolean> {
+    if (this.shuttingDown) return false;
+    try {
+      let cwd = this.cwdOf.get(id);
+      if (!cwd && this.sessions?.findCwd) {
+        try {
+          cwd = (await this.sessions.findCwd(id)) ?? undefined;
+          if (cwd) this.cwdOf.set(id, cwd);
+        } catch { /* ignore */ }
+      }
+      if (!cwd) {
+        console.warn(`[manager] 委派任务完成但不知道会话 ${id.slice(0, 8)} 的工作目录，通知保留待重发`);
+        return false;
+      }
+      const config = this.configs?.get(id) ?? { model: 'sonnet', effort: 'medium' };
+      let r = this.runners.get(id);
+      if (r && !r.alive) return false;
+      const created = !r;
+      if (!r) {
+        if (!opts.allowSpawn) return false;
+        r = this.createRunner(id, cwd, false, config, false);
+        this.runners.set(id, r);
+      }
+      const text = formatDelegateNotification(n);
+      try {
+        r.inject(text, config);
+      } catch (e) {
+        if (created && !r.alive) this.runners.delete(id);
+        throw e;
+      }
+      this.delegateJobs.get(id)?.ackNotification(n);
+      this.cwdOf.set(id, r.cwd);
+      if (created) {
+        if (this.accounts && r.accountId) this.accounts.bind(id, r.accountId);
+        this.changed(r.cwd);
+      }
+      return true;
+    } catch (e) {
+      console.warn(`[manager] 委派任务完成通知注入失败 (${id.slice(0, 8)}):`, e instanceof Error ? e.message : e);
+      return false;
+    }
+  }
+
+  /** 依次补发该会话待送达的委派通知；onlyLiveSpawn=true 时绝不为服务重启恢复的通知拉起进程 */
+  private async flushPending(id: string, opts: { allowSpawn: boolean; onlyLiveSpawn?: boolean }): Promise<void> {
+    if (this.shuttingDown || this.flushing.has(id)) return;
+    const jobs = this.peekJobs(id);
+    if (!jobs) return;
+    const list = jobs.pendingNotifications();
+    if (list.length === 0) return;
+    this.flushing.add(id);
+    try {
+      for (const item of list) {
+        const canSpawn = opts.allowSpawn && (!opts.onlyLiveSpawn || !item.fromRestart);
+        const ok = await this.deliverNotification(id, item.n, { allowSpawn: canSpawn });
+        if (!ok) {
+          if (!canSpawn && !this.runners.get(id)) continue;
+          break;
+        }
+      }
+    } finally {
+      this.flushing.delete(id);
     }
   }
 
@@ -443,18 +744,29 @@ export class Manager {
       probe,
       timings: this.timings,
       claudePath: this.claudePath,
+      // 探测进程也要传：它收到消息会直接转正成对话进程
+      delegateJobs: this.jobsFor(id),
+      ...(this.delegateBackend !== undefined ? { delegateBackend: this.delegateBackend } : {}),
+      disabledAgents: () => this.tools?.agents?.() ?? [],
+      nativeAgents: () => this.tools?.nativeAgents?.() ?? true,
+      ...(this.agentModels ? { agentDefaults: () => this.agentDefaults(account?.dir) } : {}),
       flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
-          const ev = e as { type?: unknown; subtype?: unknown; skills?: unknown; tools?: unknown } | null;
+          const ev = e as { type?: unknown; subtype?: unknown; skills?: unknown; slash_commands?: unknown; tools?: unknown } | null;
           if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.skills)) {
             const list = ev.skills.filter((x): x is string => typeof x === 'string');
             this.initSkills.set(id, list);
             this.initSkillsByCwd.set(cwd, list);
           }
+          if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.slash_commands)) {
+            const list = ev.slash_commands.filter((x): x is string => typeof x === 'string');
+            this.initSlash.set(id, list);
+            this.initSlashByCwd.set(cwd, list);
+          }
           if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.tools)) {
-            const list = ev.tools.filter((x): x is string => typeof x === 'string' && BUILTIN_TOOL_RE.test(x));
+            const list = ev.tools.filter((x): x is string => typeof x === 'string' && TOOL_NAME_RE.test(x));
             this.initTools.set(id, list);
             if (list.length) this.tools?.setKnown?.(list);
           }
@@ -474,6 +786,15 @@ export class Manager {
         },
         onQueue: (items) => this.emit(id, { t: 'queue', sessionId: id, items }),
         onPrompts: (items) => this.emit(id, { t: 'prompts', sessionId: id, items }),
+        onBackgroundTasks: (count) => {
+          const wasRunning = this.dots.isRunning(id);
+          let dotChanged = this.dots.setBackground(id, count, 'claude');
+          // 后台子代理全部结束且主进程已空闲：没人订阅时标记未读
+          if (wasRunning && !this.dots.isRunning(id) && this.dots.turnFinished(id, this.hasSubscribers(id))) {
+            dotChanged = true;
+          }
+          if (dotChanged) this.changed(cwd);
+        },
         onSettings: (applied) => {
           this.settingsCache.set(id, { ...this.settingsCache.get(id), ...applied });
           this.emit(id, { t: 'settings', sessionId: id, applied });
@@ -486,16 +807,28 @@ export class Manager {
           if (runner.alive) void this.fetchContext(runner).catch(() => {});
           if (runner.alive) void this.autoTitle.ensure(runner, cwd);
         },
+        onStopped: (ev) => this.onRunnerStopped(id, ev),
+        onTurnOk: () => {
+          this.stops?.clear(id);
+        },
         onExit: () => {
           // 已被同一会话的新进程替换（并行模式换账号）：新进程的状态不能被旧进程退出清掉
           const other = this.runners.get(id);
-          if (other && other !== runner) return;
+          if (other && other !== runner) {
+            // 不丢弃待送达通知：若新进程已活着就顺手送达，否则继续保留在 pending
+            if (other.alive) void this.flushPending(id, { allowSpawn: false });
+            return;
+          }
           this.cancelLiveContext(id);
           this.cancelMcpRetry(id);
           if (other === runner) this.runners.delete(id);
-          const wasDot = this.dots.setRunning(id, false);
+          // 进程退出后 Claude 后台子代理不再存活，清掉；delegate 由 Cosyee 托管，保留其状态
+          const d1 = this.dots.setRunning(id, false);
+          const d2 = this.dots.setBackground(id, 0, 'claude');
           this.pins?.onRunning(id, cwd, false);
-          if (wasDot) this.changed(cwd);
+          if (d1 || d2) this.changed(cwd);
+          // 关闭期间到达的委派完成通知：实时通知允许重新拉起进程，服务重启恢复的通知绝不主动拉起
+          void this.flushPending(id, { allowSpawn: true, onlyLiveSpawn: true });
         },
       },
     });
@@ -530,13 +863,15 @@ export class Manager {
    * get_settings 的其余内容含个人信息，这里不保留。
    */
   private async fetchContext(r: Runner): Promise<ContextUsage> {
-    const [raw, settings, mcp] = await Promise.all([
+    const [raw, settings, mcp, init] = await Promise.all([
       r.request('get_context_usage'),
       r.request('get_settings').catch(() => null),
       r.request('mcp_status').catch(() => null),
+      initInfoOf(r),
     ]);
     const eff = (settings as { effective?: { skillOverrides?: unknown } } | null)?.effective?.skillOverrides;
     const disk = this.scanDiskSkills(r.sessionId, r.cwd);
+    const desc = this.descriptions(r, init, disk);
     const usage = toContextUsage(raw, Date.now(), {
       initSkills: this.initSkills.get(r.sessionId) ?? this.initSkillsByCwd.get(r.cwd) ?? null,
       overrides: eff && typeof eff === 'object' ? (eff as Record<string, unknown>) : null,
@@ -546,13 +881,36 @@ export class Manager {
       mcpStatus: mcp,
       disabledTools: this.tools?.get() ?? null,
       disabledAgents: this.tools?.agents?.() ?? null,
+      nativeAgents: this.tools?.nativeAgents?.() ?? null,
       tools: this.initTools.get(r.sessionId) ?? this.tools?.known?.() ?? null,
+      slashCommands: this.initSlash.get(r.sessionId) ?? this.initSlashByCwd.get(r.cwd) ?? (init?.commandNames.length ? init.commandNames : null),
       compactWindow: this.compactWindow?.get() ?? null,
+      skillDescriptions: desc.skills,
+      agentDescriptions: desc.agents,
     });
     this.contextCache.set(r.sessionId, usage);
     this.emit(r.sessionId, { t: 'context', sessionId: r.sessionId, usage });
     this.scheduleMcpRetry(r, usage);
     return usage;
+  }
+
+  /**
+   * skill / 智能体的描述原文：以 CLI initialize 报告的为准（就是放进系统提示词的那段，含内置）；
+   * 不在其中的（已关闭、仅手动）读磁盘上 SKILL.md / 智能体定义的 description。
+   */
+  private descriptions(r: Runner, init: InitDescs | null, disk: DiskSkill[] | null): { skills: Map<string, string>; agents: Map<string, string> } {
+    const skills = new Map(init?.commands ?? []);
+    for (const d of disk ?? []) {
+      if (skills.has(d.name)) continue;
+      const text = skillDescription(d.dir);
+      if (text) skills.set(d.name, text);
+    }
+    let agents = new Map<string, string>();
+    try {
+      agents = listDiskAgentDescriptions(this.accounts?.resolve(r.sessionId)?.dir ?? baseClaudeHome(), r.cwd);
+    } catch { /* 读不到磁盘：只用 CLI 报告的 */ }
+    for (const [k, v] of init?.agents ?? []) agents.set(k, v);
+    return { skills, agents };
   }
 
   private readonly removedSkills = new Set<string>();
@@ -777,6 +1135,18 @@ export class Manager {
     return list;
   }
 
+  /**
+   * 开启 / 关闭原生子代理：关闭时，有可用委派的会话在 deny 里加上整个 Agent（见 Runner.withNativeDeny）。
+   * 实测（claude 2.1.326）：运行中下发立即生效，模型下一轮起看不到 Agent，CLI 同时恢复内置 WebFetch；重新开启则反过来。
+   */
+  async setNativeAgents(enabled: boolean): Promise<boolean> {
+    if (!this.tools?.nativeAgents || !this.tools.setNativeAgents) throw new HttpError(500, '未启用智能体设置');
+    if (this.tools.nativeAgents() === enabled) return enabled;
+    this.tools.setNativeAgents(enabled);
+    await this.pushDeny({ nativeAgents: enabled });
+    return enabled;
+  }
+
   /** 完整的 permissions.deny：停用的工具 + 关闭的智能体（Agent(名字)） */
   private denyList(): string[] {
     return [...(this.tools?.get() ?? []), ...(this.tools?.agents?.() ?? []).map((a) => `Agent(${a})`)];
@@ -786,13 +1156,13 @@ export class Manager {
    * 把完整的 deny 名单下发给所有运行中的进程，并刷新面板；没有进程、但面板开着的会话直接改缓存里的名单。
    * apply_flag_settings 对 permissions.deny 是整体替换，实测空数组即清除，所以每次都发全量。
    */
-  private async pushDeny(patch: Pick<ContextUsage, 'disabledTools' | 'disabledAgents'>): Promise<void> {
+  private async pushDeny(patch: Pick<ContextUsage, 'disabledTools' | 'disabledAgents' | 'nativeAgents'>): Promise<void> {
     const deny = this.denyList();
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {
         try {
-          await r.request('apply_flag_settings', { settings: { permissions: { deny } } });
+          await r.request('apply_flag_settings', { settings: { permissions: { deny: r.withNativeDeny(deny) } } });
         } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
         if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
       }),
@@ -931,23 +1301,202 @@ export class Manager {
     return res;
   }
 
+  /** 永久删除会话时清理委派任务、待送达通知、停止记录与落盘目录；软删除不调用 */
+  forgetSession(id: string): void {
+    const jobs = this.delegateJobs.get(id);
+    if (jobs) {
+      jobs.forget();
+      this.delegateJobs.delete(id);
+    }
+    this.stops?.clear(id);
+    this.dots?.setBackground(id, 0, 'delegate');
+    void this.delegateRecord?.deleteSession(id);
+  }
+
+  // ───────────── 错误停止与自动重试 ─────────────
+
+  /** Runner 报告本轮因错误停止或进程异常退出：按规则记录并安排自动重试 */
+  private onRunnerStopped(id: string, ev: RunnerStopInfo): void {
+    if (!this.stops) return;
+    const now = this.now();
+    const prev = this.stops.get(id);
+    // 自动重试发出的那一轮再次失败时沿用已累计的 attempts；其它情况从 0 起算
+    const attempts = prev?.state === 'retrying' ? prev.attempts : 0;
+    let state: StopInfo['state'];
+    let retryAt: number | undefined;
+    if (ev.kind === 'fatal') {
+      state = 'stopped';
+    } else if (ev.kind === 'rate_limit') {
+      const hasReset = typeof ev.resetsAt === 'number' && Number.isFinite(ev.resetsAt) && ev.resetsAt > 0;
+      if (hasReset) {
+        // 拿到新的 resetsAt 时不累计次数上限，等到额度重置后再试
+        state = 'waiting';
+        retryAt = ev.resetsAt! * 1000 + RATE_LIMIT_BUFFER_MS;
+      } else if (attempts >= MAX_AUTO_RETRIES) {
+        state = 'gave_up';
+      } else {
+        state = 'waiting';
+        retryAt = now + RATE_LIMIT_FALLBACK_MS;
+      }
+    } else {
+      // transient
+      if (attempts >= MAX_AUTO_RETRIES) {
+        state = 'gave_up';
+      } else {
+        state = 'waiting';
+        retryAt = now + transientRetryDelay(attempts);
+      }
+    }
+    this.stops.set(id, {
+      kind: ev.kind,
+      reason: ev.reason,
+      ...(retryAt !== undefined ? { retryAt } : {}),
+      attempts,
+      state,
+      at: now,
+    });
+  }
+
+  /** 判断会话当前是否满足重试的空闲条件 */
+  private isSessionIdleForRetry(id: string): boolean {
+    const r = this.runners.get(id);
+    if (r) {
+      if (!r.alive || r.status !== 'idle') return false;
+      if (r.queueItems().length > 0) return false;
+      if (r.promptItems().length > 0) return false;
+    }
+    const jobs = this.peekJobs(id);
+    if (jobs && jobs.list().some((j) => j.state === 'running')) return false;
+    if (this.dots?.hasBackground(id)) return false;
+    return true;
+  }
+
+  private startRetryPoller(): void {
+    if (this.retryTimer || this.retryPollMs <= 0) return;
+    this.retryTimer = setInterval(() => {
+      void this.pollRetries();
+    }, this.retryPollMs);
+    this.retryTimer.unref();
+  }
+
+  /** 检查所有等待自动重试的记录，到期且空闲则发出重试消息 */
+  async pollRetries(): Promise<void> {
+    if (this.shuttingDown || !this.stops) return;
+    const now = this.now();
+    for (const { sessionId, info } of this.stops.list()) {
+      if (this.shuttingDown) return;
+      if (info.state !== 'waiting' || typeof info.retryAt !== 'number' || info.retryAt > now) continue;
+      if (this.retrying.has(sessionId) || !this.isSessionIdleForRetry(sessionId)) continue;
+      await this.executeRetry(sessionId, info);
+    }
+  }
+
+  /** 立即重试一次因错误停止的会话；无记录或会话不空闲时给客户端回 error */
+  private async retryNow(client: Client, id: string): Promise<void> {
+    if (!this.stops) {
+      this.safeSend(client, { t: 'error', message: '未启用重试记录' });
+      return;
+    }
+    const info = this.stops.get(id);
+    if (!info) {
+      this.safeSend(client, { t: 'error', message: '该会话没有停止记录' });
+      return;
+    }
+    const res = await this.executeRetry(id, info);
+    if (!res.ok) this.safeSend(client, { t: 'error', message: res.error ?? '重试失败' });
+  }
+
+  /** 取消自动重试：保留记录用于展示原因，state 置为 stopped 并去掉 retryAt */
+  private retryCancel(id: string): void {
+    if (!this.stops) return;
+    const info = this.stops.get(id);
+    if (!info) return;
+    if (info.state === 'stopped' && info.retryAt === undefined) return;
+    this.stops.set(id, {
+      kind: info.kind,
+      reason: info.reason,
+      attempts: info.attempts,
+      state: 'stopped',
+      at: info.at,
+    });
+  }
+
+  private async executeRetry(id: string, expected: StopInfo): Promise<{ ok: boolean; error?: string }> {
+    if (this.shuttingDown || !this.stops) return { ok: false, error: '服务正在关闭' };
+    if (this.retrying.has(id)) return { ok: false, error: '正在重试中' };
+    if (!this.isSessionIdleForRetry(id)) return { ok: false, error: '会话正在执行中，无法重试' };
+    this.retrying.add(id);
+    try {
+      let cwd = this.cwdOf.get(id);
+      if (!cwd && this.sessions?.findCwd) {
+        try {
+          cwd = (await this.sessions.findCwd(id)) ?? undefined;
+          if (cwd) this.cwdOf.set(id, cwd);
+        } catch { /* ignore */ }
+      }
+      if (!cwd) return { ok: false, error: '找不到会话的工作目录' };
+      if (this.shuttingDown) return { ok: false, error: '服务正在关闭' };
+      const latest = this.stops.get(id);
+      if (!latest || latest.state !== expected.state) return { ok: false, error: '停止记录已变更' };
+      if (!this.isSessionIdleForRetry(id)) return { ok: false, error: '会话正在执行中，无法重试' };
+      const config = this.configs?.get(id) ?? { model: 'sonnet', effort: 'medium' };
+      this.sendInternal(id, cwd, retryPromptText(latest.kind), config);
+      this.stops.set(id, {
+        kind: latest.kind,
+        reason: latest.reason,
+        attempts: latest.attempts + 1,
+        state: 'retrying',
+        at: this.now(),
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      this.retrying.delete(id);
+    }
+  }
+
   // ───────────── 关闭 ─────────────
 
-  /** 优雅关闭：关闭所有进程并等待退出（最多 timeoutMs）。 */
+  /** 优雅关闭：清理重试轮询、关闭所有进程并等待退出（最多 timeoutMs）。 */
   async shutdown(timeoutMs = 4000): Promise<void> {
+    // 静默中止所有委派任务（保留磁盘上的 running 状态，下次启动时据此报告中断）
+    this.shuttingDown = true;
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.unsubStops?.();
+    this.unsubStops = null;
+    try {
+      for (const [id, j] of this.delegateJobs) {
+        j.abortAll();
+        this.dots?.setBackground(id, 0, 'delegate');
+      }
+      await this.stopRunners(timeoutMs);
+    } finally {
+      this.shuttingDown = false;
+    }
+  }
+
+  /** 结束所有 claude 进程并等待退出（最多 timeoutMs）。委派任务不受影响 */
+  private async stopRunners(timeoutMs: number): Promise<void> {
     const rs = [...this.runners.values()];
     for (const r of rs) r.shutdown(Math.min(2000, timeoutMs));
     const deadline = Date.now() + timeoutMs;
-    while (this.runners.size > 0 && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
-    for (const r of this.runners.values()) r.killSync();
+    // 只等这一批：等待期间委派完成通知可能为会话拉起新进程，它不该被杀
+    const pending = () => rs.filter((r) => this.runners.get(r.sessionId) === r);
+    while (pending().length > 0 && Date.now() < deadline) await new Promise((res) => setTimeout(res, 50));
+    for (const r of pending()) r.killSync();
   }
 
   /**
    * 切换账号：结束所有进程，清掉与账号有关的缓存（设置、上下文、skill 列表…）。
    * 订阅关系保留（前端随后整页刷新会重新订阅）。
+   * 后台委派任务继续跑（后端与 Claude 账号无关），完成通知在会话下次启动时送达。
    */
   async resetAll(timeoutMs = 5000): Promise<void> {
-    await this.shutdown(timeoutMs);
+    await this.stopRunners(timeoutMs);
     for (const id of [...this.ctxLive.keys()]) this.cancelLiveContext(id);
     for (const id of [...this.mcpRetry.keys()]) this.cancelMcpRetry(id);
     this.settingsCache.clear();
@@ -955,6 +1504,8 @@ export class Manager {
     this.probing.clear();
     this.initSkills.clear();
     this.initSkillsByCwd.clear();
+    this.initSlash.clear();
+    this.initSlashByCwd.clear();
     this.initTools.clear();
   }
 
@@ -980,6 +1531,7 @@ export class Manager {
       this.contextCache.delete(id);
       this.probing.delete(id);
       this.initSkills.delete(id);
+      this.initSlash.delete(id);
       this.initTools.delete(id);
     }
   }
@@ -987,6 +1539,11 @@ export class Manager {
   /** 通知所有前端：账号变了（reload = 整页刷新） */
   notifyAccount(reload: boolean): void {
     this.broadcast({ t: 'account.changed', reload });
+  }
+
+  /** 通知所有前端：Antigravity 账号列表 / 当前账号 / 登录状态变了 */
+  notifyAgy(): void {
+    this.broadcast({ t: 'agy.changed' });
   }
 
   /** 同步强杀（process 'exit' 事件里使用）。 */
