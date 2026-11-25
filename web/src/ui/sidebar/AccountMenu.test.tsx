@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { AccountEntry, AccountList, AccountLogin, AccountMode, AgyAccountEntry, AgyAccountList, SessionSummary } from '@cosyee/shared';
+import type { AccountEntry, AccountList, AccountLogin, AccountMode, AgyAccountEntry, AgyAccountList, KiroStatus, SessionSummary } from '@cosyee/shared';
 import { AccountMenu, accountPage, agySubtitle, agyTitle, apiMapNote, entrySubtitle, entryTitle, planChip } from './AccountMenu';
 import { SessionRow } from './SessionRow';
 
@@ -866,6 +866,147 @@ describe('Antigravity 多账号', () => {
       await flush();
       expect(document.querySelector('[role="dialog"]')).toBeNull();
       expect(calls.filter((c) => c.url.endsWith('/cancel')).length).toBe(cancelBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('深链 ?add=kiro', () => {
+  const kiroStatus = (login: AccountLogin | null = null): KiroStatus => ({
+    engine: {
+      source: 'managed',
+      current: { commit: 'a1b2c3d4e5f67890', date: 1700000000000, title: 'init' },
+      latest: null,
+      updateAvailable: false,
+      checkedAt: null,
+      missingTools: [],
+      build: { state: 'idle', step: null, error: null },
+      adminUi: false,
+      adminUiError: null,
+    },
+    service: { enabled: true, accounts: 0, running: 0, failed: 0, busySessions: 0, outdated: 0, items: [] },
+    imports: { kiroIde: true, kiroCli: true },
+    login,
+  });
+
+  const savedUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const savedState: unknown = window.history.state;
+
+  afterEach(() => {
+    window.history.replaceState(savedState, '', savedUrl);
+  });
+
+  it('带 ?add=kiro 时弹出 Kiro 对话框、不打开菜单，且只删除 add 参数并保留其它参数、hash 和 history.state', async () => {
+    routes = {
+      'GET /api/kiro': () => ({ body: kiroStatus() }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+    };
+    window.history.replaceState({ keep: 1 }, '', '/?foo=1&add=kiro&bar=2#sec');
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    await flush();
+
+    const dlgs = document.querySelectorAll('[role="dialog"]');
+    expect(dlgs.length).toBe(1);
+    expect(dlgs[0].textContent).toContain('AWS Builder ID');
+    expect(document.querySelector('.cz-sidebar__menu')).toBeNull();
+    expect(window.location.search).toBe('?foo=1&bar=2');
+    expect(window.location.hash).toBe('#sec');
+    expect(window.history.state).toEqual({ keep: 1 });
+  });
+
+  it('StrictMode 下带 ?add=kiro 只弹出一个对话框且参数被清', async () => {
+    routes = {
+      'GET /api/kiro': () => ({ body: kiroStatus() }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+    };
+    window.history.replaceState(null, '', '/?add=kiro');
+    mount(
+      <StrictMode>
+        <AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />
+      </StrictMode>,
+    );
+    await flush();
+
+    const dlgs = document.querySelectorAll('[role="dialog"]');
+    expect(dlgs.length).toBe(1);
+    expect(dlgs[0].textContent).toContain('AWS Builder ID');
+    expect(window.location.search).toBe('');
+  });
+
+  it('无参数或 add 为其它值时不弹对话框，也不修改 URL', async () => {
+    routes = {
+      'GET /api/kiro': () => ({ body: kiroStatus() }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+    };
+    window.history.replaceState(null, '', '/');
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(window.location.search).toBe('');
+
+    act(() => root?.unmount());
+    window.history.replaceState({ stay: true }, '', '/?add=claude&foo=1#h');
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(window.location.search).toBe('?add=claude&foo=1');
+    expect(window.location.hash).toBe('#h');
+    expect(window.history.state).toEqual({ stay: true });
+  });
+
+  it('关闭对话框后重新渲染或重新挂载不再弹出', async () => {
+    routes = {
+      'GET /api/kiro': () => ({ body: kiroStatus() }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+    };
+    window.history.replaceState(null, '', '/?add=kiro');
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={0} />);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    // 重新渲染不再弹
+    act(() => root!.render(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={1} />));
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    // 卸载后再挂载也不再弹
+    act(() => root?.unmount());
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={2} />);
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('服务端已有进行中的 Kiro 登录时，带 ?add=kiro 弹出后自动续接该登录', async () => {
+    vi.useFakeTimers();
+    const ongoing: AccountLogin = {
+      loginId: 'L-kiro-1',
+      status: 'waiting',
+      userCode: 'ABCD-1234',
+      url: 'https://view.awsapps.com/start/#/device',
+      accountId: null,
+      error: null,
+    };
+    routes = {
+      'GET /api/kiro': () => ({ body: kiroStatus(ongoing) }),
+      'GET /api/kiro/login/L-kiro-1': () => ({ body: ongoing }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+    };
+    try {
+      window.history.replaceState(null, '', '/?add=kiro');
+      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+      await flush();
+
+      const dlg = document.querySelector('[role="dialog"]')!;
+      expect(dlg).not.toBeNull();
+      expect(dlg.textContent).toContain('ABCD-1234');
+      expect(dlg.querySelector('a')?.getAttribute('href')).toBe('https://view.awsapps.com/start/#/device');
+      expect(dlg.querySelector('[role="radiogroup"][aria-label="登录方式"]')).toBeNull();
+      expect(window.location.search).toBe('');
     } finally {
       vi.useRealTimers();
     }

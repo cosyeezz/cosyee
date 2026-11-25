@@ -504,7 +504,7 @@
       </dl>
       <p class="kiro-update" id="k-update" hidden></p>
       <div class="actions">
-        <button type="button" class="btn primary" id="k-start"><svg class="i"><use href="#i-play"/></svg>启动</button>
+        <button type="button" class="btn primary" id="k-start"><svg class="i"><use href="#i-play"/></svg><span>启动</span></button>
         <button type="button" class="btn danger" id="k-stop" hidden><svg class="i"><use href="#i-stop"/></svg>停止</button>
         <button type="button" class="btn" id="k-restart" hidden><svg class="i"><use href="#i-refresh"/></svg>重启</button>
         <button type="button" class="btn" id="k-admin" aria-expanded="false" aria-controls="k-admin-list"><svg class="i"><use href="#i-open"/></svg>管理页面</button>
@@ -647,9 +647,10 @@
   }
   function hideStatus() { $('status').className = ''; }
 
-  function go(server) { location.href = server.url + '/'; }
+  function go(server, query) { location.href = server.url + '/' + (typeof query === 'string' ? query : ''); }
 
-  async function connect(server) {
+  async function connect(server, query) {
+    var q = typeof query === 'string' ? query : '';
     var my = ++connecting;
     localStorage.setItem(LAST, server.id);
     busyId = server.id; failId = null;
@@ -662,12 +663,12 @@
       try { ok = await invoke('probe', { host: u.hostname.replace(/^\[|\]$/g, ''), port: port }); } catch (e) { ok = true; }
     }
     if (my !== connecting) return; // 已取消或又点了别的
-    if (ok) return go(server);
+    if (ok) return go(server, q);
     busyId = null; failId = server.id;
     render();
     showStatus('连不上 ' + server.name, '确认服务端已启动（Tailscale 模式），并且这台设备已登录同一个 Tailscale 网络。', [
-      { label: '重试', primary: true, onClick: function () { connect(server); } },
-      { label: '仍然打开', onClick: function () { go(server); } },
+      { label: '重试', primary: true, onClick: function () { connect(server, q); } },
+      { label: '仍然打开', onClick: function () { go(server, q); } },
       { label: '关闭', ghost: true, onClick: function () { failId = null; hideStatus(); render(); } },
     ], true);
   }
@@ -879,7 +880,8 @@
     return { kind: 'other', error: errText(e) };
   }
   function createServiceCard(cfg) {
-    var logTimer = null, logFrom = 0, logInFlight = false;
+    var logTimer = null, logFrom = 0, logInFlight = null, logResetGen = 0, logSession = 0;
+    var LOG_FLUSH_MAX = 20;
     var card = {
       st: null,
       err: null,
@@ -891,41 +893,85 @@
         m.textContent = text || '';
         m.className = 'local-msg' + (isError ? ' error' : '');
       },
-      pollLogOnce: async function () {
-        if (logInFlight) return;
-        logInFlight = true;
-        try {
-          var res = await invoke(cfg.logCmd, { from: logFrom });
-          // 服务端开始了新的任务、日志重新编号：从头取
-          if (res && typeof res.next === 'number' && res.next < logFrom) {
-            logFrom = 0;
-            $(cfg.logId).textContent = '';
-            return;
+      pollLogOnce: function () {
+        if (logInFlight) return logInFlight;
+        var gen = logResetGen;
+        var p = (async function () {
+          var added = 0;
+          var reset = false;
+          try {
+            var res = await invoke(cfg.logCmd, { from: logFrom });
+            if (gen !== logResetGen) return { added: 0, reset: false, stale: true };
+            // 服务端开始了新的任务、日志重新编号：从头取
+            if (res && typeof res.next === 'number' && res.next < logFrom) {
+              logFrom = 0;
+              $(cfg.logId).textContent = '';
+              reset = true;
+              return { added: 0, reset: true, stale: false };
+            }
+            if (res && Array.isArray(res.lines) && res.lines.length) {
+              var box = $(cfg.logId);
+              box.classList.add('show');
+              box.textContent += res.lines.join('\n') + '\n';
+              box.scrollTop = box.scrollHeight;
+              added = res.lines.length;
+              logFrom = typeof res.next === 'number' ? res.next : logFrom + res.lines.length;
+            } else if (res && typeof res.next === 'number') {
+              logFrom = res.next;
+            }
+          } catch (e) { /* 忽略增量轮询瞬时错误 */ }
+          finally {
+            if (logInFlight === p) logInFlight = null;
           }
-          if (res && Array.isArray(res.lines) && res.lines.length) {
-            var box = $(cfg.logId);
-            box.classList.add('show');
-            box.textContent += res.lines.join('\n') + '\n';
-            box.scrollTop = box.scrollHeight;
-            logFrom = typeof res.next === 'number' ? res.next : logFrom + res.lines.length;
-          } else if (res && typeof res.next === 'number') {
-            logFrom = res.next;
-          }
-        } catch (e) { /* 忽略增量轮询瞬时错误 */ }
-        finally { logInFlight = false; }
+          return { added: added, reset: reset, stale: false };
+        })();
+        logInFlight = p;
+        return p;
       },
       startLog: function (reset) {
         var box = $(cfg.logId);
-        if (reset) { box.textContent = ''; logFrom = 0; }
+        if (reset) {
+          logResetGen++;
+          logSession++;
+          box.textContent = '';
+          logFrom = 0;
+        } else if (!logTimer) {
+          logSession++;
+        }
         box.classList.add('show');
+        var mySession = logSession;
         if (!logTimer) {
+          logTimer = setInterval(function () { card.pollLogOnce(); }, 500);
+        }
+        if (logInFlight) {
+          logInFlight.then(function () {
+            if (logTimer && logSession === mySession) card.pollLogOnce();
+          });
+        } else {
           card.pollLogOnce();
-          logTimer = setInterval(card.pollLogOnce, 500);
         }
       },
       stopLog: function (flush) {
         if (logTimer) { clearInterval(logTimer); logTimer = null; }
-        if (flush) card.pollLogOnce();
+        if (!flush) {
+          logResetGen++;
+          logSession++;
+          return;
+        }
+        var mySession = logSession;
+        var myGen = logResetGen;
+        (async function () {
+          // 等在途请求结束后再取，确保同一时刻只有一个请求在途且 logFrom 为最新值
+          if (logInFlight) await logInFlight;
+          if (mySession !== logSession || myGen !== logResetGen) return;
+          for (var i = 0; i < LOG_FLUSH_MAX; i++) {
+            var r = await card.pollLogOnce();
+            if (mySession !== logSession || myGen !== logResetGen) return;
+            if (!r || (!r.added && !r.reset)) break;
+          }
+          if (mySession !== logSession || myGen !== logResetGen) return;
+          if (cfg.onLogFlushed) cfg.onLogFlushed(card, card.st);
+        })();
       },
       setOffline: function () {
         card.st = null;
@@ -1043,6 +1089,7 @@
   }
 
   // ───── kiro.rs 服务 ─────
+  var kStartMode = 'start';
   var kEngineMode = 'build';
   var kAdminOpen = false;
   var PROXY_LABELS = { ready: '运行中', starting: '启动中', failed: '失败', stopped: '已停止' };
@@ -1059,20 +1106,29 @@
     logCmd: 'kiro_log',
     unsupportedText: '当前服务端版本不支持 kiro.rs 服务管理，请先更新上方的服务端。',
     isJobRunning: function (st) { return !!(st && st.engine && st.engine.build && st.engine.build.state === 'running'); },
-    onReset: function () { kAdminOpen = false; },
+    onLogFlushed: function (c, st) {
+      var build = st && st.engine && st.engine.build;
+      if (build && build.state === 'idle') $('k-log').classList.remove('show');
+    },
+    onReset: function () { kStartMode = 'start'; kAdminOpen = false; },
     onStatus: function (c, st) {
       if (c.confirm && (!st || !st.service || st.service.running === 0)) c.confirm = null;
       var items = st && st.service && Array.isArray(st.service.items) ? st.service.items : [];
       if (items.length <= 1 || !st.engine || !st.engine.adminUi || st.service.enabled === false) kAdminOpen = false;
     },
     renderOfflineControls: function () {
+      kStartMode = 'start';
       $('k-update').hidden = true;
-      $('k-start').hidden = false;
-      $('k-start').className = 'btn';
-      $('k-start').disabled = true;
+      var sb = $('k-start');
+      sb.hidden = false;
+      sb.className = 'btn';
+      sb.querySelector('span').textContent = '启动';
+      sb.querySelector('use').setAttribute('href', '#i-play');
+      sb.disabled = true;
       $('k-stop').hidden = true;
       $('k-restart').hidden = true;
       $('k-admin').disabled = true;
+      $('k-admin').title = '';
       $('k-admin').setAttribute('aria-expanded', 'false');
       $('k-admin-list').hidden = true;
       $('k-engine-btn').className = 'btn ghost';
@@ -1167,10 +1223,24 @@
         upd.hidden = true;
       }
 
-      $('k-start').hidden = running;
-      $('k-start').className = 'btn' + (installed && hasAccounts ? ' primary' : '');
-      // 停止后即使没有账号也要能重新启用，否则添加不了 Kiro 账号
-      $('k-start').disabled = busy || !installed || (!hasAccounts && svc.enabled !== false);
+      var hasService = !!(st.service && typeof st.service.accounts === 'number');
+      var addAccountMode = !!(installed && hasService && !hasAccounts && !running);
+      var sb = $('k-start');
+      sb.hidden = running;
+      if (addAccountMode) {
+        kStartMode = 'add';
+        sb.querySelector('span').textContent = '添加 Kiro 账号';
+        sb.querySelector('use').setAttribute('href', '#i-plus');
+        sb.className = 'btn primary';
+        sb.disabled = busy;
+      } else {
+        kStartMode = 'start';
+        sb.querySelector('span').textContent = '启动';
+        sb.querySelector('use').setAttribute('href', '#i-play');
+        sb.className = 'btn' + (installed && hasAccounts ? ' primary' : '');
+        // 停止后即使没有账号也要能重新启用，否则添加不了 Kiro 账号
+        sb.disabled = busy || !installed || (!hasAccounts && svc.enabled !== false);
+      }
 
       $('k-stop').hidden = !running;
       $('k-stop').disabled = busy || !running;
@@ -1180,6 +1250,7 @@
       $('k-restart').disabled = busy || !running;
 
       $('k-admin').disabled = busy || !adminReady;
+      $('k-admin').title = (!busy && installed && hasService && !hasAccounts) ? '添加 Kiro 账号后可用' : '';
       $('k-admin').setAttribute('aria-expanded', String(kAdminOpen && adminReady && items.length > 1));
 
       var picker = $('k-admin-list');
@@ -1255,8 +1326,12 @@
         hints.push('缺少 git，请先安装 Git。');
         if (!hintLevel) hintLevel = 'warn';
       }
-      if (!hasAccounts) {
-        hints.push('还没有 Kiro 账号。先打开 Cosyee，在账号菜单里添加 Kiro 账号。');
+      if (hasService && !hasAccounts) {
+        if (installed) {
+          hints.push('引擎已就绪，还没有 Kiro 账号。添加账号后代理会自动启动，无需再点启动。');
+        } else {
+          hints.push('先安装引擎，再添加 Kiro 账号。');
+        }
       }
       if (outdated > 0) {
         hints.push('有 ' + outdated + ' 个代理仍在使用旧版引擎，点击「重启」后生效。');
@@ -1267,6 +1342,27 @@
       hint.textContent = hints.join('\n');
     },
   });
+
+  function kDoStart() {
+    if (kStartMode === 'add') {
+      var svc = kiroCard.st && kiroCard.st.service;
+      if (svc && svc.enabled === false) {
+        kiroCard.runAction('启用服务', function () {
+          return invoke('kiro_service', { action: 'start', force: false });
+        }, {
+          onResult: function (c, res) {
+            c.msg('');
+            if (res && typeof res === 'object') c.applyStatus(res);
+            connect(ensureLocalEntry(), '?add=kiro');
+          },
+        });
+      } else {
+        connect(ensureLocalEntry(), '?add=kiro');
+      }
+      return;
+    }
+    kDoService('start', false);
+  }
 
   function kDoService(action, force) {
     var label = action === 'start' ? '启动' : action === 'stop' ? '停止' : '重启';
@@ -1460,7 +1556,7 @@
     $('l-open').onclick = function () { connect(ensureLocalEntry()); };
     $('l-link').onclick = function (e) { e.preventDefault(); connect(ensureLocalEntry()); };
 
-    $('k-start').onclick = function () { kDoService('start', false); };
+    $('k-start').onclick = function () { kDoStart(); };
     $('k-stop').onclick = function () { kDoService('stop', false); };
     $('k-restart').onclick = function () { kDoService('restart', false); };
     $('k-admin').onclick = function () {

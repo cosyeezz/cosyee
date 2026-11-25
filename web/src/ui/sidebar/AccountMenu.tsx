@@ -92,6 +92,17 @@ export function apiMapNote(info: AccountApiInfo): string {
 /** 整页刷新（单独放一个对象里，测试可以替换） */
 export const accountPage = { reload: () => window.location.reload() };
 
+/** 消费 URL 中的 ?add=kiro 参数：只删除 add，保留其它参数、hash 和 history.state */
+function consumeAddKiroParam(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('add') !== 'kiro') return false;
+  params.delete('add');
+  const search = params.toString();
+  const next = `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`;
+  window.history.replaceState(window.history.state, '', next);
+  return true;
+}
+
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const loginPending = (l: AccountLogin | null | undefined): l is AccountLogin =>
   !!l && (l.status === 'starting' || l.status === 'waiting');
@@ -658,11 +669,15 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     load();
   }, [load]);
 
-  const openDialog = (d: DialogState) => {
+  const openDialog = useCallback((d: DialogState) => {
     loginDone.current = false;
     setEditingAgyId(null);
     setDialog(d);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (consumeAddKiroParam()) openDialog({ kind: 'kiro', resume: null });
+  }, [openDialog]);
 
   const closeDialog = () => {
     const reload = (dialog?.kind === 'login' || dialog?.kind === 'kiro') && !!dialog.relogin?.active && loginDone.current;
