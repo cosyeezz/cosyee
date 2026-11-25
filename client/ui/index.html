@@ -173,18 +173,28 @@
     flex: none; font-size: 11px; line-height: 18px; font-weight: 500; padding: 0 7px; border-radius: 999px;
     color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent);
   }
-  .srv .del {
+  .srv .srv-acts { flex: none; display: flex; align-items: center; gap: 2px; }
+  .srv .edit, .srv .del {
     display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 9px; padding: 0;
     background: none; color: var(--text-3); cursor: pointer; opacity: 0; transition: opacity .15s, background-color .15s, color .15s;
   }
+  .srv:hover .edit, .srv:focus-within .edit,
   .srv:hover .del, .srv:focus-within .del { opacity: 1; }
+  .srv .edit:hover { color: var(--text); background: var(--bg-hover); }
   .srv .del:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .srv .rename-input {
+    width: 100%; min-width: 0; height: 28px; padding: 0 8px;
+    font: 600 14px/1.35 var(--font-sans); color: var(--text);
+    background: var(--bg-input); border: 1px solid var(--accent); border-radius: var(--r-sm);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .srv.editing { cursor: default; }
   .srv .go { display: grid; place-items: center; width: 24px; color: var(--text-3); transition: color .2s, translate .3s var(--ease-out); }
   .srv:hover .go { color: var(--text); translate: 2px 0; }
   .srv.busy .go .chev, .srv:not(.busy) .go .spin { display: none; }
   .srv.failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--card-edge)); }
   .srv.leaving { opacity: 0; translate: 0 -4px; }
-  @media (hover: none) { .srv .del { opacity: 1; } }
+  @media (hover: none) { .srv .edit, .srv .del { opacity: 1; } }
 
   .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -503,6 +513,7 @@
   <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11" rx="2"/><path d="M8.5 19.5h7M12 15.5v4"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.2 3.6 8.5s-1.2 6.2-3.6 8.5c-2.4-2.3-3.6-5.2-3.6-8.5s1.2-6.2 3.6-8.5Z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 4.5h4M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M16.5 4.5a2.12 2.12 0 0 1 3 3L8.5 18.5l-4 1 1-4L16.5 4.5Z"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
@@ -736,7 +747,7 @@
 <script>
 (function () {
   'use strict';
-  var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto';
+  var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto', PEER_NAMES_KEY = 'cosyee.tailnet.names';
   var DEFAULT_SERVER_PORT = 7878;
   var $ = function (id) { return document.getElementById(id); };
   var T = window.__TAURI__;
@@ -753,7 +764,8 @@
           var cur = JSON.parse(localStorage.getItem(KEY) || '[]');
           if (!Array.isArray(cur) || cur.length === 0) {
             localStorage.setItem(KEY, JSON.stringify([
-              { id: 'mock-dev-box', name: 'dev-box', url: 'http://dev-box:7878' }
+              { id: 'mock-workstation-ip', name: '100.64.0.21', url: 'http://100.64.0.21:7878' },
+              { id: 'mock-dev-box', name: '公司开发机', url: 'http://dev-box:7878', autoName: false },
             ]));
           }
         } catch (e) { /* 忽略 */ }
@@ -845,6 +857,75 @@
   }
   function isLocal(url) { try { var h = new URL(url).hostname; return h === '127.0.0.1' || h === 'localhost' || h === '[::1]'; } catch (e) { return false; } }
 
+  // ───── Tailscale 设备名缓存与自动同步 ─────
+  function urlHost(url) {
+    try { return tNormHost(new URL(url).hostname); } catch (e) { return ''; }
+  }
+  function fallbackHostName(url) {
+    try { return new URL(url).hostname; } catch (e) { return String(url || ''); }
+  }
+  /** 判断服务器是否跟随 Tailscale 设备名：显式 autoName 优先；旧数据无此字段时，name 等于 URL hostname 视为自动 */
+  function isAutoName(s) {
+    if (!s) return false;
+    if (typeof s.autoName === 'boolean') return s.autoName;
+    try {
+      var h = new URL(s.url).hostname;
+      return s.name === h || tNormHost(s.name) === tNormHost(h);
+    } catch (e) {
+      return false;
+    }
+  }
+  function loadPeerNames() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(PEER_NAMES_KEY) || '{}');
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    } catch (e) { return {}; }
+  }
+  function savePeerNames(map) {
+    try { localStorage.setItem(PEER_NAMES_KEY, JSON.stringify(map)); } catch (e) { /* 忽略 */ }
+  }
+  function peerDisplayName(p) {
+    // 优先 MagicDNS 机器名（Tailscale 管理后台改名改的是它，与设备列表显示一致），没有再用系统主机名
+    return String((p && (p.shortName || p.name)) || '').trim();
+  }
+  /** 将 peers 写入本地主机→名称缓存，并同步所有 autoName 服务器的显示名；仅在列表变化时 save() 并按需 render() */
+  function applyPeerNames(peers, skipRender) {
+    var cache = loadPeerNames();
+    if (Array.isArray(peers) && peers.length) {
+      var cacheChanged = false;
+      peers.forEach(function (p) {
+        var dname = peerDisplayName(p);
+        if (!dname) return;
+        var keys = [p.shortName, p.dnsName, p.name];
+        if (Array.isArray(p.ips)) keys = keys.concat(p.ips);
+        keys.forEach(function (k) {
+          var nh = tNormHost(k);
+          if (nh && cache[nh] !== dname) {
+            cache[nh] = dname;
+            cacheChanged = true;
+          }
+        });
+      });
+      if (cacheChanged) savePeerNames(cache);
+    }
+    var list = load();
+    var changed = false;
+    list.forEach(function (s) {
+      if (!isAutoName(s)) return;
+      var h = urlHost(s.url);
+      var mapped = h && cache[h];
+      if (mapped && s.name !== mapped) {
+        s.name = mapped;
+        s.autoName = true;
+        changed = true;
+      }
+    });
+    if (changed) {
+      save(list);
+      if (!skipRender) render();
+    }
+  }
+
   // ───── 聚光：光斑跟随光标，卡片轻微倾斜（≤2°） ─────
   function spotlight(el, tilt) {
     if (el.__spot) return;
@@ -919,51 +1000,183 @@
   }
 
   // ───── 服务器列表 ─────
+  var editingId = null;
+  var cancelEditing = null;
+  var commitEditing = null;
+
+  function findServerLi(id) {
+    var ul = $('list');
+    if (!ul) return null;
+    for (var i = 0; i < ul.children.length; i++) {
+      if (ul.children[i].dataset && ul.children[i].dataset.id === id) return ul.children[i];
+    }
+    return null;
+  }
+
+  function startRename(id) {
+    if (editingId === id) return;
+    if (editingId && commitEditing) commitEditing();
+    var li = findServerLi(id);
+    var list = load();
+    var cur = list.filter(function (x) { return x.id === id; })[0];
+    if (!cur || !li) return;
+    var nameBox = li.querySelector('.name');
+    if (!nameBox) return;
+
+    editingId = id;
+    li.classList.add('editing');
+    nameBox.textContent = '';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'rename-input';
+    input.value = cur.name;
+    input.placeholder = '留空恢复自动名称';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', '重命名服务器');
+    nameBox.appendChild(input);
+
+    var finished = false;
+    function finish(commit, refocus) {
+      if (finished) return;
+      finished = true;
+      if (editingId === id) {
+        editingId = null;
+        cancelEditing = null;
+        commitEditing = null;
+      }
+      if (commit) {
+        var val = input.value.trim();
+        var latest = load();
+        var item = latest.filter(function (x) { return x.id === id; })[0];
+        if (item) {
+          if (val) {
+            item.name = val;
+            item.autoName = false;
+          } else {
+            item.autoName = true;
+            var h = urlHost(item.url);
+            var cached = h && loadPeerNames()[h];
+            item.name = cached || fallbackHostName(item.url);
+          }
+          save(latest);
+        }
+      }
+      render();
+      if (refocus) {
+        var nextLi = findServerLi(id);
+        if (nextLi) nextLi.focus({ preventScroll: true });
+      }
+    }
+
+    cancelEditing = function () { finish(false, true); };
+    commitEditing = function () { finish(true, false); };
+
+    input.onclick = function (ev) { ev.stopPropagation(); };
+    input.onmousedown = function (ev) { ev.stopPropagation(); };
+    input.onkeydown = function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true, true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false, true); }
+    };
+    input.onblur = function () { finish(true, false); };
+
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+
+  function buildServerItem(s, last) {
+    var li = document.createElement('li');
+    li.className = 'srv card' + (s.id === busyId ? ' busy' : '') + (s.id === failId ? ' failed' : '');
+    li.dataset.id = s.id;
+    li.tabIndex = 0;
+    li.setAttribute('aria-label', '连接 ' + s.name + '，' + s.url);
+    li.innerHTML = '<span class="beam" aria-hidden="true"></span>'
+      + '<span class="ico">' + svg(isLocal(s.url) ? 'monitor' : 'globe') + '</span>'
+      + '<div class="info"><div class="name"><span></span></div><div class="url"></div></div>'
+      + '<span class="srv-acts">'
+      + '<button type="button" class="edit" title="重命名这个服务器">' + svg('edit') + '</button>'
+      + '<button type="button" class="del" title="删除这个服务器">' + svg('trash') + '</button>'
+      + '</span>'
+      + '<span class="go" aria-hidden="true"><svg class="i chev"><use href="#i-chev"/></svg><span class="spin"></span></span>';
+    li.querySelector('.name span').textContent = s.name;
+    li.querySelector('.url').textContent = s.url;
+    var editBtn = li.querySelector('.edit');
+    editBtn.setAttribute('aria-label', '重命名 ' + s.name);
+    var delBtn = li.querySelector('.del');
+    delBtn.setAttribute('aria-label', '删除 ' + s.name);
+    if (s.id === last) {
+      var t = document.createElement('span'); t.className = 'tag'; t.textContent = '上次';
+      li.querySelector('.name').appendChild(t);
+    }
+    editBtn.onmousedown = function (e) { e.stopPropagation(); e.preventDefault(); };
+    editBtn.onclick = function (e) {
+      e.stopPropagation();
+      startRename(s.id);
+    };
+    editBtn.onkeydown = function (e) { e.stopPropagation(); };
+    delBtn.onmousedown = function (e) { e.stopPropagation(); e.preventDefault(); };
+    delBtn.onclick = function (e) {
+      e.stopPropagation();
+      if (editingId === s.id) { editingId = null; cancelEditing = null; commitEditing = null; }
+      li.classList.add('leaving');
+      setTimeout(function () {
+        save(load().filter(function (x) { return x.id !== s.id; }));
+        if (busyId === s.id || failId === s.id) { connecting++; busyId = failId = null; hideStatus(); }
+        render();
+      }, reduce.matches ? 0 : 200);
+    };
+    delBtn.onkeydown = function (e) { e.stopPropagation(); };
+    li.onclick = function () { if (editingId === s.id) return; connect(s); };
+    li.onkeydown = function (e) { if (editingId === s.id) return; if (e.key === 'Enter' && e.target === li) connect(s); };
+    spotlight(li, 2);
+    return li;
+  }
+
   function render() {
     var list = load(), last = localStorage.getItem(LAST);
     var ul = $('list');
     var focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('.srv');
     var focusId = focused && focused.dataset.id;
-    ul.textContent = '';
+
+    // 改名期间保留正在编辑的那一行 DOM，避免重绘打断输入与焦点
+    var keepLi = null;
+    if (editingId) {
+      var exists = list.some(function (x) { return x.id === editingId; });
+      if (exists) keepLi = findServerLi(editingId);
+      if (!keepLi) { editingId = null; cancelEditing = null; commitEditing = null; }
+    }
+
+    if (keepLi) {
+      Array.prototype.slice.call(ul.children).forEach(function (child) {
+        if (child !== keepLi) ul.removeChild(child);
+      });
+    } else {
+      ul.textContent = '';
+    }
+
     $('empty').hidden = list.length > 0;
     $('count').textContent = list.length ? String(list.length) : '';
+
+    var seenKeep = false;
     list.forEach(function (s) {
-      var li = document.createElement('li');
-      li.className = 'srv card' + (s.id === busyId ? ' busy' : '') + (s.id === failId ? ' failed' : '');
-      li.dataset.id = s.id;
-      li.tabIndex = 0;
-      li.setAttribute('aria-label', '连接 ' + s.name + '，' + s.url);
-      li.innerHTML = '<span class="beam" aria-hidden="true"></span>'
-        + '<span class="ico">' + svg(isLocal(s.url) ? 'monitor' : 'globe') + '</span>'
-        + '<div class="info"><div class="name"><span></span></div><div class="url"></div></div>'
-        + '<button type="button" class="del" title="删除这个服务器" aria-label="删除 ' + s.name.replace(/"/g, '&quot;') + '">' + svg('trash') + '</button>'
-        + '<span class="go" aria-hidden="true"><svg class="i chev"><use href="#i-chev"/></svg><span class="spin"></span></span>';
-      li.querySelector('.name span').textContent = s.name;
-      li.querySelector('.url').textContent = s.url;
-      if (s.id === last) {
-        var t = document.createElement('span'); t.className = 'tag'; t.textContent = '上次';
-        li.querySelector('.name').appendChild(t);
+      if (keepLi && s.id === editingId) {
+        keepLi.classList.toggle('busy', s.id === busyId);
+        keepLi.classList.toggle('failed', s.id === failId);
+        seenKeep = true;
+        return;
       }
-      li.querySelector('.del').onclick = function (e) {
-        e.stopPropagation();
-        li.classList.add('leaving');
-        setTimeout(function () {
-          save(load().filter(function (x) { return x.id !== s.id; }));
-          if (busyId === s.id || failId === s.id) { connecting++; busyId = failId = null; hideStatus(); }
-          render();
-        }, reduce.matches ? 0 : 200);
-      };
-      li.onclick = function () { connect(s); };
-      li.onkeydown = function (e) { if (e.key === 'Enter' && e.target === li) connect(s); };
-      spotlight(li, 2);
-      ul.appendChild(li);
-      if (s.id === focusId) li.focus({ preventScroll: true });
+      var li = buildServerItem(s, last);
+      if (keepLi && !seenKeep) ul.insertBefore(li, keepLi);
+      else ul.appendChild(li);
+      if (s.id === focusId && !keepLi) li.focus({ preventScroll: true });
     });
     if (typeof tRenderPeers === 'function') tRenderPeers();
   }
 
   // ───── 添加：按钮原位展开成表单 ─────
   var adder = $('adder');
+  var prefillInfo = null;
   function morph(open) {
     if (adder.classList.contains('open') === open) return;
     var from = adder.offsetHeight;
@@ -979,8 +1192,9 @@
   $('add-open').onclick = function () { morph(true); };
   $('add-close').onclick = function () { morph(false); };
   $('add').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); morph(false); } });
-  // 安卓返回手势：展开着的添加表单先收起（列表为空时表单就是主界面，不收）
+  // 安卓返回手势：改名编辑时先取消编辑；展开着的添加表单再收起（列表为空时表单就是主界面，不收）
   window.addEventListener('cosyee:back', function (e) {
+    if (editingId && cancelEditing) { e.preventDefault(); cancelEditing(); return; }
     if (adder.classList.contains('open') && load().length) { e.preventDefault(); morph(false); }
   });
 
@@ -997,8 +1211,13 @@
     if (!url) { addError('地址格式不对。例如 100.106.9.14、my-pc:7878 或 https://my-pc.tailxxxx.ts.net'); return; }
     var list = load();
     if (list.some(function (x) { return x.url === url; })) { addError('这个服务器已经在列表里了：' + url); return; }
-    var name = $('name').value.trim() || new URL(url).hostname;
-    var s = { id: String(Date.now()), name: name, url: url };
+    var rawName = $('name').value.trim();
+    var isPrefillUnchanged = !!(prefillInfo && prefillInfo.url === url && rawName === prefillInfo.name);
+    var autoName = !rawName || isPrefillUnchanged;
+    var host = urlHost(url);
+    var name = rawName || (host && loadPeerNames()[host]) || fallbackHostName(url);
+    var s = { id: String(Date.now()), name: name, url: url, autoName: autoName };
+    prefillInfo = null;
     list.push(s);
     save(list);
     $('addr').value = ''; $('name').value = '';
@@ -1012,6 +1231,7 @@
   auto.checked = localStorage.getItem(AUTO) !== '0';
   auto.onchange = function () { localStorage.setItem(AUTO, auto.checked ? '1' : '0'); };
 
+  applyPeerNames(null, true);
   render();
   spotlight(adder, 0);
   if (!load().length) { adder.classList.add('open'); $('add-open').setAttribute('aria-expanded', 'true'); }
@@ -1784,6 +2004,7 @@
   var tPeersErr = '';
   var tPeersProbe = {};
   var tPeersProbeGen = 0;
+  var tWasRunning = false;
 
   function tIsRunningState(st) {
     return !!(st && st.supported !== false && (st.bundled || st.installed) && st.enabled && st.state === 'Running');
@@ -1834,8 +2055,11 @@
   function tPrefillAddPeer(p) {
     var host = tPeerAddHost(p);
     if (!host) return;
-    $('addr').value = tFormatAddrWithPort(host, DEFAULT_SERVER_PORT);
-    $('name').value = p.name || p.shortName || host;
+    var addrVal = tFormatAddrWithPort(host, DEFAULT_SERVER_PORT);
+    var prefillName = peerDisplayName(p) || host;
+    $('addr').value = addrVal;
+    $('name').value = prefillName;
+    prefillInfo = { url: normalize(addrVal), name: prefillName };
     $('add-err').textContent = '';
     $('addr').removeAttribute('aria-invalid');
     morph(true);
@@ -1989,9 +2213,10 @@
       tPeersTimer = null;
     }
   }
-  function tSyncPeersPoll(immediate) {
+  function tSyncPeersPoll(immediate, forceOnce) {
     if (!tIsRunningState(tailnetCard && tailnetCard.st)) {
       tStopPeersPoll();
+      tWasRunning = false;
       tPeersLoaded = false;
       tPeersData = [];
       tPeersOutdated = false;
@@ -2007,9 +2232,11 @@
           if (tShouldPollPeers() && !tPeersInFlight) tFetchPeers();
         }, 15000);
       }
-      if ((immediate || !tPeersLoaded) && !tPeersInFlight) tFetchPeers();
+      if ((immediate || forceOnce || !tPeersLoaded) && !tPeersInFlight) tFetchPeers();
     } else {
       tStopPeersPoll();
+      // 首次进入 Running 或状态刚变为 Running 时，即使卡片不可见也拉取一次以更新服务器名称
+      if (forceOnce && !tPeersInFlight) tFetchPeers();
     }
   }
   async function tFetchPeers() {
@@ -2031,6 +2258,7 @@
         tPeersOutdated = false;
         tPeersErr = '';
         tPeersData = res && Array.isArray(res.peers) ? res.peers : [];
+        applyPeerNames(tPeersData);
         // 并发探测在线设备的 Cosyee 默认端口
         var gen = ++tPeersProbeGen;
         var nextProbe = {};
@@ -2160,8 +2388,14 @@
         else if (st.bundled && c.confirm.action === 'uninstall') c.confirm = null;
         else if (c.confirm.action === 'logout' && (!st.enabled || (st.state !== 'Running' && st.state !== 'NeedsMachineAuth'))) c.confirm = null;
       }
+      var nowRunning = tIsRunningState(st);
+      var becameRunning = nowRunning && !tWasRunning;
+      tWasRunning = nowRunning;
       tSyncPoll(st);
-      tSyncPeersPoll(false);
+      tSyncPeersPoll(false, becameRunning);
+    },
+    onReset: function () {
+      tWasRunning = false;
     },
     renderOfflineControls: function () {
       var bundled = tIsBundled(tailnetCard.st);
