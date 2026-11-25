@@ -397,6 +397,66 @@
     text-decoration: none; word-break: break-all;
   }
   .auth-box a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  /* tailnet 本机一行摘要与其它设备列表 */
+  .t-self-line {
+    margin: 10px 0 0; font: 12px/1.5 var(--font-mono); color: var(--text-3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .t-peers { margin: 12px 0 14px; }
+  .t-peers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .t-peers-toggle {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 2px; border: 0; border-radius: 7px;
+    background: none; color: var(--text-2); font: 600 12.5px/1.3 var(--font-sans); cursor: pointer;
+    transition: color .15s, background-color .15s;
+  }
+  .t-peers-toggle:hover { color: var(--text); background: var(--bg-hover); }
+  .t-peers-chev { width: 14px; height: 14px; transition: transform .2s var(--ease-out); }
+  .t-peers-toggle[aria-expanded="true"] .t-peers-chev { transform: rotate(90deg); }
+  .t-peers-count { font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .t-peers-refresh { width: 28px; height: 28px; padding: 0; }
+  .t-peers-refresh svg { width: 14px; height: 14px; }
+  .t-peers-list {
+    border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elev); overflow: hidden;
+  }
+  .t-peer {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border-top: 1px solid var(--border);
+  }
+  .t-peer:first-child { border-top: 0; }
+  .t-peer-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; }
+  .t-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-3); opacity: .5; }
+  .t-dot.online { background: var(--ok); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .t-peer-name {
+    font-size: 13px; font-weight: 500; color: var(--text); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .t-peer.offline .t-peer-name { color: var(--text-3); }
+  .t-badge {
+    flex: none; font-size: 11px; line-height: 18px; font-weight: 500; padding: 0 7px; border-radius: 999px; white-space: nowrap;
+  }
+  .t-badge.cosyee { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+  .t-peer-act { flex: none; }
+  .t-peer-act .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+  .t-peers-offline-toggle {
+    display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px;
+    border: 0; border-top: 1px solid var(--border); background: none; color: var(--text-3);
+    font: 500 12px/1.3 var(--font-sans); text-align: left; cursor: pointer;
+    transition: background-color .15s, color .15s;
+  }
+  .t-peers-offline-toggle:first-child { border-top: 0; }
+  .t-peers-offline-toggle:hover { background: var(--bg-hover); color: var(--text-2); }
+  .t-peers-offline-toggle svg { width: 13px; height: 13px; transition: transform .2s var(--ease-out); }
+  .t-peers-offline-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+  .t-peers-msg {
+    padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: var(--r-md);
+    font-size: 12px; line-height: 1.5; color: var(--text-3);
+  }
+  .t-peers-msg.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .t-peers-msg.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+  #t-actions { margin-top: 12px; align-items: center; }
+  #t-actions:not(:has(> .btn:not([hidden]))) { display: none; }
+  .t-log-btn { height: 28px; padding: 0 8px; font-size: 12px; color: var(--text-3); }
+  .t-log-btn svg { width: 13px; height: 13px; }
   .admin-picker {
     margin-top: 10px; border: 1px solid var(--border); border-radius: var(--r-md);
     background: var(--bg-elev); overflow: hidden; display: flex; flex-direction: column;
@@ -512,18 +572,27 @@
       <span class="beam" aria-hidden="true"></span>
       <div class="local-head">
         <span class="ico"><svg class="i"><use href="#i-shield"/></svg></span>
-        <div class="t"><b>内置 Tailscale<span class="pill sm" id="t-pill"><i></i><span>检查中</span></span></b><small class="ver" id="t-ver">…</small></div>
+        <div class="t"><b>内置 Tailscale<span class="pill sm" id="t-pill"><i></i><span>检查中</span></span></b><small class="ver" id="t-ver" hidden></small></div>
         <div class="comp-acts">
           <button type="button" class="btn ghost" id="t-check-btn"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
           <button type="button" class="btn primary" id="t-install-btn" hidden><svg class="i"><use href="#i-down"/></svg><span>安装</span></button>
         </div>
       </div>
-      <p class="t-desc" id="t-desc" hidden>随客户端内置，仅用于本客户端连接服务端，默认关闭。</p>
-      <dl class="checks two" id="t-checks">
-        <div><dt>设备</dt><dd id="t-self" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
-        <div><dt>IP</dt><dd id="t-ip" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
-      </dl>
-      <p class="local-addr" id="t-net" hidden>Tailnet · <span id="t-net-val"></span></p>
+      <p class="t-self-line" id="t-self-line" hidden></p>
+      <div class="t-peers" id="t-peers" hidden>
+        <div class="t-peers-head">
+          <button type="button" class="t-peers-toggle" id="t-peers-toggle" aria-expanded="true" aria-controls="t-peers-body">
+            <svg class="i t-peers-chev"><use href="#i-chev"/></svg>
+            <span>设备</span>
+            <span class="t-peers-count" id="t-peers-count"></span>
+          </button>
+          <button type="button" class="btn ghost t-peers-refresh" id="t-peers-refresh" title="刷新设备列表" aria-label="刷新设备列表"><svg class="i"><use href="#i-refresh"/></svg></button>
+        </div>
+        <div id="t-peers-body">
+          <div class="t-peers-msg" id="t-peers-msg" hidden></div>
+          <div class="t-peers-list" id="t-peers-list" hidden></div>
+        </div>
+      </div>
       <div class="sub-banner" id="t-restart-banner" role="status" hidden>
         <p>重启客户端后生效。</p>
         <button type="button" class="btn primary" id="t-relaunch-btn"><svg class="i"><use href="#i-refresh"/></svg>立即重启</button>
@@ -540,8 +609,8 @@
         <button type="button" class="btn primary" id="t-login-btn" hidden><svg class="i"><use href="#i-login"/></svg>登录</button>
         <button type="button" class="btn" id="t-logout-btn" hidden><svg class="i"><use href="#i-logout"/></svg>退出登录</button>
         <button type="button" class="btn" id="t-restart-btn" hidden><svg class="i"><use href="#i-refresh"/></svg>重启组件</button>
-        <button type="button" class="btn ghost" id="t-log-btn" hidden><svg class="i"><use href="#i-file"/></svg>日志</button>
         <button type="button" class="btn danger" id="t-uninstall-btn" hidden><svg class="i"><use href="#i-trash"/></svg>卸载</button>
+        <button type="button" class="btn ghost t-log-btn" id="t-log-btn" hidden><svg class="i"><use href="#i-file"/></svg>日志</button>
       </div>
       <div id="t-toggle-wrap" hidden>
         <div class="divider"></div>
@@ -668,11 +737,79 @@
 (function () {
   'use strict';
   var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto';
+  var DEFAULT_SERVER_PORT = 7878;
   var $ = function (id) { return document.getElementById(id); };
   var T = window.__TAURI__;
   var invoke = T && T.core && T.core.invoke;
   var params = new URLSearchParams(location.search);
   var reduce = matchMedia('(prefers-reduced-motion: reduce)');
+
+  // 开发与预览 mock 场景（仅在非 Tauri 环境且地址带 ?mock= 时启用：peers / peers-empty / peers-outdated）
+  if (!invoke && params.has('mock')) {
+    (function setupMock() {
+      var mode = params.get('mock') || 'peers';
+      if (mode === 'peers') {
+        try {
+          var cur = JSON.parse(localStorage.getItem(KEY) || '[]');
+          if (!Array.isArray(cur) || cur.length === 0) {
+            localStorage.setItem(KEY, JSON.stringify([
+              { id: 'mock-dev-box', name: 'dev-box', url: 'http://dev-box:7878' }
+            ]));
+          }
+        } catch (e) { /* 忽略 */ }
+      }
+      invoke = async function (cmd, args) {
+        if (cmd === 'set_servers') return null;
+        if (cmd === 'tailnet_status') {
+          return {
+            supported: true,
+            unsupportedReason: null,
+            bundled: false,
+            installed: mode === 'peers-outdated' ? '1.0.0' : '1.1.0',
+            enabled: true,
+            loggedIn: true,
+            running: true,
+            state: 'Running',
+            authURL: null,
+            self: { name: 'cosyee-win', dnsName: 'cosyee-win.demo.ts.net', ips: ['100.64.0.10'] },
+            tailnet: 'demo.ts.net',
+            latest: '1.1.0',
+            checkedAt: Date.now(),
+            busy: false,
+            proxyActive: true,
+            needsRestart: false,
+            error: null,
+          };
+        }
+        if (cmd === 'tailnet_peers') {
+          if (mode === 'peers-empty') {
+            return { state: 'Running', peers: [], outdated: false, error: null };
+          }
+          if (mode === 'peers-outdated') {
+            return { state: null, peers: [], outdated: true, error: '组件版本过旧，更新组件后可列出设备' };
+          }
+          return {
+            state: 'Running',
+            outdated: false,
+            error: null,
+            peers: [
+              { name: 'dev-box', dnsName: 'dev-box.demo.ts.net', shortName: 'dev-box', ips: ['100.64.0.22', 'fd7a:115c:a1e0::22'], os: 'macos', online: true, lastSeen: '2026-11-25T07:10:00Z' },
+              { name: 'home-nas', dnsName: 'home-nas.demo.ts.net', shortName: 'home-nas', ips: ['100.64.0.23'], os: 'linux', online: true, lastSeen: '2026-11-25T07:12:00Z' },
+              { name: 'workstation', dnsName: 'workstation.demo.ts.net', shortName: 'workstation', ips: ['100.64.0.21'], os: 'linux', online: true, lastSeen: '2026-11-25T07:14:00Z' },
+              { name: 'pixel-9', dnsName: 'pixel-9.demo.ts.net', shortName: 'pixel-9', ips: ['100.64.0.24'], os: 'android', online: false, lastSeen: '2026-11-24T12:00:00Z' },
+            ],
+          };
+        }
+        if (cmd === 'probe') {
+          var h = args && args.host ? String(args.host) : '';
+          var p = args && args.port ? Number(args.port) : 0;
+          return p === DEFAULT_SERVER_PORT && (h === '100.64.0.21' || h === 'workstation' || h === '100.64.0.22' || h === 'dev-box');
+        }
+        if (cmd === 'tailnet_log') return { lines: [], next: 0 };
+        throw { kind: 'offline', error: 'mock 模式下未启用该命令：' + cmd };
+      };
+    })();
+  }
 
   // 窗口底色跟主题走（拖动缩放时露出的底色）
   try {
@@ -822,6 +959,7 @@
       ul.appendChild(li);
       if (s.id === focusId) li.focus({ preventScroll: true });
     });
+    if (typeof tRenderPeers === 'function') tRenderPeers();
   }
 
   // ───── 添加：按钮原位展开成表单 ─────
@@ -1635,6 +1773,298 @@
   var tAuthUrl = '';
   var tPollTimer = null;
   var tCopyTimer = null;
+  var tPeersOpen = true;
+  var tPeersOfflineOpen = false;
+  var tPeersVisible = true;
+  var tPeersTimer = null;
+  var tPeersInFlight = false;
+  var tPeersLoaded = false;
+  var tPeersData = [];
+  var tPeersOutdated = false;
+  var tPeersErr = '';
+  var tPeersProbe = {};
+  var tPeersProbeGen = 0;
+
+  function tIsRunningState(st) {
+    return !!(st && st.supported !== false && (st.bundled || st.installed) && st.enabled && st.state === 'Running');
+  }
+  function tNormHost(h) {
+    return String(h || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  }
+  function tPeerAddHost(p) {
+    if (!p) return '';
+    return p.shortName || firstIpv4(p.ips) || p.dnsName || (Array.isArray(p.ips) && p.ips[0]) || '';
+  }
+  function tPeerProbeHost(p) {
+    if (!p) return '';
+    return firstIpv4(p.ips) || p.shortName || p.dnsName || (Array.isArray(p.ips) && p.ips[0]) || '';
+  }
+  function tFormatAddrWithPort(host, port) {
+    if (!host) return '';
+    return host.indexOf(':') !== -1 ? '[' + host + ']:' + port : host + ':' + port;
+  }
+  function tAddedHostSet() {
+    var set = {};
+    load().forEach(function (s) {
+      try {
+        var h = tNormHost(new URL(s.url).hostname);
+        if (h) set[h] = true;
+      } catch (e) { /* 忽略 */ }
+    });
+    return set;
+  }
+  function tIsPeerAdded(p, addedSet) {
+    if (!p) return false;
+    var cands = [];
+    if (p.shortName) cands.push(p.shortName);
+    if (p.dnsName) cands.push(p.dnsName);
+    if (Array.isArray(p.ips)) cands = cands.concat(p.ips);
+    for (var i = 0; i < cands.length; i++) {
+      var h = tNormHost(cands[i]);
+      if (h && addedSet[h]) return true;
+    }
+    return false;
+  }
+  function tFmtOs(os) {
+    var s = String(os || '').trim().toLowerCase();
+    if (!s) return '';
+    var map = { linux: 'Linux', windows: 'Windows', macos: 'macOS', darwin: 'macOS', android: 'Android', ios: 'iOS' };
+    return map[s] || os;
+  }
+  function tPrefillAddPeer(p) {
+    var host = tPeerAddHost(p);
+    if (!host) return;
+    $('addr').value = tFormatAddrWithPort(host, DEFAULT_SERVER_PORT);
+    $('name').value = p.name || p.shortName || host;
+    $('add-err').textContent = '';
+    $('addr').removeAttribute('aria-invalid');
+    morph(true);
+    try {
+      adder.scrollIntoView({ behavior: reduce.matches ? 'auto' : 'smooth', block: 'nearest' });
+    } catch (e) { /* 忽略 */ }
+    $('addr').focus({ preventScroll: true });
+  }
+  function tPeerTitle(p) {
+    var parts = [];
+    var display = p.shortName || p.name || p.dnsName;
+    if (p.name && p.name !== display) parts.push(p.name);
+    var ip = firstIpv4(p.ips);
+    if (ip) parts.push(ip);
+    var osText = tFmtOs(p.os);
+    if (osText) parts.push(osText);
+    if (p.online) parts.push('在线');
+    else if (p.lastSeen) {
+      var seen = fmtTime(Date.parse(p.lastSeen));
+      parts.push(seen ? '离线 · ' + seen : '离线');
+    } else parts.push('离线');
+    return parts.join(' · ');
+  }
+  function tBuildPeerRow(p, addedSet) {
+    var row = document.createElement('div');
+    row.className = 't-peer' + (p.online ? '' : ' offline');
+    row.title = tPeerTitle(p);
+
+    var main = document.createElement('div');
+    main.className = 't-peer-main';
+
+    var dot = document.createElement('span');
+    dot.className = 't-dot' + (p.online ? ' online' : '');
+    dot.setAttribute('aria-hidden', 'true');
+    main.appendChild(dot);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 't-peer-name';
+    nameEl.textContent = p.shortName || p.name || p.dnsName || '未命名设备';
+    main.appendChild(nameEl);
+
+    var probeHost = tPeerProbeHost(p);
+    var hasCosyee = !!(p.online && probeHost && tPeersProbe[probeHost] === true);
+    if (hasCosyee) {
+      var srvBadge = document.createElement('span');
+      srvBadge.className = 't-badge cosyee';
+      srvBadge.textContent = 'Cosyee';
+      main.appendChild(srvBadge);
+    }
+
+    row.appendChild(main);
+
+    var added = tIsPeerAdded(p, addedSet);
+    var act = document.createElement('div');
+    act.className = 't-peer-act';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn' + (!added && hasCosyee ? ' primary' : '');
+    btn.textContent = added ? '已添加' : '添加';
+    btn.disabled = added || !tPeerAddHost(p);
+    btn.onclick = function () { tPrefillAddPeer(p); };
+    act.appendChild(btn);
+    row.appendChild(act);
+
+    return row;
+  }
+  function tRenderPeers() {
+    var wrap = $('t-peers');
+    if (!wrap) return;
+    var running = tIsRunningState(tailnetCard && tailnetCard.st);
+    wrap.hidden = !running;
+    if (!running) return;
+
+    $('t-peers-toggle').setAttribute('aria-expanded', String(tPeersOpen));
+    $('t-peers-body').hidden = !tPeersOpen;
+    $('t-peers-refresh').disabled = tPeersInFlight;
+    $('t-peers-count').textContent = tPeersLoaded && !tPeersErr && !tPeersOutdated ? String(tPeersData.length) : '';
+
+    var msgEl = $('t-peers-msg');
+    var listEl = $('t-peers-list');
+    if (tPeersOutdated) {
+      msgEl.className = 't-peers-msg warn';
+      msgEl.textContent = tPeersErr || '组件版本过旧，更新组件后可列出设备';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (tPeersErr) {
+      msgEl.className = 't-peers-msg error';
+      msgEl.textContent = '获取设备失败：' + tPeersErr;
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (!tPeersLoaded) {
+      msgEl.className = 't-peers-msg';
+      msgEl.textContent = '正在加载设备…';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (!tPeersData.length) {
+      msgEl.className = 't-peers-msg';
+      msgEl.textContent = '当前 tailnet 中没有其它设备。';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+
+    msgEl.hidden = true;
+    listEl.hidden = false;
+    listEl.textContent = '';
+    var addedSet = tAddedHostSet();
+    var onlinePeers = [];
+    var offlinePeers = [];
+    tPeersData.forEach(function (p) {
+      if (p && p.online) onlinePeers.push(p);
+      else if (p) offlinePeers.push(p);
+    });
+
+    onlinePeers.forEach(function (p) {
+      listEl.appendChild(tBuildPeerRow(p, addedSet));
+    });
+
+    if (offlinePeers.length) {
+      var offBtn = document.createElement('button');
+      offBtn.type = 'button';
+      offBtn.className = 't-peers-offline-toggle';
+      offBtn.setAttribute('aria-expanded', String(tPeersOfflineOpen));
+      offBtn.innerHTML = '<svg class="i"><use href="#i-chev"/></svg><span></span>';
+      offBtn.querySelector('span').textContent = '离线 ' + offlinePeers.length + ' 台';
+      offBtn.onclick = function () {
+        tPeersOfflineOpen = !tPeersOfflineOpen;
+        tRenderPeers();
+      };
+      listEl.appendChild(offBtn);
+
+      if (tPeersOfflineOpen) {
+        offlinePeers.forEach(function (p) {
+          listEl.appendChild(tBuildPeerRow(p, addedSet));
+        });
+      }
+    }
+  }
+  function tShouldPollPeers() {
+    return tIsRunningState(tailnetCard && tailnetCard.st) && tPeersOpen && tPeersVisible && !document.hidden;
+  }
+  function tStopPeersPoll() {
+    if (tPeersTimer) {
+      clearInterval(tPeersTimer);
+      tPeersTimer = null;
+    }
+  }
+  function tSyncPeersPoll(immediate) {
+    if (!tIsRunningState(tailnetCard && tailnetCard.st)) {
+      tStopPeersPoll();
+      tPeersLoaded = false;
+      tPeersData = [];
+      tPeersOutdated = false;
+      tPeersErr = '';
+      tPeersProbe = {};
+      tPeersProbeGen++;
+      tRenderPeers();
+      return;
+    }
+    if (tShouldPollPeers()) {
+      if (!tPeersTimer) {
+        tPeersTimer = setInterval(function () {
+          if (tShouldPollPeers() && !tPeersInFlight) tFetchPeers();
+        }, 15000);
+      }
+      if ((immediate || !tPeersLoaded) && !tPeersInFlight) tFetchPeers();
+    } else {
+      tStopPeersPoll();
+    }
+  }
+  async function tFetchPeers() {
+    if (!invoke || tPeersInFlight || !tIsRunningState(tailnetCard && tailnetCard.st)) return;
+    tPeersInFlight = true;
+    tRenderPeers();
+    try {
+      var res = await invoke('tailnet_peers');
+      tPeersLoaded = true;
+      if (res && res.outdated) {
+        tPeersOutdated = true;
+        tPeersErr = res.error || '组件版本过旧，更新组件后可列出设备';
+        tPeersData = [];
+      } else if (res && res.error) {
+        tPeersOutdated = false;
+        tPeersErr = String(res.error);
+        tPeersData = [];
+      } else {
+        tPeersOutdated = false;
+        tPeersErr = '';
+        tPeersData = res && Array.isArray(res.peers) ? res.peers : [];
+        // 并发探测在线设备的 Cosyee 默认端口
+        var gen = ++tPeersProbeGen;
+        var nextProbe = {};
+        tPeersData.forEach(function (p) {
+          var host = tPeerProbeHost(p);
+          if (p.online && host) {
+            if (typeof tPeersProbe[host] === 'boolean') nextProbe[host] = tPeersProbe[host];
+          }
+        });
+        tPeersProbe = nextProbe;
+        tPeersData.forEach(function (p) {
+          var host = tPeerProbeHost(p);
+          if (!p.online || !host) return;
+          invoke('probe', { host: host, port: DEFAULT_SERVER_PORT }).then(function (ok) {
+            if (gen !== tPeersProbeGen) return;
+            tPeersProbe[host] = !!ok;
+            tRenderPeers();
+          }).catch(function () {
+            if (gen !== tPeersProbeGen) return;
+            tPeersProbe[host] = false;
+          });
+        });
+      }
+    } catch (e) {
+      tPeersLoaded = true;
+      var msg = errText(e);
+      tPeersOutdated = msg.indexOf('组件版本过旧') !== -1;
+      tPeersErr = msg;
+      tPeersData = [];
+    } finally {
+      tPeersInFlight = false;
+      tRenderPeers();
+    }
+  }
 
   function tIsBundled(st) { return st ? !!st.bundled : isAndroid; }
   function fmtVer(v) {
@@ -1679,7 +2109,8 @@
   }
   function tVer(text, tone, title) {
     var el = $('t-ver');
-    el.textContent = text;
+    el.hidden = !text;
+    el.textContent = text || '';
     el.className = 'ver' + (tone ? ' ' + tone : '');
     el.title = title || '';
   }
@@ -1705,7 +2136,7 @@
   var tailnetCard = createServiceCard({
     cardId: 'tailnet-card',
     pillId: 't-pill',
-    checkIds: ['t-self', 't-ip'],
+    checkIds: [],
     pillClass: 'pill sm',
     hintId: 't-hint',
     msgId: 't-msg',
@@ -1730,13 +2161,15 @@
         else if (c.confirm.action === 'logout' && (!st.enabled || (st.state !== 'Running' && st.state !== 'NeedsMachineAuth'))) c.confirm = null;
       }
       tSyncPoll(st);
+      tSyncPeersPoll(false);
     },
     renderOfflineControls: function () {
       var bundled = tIsBundled(tailnetCard.st);
       $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
-      $('t-desc').hidden = !bundled;
-      tVer(bundled ? '内置' : '…');
-      $('t-net').hidden = true;
+      tVer('');
+      $('t-self-line').hidden = true;
+      $('t-peers').hidden = true;
+      tStopPeersPoll();
       $('t-restart-banner').hidden = true;
       $('t-auth').hidden = true;
       $('t-toggle-wrap').hidden = true;
@@ -1774,48 +2207,30 @@
         : !!(selfName || ipv4 || st.tailnet);
 
       $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
-      $('t-desc').hidden = !bundled;
-      $('t-checks').hidden = !(supported && installed);
-      if (!supported) {
-        tVer('当前平台不支持', 'warn');
+      // 头部版本：Android 内置不显示；桌面仅「未安装」或「有更新」时显示
+      if (!supported || bundled) {
+        tVer('');
+      } else if (!installed) {
+        tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
+      } else if (updateAvail) {
+        tVer(fmtVer(st.installed) + ' → ' + fmtVer(st.latest), 'up');
       } else {
-        if (bundled) tVer(st.installed ? fmtVer(st.installed) : '内置');
-        else if (!installed) tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
-        else if (updateAvail) tVer(fmtVer(st.installed) + ' → ' + fmtVer(st.latest), 'up');
-        else if (st.latest) tVer(fmtVer(st.installed) + ' · 已是最新', 'ok');
-        else tVer(fmtVer(st.installed));
-
-        if (isRunning) {
-          setCheck('t-self', selfName || '已连接', 'ok');
-          setCheck('t-ip', ipv4 || '—', ipv4 ? 'ok' : 'wait');
-        } else if (isStarting) {
-          setCheck('t-self', '启动中…', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isNeedsLogin) {
-          setCheck('t-self', '需要登录', 'bad');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isNeedsAuth) {
-          setCheck('t-self', selfName || '等待审批', 'bad');
-          setCheck('t-ip', ipv4 || '—', ipv4 ? 'ok' : 'wait');
-        } else if (installed && !enabled) {
-          setCheck('t-self', '已停用', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isErrorState) {
-          setCheck('t-self', '出错', 'bad');
-          setCheck('t-ip', '—', 'wait');
-        } else {
-          setCheck('t-self', '—', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        }
+        tVer('');
       }
 
-      var netEl = $('t-net');
-      if (isRunning && st.tailnet) {
-        $('t-net-val').textContent = st.tailnet;
-        netEl.hidden = false;
+      // 仅已连接时显示一行「本机名 · IPv4」
+      var selfLine = $('t-self-line');
+      var selfParts = [];
+      if (selfName) selfParts.push(selfName);
+      if (ipv4) selfParts.push(ipv4);
+      if (isRunning && selfParts.length) {
+        selfLine.textContent = selfParts.join(' · ');
+        selfLine.hidden = false;
       } else {
-        netEl.hidden = true;
+        selfLine.textContent = '';
+        selfLine.hidden = true;
       }
+      tRenderPeers();
 
       var pill = $('t-pill');
       if (busy) {
@@ -1884,7 +2299,7 @@
       logoutBtn.disabled = busy;
 
       var restartBtn = $('t-restart-btn');
-      restartBtn.hidden = !(supported && installed && enabled);
+      restartBtn.hidden = !(supported && installed && enabled && isErrorState);
       restartBtn.className = 'btn' + (isErrorState && !updateAvail ? ' primary' : '');
       restartBtn.disabled = busy;
 
@@ -1939,7 +2354,6 @@
 
     if (isAndroid) {
       $('h-components').textContent = '内置 Tailscale';
-      $('t-desc').hidden = false;
       $('t-check-btn').hidden = true;
       $('t-install-btn').hidden = true;
       $('t-uninstall-btn').hidden = true;
@@ -2076,10 +2490,32 @@
       if (!box.textContent.trim()) box.textContent = '暂无日志。\n';
     };
 
+    $('t-peers-toggle').onclick = function () {
+      tPeersOpen = !tPeersOpen;
+      tRenderPeers();
+      tSyncPeersPoll(tPeersOpen);
+    };
+    $('t-peers-refresh').onclick = function () {
+      if (!tPeersOpen) tPeersOpen = true;
+      tFetchPeers();
+      tSyncPeersPoll(false);
+    };
+    if (typeof IntersectionObserver === 'function') {
+      var peersIo = new IntersectionObserver(function (entries) {
+        var vis = entries.some(function (en) { return en.isIntersecting; });
+        if (vis !== tPeersVisible) {
+          tPeersVisible = vis;
+          tSyncPeersPoll(vis);
+        }
+      }, { threshold: 0.05 });
+      peersIo.observe($('tailnet-card'));
+    }
+
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden && tEverLoaded && tNeedsPoll(tailnetCard.st) && !tailnetCard.busy && !tailnetCard.inFlight) {
         tailnetCard.refresh();
       }
+      tSyncPeersPoll(!document.hidden);
     });
     // 内置 Tailscale 桌面和手机均加载；若旧客户端未注册命令，refresh 失败且 #components 保持隐藏
     tailnetCard.refresh();

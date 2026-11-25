@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,24 @@ type StatusResponse struct {
 	Self    *SelfInfo `json:"self"`
 	Tailnet *string   `json:"tailnet"`
 	Error   *string   `json:"error"`
+}
+
+// PeerInfo 描述 GET /peers 返回的单台 tailnet 设备（不含本机）。
+type PeerInfo struct {
+	Name      string   `json:"name"`
+	DNSName   string   `json:"dnsName"`
+	ShortName string   `json:"shortName"`
+	IPs       []string `json:"ips"`
+	OS        string   `json:"os"`
+	Online    bool     `json:"online"`
+	LastSeen  *string  `json:"lastSeen"`
+}
+
+// PeersResponse 是 GET /peers 返回的 JSON 结构。
+type PeersResponse struct {
+	State string     `json:"state"`
+	Peers []PeerInfo `json:"peers"`
+	Error *string    `json:"error,omitempty"`
 }
 
 // Instance runs the tsnet backend, control HTTP API, and authenticated SOCKS5 proxy.
@@ -373,6 +392,7 @@ func (i *Instance) Stop() error {
 func (i *Instance) controlHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", i.handleStatus)
+	mux.HandleFunc("/peers", i.handlePeers)
 	mux.HandleFunc("/login", i.handleLogin)
 	mux.HandleFunc("/logout", i.handleLogout)
 
@@ -503,6 +523,165 @@ func mapBackendState(raw string) string {
 	default:
 		return "Error"
 	}
+}
+
+func (i *Instance) handlePeers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	if fatalErr := i.getFatalError(); fatalErr != nil {
+		errStr := fatalErr.Error()
+		writeJSON(w, http.StatusOK, PeersResponse{
+			State: "Error",
+			Peers: []PeerInfo{},
+			Error: &errStr,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	st, err := i.backend.StatusWithPeers(ctx)
+	if err != nil {
+		errStr := err.Error()
+		writeJSON(w, http.StatusOK, PeersResponse{
+			State: "Error",
+			Peers: []PeerInfo{},
+			Error: &errStr,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildPeersResponse(st))
+}
+
+func buildPeersResponse(st *ipnstate.Status) PeersResponse {
+	if st == nil {
+		msg := "empty status from tailscale backend"
+		return PeersResponse{
+			State: "Error",
+			Peers: []PeerInfo{},
+			Error: &msg,
+		}
+	}
+
+	state := mapBackendState(st.BackendState)
+	if state != "Running" {
+		return PeersResponse{
+			State: state,
+			Peers: []PeerInfo{},
+		}
+	}
+
+	peers := make([]PeerInfo, 0, len(st.Peer))
+	for _, p := range st.Peer {
+		if p == nil || isSelfPeer(st.Self, p) {
+			continue
+		}
+
+		dnsName := strings.TrimSuffix(p.DNSName, ".")
+		shortName := ""
+		if dnsName != "" {
+			if idx := strings.IndexByte(dnsName, '.'); idx >= 0 {
+				shortName = dnsName[:idx]
+			} else {
+				shortName = dnsName
+			}
+		}
+
+		// IPv4 排在前面，IPv6 排在后面
+		ipv4s := make([]string, 0, len(p.TailscaleIPs))
+		ipv6s := make([]string, 0, len(p.TailscaleIPs))
+		for _, ip := range p.TailscaleIPs {
+			u := ip.Unmap()
+			if u.Is4() {
+				ipv4s = append(ipv4s, u.String())
+			} else {
+				ipv6s = append(ipv6s, u.String())
+			}
+		}
+		ips := make([]string, 0, len(ipv4s)+len(ipv6s))
+		ips = append(ips, ipv4s...)
+		ips = append(ips, ipv6s...)
+
+		var lastSeen *string
+		if !p.LastSeen.IsZero() {
+			ts := p.LastSeen.UTC().Format(time.RFC3339)
+			lastSeen = &ts
+		}
+
+		peers = append(peers, PeerInfo{
+			Name:      p.HostName,
+			DNSName:   dnsName,
+			ShortName: shortName,
+			IPs:       ips,
+			OS:        p.OS,
+			Online:    p.Online,
+			LastSeen:  lastSeen,
+		})
+	}
+
+	// 排序：在线在前，再按名称升序（不区分大小写）
+	sort.Slice(peers, func(i, j int) bool {
+		if peers[i].Online != peers[j].Online {
+			return peers[i].Online
+		}
+		ni := peerSortName(peers[i])
+		nj := peerSortName(peers[j])
+		li := strings.ToLower(ni)
+		lj := strings.ToLower(nj)
+		if li != lj {
+			return li < lj
+		}
+		if ni != nj {
+			return ni < nj
+		}
+		if peers[i].DNSName != peers[j].DNSName {
+			return peers[i].DNSName < peers[j].DNSName
+		}
+		var ipi, ipj string
+		if len(peers[i].IPs) > 0 {
+			ipi = peers[i].IPs[0]
+		}
+		if len(peers[j].IPs) > 0 {
+			ipj = peers[j].IPs[0]
+		}
+		return ipi < ipj
+	})
+
+	return PeersResponse{
+		State: state,
+		Peers: peers,
+	}
+}
+
+func isSelfPeer(self, peer *ipnstate.PeerStatus) bool {
+	if self == nil || peer == nil {
+		return false
+	}
+	if peer == self {
+		return true
+	}
+	if self.ID != "" && peer.ID == self.ID {
+		return true
+	}
+	if !self.PublicKey.IsZero() && peer.PublicKey == self.PublicKey {
+		return true
+	}
+	return false
+}
+
+func peerSortName(p PeerInfo) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if p.ShortName != "" {
+		return p.ShortName
+	}
+	return p.DNSName
 }
 
 func (i *Instance) handleLogin(w http.ResponseWriter, r *http.Request) {

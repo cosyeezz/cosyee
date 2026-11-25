@@ -24,6 +24,7 @@ type Backend interface {
 	Close() error
 	Dial(ctx context.Context, network, address string) (net.Conn, error)
 	Status(ctx context.Context) (*ipnstate.Status, error)
+	StatusWithPeers(ctx context.Context) (*ipnstate.Status, error)
 	StartLoginInteractive(ctx context.Context) error
 	Logout(ctx context.Context) error
 	WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt) (IPNWatcher, error)
@@ -73,6 +74,13 @@ func (b *tsnetBackend) Status(ctx context.Context) (*ipnstate.Status, error) {
 		return nil, fmt.Errorf("backend not started")
 	}
 	return b.lc.StatusWithoutPeers(ctx)
+}
+
+func (b *tsnetBackend) StatusWithPeers(ctx context.Context) (*ipnstate.Status, error) {
+	if b.lc == nil {
+		return nil, fmt.Errorf("backend not started")
+	}
+	return b.lc.Status(ctx)
 }
 
 func (b *tsnetBackend) StartLoginInteractive(ctx context.Context) error {

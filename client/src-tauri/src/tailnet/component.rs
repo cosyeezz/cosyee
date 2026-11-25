@@ -66,6 +66,46 @@ pub struct ControlStatus {
     pub error: Option<String>,
 }
 
+/// GET /peers 返回的单台 tailnet 设备信息（不含本机）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerInfo {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub name: String,
+    #[serde(default, rename = "dnsName", deserialize_with = "deserialize_null_default")]
+    pub dns_name: String,
+    #[serde(default, rename = "shortName", deserialize_with = "deserialize_null_default")]
+    pub short_name: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub ips: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub os: String,
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default, rename = "lastSeen")]
+    pub last_seen: Option<String>,
+}
+
+/// GET /peers 的响应结构。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlPeers {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub state: String,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub peers: Vec<PeerInfo>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// 旧版桌面组件不支持 GET /peers（返回 404）时的中文提示。
+pub const PEERS_OUTDATED_MSG: &str = "组件版本过旧，更新组件后可列出设备";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchPeersError {
+    /// 控制接口返回 404，说明组件版本过旧尚未支持 /peers。
+    Outdated,
+    Other(String),
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginResponse {
     #[serde(rename = "authURL")]
@@ -204,6 +244,27 @@ pub fn fetch_control_status(info: &RunningInfo) -> Result<ControlStatus, String>
     }
     serde_json::from_str::<ControlStatus>(&body)
         .map_err(|e| format!("解析组件状态失败：{e}"))
+}
+
+pub fn fetch_control_peers(info: &RunningInfo) -> Result<ControlPeers, FetchPeersError> {
+    let (status, body) = control_request(
+        &info.control,
+        &info.token,
+        "GET",
+        "/peers",
+        Duration::from_secs(5),
+    )
+    .map_err(FetchPeersError::Other)?;
+    if status == 404 {
+        return Err(FetchPeersError::Outdated);
+    }
+    if !(200..300).contains(&status) {
+        return Err(FetchPeersError::Other(format!(
+            "查询 tailnet 设备列表失败（HTTP {status}）"
+        )));
+    }
+    serde_json::from_str::<ControlPeers>(&body)
+        .map_err(|e| FetchPeersError::Other(format!("解析 tailnet 设备列表失败：{e}")))
 }
 
 pub fn trigger_login(info: &RunningInfo) -> Result<String, String> {
@@ -929,6 +990,85 @@ mod tests {
         assert_eq!(st.state, "Running");
         assert_eq!(st.tailnet.as_deref(), Some("tail.ts.net"));
         assert_eq!(st.self_node.as_ref().unwrap().ips, vec!["100.64.0.1"]);
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn control_http_client_fetches_and_parses_peers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected_host = addr.to_string();
+
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut req_bytes = Vec::new();
+            let mut buf = [0u8; 512];
+            while !req_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req_bytes.extend_from_slice(&buf[..n]);
+            }
+            let req = String::from_utf8_lossy(&req_bytes);
+            assert!(req.starts_with("GET /peers HTTP/1.0"), "实际请求：{req}");
+            assert!(req.contains("Authorization: Bearer tok-peers"), "实际请求：{req}");
+            assert!(req.contains(&format!("Host: {expected_host}")), "实际请求：{req}");
+            let body = r#"{"state":"Running","peers":[{"name":"dev-box","dnsName":"dev-box.demo.ts.net","shortName":"dev-box","ips":["100.64.0.2","fd7a:115c:a1e0::2"],"os":"linux","online":true,"lastSeen":"2026-11-25T10:00:00Z"},{"name":"old-phone","dnsName":"old-phone.demo.ts.net","shortName":"old-phone","ips":["100.64.0.9"],"os":"android","online":false,"lastSeen":null}]}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            s.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let info = RunningInfo {
+            version: "1.1.0".into(),
+            control: addr.to_string(),
+            socks: "127.0.0.1:1".into(),
+            token: "tok-peers".into(),
+            bin_file: "test".into(),
+        };
+        let cp = fetch_control_peers(&info).unwrap();
+        assert_eq!(cp.state, "Running");
+        assert_eq!(cp.peers.len(), 2);
+        assert_eq!(cp.peers[0].name, "dev-box");
+        assert_eq!(cp.peers[0].short_name, "dev-box");
+        assert_eq!(cp.peers[0].ips, vec!["100.64.0.2", "fd7a:115c:a1e0::2"]);
+        assert!(cp.peers[0].online);
+        assert_eq!(cp.peers[0].last_seen.as_deref(), Some("2026-11-25T10:00:00Z"));
+        assert!(!cp.peers[1].online);
+        assert_eq!(cp.peers[1].last_seen, None);
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn control_http_client_detects_outdated_peers_404() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut req_bytes = Vec::new();
+            let mut buf = [0u8; 512];
+            while !req_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req_bytes.extend_from_slice(&buf[..n]);
+            }
+            let body = "404 page not found\n";
+            let resp = format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            s.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let info = RunningInfo {
+            version: "1.0.0".into(),
+            control: addr.to_string(),
+            socks: "127.0.0.1:1".into(),
+            token: "tok-old".into(),
+            bin_file: "test".into(),
+        };
+        let err = fetch_control_peers(&info).unwrap_err();
+        assert_eq!(err, FetchPeersError::Outdated);
         h.join().unwrap();
     }
 

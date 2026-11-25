@@ -910,6 +910,61 @@ pub struct TailnetLogResp {
     pub next: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TailnetPeersResp {
+    pub state: Option<String>,
+    pub peers: Vec<component::PeerInfo>,
+    pub outdated: bool,
+    pub error: Option<String>,
+}
+
+/// 查询 tailnet 其它设备列表的纯辅助逻辑（组件未运行或旧版返回 404 均返回结构化提示，不报错）。
+fn query_peers_for_info(info: Option<component::RunningInfo>) -> TailnetPeersResp {
+    let Some(info) = info else {
+        return TailnetPeersResp {
+            state: None,
+            peers: Vec::new(),
+            outdated: false,
+            error: Some("内置 Tailscale 组件未运行".into()),
+        };
+    };
+    match component::fetch_control_peers(&info) {
+        Ok(cp) => TailnetPeersResp {
+            state: if cp.state.is_empty() {
+                None
+            } else {
+                Some(cp.state)
+            },
+            peers: cp.peers,
+            outdated: false,
+            error: cp.error,
+        },
+        Err(component::FetchPeersError::Outdated) => TailnetPeersResp {
+            state: None,
+            peers: Vec::new(),
+            outdated: true,
+            error: Some(component::PEERS_OUTDATED_MSG.into()),
+        },
+        Err(component::FetchPeersError::Other(msg)) => TailnetPeersResp {
+            state: None,
+            peers: Vec::new(),
+            outdated: false,
+            error: Some(msg),
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn tailnet_peers() -> Result<TailnetPeersResp, String> {
+    let mgr = manager()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let info = mgr.runner.running_info();
+        query_peers_for_info(info)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn tailnet_status() -> Result<TailnetStatusResp, String> {
     let mgr = manager()?;
@@ -1609,5 +1664,39 @@ mod tests {
         );
         assert_eq!(classify_login_wait_state("NeedsLogin"), LoginWaitOutcome::NeedLogin);
         assert_eq!(classify_login_wait_state("Stopped"), LoginWaitOutcome::NeedLogin);
+    }
+
+    #[test]
+    fn query_peers_handles_not_running_and_outdated() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // 1. 组件未运行时返回空列表加提示，不报错
+        let not_running = query_peers_for_info(None);
+        assert!(not_running.peers.is_empty());
+        assert!(!not_running.outdated);
+        assert!(not_running.error.as_deref().unwrap_or("").contains("未运行"));
+
+        // 2. 旧版组件返回 404 时返回可识别中文提示
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found");
+        });
+        let info = component::RunningInfo {
+            version: "1.0.0".into(),
+            control: addr.to_string(),
+            socks: "127.0.0.1:1".into(),
+            token: "tok".into(),
+            bin_file: "test".into(),
+        };
+        let outdated = query_peers_for_info(Some(info));
+        assert!(outdated.peers.is_empty());
+        assert!(outdated.outdated);
+        assert_eq!(outdated.error.as_deref(), Some(component::PEERS_OUTDATED_MSG));
+        h.join().unwrap();
     }
 }

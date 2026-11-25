@@ -21,6 +21,8 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
 type mockWatcher struct {
@@ -54,16 +56,17 @@ func (w *mockWatcher) Close() error {
 }
 
 type mockBackend struct {
-	mu           sync.Mutex
-	status       *ipnstate.Status
-	statusErr    error
-	statusFn     func(ctx context.Context) (*ipnstate.Status, error)
-	logoutCalled bool
-	dialedAddrs  []string
-	dialFn       func(ctx context.Context, network, address string) (net.Conn, error)
-	authURLToHit string
-	watcher      *mockWatcher
-	closeWatcher bool
+	mu                sync.Mutex
+	status            *ipnstate.Status
+	statusErr         error
+	statusFn          func(ctx context.Context) (*ipnstate.Status, error)
+	statusWithPeersFn func(ctx context.Context) (*ipnstate.Status, error)
+	logoutCalled      bool
+	dialedAddrs       []string
+	dialFn            func(ctx context.Context, network, address string) (net.Conn, error)
+	authURLToHit      string
+	watcher           *mockWatcher
+	closeWatcher      bool
 }
 
 func (m *mockBackend) Start() error { return nil }
@@ -83,6 +86,18 @@ func (m *mockBackend) Dial(ctx context.Context, network, address string) (net.Co
 func (m *mockBackend) Status(ctx context.Context) (*ipnstate.Status, error) {
 	m.mu.Lock()
 	fn := m.statusFn
+	st := m.status
+	err := m.statusErr
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx)
+	}
+	return st, err
+}
+
+func (m *mockBackend) StatusWithPeers(ctx context.Context) (*ipnstate.Status, error) {
+	m.mu.Lock()
+	fn := m.statusWithPeersFn
 	st := m.status
 	err := m.statusErr
 	m.mu.Unlock()
@@ -748,5 +763,218 @@ func TestHandleLoginFallbackHasTimeoutAndHandlesNilStatus(t *testing.T) {
 	}
 	if remaining <= 0 || remaining > 3*time.Second {
 		t.Fatalf("expected ~2s fallback timeout, got remaining=%v", remaining)
+	}
+}
+
+func TestPeersEndpoint(t *testing.T) {
+	mb := &mockBackend{
+		status: &ipnstate.Status{BackendState: "NeedsLogin"},
+	}
+	inst, ready, err := Start(Config{
+		Backend: mb,
+		Version: "1.1.0",
+	})
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer inst.Stop()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	baseURL := "http://" + ready.Control
+
+	// 1. 鉴权与 Host 校验：无 token -> 401，错 token -> 401，错 Host -> 403，非 GET -> 405
+	resp, err := client.Get(baseURL + "/peers")
+	if err != nil {
+		t.Fatalf("GET /peers without token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", resp.StatusCode)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, baseURL+"/peers", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /peers wrong token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, baseURL+"/peers", nil)
+	req.Host = "evil.example.com:8080"
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /peers wrong host: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 with wrong Host, got %d", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest(http.MethodPost, baseURL+"/peers", nil)
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /peers: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for POST /peers, got %d", resp.StatusCode)
+	}
+
+	// 2. 未登录状态返回 200、空列表与 state 字段，不报 500
+	req, _ = http.NewRequest(http.MethodGet, baseURL+"/peers", nil)
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /peers NeedsLogin: %v", err)
+	}
+	var rawNeedsLogin map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rawNeedsLogin); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode NeedsLogin /peers: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 in NeedsLogin, got %d", resp.StatusCode)
+	}
+	if rawNeedsLogin["state"] != "NeedsLogin" {
+		t.Fatalf("expected state=NeedsLogin, got %#v", rawNeedsLogin["state"])
+	}
+	peersSlice, ok := rawNeedsLogin["peers"].([]any)
+	if !ok || len(peersSlice) != 0 {
+		t.Fatalf("expected empty JSON array for peers in NeedsLogin, got %#v", rawNeedsLogin["peers"])
+	}
+
+	// 3. Running 状态：排除本机、IPv4 在前、lastSeen RFC3339/null、排序（在线在前再按名称）
+	selfKey := key.NewNode().Public()
+	k1 := key.NewNode().Public()
+	k2 := key.NewNode().Public()
+	k3 := key.NewNode().Public()
+	k4 := key.NewNode().Public()
+	seenAt := time.Date(2026, 11, 25, 10, 20, 30, 0, time.UTC)
+
+	mb.mu.Lock()
+	mb.status = &ipnstate.Status{
+		BackendState: "Running",
+		Self: &ipnstate.PeerStatus{
+			ID:        tailcfg.StableNodeID("self-id"),
+			PublicKey: selfKey,
+			HostName:  "cosyee-self",
+			DNSName:   "cosyee-self.demo.ts.net.",
+			Online:    true,
+		},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			// 模拟本机混入 Peer map，必须被排除
+			selfKey: {
+				ID:        tailcfg.StableNodeID("self-id"),
+				PublicKey: selfKey,
+				HostName:  "cosyee-self",
+				DNSName:   "cosyee-self.demo.ts.net.",
+				TailscaleIPs: []netip.Addr{
+					netip.MustParseAddr("100.64.0.1"),
+				},
+				OS:     "windows",
+				Online: true,
+			},
+			k1: {
+				ID:        tailcfg.StableNodeID("node-1"),
+				PublicKey: k1,
+				HostName:  "zeta-box",
+				DNSName:   "zeta-box.demo.ts.net.",
+				TailscaleIPs: []netip.Addr{
+					netip.MustParseAddr("fd7a:115c:a1e0::2"),
+					netip.MustParseAddr("100.64.0.2"),
+				},
+				OS:     "linux",
+				Online: true,
+			},
+			k2: {
+				ID:        tailcfg.StableNodeID("node-2"),
+				PublicKey: k2,
+				HostName:  "Alpha-Mac",
+				DNSName:   "alpha-mac.demo.ts.net.",
+				TailscaleIPs: []netip.Addr{
+					netip.MustParseAddr("100.64.0.3"),
+				},
+				OS:       "macos",
+				Online:   true,
+				LastSeen: seenAt,
+			},
+			k3: {
+				ID:        tailcfg.StableNodeID("node-3"),
+				PublicKey: k3,
+				HostName:  "beta-offline",
+				DNSName:   "beta-offline.demo.ts.net.",
+				TailscaleIPs: []netip.Addr{
+					netip.MustParseAddr("100.64.0.4"),
+				},
+				OS:       "android",
+				Online:   false,
+				LastSeen: seenAt,
+			},
+			k4: {
+				ID:        tailcfg.StableNodeID("node-4"),
+				PublicKey: k4,
+				HostName:  "aardvark-offline",
+				DNSName:   "aardvark-offline.demo.ts.net.",
+				TailscaleIPs: []netip.Addr{
+					netip.MustParseAddr("fd7a:115c:a1e0::5"),
+				},
+				OS:     "ios",
+				Online: false,
+			},
+		},
+	}
+	mb.mu.Unlock()
+
+	req, _ = http.NewRequest(http.MethodGet, baseURL+"/peers", nil)
+	req.Header.Set("Authorization", "Bearer "+ready.Token)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /peers Running: %v", err)
+	}
+	var got PeersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode Running /peers: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK || got.State != "Running" {
+		t.Fatalf("unexpected /peers status=%d body=%+v", resp.StatusCode, got)
+	}
+	if len(got.Peers) != 4 {
+		t.Fatalf("expected 4 peers (excluding self), got %d: %+v", len(got.Peers), got.Peers)
+	}
+
+	// 验证排序：在线在前（Alpha-Mac, zeta-box），再离线按名称（aardvark-offline, beta-offline）
+	wantOrder := []string{"Alpha-Mac", "zeta-box", "aardvark-offline", "beta-offline"}
+	for idx, wantName := range wantOrder {
+		if got.Peers[idx].Name != wantName {
+			t.Fatalf("peer[%d].Name = %q, want %q (all=%+v)", idx, got.Peers[idx].Name, wantName, got.Peers)
+		}
+	}
+
+	// 验证 Alpha-Mac 字段
+	p0 := got.Peers[0]
+	if p0.DNSName != "alpha-mac.demo.ts.net" || p0.ShortName != "alpha-mac" || p0.OS != "macos" || !p0.Online {
+		t.Fatalf("unexpected Alpha-Mac fields: %+v", p0)
+	}
+	if p0.LastSeen == nil || *p0.LastSeen != "2026-11-25T10:20:30Z" {
+		t.Fatalf("unexpected Alpha-Mac lastSeen: %+v", p0.LastSeen)
+	}
+
+	// 验证 zeta-box：IPv4 排在 IPv6 前面，未设置 LastSeen 时为 nil
+	p1 := got.Peers[1]
+	if len(p1.IPs) != 2 || p1.IPs[0] != "100.64.0.2" || p1.IPs[1] != "fd7a:115c:a1e0::2" {
+		t.Fatalf("expected IPv4 before IPv6 for zeta-box, got %v", p1.IPs)
+	}
+	if p1.LastSeen != nil {
+		t.Fatalf("expected nil lastSeen for zeta-box, got %v", *p1.LastSeen)
 	}
 }
