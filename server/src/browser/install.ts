@@ -2,6 +2,8 @@
 // 装在 <cosyee 目录>/agent-browser/ 下：bin 是程序，meta.json 记版本。
 // 安装 / 更新 = 查 GitHub 最新 release → 下载当前平台的单文件 → 用 API 给的 sha256 摘要校验 → 原子替换。
 // COSYEE_AGENT_BROWSER 指定了程序时只显示，不安装 / 更新。
+// 预编译单文件不带官方 skill 文档：另外按程序版本把仓库里同一 tag 的 skill-data/ 下载到 <安装目录>/skill-data，
+// 包装脚本经 AGENT_BROWSER_SKILLS_DIR 指给 `agent-browser skills`（见 skill.ts）。
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,12 +11,20 @@ import { execFile } from 'node:child_process';
 import { writeFileAtomic } from '../kiro/sanitize.js';
 import { cosyeeHome } from '../paths.js';
 import { fetchJsonLimited, LogBuffer } from '../components/common.js';
+import { readTextLimited } from '../delegate/agyCli.js';
 
 export const RELEASE_API = 'https://api.github.com/repos/vercel-labs/agent-browser/releases/latest';
 const BIN_MAX_BYTES = 200 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const TAG_RE = /^v?\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const REPO = 'vercel-labs/agent-browser';
+/** skill-data 下的文件：最多 4 层、只含安全字符（不会写到目录外面） */
+const SKILL_PATH_RE = /^skill-data(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}){2,4}$/;
+const SKILL_FILE_MAX = 512 * 1024;
+const SKILL_TOTAL_MAX = 8 * 1024 * 1024;
+const SKILL_FILES_MAX = 300;
+const SKILL_VERSION_FILE = '.version';
 
 export interface BrowserInstallOptions {
   /** 安装目录，默认 <cosyee 目录>/agent-browser */
@@ -141,6 +151,92 @@ export class BrowserInstall {
     }
   }
 
+  /** 官方 skill 文档目录（含 core/SKILL.md 时包装脚本才指给 agent-browser） */
+  skillsDir(): string {
+    return path.join(this.root(), 'skill-data');
+  }
+
+  private skillsVersion(): string | null {
+    try {
+      return fs.readFileSync(path.join(this.skillsDir(), SKILL_VERSION_FILE), 'utf8').trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private skillsJob: Promise<void> | null = null;
+
+  /**
+   * 官方 skill 文档和程序版本对不上（没下载过 / 程序更新了）时补下载；不阻塞调用方，失败下次再试。
+   * 自定义程序（COSYEE_AGENT_BROWSER，多半是 npm 装的、自带文档）和没装时不管。
+   */
+  ensureSkills(): Promise<void> {
+    if (this.skillsJob) return this.skillsJob;
+    const version = this.customPath() ? null : this.status().installed ? this.readMeta().version : null;
+    if (!version || this.skillsVersion() === version) return Promise.resolve();
+    this.skillsJob = this.downloadSkills(version)
+      .catch((e: unknown) => this.logs.append(`[cosyee] 官方 skill 文档下载失败：${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => {
+        this.skillsJob = null;
+      });
+    return this.skillsJob;
+  }
+
+  /** 从 GitHub 取 tag 下 skill-data/ 的文件清单和内容，写进临时目录再整体换上 */
+  private async downloadSkills(version: string): Promise<void> {
+    const tag = `v${version.replace(/^v/, '')}`;
+    if (!TAG_RE.test(tag)) throw new Error('版本号无效');
+    const fetchFn = this.opts.fetch ?? globalThis.fetch;
+    const tree = await fetchJsonLimited(fetchFn, `https://api.github.com/repos/${REPO}/git/trees/${encodeURIComponent(tag)}?recursive=1`, {
+      maxBytes: 16 * 1024 * 1024,
+    });
+    const items = (tree as { tree?: unknown } | null)?.tree;
+    if (!Array.isArray(items)) throw new Error('文件清单格式不对');
+    const files = items
+      .filter((t): t is { path: string; type: string; size?: unknown } => !!t && typeof t.path === 'string' && t.type === 'blob')
+      .filter((t) => t.path.startsWith('skill-data/'));
+    if (!files.some((f) => f.path === 'skill-data/core/SKILL.md')) throw new Error(`${tag} 里没有 skill-data/core/SKILL.md`);
+    if (files.length > SKILL_FILES_MAX) throw new Error('文件太多');
+    const root = this.root();
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const tmp = path.join(root, `.skill-data-${crypto.randomBytes(6).toString('hex')}`);
+    try {
+      let total = 0;
+      for (const f of files) {
+        if (!SKILL_PATH_RE.test(f.path)) continue; // 不认识的路径跳过，不写
+        if (typeof f.size === 'number' && f.size > SKILL_FILE_MAX) continue;
+        const text = await this.fetchText(fetchFn, `https://raw.githubusercontent.com/${REPO}/${encodeURIComponent(tag)}/${f.path}`);
+        total += Buffer.byteLength(text);
+        if (total > SKILL_TOTAL_MAX) throw new Error('文件总量过大');
+        const dest = path.join(tmp, f.path.slice('skill-data/'.length));
+        fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(dest, text, { mode: 0o600 });
+      }
+      fs.writeFileSync(path.join(tmp, SKILL_VERSION_FILE), version + '\n', { mode: 0o600 });
+      fs.rmSync(this.skillsDir(), { recursive: true, force: true });
+      fs.renameSync(tmp, this.skillsDir());
+      this.logs.append(`[cosyee] 已下载官方 skill 文档 ${tag}（${files.length} 个文件）`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  private async fetchText(fetchFn: typeof globalThis.fetch, url: string): Promise<string> {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30_000);
+    timer.unref?.();
+    try {
+      const res = await fetchFn(url, { headers: { 'user-agent': 'cosyee' }, signal: ac.signal });
+      if (!res.ok) throw new Error(`下载失败（HTTP ${res.status}）`);
+      return await readTextLimited(res, SKILL_FILE_MAX);
+    } catch (e) {
+      if (ac.signal.aborted) throw new Error('下载超时');
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private metaFile(): string {
     return path.join(this.root(), 'meta.json');
   }
@@ -226,6 +322,7 @@ export class BrowserInstall {
     const cur = this.status();
     if (cur.installed && cur.version === tag) {
       this.logs.append(`[cosyee] 已是最新版 ${tag}`);
+      await this.ensureSkills();
       return;
     }
     const asset = assets.find((a) => a.name === name);
@@ -247,6 +344,7 @@ export class BrowserInstall {
       fs.renameSync(tmp, this.managedPath());
       this.writeMeta({ version: ver ?? tag });
       this.logs.append(`[cosyee] 已安装 ${ver ?? tag}`);
+      await this.ensureSkills();
     } finally {
       fs.rmSync(tmp, { force: true });
     }

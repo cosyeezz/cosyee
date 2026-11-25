@@ -16,6 +16,7 @@ import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
 import { BrowserInstall } from './browser/install.js';
 import { BrowserManager } from './browser/manager.js';
+import { ensureBrowserPlugin } from './browser/skill.js';
 import { createAgyAdapter } from './components/agy.js';
 import { createBrowserAdapter } from './components/browser.js';
 import { createClaudeAdapter } from './components/claude.js';
@@ -162,7 +163,16 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       return acc ? accounts.displayName(acc) : null;
     },
   });
+  // 内置浏览器（agent-browser）：程序装在 <数据目录>/agent-browser，浏览器数据在 <数据目录>/browser；
+  // 给 Claude 的 cosyee:browser skill 是生成在 <数据目录>/claude-plugin 的本地插件
+  const dataHome = () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome());
+  const browserInstall = new BrowserInstall({ rootDir: () => path.join(dataHome(), 'agent-browser') });
+  const browserPlugin = () => {
+    void browserInstall.ensureSkills();
+    return ensureBrowserPlugin({ pluginDir: path.join(dataHome(), 'claude-plugin'), dataDir: path.join(dataHome(), 'browser'), install: browserInstall });
+  };
   const manager = new Manager({
+    pluginDir: browserPlugin,
     dots,
     sessions,
     pins,
@@ -356,9 +366,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
 
-  // 内置浏览器（agent-browser）：程序装在 <数据目录>/agent-browser，浏览器数据在 <数据目录>/browser
-  const dataHome = () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome());
-  const browserInstall = new BrowserInstall({ rootDir: () => path.join(dataHome(), 'agent-browser') });
   const browser = new BrowserManager({ install: browserInstall, dataDir: () => path.join(dataHome(), 'browser') });
 
   // 本机组件版本与自动更新。服务端自己：源码运行（没有打包注入的版本）或桌面版（带访问令牌）只显示不更新
@@ -440,7 +447,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       const origin = req.headers.origin;
       if (!originAllowed(typeof origin === 'string' ? origin : undefined, actualPort, bindHost)) return reject(403, 'Forbidden');
       if (url.pathname === '/api/browser/stream') {
-        browserWss.handleUpgrade(req, socket, head, (ws) => void browser.attach(ws));
+        browserWss.handleUpgrade(req, socket, head, (ws) => void browser.attach(ws, url.searchParams.get('profile')));
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));

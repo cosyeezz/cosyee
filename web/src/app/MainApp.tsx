@@ -140,7 +140,7 @@ export function MainApp() {
   const [browserOpen, setBrowserOpen] = useState(false);
   const closeBrowser = useCallback(() => setBrowserOpen(false), []);
   const onBrowserPick = useCallback(
-    (r: BrowserPickResult) => composerRef.current?.insertChips([{ kind: 'el', path: r.item.path, token: r.item.previewToken }]) ?? false,
+    (r: BrowserPickResult) => composerRef.current?.insertChips([{ kind: 'el', path: r.text }]) ?? false,
     [],
   );
   useEffect(() => {

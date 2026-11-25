@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import type { Attachment, PreviewInfo } from '@cosyee/shared';
+import { isElementRef, type Attachment, type PreviewInfo } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { parseQuotes } from '../../core/quote';
 import { api } from '../../core/api';
@@ -46,6 +46,7 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
       if (paste) return api.pasteInfo(paste);
       const element = elementName(path);
       if (element) return api.elementInfo(`${element}.md`);
+      if (isElementRef(path)) throw new Error('element ref'); // 定位文字本身就是内容，没有文件
       if (!session) throw new Error('no session');
       const p = await api.filePreview({ session, cwd, path });
       const dir = p.kind === 'directory';

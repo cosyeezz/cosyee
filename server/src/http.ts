@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXEC_CODE_LIMIT, SKILL_MODES, type Account, type Bootstrap, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
+import { EXEC_CODE_LIMIT, SKILL_MODES, type Account, type Bootstrap, type BrowserPickResult, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
 import type { AgyAccounts } from './accounts/agy.js';
 import { type Accounts, RunningError } from './accounts/index.js';
 import type { KiroService } from './kiro/index.js';
@@ -29,7 +29,7 @@ import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
 import { type ComponentUpdater, componentRoutes } from './components/updater.js';
 import type { BrowserManager } from './browser/manager.js';
-import { elementTarget, toElement } from './browser/elements.js';
+import { elementTarget, elementText, toElement } from './browser/elements.js';
 import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
@@ -421,15 +421,29 @@ export function createHandler(deps: HttpDeps) {
       return { x, y };
     };
     if (method === 'GET' && p === '/api/browser') return sendJson(res, 200, browser.status());
+    // 身份管理：新建 / 改名 / 删除（连登录状态一起删）/ 停止（关掉它的浏览器，登录状态保留）
+    if (method === 'POST' && p === '/api/browser/profiles') return sendJson(res, 200, browser.createProfile((await readJson(req)).name));
+    let pm: RegExpExecArray | null;
+    if (method === 'POST' && (pm = /^\/api\/browser\/profiles\/([^/]+)\/(rename|delete|stop)$/.exec(p))) {
+      const id = decodeURIComponent(pm[1]!);
+      if (pm[2] === 'rename') return sendJson(res, 200, browser.renameProfile(id, (await readJson(req)).name));
+      if (pm[2] === 'delete') await browser.deleteProfile(id);
+      else await browser.stopProfile(id);
+      return sendJson(res, 200, { ok: true });
+    }
+    // 下面的操作都针对一个身份：body.profile，不传用默认身份
+    const profileOf = (b: Json) => (b.profile === undefined || b.profile === null ? undefined : String(b.profile));
+    const session = (b: Json) => browser.session(profileOf(b));
     if (method === 'POST' && p === '/api/browser/open') {
-      const url = (await readJson(req)).url;
-      if (typeof url !== 'string') throw new HttpError(400, '缺少 url');
-      return sendJson(res, 200, await browser.open(url));
+      const b = await readJson(req);
+      if (typeof b.url !== 'string') throw new HttpError(400, '缺少 url');
+      return sendJson(res, 200, await session(b).open(b.url));
     }
     if (method === 'POST' && p === '/api/browser/nav') {
-      const action = (await readJson(req)).action;
+      const b = await readJson(req);
+      const action = b.action;
       if (action !== 'back' && action !== 'forward' && action !== 'reload') throw new HttpError(400, 'action 不合法');
-      await browser.nav(action);
+      await session(b).nav(action);
       return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST' && p === '/api/browser/viewport') {
@@ -438,18 +452,20 @@ export function createHandler(deps: HttpDeps) {
       const h = Number(b.height);
       const s = Number(b.scale ?? 1);
       if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(s)) throw new HttpError(400, '视口参数不合法');
-      await browser.viewport(w, h, s);
+      await session(b).viewport(w, h, s);
       return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST' && p === '/api/browser/hover') {
-      const { x, y } = point(await readJson(req));
-      return sendJson(res, 200, await browser.hover(x, y));
+      const b = await readJson(req);
+      const { x, y } = point(b);
+      return sendJson(res, 200, await session(b).hover(x, y));
     }
     if (method === 'POST' && p === '/api/browser/pick') {
-      const { x, y } = point(await readJson(req));
-      const out = await browser.pick(x, y);
-      const [item] = deps.previews.register([{ path: out.md, kind: 'file' }]);
-      return sendJson(res, 200, { item, element: toElement(out.raw) });
+      const b = await readJson(req);
+      const { x, y } = point(b);
+      const raw = await session(b).pick(x, y);
+      const out: BrowserPickResult = { text: elementText(raw, browser.profile(profileOf(b))), element: toElement(raw) };
+      return sendJson(res, 200, out);
     }
     // 按文件名读抓取的元素（会话流里历史标签没有预览令牌）：只认生成的文件名
     let m: RegExpExecArray | null;

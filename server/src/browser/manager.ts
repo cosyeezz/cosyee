@@ -1,4 +1,6 @@
-// 内置浏览器：用 agent-browser 驱动一个 cosyee 专用的 Chrome（无界面，独立 profile，登录状态长期保存）。
+// 内置浏览器：用 agent-browser 驱动 cosyee 专用的 Chrome（无界面，登录状态长期保存）。
+// 支持多个「身份」：每个身份一个独立的 profile 目录和 agent-browser 会话（各自一个 Chrome，可同时运行），
+// 同一个网站可以在不同身份里登录不同账号。
 // 画面靠 agent-browser 自带的 stream（WebSocket 推 JPEG 帧、收鼠标键盘输入），本进程转发给前端；
 // 导航 / 视口 / 悬停 / 抓取元素走 CLI（命令很快，约 10ms；首次启动浏览器约 4s）。
 import crypto from 'node:crypto';
@@ -6,18 +8,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { WebSocket } from 'ws';
-import type { BrowserHover, BrowserStatus } from '@cosyee/shared';
+import type { BrowserHover, BrowserProfile, BrowserProfileStatus, BrowserStatus } from '@cosyee/shared';
 import { cosyeeHome } from '../paths.js';
 import { HttpError } from '../workspaces.js';
 import type { BrowserInstall } from './install.js';
-import { elementMarkdown, newElementFiles, parseRawPick, pickScript, toElement, unmarkScript, type RawPick } from './elements.js';
+import { parseRawPick, pickScript, type RawPick } from './elements.js';
 
 const NAMESPACE = 'cosyee';
 const SESSION = 'cosyee';
+/** 默认身份：沿用最早的 profile 目录和会话名，升级后原来的登录状态还在 */
+export const DEFAULT_PROFILE = 'default';
+const DEFAULT_NAME = '默认';
+const MAX_PROFILES = 20;
+const MAX_NAME = 32;
 const CMD_TIMEOUT_MS = 30_000;
 const OPEN_TIMEOUT_MS = 60_000;
 const KEEPALIVE_MS = 5 * 60_000;
-const MAX_PNG = 4 * 1024 * 1024;
 /** 前端可以发给浏览器的消息类型（其余丢弃） */
 const INPUT_TYPES = new Set(['input_mouse', 'input_keyboard', 'input_touch', 'ack']);
 const CLIENT_MSG_MAX = 64 * 1024;
@@ -27,12 +33,6 @@ export interface BrowserManagerOptions {
   /** 数据目录（profile、UA、抓取的元素），默认 <cosyee 目录>/browser */
   dataDir?: () => string;
   namespace?: string;
-}
-
-export interface PickOutput {
-  md: string;
-  png: string | null;
-  raw: RawPick;
 }
 
 /** 地址栏输入 → 可打开的地址；不接受 http(s) / about:blank 以外的协议 */
@@ -65,7 +65,18 @@ export function normalizeUrl(input: string): string {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, Math.round(v)));
 
-export class BrowserManager {
+interface SessionOptions {
+  install: BrowserInstall;
+  namespace: string;
+  /** agent-browser 会话名 */
+  session: string;
+  profileDir: string;
+  /** 改好的 UA（各身份共用一份） */
+  uaFile: string;
+}
+
+/** 一个身份对应的浏览器：命令串行执行，画面推流转发给前端 */
+class BrowserSession {
   private queue: Promise<unknown> = Promise.resolve();
   private started = false;
   private ua: string | null = null;
@@ -76,30 +87,21 @@ export class BrowserManager {
   private keepalive: NodeJS.Timeout | null = null;
   private last: { url: string | null; title: string | null } = { url: null, title: null };
 
-  constructor(private readonly opts: BrowserManagerOptions) {}
-
-  private dataDir(): string {
-    return this.opts.dataDir ? this.opts.dataDir() : path.join(cosyeeHome(), 'browser');
-  }
-
-  private ns(): string {
-    return this.opts.namespace ?? NAMESPACE;
-  }
+  constructor(private readonly opts: SessionOptions) {}
 
   /** 程序路径（写进元素描述，让 Claude 能接着操作同一个浏览器） */
   binPath(): string | null {
     return this.opts.install.binPath();
   }
 
-  /** 正在看画面的窗口数（组件面板「使用中」） */
+  /** 正在看画面的窗口数 */
   busy(): number {
     return this.clients.size;
   }
 
   /** 启动参数：每条命令都要一致，否则 agent-browser 会重启浏览器 */
   private launchArgs(withUa: boolean): string[] {
-    const profile = path.join(this.dataDir(), 'profile');
-    const args = ['--namespace', this.ns(), '--session', SESSION, '--profile', profile, '--idle-timeout', '1h'];
+    const args = ['--namespace', this.opts.namespace, '--session', this.opts.session, '--profile', this.opts.profileDir, '--idle-timeout', '1h'];
     if (withUa && this.ua) args.push('--user-agent', this.ua);
     return args;
   }
@@ -108,17 +110,11 @@ export class BrowserManager {
     return ['--json', ...this.launchArgs(withUa)];
   }
 
-  /** 给 Claude 的命令前缀（写进元素描述） */
-  private cliPrefix(): string[] | null {
-    const bin = this.binPath();
-    return bin ? [bin, ...this.launchArgs(true)] : null;
-  }
-
   /** 跑一条命令，返回 data；失败抛 HttpError(502) */
   private exec(args: string[], timeoutMs = CMD_TIMEOUT_MS, withUa = true): Promise<Record<string, unknown>> {
     const bin = this.binPath();
     if (!bin) return Promise.reject(new HttpError(409, '内置浏览器未安装，请在浏览器面板或客户端「本机服务」里安装'));
-    fs.mkdirSync(path.join(this.dataDir(), 'profile'), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(this.opts.profileDir, { recursive: true, mode: 0o700 });
     return new Promise((resolve, reject) => {
       execFile(
         bin,
@@ -154,7 +150,7 @@ export class BrowserManager {
    */
   private async ensureUa(): Promise<void> {
     if (this.ua) return;
-    const file = path.join(this.dataDir(), 'ua.txt');
+    const file = this.opts.uaFile;
     try {
       const s = fs.readFileSync(file, 'utf8').trim();
       if (s && s.length < 500 && !/[\r\n]/.test(s)) {
@@ -166,7 +162,7 @@ export class BrowserManager {
     const real = typeof d.result === 'string' ? d.result : '';
     if (!real) return;
     const ua = real.replace(/HeadlessChrome\//g, 'Chrome/');
-    fs.mkdirSync(this.dataDir(), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, ua + '\n', { mode: 0o600 });
     this.ua = ua;
   }
@@ -186,8 +182,8 @@ export class BrowserManager {
     if (typeof d.title === 'string') this.last.title = d.title;
   }
 
-  status(): BrowserStatus {
-    return { installed: this.binPath() !== null, running: this.started, url: this.last.url, title: this.last.title };
+  status(): { running: boolean; url: string | null; title: string | null; viewers: number } {
+    return { running: this.started, url: this.last.url, title: this.last.title, viewers: this.clients.size };
   }
 
   /** 启动（或复用）浏览器，确保画面推流已开，返回推流端口 */
@@ -252,7 +248,7 @@ export class BrowserManager {
         const { x, y, resolve } = this.hoverNext;
         this.hoverNext = null;
         try {
-          const r = parseRawPick(await this.serial(() => this.evalJs(pickScript(x, y, null, true))));
+          const r = parseRawPick(await this.serial(() => this.evalJs(pickScript(x, y, true))));
           resolve(r ? { rect: r.rect, label: r.label } : null);
         } catch {
           resolve(null);
@@ -263,38 +259,18 @@ export class BrowserManager {
     }
   }
 
-  /** 抓取 (x, y) 处的元素：写描述文件和截图 */
-  pick(x: number, y: number): Promise<PickOutput> {
+  /** 抓取 (x, y) 处的元素 */
+  pick(x: number, y: number): Promise<RawPick> {
     return this.serial(async () => {
-      const mark = crypto.randomBytes(8).toString('hex');
-      const raw = parseRawPick(await this.evalJs(pickScript(x, y, mark, false)));
+      const raw = parseRawPick(await this.evalJs(pickScript(x, y, false)));
       if (!raw) throw new HttpError(404, '这个位置没有元素');
-      const files = newElementFiles();
-      let png: string | null = null;
-      try {
-        if (!raw.inFrame && !raw.inShadow && raw.rect.width >= 1 && raw.rect.height >= 1) {
-          try {
-            await this.run(['screenshot', `[data-cosyee-pick="${mark}"]`, files.png]);
-            const st = fs.statSync(files.png);
-            if (st.isFile() && st.size > 0 && st.size <= MAX_PNG) {
-              fs.chmodSync(files.png, 0o600);
-              png = files.png;
-            } else fs.rmSync(files.png, { force: true });
-          } catch {
-            fs.rmSync(files.png, { force: true });
-          }
-        }
-      } finally {
-        await this.evalJs(unmarkScript(mark)).catch(() => { /* 页面可能已跳走 */ });
-      }
-      fs.writeFileSync(files.md, elementMarkdown(raw, { png, cli: this.cliPrefix() }), { mode: 0o600 });
       this.last.url = raw.url;
       this.last.title = raw.title;
-      return { md: files.md, png, raw };
+      return raw;
     });
   }
 
-  /** 关闭浏览器（更新程序前调用） */
+  /** 关闭浏览器（更新程序前、停止或删除身份时调用） */
   async close(): Promise<void> {
     for (const c of this.clients) c.close(1001, 'closing');
     if (!this.started || !this.binPath()) return;
@@ -369,5 +345,183 @@ export class BrowserManager {
     this.keepalive = null;
     for (const c of this.clients) c.terminate();
     this.clients.clear();
+  }
+}
+
+/** 身份名：去掉首尾空白，不能为空、不能有控制字符 */
+export function normalizeProfileName(input: unknown): string {
+  if (typeof input !== 'string') throw new HttpError(400, '缺少名称');
+  const s = input.trim();
+  if (!s) throw new HttpError(400, '名称不能为空');
+  if ([...s].length > MAX_NAME) throw new HttpError(400, `名称不能超过 ${MAX_NAME} 个字`);
+  if (/[\u0000-\u001f\u007f]/.test(s)) throw new HttpError(400, '名称含有不可见字符');
+  return s;
+}
+
+const PROFILE_ID = /^[0-9a-f]{8}$/;
+
+/** 内置浏览器：管理多个身份，每个身份一个 BrowserSession（按需创建，可同时运行） */
+export class BrowserManager {
+  private sessions = new Map<string, BrowserSession>();
+  private profiles: BrowserProfile[] | null = null;
+
+  constructor(private readonly opts: BrowserManagerOptions) {}
+
+  private dataDir(): string {
+    return this.opts.dataDir ? this.opts.dataDir() : path.join(cosyeeHome(), 'browser');
+  }
+
+  private listFile(): string {
+    return path.join(this.dataDir(), 'profiles.json');
+  }
+
+  /** 身份的 profile 目录：默认身份沿用 <数据目录>/profile */
+  private profileDir(id: string): string {
+    return id === DEFAULT_PROFILE ? path.join(this.dataDir(), 'profile') : path.join(this.dataDir(), 'profiles', id);
+  }
+
+  /** 身份列表，默认身份总在第一个 */
+  private list(): BrowserProfile[] {
+    if (this.profiles) return this.profiles;
+    let saved: BrowserProfile[] = [];
+    try {
+      const j = JSON.parse(fs.readFileSync(this.listFile(), 'utf8')) as { profiles?: unknown };
+      if (Array.isArray(j.profiles)) {
+        saved = j.profiles.filter((p): p is BrowserProfile =>
+          !!p && typeof p === 'object' && typeof (p as BrowserProfile).name === 'string'
+          && ((p as BrowserProfile).id === DEFAULT_PROFILE || PROFILE_ID.test(String((p as BrowserProfile).id))));
+      }
+    } catch { /* 没有文件：只有默认身份 */ }
+    const def = saved.find((p) => p.id === DEFAULT_PROFILE) ?? { id: DEFAULT_PROFILE, name: DEFAULT_NAME };
+    this.profiles = [def, ...saved.filter((p) => p.id !== DEFAULT_PROFILE)].map((p) => ({ id: p.id, name: p.name }));
+    return this.profiles;
+  }
+
+  private save(list: BrowserProfile[]): void {
+    fs.mkdirSync(this.dataDir(), { recursive: true, mode: 0o700 });
+    const tmp = `${this.listFile()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ profiles: list }, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(tmp, this.listFile());
+    this.profiles = list;
+  }
+
+  private find(id: string): BrowserProfile {
+    const p = this.list().find((x) => x.id === id);
+    if (!p) throw new HttpError(404, '没有这个浏览器身份');
+    return p;
+  }
+
+  /** 身份的 id 和名字（写进抓取元素的定位文字） */
+  profile(id: string = DEFAULT_PROFILE): { id: string; name: string } {
+    const p = this.find(id);
+    return { id: p.id, name: p.name };
+  }
+
+  /** 身份对应的浏览器；没传身份用默认身份 */
+  session(id: string = DEFAULT_PROFILE): BrowserSession {
+    this.find(id);
+    let s = this.sessions.get(id);
+    if (!s) {
+      s = new BrowserSession({
+        install: this.opts.install,
+        namespace: this.opts.namespace ?? NAMESPACE,
+        session: id === DEFAULT_PROFILE ? SESSION : `${SESSION}-${id}`,
+        profileDir: this.profileDir(id),
+        uaFile: path.join(this.dataDir(), 'ua.txt'),
+      });
+      this.sessions.set(id, s);
+    }
+    return s;
+  }
+
+  private profileStatus(p: BrowserProfile): BrowserProfileStatus {
+    const s = this.sessions.get(p.id)?.status();
+    return { id: p.id, name: p.name, running: s?.running ?? false, url: s?.url ?? null, title: s?.title ?? null, viewers: s?.viewers ?? 0 };
+  }
+
+  status(): BrowserStatus {
+    return { installed: this.binPath() !== null, profiles: this.list().map((p) => this.profileStatus(p)) };
+  }
+
+  private checkName(name: string, except?: string): void {
+    const k = name.toLowerCase();
+    if (this.list().some((p) => p.id !== except && p.name.toLowerCase() === k)) throw new HttpError(409, '已经有同名的身份');
+  }
+
+  createProfile(input: unknown): BrowserProfileStatus {
+    const name = normalizeProfileName(input);
+    const list = this.list();
+    if (list.length >= MAX_PROFILES) throw new HttpError(409, `最多 ${MAX_PROFILES} 个身份`);
+    this.checkName(name);
+    let id: string;
+    do id = crypto.randomBytes(4).toString('hex');
+    while (list.some((p) => p.id === id));
+    const p = { id, name };
+    this.save([...list, p]);
+    return this.profileStatus(p);
+  }
+
+  renameProfile(id: string, input: unknown): BrowserProfileStatus {
+    const name = normalizeProfileName(input);
+    this.find(id);
+    this.checkName(name, id);
+    const list = this.list().map((p) => (p.id === id ? { ...p, name } : p));
+    this.save(list);
+    return this.profileStatus(this.find(id));
+  }
+
+  /** 关掉这个身份的浏览器（登录状态保留） */
+  async stopProfile(id: string): Promise<void> {
+    this.find(id);
+    await this.sessions.get(id)?.close();
+  }
+
+  /** 删除身份：关掉浏览器并删掉它的 profile 目录（登录状态一起删）；默认身份不能删 */
+  async deleteProfile(id: string): Promise<void> {
+    if (id === DEFAULT_PROFILE) throw new HttpError(400, '默认身份不能删除');
+    this.find(id);
+    const s = this.sessions.get(id);
+    if (s) {
+      await s.close();
+      s.dispose();
+      this.sessions.delete(id);
+    }
+    this.save(this.list().filter((p) => p.id !== id));
+    fs.rmSync(this.profileDir(id), { recursive: true, force: true });
+  }
+
+  binPath(): string | null {
+    return this.opts.install.binPath();
+  }
+
+  /** 正在看画面的窗口数（组件面板「使用中」） */
+  busy(): number {
+    let n = 0;
+    for (const s of this.sessions.values()) n += s.busy();
+    return n;
+  }
+
+  /** 关闭所有身份的浏览器（更新程序前调用） */
+  async close(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((s) => s.close()));
+  }
+
+  /** 前端画面连接；身份不存在时回一条错误再断开 */
+  async attach(client: WebSocket, id: string | null): Promise<void> {
+    let s: BrowserSession;
+    try {
+      s = this.session(id || DEFAULT_PROFILE);
+    } catch (e) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 'cosyee_error', message: e instanceof Error ? e.message : String(e) }));
+        client.close();
+      }
+      return;
+    }
+    return s.attach(client);
+  }
+
+  dispose(): void {
+    for (const s of this.sessions.values()) s.dispose();
   }
 }

@@ -10,6 +10,8 @@ const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator
 const DOUBLE_CLICK_MS = 400;
 
 export interface BrowserViewProps {
+  /** 身份 id */
+  profile: string;
   canvasRef: RefObject<HTMLCanvasElement>;
   stream: BrowserStream;
   capture: boolean;
@@ -18,7 +20,7 @@ export interface BrowserViewProps {
   onError: (message: string) => void;
 }
 
-export function BrowserView({ canvasRef, stream, capture, onCancelCapture, onPicked, onError }: BrowserViewProps) {
+export function BrowserView({ profile, canvasRef, stream, capture, onCancelCapture, onPicked, onError }: BrowserViewProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const imeRef = useRef<HTMLTextAreaElement>(null);
   const [stage, setStage] = useState<PageSize | null>(null);
@@ -45,10 +47,10 @@ export function BrowserView({ canvasRef, stream, capture, onCancelCapture, onPic
   useEffect(() => {
     if (!stage || state !== 'open' || stage.width < 10 || stage.height < 10) return;
     const t = window.setTimeout(() => {
-      api.browserViewport(stage.width, stage.height, window.devicePixelRatio || 1).catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
+      api.browserViewport(profile, stage.width, stage.height, window.devicePixelRatio || 1).catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
     }, 200);
     return () => window.clearTimeout(t);
-  }, [stage, state, onError]);
+  }, [profile, stage, state, onError]);
 
   useEffect(() => {
     if (!capture) setHover(null);
@@ -71,24 +73,24 @@ export function BrowserView({ canvasRef, stream, capture, onCancelCapture, onPic
       while (hoverNext.current) {
         const q = hoverNext.current;
         hoverNext.current = null;
-        const h = await api.browserHover(q.x, q.y).catch(() => null);
+        const h = await api.browserHover(profile, q.x, q.y).catch(() => null);
         if (captureRef.current) setHover(h);
       }
     } finally {
       hoverBusy.current = false;
     }
-  }, []);
+  }, [profile]);
 
   const pick = useCallback(async (p: { x: number; y: number }) => {
     setPicking(true);
     try {
-      onPicked(await api.browserPick(p.x, p.y));
+      onPicked(await api.browserPick(profile, p.x, p.y));
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
       setPicking(false);
     }
-  }, [onPicked, onError]);
+  }, [profile, onPicked, onError]);
 
   // 滚轮要能 preventDefault（不让外层滚动），React 的 onWheel 是被动监听，只能自己挂
   useEffect(() => {

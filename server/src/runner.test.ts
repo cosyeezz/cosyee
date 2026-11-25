@@ -989,3 +989,12 @@ describe('inject（委派任务完成通知）', () => {
     expect(anyR.intentional).toBe(true);
   });
 });
+
+describe('内置浏览器插件', () => {
+  it('buildArgs 带 --plugin-dir；没有时不带', () => {
+    const a = buildArgs('sid', true, cfg, {}, { pluginDir: '/x/claude-plugin' });
+    expect(a[a.indexOf('--plugin-dir') + 1]).toBe('/x/claude-plugin');
+    expect(buildArgs('sid', true, cfg)).not.toContain('--plugin-dir');
+    expect(buildArgs('sid', true, cfg, {}, { pluginDir: null })).not.toContain('--plugin-dir');
+  });
+});

@@ -1,7 +1,7 @@
 // 标签预览浮窗：贴在标签上方（空间不够则下方），无遮罩，不抢焦点。
 // 不含任何可聚焦元素；容器 mousedown 默认 preventDefault，使焦点留在编辑区（路径文字除外，允许选中复制）。
 import { useEffect, useLayoutEffect, useState } from 'react';
-import type { PreviewInfo } from '@cosyee/shared';
+import { parseElementRef, type ElementRef, type PreviewInfo } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { elementName } from '../../core/composer';
 import { Icon } from '../icons/Icon';
@@ -51,13 +51,15 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
   const isImage = chip.kind === 'img';
   // 抓取的元素：描述文件旁边有同名截图（iframe / shadow DOM 里的元素没有截图，加载失败就不显示）
   const element = chip.kind === 'el' ? elementName(chip.path) : null;
+  // 新版抓取的元素：标签里就是定位文字，拆成字段显示
+  const ref = chip.kind === 'el' ? parseElementRef(chip.path) : null;
   const [pos, setPos] = useState<Place>(() => place(anchor));
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
 
   // 取文件信息（大小 / 修改时间）
   useEffect(() => {
-    if (!token) return;
+    if (!token || ref) return;
     let cancelled = false;
     previewInfo(token).then((i) => { if (!cancelled) setInfo(i); }).catch(() => { /* 信息拿不到就只显示路径 */ });
     return () => { cancelled = true; };
@@ -122,10 +124,14 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
           <img src={rawUrl} alt={chip.label} onError={() => setImgFailed(true)} />
         </div>
       )}
-      <div className="cz-preview__head">
-        <Icon name={CHIP_ICON[chip.kind]} size={16} />
-        <span className="cz-preview__path">{path}</span>
-      </div>
+      {ref ? (
+        <ElementCard r={ref} />
+      ) : (
+        <div className="cz-preview__head">
+          <Icon name={CHIP_ICON[chip.kind]} size={16} />
+          <span className="cz-preview__path">{path}</span>
+        </div>
+      )}
       {meta.length > 0 && <div className="cz-preview__meta">{meta.join(' · ')}</div>}
       {onRemove && (
         <button type="button" className="cz-preview__remove" onClick={() => { onRemove(); onClose(); }}>
@@ -134,5 +140,31 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
         </button>
       )}
     </div>
+  );
+}
+
+/** 抓取元素的预览：选择器可选中复制，其余字段按行列出 */
+function ElementCard({ r }: { r: ElementRef }) {
+  const rows: [string, string][] = [];
+  if (r.text) rows.push(['文字', r.text]);
+  if (r.where) rows.push(['位置', r.where === 'iframe' ? '在 iframe 里（选择器相对 iframe 的文档）' : '在 shadow DOM 里（选择器相对所在的 shadow root）']);
+  if (r.url) rows.push(['页面', r.url]);
+  rows.push(['身份', r.profile.name || r.profile.id]);
+  return (
+    <>
+      <div className="cz-preview__head">
+        <Icon name={CHIP_ICON.el} size={16} />
+        <span className="cz-preview__title">内置浏览器元素 &lt;{r.tag}&gt;</span>
+      </div>
+      <div className="cz-preview__path cz-preview__sel">{r.selector}</div>
+      <dl className="cz-preview__fields">
+        {rows.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </>
   );
 }

@@ -373,14 +373,28 @@ export interface BrowserRect {
   height: number;
 }
 
+/** 浏览器身份：每个身份一份独立的登录状态（profile），同一网站可以在不同身份里登录不同账号 */
+export interface BrowserProfile {
+  /** 'default' 是默认身份（不能删除），其余是 8 位十六进制 */
+  id: string;
+  name: string;
+}
+
+export interface BrowserProfileStatus extends BrowserProfile {
+  /** 这个身份的后台浏览器是否在运行（各身份可以同时运行） */
+  running: boolean;
+  url: string | null;
+  title: string | null;
+  /** 正在看画面的窗口数 */
+  viewers: number;
+}
+
 /** GET /api/browser：内置浏览器的状态 */
 export interface BrowserStatus {
   /** agent-browser 是否已安装（没装时面板里直接安装） */
   installed: boolean;
-  /** 后台浏览器是否在运行 */
-  running: boolean;
-  url: string | null;
-  title: string | null;
+  /** 身份列表，默认身份在第一个 */
+  profiles: BrowserProfileStatus[];
 }
 
 /** 抓取模式里鼠标悬停的元素（只用于画高亮框） */
@@ -408,7 +422,8 @@ export interface BrowserElement {
 
 /** POST /api/browser/pick：元素描述存成文件后，按「选出的文件」登记，前端当附件标签用 */
 export interface BrowserPickResult {
-  item: PickedItem;
+  /** 插进输入框的一行定位文字 */
+  text: string;
   element: BrowserElement;
 }
 

@@ -1,8 +1,9 @@
 // 输入框的文档模型与序列化（纯函数，无副作用）。
 // 发送时：标签 → `@"<绝对路径>"`；加载历史 / 实时回显时：把 `@"..."` 还原成占位名 + attachments。
-import type { Attachment, PickedItem } from '@cosyee/shared';
+// 内置浏览器抓取的元素（el）例外：标签里存的是一行定位文字 ⟦内置浏览器元素｜…⟧，发出去就是这行文字本身。
+import { ELEMENT_REF_HEAD, isElementRef, type Attachment, type PickedItem } from '@cosyee/shared';
 
-/** el = 内置浏览器里抓取的页面元素（路径是服务端生成的元素描述文件） */
+/** el = 内置浏览器里抓取的页面元素（path 是定位文字；早期版本是服务端生成的元素描述文件路径） */
 export type ChipKind = 'file' | 'img' | 'folder' | 'el';
 
 export type Segment =
@@ -52,7 +53,7 @@ export function trimSegments(segments: Segment[]): Segment[] {
  * 这里保留原样不转义；解析侧用「引号后紧跟空白/标点/结尾」判定结束，所以多数情况下仍可往返。
  */
 export function mention(path: string): string {
-  return `@"${path}"`;
+  return isElementRef(path) ? path : `@"${path}"`;
 }
 
 /**
@@ -97,6 +98,7 @@ export function elementName(path: string): string | null {
  *  - 否则 file（以点开头的隐藏文件如 .gitignore 视为 file）
  */
 export function guessKind(path: string): ChipKind {
+  if (isElementRef(path)) return 'el';
   if (/[\\/]$/.test(path)) return 'folder';
   if (elementName(path)) return 'el';
   const base = path.split(/[\\/]/).pop() ?? '';
@@ -110,8 +112,12 @@ export function guessKind(path: string): ChipKind {
 // 引用必须出现在行首 / 空白 / 开括号引号之后，避免误判 email@x.com
 // 带引号：@"..."，到「引号 + 结尾/空白/常见标点」为止（惰性匹配）
 // 不带引号：@ 后必须是 盘符:\ 盘符:/ / \ \\ ~/ ~\ 之一，到空白为止（所以 @someone 不算）
-const MENTION_RE =
-  /(?<=^|[\s(（[「“'])@(?:"([^\n]+?)"(?=$|[\s,.;:!?)\]，。；：！？）])|((?:[A-Za-z]:[\\/]|[\\/]|~[\\/])[^\s"]+))/g;
+// 第三种：抓取元素的定位文字 ⟦内置浏览器元素｜…⟧（整段当作一个标签，前后不要求空白）
+const MENTION_RE = new RegExp(
+  /(?<=^|[\s(（[「“'])@(?:"([^\n]+?)"(?=$|[\s,.;:!?)\]，。；：！？）])|((?:[A-Za-z]:[\\/]|[\\/]|~[\\/])[^\s"]+))/.source +
+    `|(${ELEMENT_REF_HEAD}｜[^⟧\\n]{1,4000}⟧)`,
+  'g',
+);
 const TRAILING_PUNCT_RE = /[,.;:!?)\]}，。；：！？）]+$/;
 
 /**
@@ -123,8 +129,8 @@ const TRAILING_PUNCT_RE = /[,.;:!?)\]}，。；：！？）]+$/;
 export function parseUserText(text: string): { userText: string; attachments: Attachment[] } {
   const attachments: Attachment[] = [];
   const n: Record<ChipKind, number> = { file: 0, img: 0, folder: 0, el: 0 };
-  const userText = text.replace(MENTION_RE, (_all, quoted: string | undefined, bare: string | undefined) => {
-    let path = quoted ?? bare ?? '';
+  const userText = text.replace(MENTION_RE, (_all, quoted: string | undefined, bare: string | undefined, ref: string | undefined) => {
+    let path = quoted ?? bare ?? ref ?? '';
     let tail = '';
     if (bare !== undefined) {
       const m = TRAILING_PUNCT_RE.exec(path);
@@ -173,9 +179,9 @@ export function splitMentions(text: string): Segment[] {
     else out.push({ t: 'text', text: s });
   };
   for (const m of text.matchAll(MENTION_RE)) {
-    let path = m[1] ?? m[2] ?? '';
+    let path = m[1] ?? m[2] ?? m[3] ?? '';
     let tail = '';
-    if (m[1] === undefined) {
+    if (m[2] !== undefined) {
       const t = TRAILING_PUNCT_RE.exec(path);
       if (t) {
         tail = t[0];

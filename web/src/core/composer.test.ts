@@ -170,3 +170,32 @@ describe('splitMentions', () => {
     expect(splitMentions('')).toEqual([]);
   });
 });
+
+describe('内置浏览器元素（标签里是定位文字）', () => {
+  const ref = '⟦内置浏览器元素｜<button>｜选择器 `button[aria-label="新建 会话"]`｜页面 https://example.com/a?b=1｜身份 默认（default）⟧';
+
+  it('发出去是定位文字本身，不是 @ 引用', () => {
+    expect(serialize([{ t: 'text', text: '看看' }, { t: 'chip', kind: 'el', path: ref, label: 'el1' }, { t: 'text', text: '为什么点不动' }])).toBe(
+      `看看 ${ref} 为什么点不动`,
+    );
+  });
+
+  it('历史消息里还原成标签，复制时展开回原文', () => {
+    const text = `看看${ref}，还有 @"/a/b.ts"`;
+    const { userText, attachments } = parseUserText(text);
+    expect(userText).toBe('看看el1，还有 file1');
+    expect(attachments).toEqual([
+      { kind: 'el', label: 'el1', path: ref },
+      { kind: 'file', label: 'file1', path: '/a/b.ts' },
+    ]);
+    expect(expandLabels(userText, attachments)).toBe(`看看${ref}，还有 @"/a/b.ts"`);
+  });
+
+  it('撤回时拆回标签', () => {
+    expect(splitMentions(`x ${ref} y`)).toEqual([
+      { t: 'text', text: 'x ' },
+      { t: 'chip', kind: 'el', path: ref, label: '' },
+      { t: 'text', text: ' y' },
+    ]);
+  });
+});

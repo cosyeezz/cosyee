@@ -1,16 +1,20 @@
 // 内置浏览器面板（agent-browser 驱动的 cosyee 专用 Chrome，登录状态长期保存）。
 // 宽屏时停靠在窗口右侧，把主界面往左挤（输入框始终可见，抓到的元素直接进输入框）；窄屏 / 最大化时铺满。
-// 抓取模式：悬停高亮元素，点击后服务端把元素的位置 / 选择器 / 文字 / HTML 写成描述文件，按附件标签插进输入框。
+// 抓取模式：悬停高亮元素，点击后服务端生成一行定位文字（唯一选择器 / 文字 / 页面 / 身份），按附件标签插进输入框，发送时就是这行文字。
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import type { BrowserPickResult, BrowserStatus } from '@cosyee/shared';
+import type { BrowserPickResult, BrowserProfileStatus, BrowserStatus } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { Icon } from '../icons/Icon';
 import { NARROW_QUERY, useMediaQuery } from '../layout/useMediaQuery';
 import { BrowserView } from './BrowserView';
+import { ProfileMenu } from './ProfileMenu';
 import { useBrowserStream } from './useBrowserStream';
 import './BrowserPanel.css';
 
 const WIDTH_KEY = 'cosyee.browser.width';
+/** 上次用的身份 */
+const PROFILE_KEY = 'cosyee.browser.profile';
+const DEFAULT_PROFILE = 'default';
 const MIN_W = 360;
 /** 主界面至少留这么宽 */
 const MIN_REST = 420;
@@ -47,20 +51,48 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [profile, setProfileState] = useState(() => localStorage.getItem(PROFILE_KEY) || DEFAULT_PROFILE);
+  const setProfile = useCallback((id: string) => {
+    setProfileState(id);
+    localStorage.setItem(PROFILE_KEY, id);
+  }, []);
 
+  // 只认最后一次请求的结果：先发的慢响应不能盖掉新列表（否则刚建的身份会被当成「已删除」退回默认）
+  const statusSeq = useRef(0);
   const loadStatus = useCallback(() => {
+    const seq = ++statusSeq.current;
     setStatusError(null);
     api.browserStatus().then(
-      (s) => {
-        setStatus(s);
-        if (s.url && s.url !== 'about:blank') setUrl((u) => u || s.url!);
-      },
-      (e: unknown) => setStatusError(msg(e)),
+      (s) => seq === statusSeq.current && setStatus(s),
+      (e: unknown) => seq === statusSeq.current && setStatusError(msg(e)),
     );
   }, []);
+  // 新建的身份先放进列表再切过去，不等状态刷新
+  const onCreated = useCallback(
+    (p: BrowserProfileStatus) => {
+      setStatus((s) => (s && !s.profiles.some((x) => x.id === p.id) ? { ...s, profiles: [...s.profiles, p] } : s));
+      setProfile(p.id);
+    },
+    [setProfile],
+  );
   useEffect(loadStatus, [loadStatus]);
+  // 记住的身份已被删掉（比如在别的窗口里删的）：退回默认身份
+  const profiles = status?.profiles;
+  useEffect(() => {
+    if (profiles && !profiles.some((p) => p.id === profile)) setProfile(DEFAULT_PROFILE);
+  }, [profiles, profile, setProfile]);
+  // 换身份：地址栏换成那个身份的当前地址，退出抓取模式
+  const profileUrl = profiles?.find((p) => p.id === profile)?.url ?? null;
+  const profileUrlRef = useRef(profileUrl);
+  profileUrlRef.current = profileUrl;
+  useEffect(() => {
+    const u = profileUrlRef.current;
+    setUrl(u && u !== 'about:blank' ? u : '');
+    setEditing(false);
+    setCapture(false);
+  }, [profile]);
 
-  const stream = useBrowserStream(canvasRef, !!status?.installed);
+  const stream = useBrowserStream(canvasRef, profile, !!status?.installed);
   const { tab } = stream;
   // 地址栏跟随活动页（正在编辑时不动）
   useEffect(() => {
@@ -138,7 +170,7 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
     setEditing(false);
     setLoading(true);
     try {
-      const r = await api.browserOpen(u);
+      const r = await api.browserOpen(profile, u);
       if (r.url) setUrl(r.url);
     } catch (e) {
       say(msg(e), true);
@@ -147,7 +179,7 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
     }
   };
   const nav = (action: 'back' | 'forward' | 'reload') => {
-    api.browserNav(action).catch((e: unknown) => say(msg(e), true));
+    api.browserNav(profile, action).catch((e: unknown) => say(msg(e), true));
   };
 
   const onPicked = useCallback((r: BrowserPickResult) => {
@@ -172,6 +204,9 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
         <button type="button" className="cz-br__btn" title="刷新" aria-label="刷新" disabled={!installed} onClick={() => nav('reload')}>
           <Icon name="refresh" size={15} />
         </button>
+        {installed && status && (
+          <ProfileMenu profiles={status.profiles} current={profile} onSelect={setProfile} onCreated={onCreated} onChanged={loadStatus} onError={onError} />
+        )}
         <form
           className="cz-br__url"
           onSubmit={(e) => {
@@ -243,6 +278,7 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
         ) : (
           <>
             <BrowserView
+              profile={profile}
               canvasRef={canvasRef}
               stream={stream}
               capture={capture}

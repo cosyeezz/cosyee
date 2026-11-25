@@ -92,6 +92,8 @@ export interface RunnerInit {
   claudePath?: string;
   /** 每次启动时读取，合并进 --settings（如 skillOverrides） */
   flagSettings?: () => Record<string, unknown>;
+  /** Cosyee 生成的插件目录（--plugin-dir），每次启动时读取；null 不带 */
+  pluginDir?: () => string | null;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
   /** 测试用：委派后端。不传 = sharedAgyBackend()；null = 禁用 delegate */
@@ -192,7 +194,7 @@ export function buildArgs(
   config: SessionConfig,
   extraSettings: Record<string, unknown> = {},
   /** settingsFile：settings 含密钥时把它写进私有文件，返回路径代替命令行里的 JSON */
-  opts: { delegate?: boolean; settingsFile?: (settings: Record<string, unknown>) => string } = {},
+  opts: { delegate?: boolean; settingsFile?: (settings: Record<string, unknown>) => string; pluginDir?: string | null } = {},
 ): string[] {
   const args = [
     '-p',
@@ -215,6 +217,7 @@ export function buildArgs(
     // 每次启动都要带：--resume 不会沿用上次进程的追加提示词
     '--append-system-prompt', opts.delegate ? `${PATH_PROMPT} ${DELEGATE_PROMPT}` : PATH_PROMPT,
   ];
+  if (opts.pluginDir) args.push('--plugin-dir', opts.pluginDir);
   if (opts.delegate) args.push('--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: 'sdk', name: MCP_SERVER } } }));
   const settings: Record<string, unknown> = { ...extraSettings };
   if (config.ultracode) settings.ultracode = true;
@@ -296,7 +299,7 @@ export class Runner {
     this.disabledAgents = init.disabledAgents;
     this.nativeAgents = init.nativeAgents;
     this.control = new ControlTracker((o) => this.writeLine(o), `cosyee-${this.sessionId.slice(0, 8)}`, this.timings.requestTimeoutMs);
-    this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings };
+    this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings, pluginDir: init.pluginDir };
     this.agentDefaults = init.agentDefaults;
     this.delegateJobs = init.delegateJobs;
   }
@@ -319,7 +322,7 @@ export class Runner {
   private readonly backendOverride: DelegateBackend | null | undefined;
   private readonly disabledAgents?: () => readonly string[];
   private readonly nativeAgents?: () => boolean;
-  private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown> };
+  private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown>; pluginDir?: () => string | null };
   /** API / Kiro 账号这次启动用的私有 settings 文件（含密钥），进程退出后删掉 */
   private settingsFile: string | null = null;
 
@@ -406,7 +409,11 @@ export class Runner {
     const settingsFile = apiEnv
       ? (s: Record<string, unknown>) => (this.settingsFile = writePrivateSettings(`session-${this.sessionId}`, s))
       : undefined;
-    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate, settingsFile });
+    let pluginDir: string | null = null;
+    try {
+      pluginDir = this.initArgs.pluginDir?.() ?? null;
+    } catch { /* 插件生成失败：不带，不影响启动 */ }
+    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate, settingsFile, pluginDir });
     // delegate 要跑很久：没有显式设置时把 MCP 工具超时放宽到 1 小时
     if (delegate && !Object.keys(env).some((k) => k.toUpperCase() === 'MCP_TOOL_TIMEOUT')) env.MCP_TOOL_TIMEOUT = '3600000';
     const spec = spawnSpec(this.claudePath, args);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { type AgentModelConfig, type DelegateNotification, formatDelegateNotification, hasModelMapping } from '@cosyee/shared';
 import type { AppliedSettings, ClientMsg, ContextUsage, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
 import { readApiConfig } from '../accounts/api-config.js';
-import { toContextUsage } from '../context.js';
+import { skillBase, toContextUsage } from '../context.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { DelegateJobs } from '../delegate/jobs.js';
 import type { DelegateRecorder } from '../delegate/record.js';
@@ -53,6 +53,8 @@ export interface ManagerOptions {
   delegateRecord?: DelegateRecorder;
   /** 委派后端；不传则由 runner 用默认单例（旧测试） */
   delegateBackend?: DelegateBackend;
+  /** Cosyee 生成的 Claude 插件目录（内置浏览器的 skill），每次启动时读取；返回 null 不带（旧测试） */
+  pluginDir?: () => string | null;
 }
 
 export interface ForkStore {
@@ -108,6 +110,8 @@ export interface SkillStore {
 }
 
 /** MCP 服务器还在连接（pending）时，隔多久再采一次上下文、最多几次 */
+/** 官方的 agent-browser skill：默认关掉，由 Cosyee 的 cosyee:browser 作为内置浏览器的唯一入口（用户在面板里设过就按用户的） */
+const OFFICIAL_BROWSER_SKILL = 'agent-browser';
 const MCP_PENDING_RETRY_MS = 3000;
 const MCP_PENDING_RETRIES = 5;
 
@@ -230,6 +234,7 @@ export class Manager {
 
   private readonly delegateRecord: DelegateRecorder | undefined;
   private readonly delegateBackend: DelegateBackend | undefined;
+  private readonly pluginDir: (() => string | null) | undefined;
 
   constructor(opts: ManagerOptions) {
     this.dots = opts.dots;
@@ -249,6 +254,7 @@ export class Manager {
     this.forks = opts.forks;
     this.delegateRecord = opts.delegateRecord;
     this.delegateBackend = opts.delegateBackend;
+    this.pluginDir = opts.pluginDir;
     this.autoTitle = new AutoTitle({
       hasTitle: async (id, cwd) => {
         const s = await this.sessions.scan(id, cwd);
@@ -753,7 +759,8 @@ export class Manager {
       disabledAgents: () => this.tools?.agents?.() ?? [],
       nativeAgents: () => this.tools?.nativeAgents?.() ?? true,
       ...(this.agentModels ? { agentDefaults: () => this.agentDefaults(account?.dir) } : {}),
-      flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
+      flagSettings: () => ({ ...this.skillFlagSettings(id, cwd), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
+      ...(this.pluginDir ? { pluginDir: this.pluginDir } : {}),
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
@@ -847,9 +854,23 @@ export class Manager {
   // ───────────── 上下文 ─────────────
 
   /** 启动参数里的 --settings 附加项：Cosyee 保存的 skill 状态 */
-  private skillFlagSettings(): Record<string, unknown> {
-    const map = this.skills?.get() ?? {};
-    return Object.keys(map).length ? { skillOverrides: { ...map } } : {};
+  private skillFlagSettings(sessionId: string, cwd: string | null): Record<string, unknown> {
+    const map = this.skillModes(sessionId, cwd);
+    return Object.keys(map).length ? { skillOverrides: map } : {};
+  }
+
+  /**
+   * 下发给某个会话的完整 skill 状态：Cosyee 保存的 + 默认关掉的官方 agent-browser skill
+   * （只补磁盘上真有的、用户没设过的；不存进设置，用户在面板里打开就以用户的为准）。
+   */
+  private skillModes(sessionId: string, cwd: string | null): Record<string, SkillMode> {
+    const stored = this.skills?.get() ?? {};
+    const out: Record<string, SkillMode> = { ...stored };
+    if (!this.skills || OFFICIAL_BROWSER_SKILL in stored) return out;
+    for (const d of this.scanDiskSkills(sessionId, cwd) ?? []) {
+      if (skillBase(d.name) === OFFICIAL_BROWSER_SKILL && !(d.name in stored)) out[d.name] = 'off';
+    }
+    return out;
   }
 
   /** 启动参数里的 --settings 附加项：已停用的工具与关闭的智能体（permissions.deny）。启动时下发，模型根本看不到它们 */
@@ -884,7 +905,7 @@ export class Manager {
     const usage = toContextUsage(raw, Date.now(), {
       initSkills: this.initSkills.get(r.sessionId) ?? this.initSkillsByCwd.get(r.cwd) ?? null,
       overrides: eff && typeof eff === 'object' ? (eff as Record<string, unknown>) : null,
-      cosyeeOverrides: this.skills?.get() ?? null,
+      cosyeeOverrides: this.skills ? this.skillModes(r.sessionId, r.cwd) : null,
       diskSkills: disk,
       hidden: this.hiddenSkills(disk),
       mcpStatus: mcp,
@@ -1087,12 +1108,11 @@ export class Manager {
     const entries = Object.entries(modes);
     if (entries.length === 0) return;
     this.skills.setMany(modes);
-    const map = { ...this.skills.get() };
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {
         try {
-          await r.request('apply_flag_settings', { settings: { skillOverrides: map } });
+          await r.request('apply_flag_settings', { settings: { skillOverrides: this.skillModes(r.sessionId, r.cwd) } });
         } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
         if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
       }),
@@ -1235,12 +1255,11 @@ export class Manager {
     for (const m of [this.initSkills, this.initSkillsByCwd]) {
       for (const [k, list] of m) m.set(k, list.filter((n) => n !== name));
     }
-    const map = { ...(this.skills?.get() ?? {}), [name]: 'off' as SkillMode };
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {
         try {
-          await r.request('apply_flag_settings', { settings: { skillOverrides: map } });
+          await r.request('apply_flag_settings', { settings: { skillOverrides: { ...this.skillModes(r.sessionId, r.cwd), [name]: 'off' } } });
         } catch { /* 进程忙 / 已退出 */ }
         if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
       }),

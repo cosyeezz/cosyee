@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgentModelConfig, AgyAccountList, BrowserHover, BrowserPickResult, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgentModelConfig, AgyAccountList, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -187,16 +187,19 @@ export const api = {
   /** 按文件名读粘贴的图片（会话流里历史图片标签用，没有预览令牌）；名字见 pasteName */
   pasteInfo: (name: string) => req<PreviewInfo>('GET', `/api/pastes/${encodeURIComponent(name)}/info`),
   pasteRawUrl: (name: string) => `/api/pastes/${encodeURIComponent(name)}/raw`,
-  /** 内置浏览器（agent-browser）：状态 / 打开地址 / 前进后退刷新 / 视口 / 抓取模式悬停与抓取 */
+  /** 内置浏览器（agent-browser）：状态 / 身份管理 / 打开地址 / 前进后退刷新 / 视口 / 抓取模式悬停与抓取（profile 是身份 id） */
   browserStatus: () => req<BrowserStatus>('GET', '/api/browser'),
-  browserOpen: (url: string) => req<{ url: string | null; title: string | null }>('POST', '/api/browser/open', { url }),
-  browserNav: (action: 'back' | 'forward' | 'reload') => req<{ ok: true }>('POST', '/api/browser/nav', { action }),
-  browserViewport: (width: number, height: number, scale: number) =>
-    req<{ ok: true }>('POST', '/api/browser/viewport', { width, height, scale }),
-  browserHover: (x: number, y: number) => req<BrowserHover | null>('POST', '/api/browser/hover', { x, y }),
-  browserPick: (x: number, y: number) => req<BrowserPickResult>('POST', '/api/browser/pick', { x, y }),
-  /** 画面推流（WebSocket）地址 */
-  browserStreamUrl: () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/browser/stream`,
+  browserCreateProfile: (name: string) => req<BrowserProfileStatus>('POST', '/api/browser/profiles', { name }),
+  browserRenameProfile: (id: string, name: string) => req<BrowserProfileStatus>('POST', `/api/browser/profiles/${encodeURIComponent(id)}/rename`, { name }),
+  browserDeleteProfile: (id: string) => req<{ ok: true }>('POST', `/api/browser/profiles/${encodeURIComponent(id)}/delete`),
+  browserStopProfile: (id: string) => req<{ ok: true }>('POST', `/api/browser/profiles/${encodeURIComponent(id)}/stop`),
+  browserOpen: (profile: string, url: string) => req<{ url: string | null; title: string | null }>('POST', '/api/browser/open', { profile, url }),
+  browserNav: (profile: string, action: 'back' | 'forward' | 'reload') => req<{ ok: true }>('POST', '/api/browser/nav', { profile, action }),
+  browserViewport: (profile: string, width: number, height: number, scale: number) =>
+    req<{ ok: true }>('POST', '/api/browser/viewport', { profile, width, height, scale }),
+  browserHover: (profile: string, x: number, y: number) => req<BrowserHover | null>('POST', '/api/browser/hover', { profile, x, y }),
+  browserPick: (profile: string, x: number, y: number) => req<BrowserPickResult>('POST', '/api/browser/pick', { profile, x, y }),
+  browserStreamUrl: (profile: string) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/browser/stream?profile=${encodeURIComponent(profile)}`,
   /** 按文件名读抓取的元素（会话流里历史标签用）；name 是 element-….md / element-….png */
   elementInfo: (name: string) => req<PreviewInfo>('GET', `/api/browser/elements/${encodeURIComponent(name)}/info`),
   elementRawUrl: (name: string) => `/api/browser/elements/${encodeURIComponent(name)}/raw`,

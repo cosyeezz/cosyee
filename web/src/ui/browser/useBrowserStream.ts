@@ -24,7 +24,7 @@ function decodeBase64(s: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, enabled: boolean): BrowserStream {
+export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, profile: string, enabled: boolean): BrowserStream {
   const [state, setState] = useState<StreamState>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<PageSize | null>(null);
@@ -37,7 +37,10 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, enable
     let alive = true;
     setState('connecting');
     setError(null);
-    const ws = new WebSocket(api.browserStreamUrl());
+    // 换身份：旧画面和地址不再属于当前身份
+    setPage(null);
+    setTab(null);
+    const ws = new WebSocket(api.browserStreamUrl(profile));
     wsRef.current = ws;
     let drawing = Promise.resolve();
 
@@ -88,7 +91,7 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, enable
       wsRef.current = null;
       ws.close();
     };
-  }, [canvasRef, enabled, nonce]);
+  }, [canvasRef, profile, enabled, nonce]);
 
   const send = useCallback((msg: object) => {
     const ws = wsRef.current;

@@ -207,3 +207,115 @@ body.cz-br-resizing .cz-br__stage { pointer-events: none; }
   .cz-br__btn { min-width: 44px; height: 44px; }
   .cz-br__url input { height: 40px; }
 }
+
+/* 身份切换（ProfileMenu）：工具条里的按钮 + 实底下拉（面板上不用玻璃，下面是网页画面） */
+.cz-brp { position: relative; flex: none; }
+.cz-brp__trigger { padding: 0 var(--sp-2); max-width: 160px; }
+.cz-brp__trigger.is-open { background: var(--bg-hover); color: var(--text); }
+.cz-brp__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-brp__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  padding: var(--sp-1);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  transform-origin: top left;
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+@starting-style { .cz-brp__menu { opacity: 0; transform: translateY(-4px) scale(.98); } }
+@media (prefers-reduced-motion: reduce) { .cz-brp__menu { transition: none; } }
+.cz-brp__cap { padding: var(--sp-1) var(--sp-2) var(--sp-2); color: var(--text-3); font-size: var(--fs-xs); }
+.cz-brp__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  border-radius: var(--r-sm);
+}
+.cz-brp__row:hover,
+.cz-brp__row:focus-within { background: var(--bg-hover); }
+.cz-brp__row.is-on { background: var(--bg-active); }
+.cz-brp__row.is-confirm { padding: 0 var(--sp-1) 0 var(--sp-2); flex-wrap: wrap; }
+.cz-brp__pick,
+.cz-brp__new {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.cz-brp__pick > svg { color: var(--accent); flex: none; }
+.cz-brp__new { flex: none; width: 100%; color: var(--text-2); }
+.cz-brp__new:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.cz-brp__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cz-brp__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.cz-brp__dot.is-run { background: var(--dot-running); box-shadow: none; }
+.cz-brp__acts { display: flex; flex: none; padding-right: 2px; }
+.cz-brp__ib,
+.cz-brp__txt {
+  display: inline-grid;
+  place-items: center;
+  height: 26px;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.cz-brp__ib { width: 26px; }
+.cz-brp__txt { padding: 0 var(--sp-2); color: var(--text-2); }
+.cz-brp__ib:hover:not(:disabled),
+.cz-brp__txt:hover:not(:disabled) { background: var(--bg-active); color: var(--text); }
+.cz-brp__ib.is-danger:hover:not(:disabled),
+.cz-brp__txt.is-danger { color: var(--danger); }
+.cz-brp__ib:disabled,
+.cz-brp__txt:disabled { opacity: .35; cursor: default; }
+.cz-brp__pick:focus-visible,
+.cz-brp__new:focus-visible,
+.cz-brp__ib:focus-visible,
+.cz-brp__txt:focus-visible,
+.cz-brp__edit input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cz-brp__ask { flex: 1 1 140px; min-width: 0; color: var(--text); font-size: var(--fs-xs); padding: var(--sp-1) 0; }
+.cz-brp__edit { flex: 1; display: flex; align-items: center; gap: 2px; padding: 2px; }
+.cz-brp__edit input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+}
+.cz-brp__hr { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--border); }
+/* 窄面板：身份按钮只留图标（名字在 title 和下拉里） */
+.cz-br__bar { container-type: inline-size; }
+@container (max-width: 480px) { .cz-brp__name { display: none; } }
+@media (hover: none) { .cz-brp__ib { width: 32px; height: 32px; } }
