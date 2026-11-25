@@ -105,7 +105,7 @@ const mixedList = () => list([
   entry({ id: 'a3', label: '没登录', name: null, plan: null, loggedIn: false, active: false, isDefault: false }),
   entry({ id: 'a4', name: 'Expired', active: false, isDefault: false, loginExpiresAt: Date.now() - 1000 }),
   apiEntry,
-  entry({ id: 'k1', name: 'Kiro 主号', plan: 'Kiro', active: false, isDefault: false, kiro: { method: 'builderId', proxy: 'ready', error: null } }),
+  entry({ id: 'k1', name: 'Kiro 主号', plan: 'Kiro', active: false, isDefault: false, kiro: { method: 'builderId', proxy: 'ready', error: null, credential: 'ok' } }),
 ]);
 
 
@@ -982,18 +982,7 @@ describe('Antigravity 多账号', () => {
 
 describe('深链 ?add=kiro', () => {
   const kiroStatus = (login: AccountLogin | null = null): KiroStatus => ({
-    engine: {
-      source: 'managed',
-      current: { commit: 'a1b2c3d4e5f67890', date: 1700000000000, title: 'init' },
-      latest: null,
-      updateAvailable: false,
-      checkedAt: null,
-      missingTools: [],
-      build: { state: 'idle', step: null, error: null },
-      adminUi: false,
-      adminUiError: null,
-    },
-    service: { enabled: true, accounts: 0, running: 0, failed: 0, busySessions: 0, outdated: 0, items: [] },
+    service: { enabled: true, accounts: 0, running: 0, failed: 0, busySessions: 0, outdated: 0, usable: 0 },
     imports: { kiroIde: true, kiroCli: true },
     login,
   });

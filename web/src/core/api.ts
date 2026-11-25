@@ -154,8 +154,6 @@ export const api = {
     req<ApiModelListing>('POST', '/api/accounts/api/models', o),
   /** Kiro 账号（本机 kiro.rs 代理）：引擎状态 / 检查更新 / 编译安装 / 登录 / 额度 */
   kiroStatus: () => req<KiroStatus>('GET', '/api/kiro'),
-  kiroCheck: () => req<KiroStatus>('POST', '/api/kiro/engine/check', {}),
-  kiroBuild: () => reqDetailed<KiroStatus>('POST', '/api/kiro/engine/build', {}),
   kiroLogin: (o: { method: KiroLoginMethod; label?: string; accountId?: string; startUrl?: string; region?: string; apiKey?: string }) =>
     reqDetailed<AccountLogin>('POST', '/api/kiro/login', o),
   kiroLoginStatus: (loginId: string) => reqDetailed<AccountLogin>('GET', `/api/kiro/login/${encodeURIComponent(loginId)}`),

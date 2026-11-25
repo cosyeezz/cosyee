@@ -338,11 +338,6 @@ export class KiroEngine {
     return this.managedCurrent(this.readMeta())?.bin ?? null;
   }
 
-  /** 预编译包不需要任何本机编译工具，恒为空（保留是为兼容接口） */
-  missingTools(): string[] {
-    return [];
-  }
-
   status(): KiroEngineStatus {
     const envBin = this.env().COSYEE_KIRO_RS?.trim();
     const meta = this.readMeta();
@@ -363,11 +358,7 @@ export class KiroEngine {
       latest,
       updateAvailable,
       checkedAt: meta.checkedAt ?? null,
-      missingTools: [],
       build: { ...this.buildState },
-      // 预编译包内置管理页面
-      adminUi: true,
-      adminUiError: null,
     };
   }
 

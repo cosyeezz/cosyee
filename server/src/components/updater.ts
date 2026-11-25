@@ -4,6 +4,7 @@ import path from 'node:path';
 import { COMPONENT_IDS, type ComponentId, type ComponentList, type ComponentStatus } from '@cosyee/shared';
 import { writeFileAtomic } from '../kiro/sanitize.js';
 import { cosyeeHome } from '../paths.js';
+import { RunningError } from '../accounts/index.js';
 import { HttpError } from '../workspaces.js';
 import { type AdapterInfo, type ComponentAdapter, errText } from './common.js';
 import { SERVER_UPDATE_BY_CLIENT } from './server.js';
@@ -74,6 +75,12 @@ interface CheckRecord {
   error: string | null;
 }
 
+const CHECKS_FILE = 'component-checks.json';
+
+interface SavedCheck extends CheckRecord {
+  latest: string | null;
+}
+
 interface JobRecord {
   kind: 'install' | 'update';
   state: 'running' | 'failed';
@@ -95,10 +102,12 @@ export class ComponentUpdater {
   private timer: unknown = null;
   private ticking: Promise<void> | null = null;
   private stopped = true;
+  private readonly home: () => string;
 
   constructor(opts: ComponentUpdaterOptions) {
     for (const a of opts.adapters) this.adapters.set(a.id, a);
-    this.settings = new ComponentSettings(opts.home ?? cosyeeHome);
+    this.home = opts.home ?? cosyeeHome;
+    this.settings = new ComponentSettings(this.home);
     this.now = opts.now ?? Date.now;
     this.timers = opts.timers ?? {
       setTimeout: (fn, ms) => {
@@ -110,6 +119,41 @@ export class ComponentUpdater {
     };
     this.firstTickMs = opts.firstTickMs ?? FIRST_TICK_MS;
     this.tickIntervalMs = opts.tickIntervalMs ?? TICK_INTERVAL_MS;
+    this.loadChecks();
+  }
+
+  /** ~/.cosyee/component-checks.json：上次检查的时间、错误和查到的最新版。服务端和命令行入口共用 */
+  private checksFile(): string {
+    return path.join(this.home(), CHECKS_FILE);
+  }
+
+  private loadChecks(): void {
+    let j: Record<string, unknown>;
+    try {
+      j = JSON.parse(fs.readFileSync(this.checksFile(), 'utf8')) as Record<string, unknown>;
+    } catch {
+      return; // 没有文件或格式不对：当作没检查过
+    }
+    for (const [id, a] of this.adapters) {
+      const r = j?.[id] as Partial<SavedCheck> | undefined;
+      if (!r || typeof r.at !== 'number' || !Number.isFinite(r.at)) continue;
+      this.checks.set(id, { at: r.at, error: typeof r.error === 'string' ? r.error : null });
+      if (typeof r.latest === 'string' && r.latest) a.restore?.(r.latest, r.at);
+    }
+  }
+
+  private saveCheck(id: ComponentId, rec: SavedCheck): void {
+    let j: Record<string, unknown> = {};
+    try {
+      const cur = JSON.parse(fs.readFileSync(this.checksFile(), 'utf8')) as unknown;
+      if (cur && typeof cur === 'object' && !Array.isArray(cur)) j = cur as Record<string, unknown>;
+    } catch { /* 没有文件：新建 */ }
+    // 这次检查失败时保留上次查到的最新版
+    const prev = j[id] as Partial<SavedCheck> | undefined;
+    j[id] = { ...rec, latest: rec.latest ?? (typeof prev?.latest === 'string' ? prev.latest : null) };
+    try {
+      writeFileAtomic(this.checksFile(), JSON.stringify(j, null, 2) + '\n', 0o600);
+    } catch { /* 写不了只影响重启后的显示 */ }
   }
 
   /** 启动定时器：5 分钟后第一次，之后每小时一次 */
@@ -168,6 +212,7 @@ export class ComponentUpdater {
       updatedBy: a.updatedBy,
       ...(a.installable ? { installable: true } : {}),
       job,
+      ...(a.service && info.installed ? { service: a.service.status() } : {}),
     };
   }
 
@@ -207,7 +252,10 @@ export class ComponentUpdater {
       } catch (e) {
         error = errText(e);
       }
-      this.checks.set(a.id, { at: this.now(), error });
+      const at = this.now();
+      this.checks.set(a.id, { at, error });
+      const latest = error === null ? await a.info().then((i) => i.latest, () => null) : null;
+      this.saveCheck(a.id, { at, error, latest });
     })();
     this.checking.set(a.id, p);
     const clear = () => {
@@ -250,6 +298,16 @@ export class ComponentUpdater {
   async setAuto(id: string, enabled: boolean): Promise<ComponentStatus> {
     const a = this.adapter(id);
     this.settings.setAutoUpdate(a.id, enabled);
+    return this.status(id);
+  }
+
+  /** 服务启停：start / stop / restart；组件没有服务时 404 */
+  async serviceOp(id: string, op: 'start' | 'stop' | 'restart', force: boolean): Promise<ComponentStatus> {
+    const svc = this.adapter(id).service;
+    if (!svc) throw new HttpError(404, '未找到');
+    if (op === 'start') await svc.start();
+    else if (op === 'stop') await svc.stop(force);
+    else await svc.restart(force);
     return this.status(id);
   }
 
@@ -309,7 +367,7 @@ export interface ComponentRouteResponse {
   body: unknown;
 }
 
-const ROUTE_RE = /^\/api\/components\/([^/]+)\/(check|update|auto|log)$/;
+const ROUTE_RE = /^\/api\/components\/([^/]+)\/(check|update|auto|log|start|stop|restart)$/;
 
 /** /api/components* 路由；未命中返回 null（调用方按 404 处理） */
 export async function componentRoutes(
@@ -342,6 +400,14 @@ export async function componentRoutes(
     if (!fromLocal) return { status: 403, body: { error: '该操作仅允许本机连接' } };
     if (op === 'check') return { status: 200, body: await updater.check(id) };
     if (op === 'update') return { status: 200, body: await updater.update(id) };
+    if (op === 'start' || op === 'stop' || op === 'restart') {
+      try {
+        return { status: 200, body: await updater.serviceOp(id, op, query.get('force') === '1') };
+      } catch (e) {
+        if (e instanceof RunningError) return { status: 409, body: { error: e.message, running: e.running } };
+        throw e;
+      }
+    }
     const enabled = query.get('enabled');
     if (enabled !== '0' && enabled !== '1') return { status: 400, body: { error: 'enabled 必须为 0 或 1' } };
     return { status: 200, body: await updater.setAuto(id, enabled === '1') };

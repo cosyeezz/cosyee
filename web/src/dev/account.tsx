@@ -2,7 +2,7 @@
 // 不连后端：替换 api 里账号相关的方法，返回假数据。
 // w = 侧栏宽度；dlg=api|edit|agy 直接打开对话框；agy=open|none|missing 控制 Antigravity 组状态。
 import { useState } from 'react';
-import type { AccountEntry, AccountList, AccountLogin, AccountMode, AgyAccountEntry, AgyAccountList, AgyQuota, KiroBalance, KiroStatus, UsageInfo, UsageSeverity } from '@cosyee/shared';
+import type { AccountEntry, AccountList, AccountLogin, AccountMode, AgyAccountEntry, AgyAccountList, AgyQuota, ComponentList, KiroBalance, KiroStatus, UsageInfo, UsageSeverity } from '@cosyee/shared';
 import '../styles/tokens.css';
 import '../styles/motion.css';
 import '../ui/layout/AppShell.css';
@@ -61,7 +61,7 @@ const list: AccountEntry[] = [
   },
   {
     id: 'k1', label: 'Kiro 个人', name: 'Kiro 个人', plan: null, loggedIn: true, active: false, isDefault: false,
-    kiro: { method: 'builderId', proxy: 'ready', error: null },
+    kiro: { method: 'builderId', proxy: 'ready', error: null, credential: 'ok' },
   },
 ];
 const usage: Record<string, UsageInfo> = {
@@ -123,24 +123,16 @@ a.saveApiAccount = () => delay({ ok: true, id: 'a2' });
 a.apiModelList = () => delay({ url: 'http://100.64.0.10:8990/v1/models', models: ['glm-4.6', 'glm-4.5-air', 'kimi-k2-turbo-preview', 'deepseek-v3.2-exp', 'qwen3-coder-plus-2025-09-23'] }, 400);
 
 let kiroState: KiroStatus = {
-  engine: {
-    source: 'managed',
-    current: { commit: 'a1b2c3d4e5f67890', date: now - 3 * D, title: 'fix: refresh token handling' },
-    latest: { commit: 'f9e8d7c6b5a43210', date: now - H, title: 'feat: support new model' },
-    updateAvailable: true,
-    checkedAt: now - 10 * 60_000,
-    missingTools: [],
-    build: { state: 'idle', step: null, error: null },
-    adminUi: false,
-    adminUiError: null,
-  },
-  service: { enabled: true, accounts: 1, running: 1, failed: 0, busySessions: 0, outdated: 0, items: [{ id: 'k1', label: 'Kiro 个人', proxy: 'ready' }] },
+  service: { enabled: true, accounts: 1, running: 1, failed: 0, busySessions: 0, outdated: 0, usable: 1 },
   imports: { kiroIde: true, kiroCli: false },
   login: null,
 };
 a.kiroStatus = () => delay<KiroStatus>({ ...kiroState });
-a.kiroCheck = () => delay<KiroStatus>({ ...kiroState });
-a.kiroBuild = () => delay<KiroStatus>({ ...kiroState });
+a.components = () => delay<ComponentList>({ list: [{
+  id: 'kiro', name: 'kiro.rs', installed: true, custom: false, version: '0.9.9', latest: '0.9.9', updateAvailable: false,
+  checkedAt: now - 10 * 60_000, checkError: null, autoUpdate: true, busy: 0, pending: false, updatedBy: 'server', installable: true, job: null,
+  service: { state: 'ready', error: null, enabled: true, outdated: false, port: 21395, accounts: { total: 1, usable: 1 } },
+}] });
 a.kiroLogin = () => delay<AccountLogin>({ loginId: 'k-L1', status: 'waiting', userCode: 'ABCD-1234', url: 'https://view.awsapps.com/start/#/device', accountId: null, error: null });
 a.kiroLoginStatus = () => delay<AccountLogin>({ loginId: 'k-L1', status: 'waiting', userCode: 'ABCD-1234', url: 'https://view.awsapps.com/start/#/device', accountId: null, error: null });
 a.kiroLoginCancel = () => delay({ ok: true });

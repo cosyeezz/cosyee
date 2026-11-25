@@ -467,23 +467,55 @@
   #t-actions:not(:has(> .btn:not([hidden]))) { display: none; }
   .t-log-btn { height: 28px; padding: 0 8px; font-size: 12px; color: var(--text-3); }
   .t-log-btn svg { width: 13px; height: 13px; }
-  .admin-picker {
-    margin-top: 10px; border: 1px solid var(--border); border-radius: var(--r-md);
-    background: var(--bg-elev); overflow: hidden; display: flex; flex-direction: column;
+  /* 组件列表：一张卡片，一行一个组件（约 40px），行间 1px 分隔线；展开区只在有日志 / 确认 / 错误时出现 */
+  #comp-card { padding: 2px 0; }
+  .comp-off { margin: 0; padding: 11px 16px; font-size: 12.5px; color: var(--text-3); }
+  .comp-off.warn { color: var(--warn); }
+  .comp-item:not([hidden]) ~ .comp-item, .comp-off:not([hidden]) + #comp-list .comp-item:first-child { border-top: 1px solid var(--border); }
+  .comp-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 14px; }
+  .comp-ico { flex: none; display: grid; place-items: center; width: 20px; height: 20px; color: var(--text-3); transition: color .15s; }
+  .comp-item.busy .comp-ico { color: var(--accent); }
+  .comp-name { flex: none; width: 112px; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .comp-ver { flex: none; width: 64px; overflow: hidden; text-overflow: ellipsis; font: 12px/1.4 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-3); white-space: nowrap; }
+  .comp-ver.up { color: var(--accent); }
+  .comp-state {
+    flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 7px; padding: 2px 0;
+    border: 0; background: none; font: 12.5px/1.4 var(--font-sans); color: var(--text-2); text-align: left; cursor: pointer;
   }
-  .admin-item {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    width: 100%; padding: 9px 12px; border: 0; border-top: 1px solid var(--border);
-    background: none; color: var(--text); font: 13px/1.4 var(--font-sans); text-align: left; cursor: pointer;
-    transition: background-color .15s;
+  .comp-state span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .comp-state:hover span { text-decoration: underline dotted; text-underline-offset: 3px; }
+  .comp-state.ok { color: var(--ok); }
+  .comp-state.up { color: var(--accent); }
+  .comp-state.warn { color: var(--warn); }
+  .comp-state.bad { color: var(--danger); }
+  .comp-state.off { color: var(--text-3); }
+  .comp-state i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+  .comp-state i.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .comp-state i.warn { background: var(--warn); }
+  .comp-state i.bad { background: var(--danger); }
+  .comp-state i.idle { background: var(--text-3); opacity: .6; }
+  .comp-link { flex: none; padding: 0; border: 0; background: none; font: 12.5px/1.4 var(--font-sans); color: var(--accent); cursor: pointer; }
+  .comp-link:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
+  .comp-btns { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; }
+  .comp-btns .icon-btn { width: 28px; height: 28px; }
+  .comp-btns .icon-btn svg { width: 15px; height: 15px; }
+  .comp-btns .icon-btn:disabled { opacity: .35; cursor: default; background: none; color: var(--text-3); }
+  .comp-up { height: 26px; padding: 0 10px; margin-left: 4px; font-size: 12px; }
+  .comp-more { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 10px 44px; }
+  .comp-msg { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; }
+  .comp-msg.error { color: var(--danger); }
+  .comp-confirm {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 6px 5px 12px; border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--warn) 10%, var(--bg-elev)); border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border));
+    font-size: 12.5px; color: var(--text);
   }
-  .admin-item:first-child { border-top: 0; }
-  .admin-item:hover:not(:disabled) { background: var(--bg-hover); }
-  .admin-item:disabled { opacity: .45; cursor: default; }
-  .admin-item .a-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .admin-item .a-state { flex: none; font-size: 11.5px; color: var(--text-3); }
-  .admin-item .a-state.ok { color: var(--ok); }
-  .admin-item .a-state.bad { color: var(--warn); }
+  .comp-confirm span { flex: 1 1 200px; min-width: 0; }
+  .comp-confirm .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+  .comp-log {
+    margin: 0; max-height: 120px; overflow: auto; padding: 8px 10px;
+    background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: var(--r-md);
+    font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap;
+  }
 
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 12px; line-height: 2; }
   footer p { margin: 0; }
@@ -524,6 +556,7 @@
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4.5v11M7 11l5 5 5-5M5 19.5h14"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M13.5 5.5h5v5M18.5 5.5l-8 8M16.5 13.5v4a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h4"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7.2 6.6a7 7 0 1 0 9.6 0"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0 2 5.3M20 4.5V11h-6.5"/></symbol>
   <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 4 8.5 4.5L12 13 3.5 8.5 12 4ZM3.5 12.5 12 17l8.5-4.5M3.5 16.5 12 21l8.5-4.5"/></symbol>
   <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="m8 10 3 2.5L8 15M12.5 15H16"/></symbol>
@@ -579,7 +612,11 @@
 
   <section id="components" class="enter" style="--i:2" hidden aria-labelledby="h-components">
     <h2 id="h-components">组件</h2>
-    <div class="card spot sub-card" id="tailnet-card">
+    <div class="card" id="comp-card" hidden>
+      <p class="comp-off" id="comp-off" hidden></p>
+      <div id="comp-list"></div>
+    </div>
+    <div class="card spot sub-card" id="tailnet-card" hidden>
       <span class="beam" aria-hidden="true"></span>
       <div class="local-head">
         <span class="ico"><svg class="i"><use href="#i-shield"/></svg></span>
@@ -666,77 +703,6 @@
       <label class="toggle"><span>允许手机和其它电脑通过 Tailscale 连接（启动时生效）</span><input type="checkbox" role="switch" id="l-tailnet"></label>
       <div id="local-msg"></div>
       <pre id="local-log"></pre>
-    </div>
-    <div class="card spot sub-card" id="kiro-card">
-      <span class="beam" aria-hidden="true"></span>
-      <div class="local-head">
-        <span class="ico"><svg class="i"><use href="#i-layers"/></svg></span>
-        <div class="t"><b>kiro.rs<span class="pill sm" id="k-pill"><i></i><span>检查中</span></span></b><small class="ver" id="cp-kiro-ver">…</small></div>
-        <div class="comp-acts">
-          <button type="button" class="btn ghost" id="cp-kiro-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
-          <button type="button" class="btn primary" id="cp-kiro-update" hidden><svg class="i"><use href="#i-down"/></svg><span>更新</span></button>
-        </div>
-      </div>
-      <div class="sub-hint" id="cp-kiro-note"></div>
-      <div class="actions svc-actions" id="k-actions">
-        <button type="button" class="btn primary" id="k-start"><svg class="i"><use href="#i-play"/></svg><span>启动</span></button>
-        <button type="button" class="btn danger" id="k-stop" hidden><svg class="i"><use href="#i-stop"/></svg>停止</button>
-        <button type="button" class="btn" id="k-restart" hidden><svg class="i"><use href="#i-refresh"/></svg>重启</button>
-        <button type="button" class="btn" id="k-admin" aria-expanded="false" aria-controls="k-admin-list"><svg class="i"><use href="#i-open"/></svg>管理页面</button>
-      </div>
-      <div class="admin-picker" id="k-admin-list" hidden></div>
-      <div class="sub-confirm" id="k-confirm" role="alert" hidden>
-        <p id="k-confirm-text"></p>
-        <div class="actions">
-          <button type="button" class="btn danger" id="k-confirm-ok">仍然停止</button>
-          <button type="button" class="btn ghost" id="k-confirm-cancel">取消</button>
-        </div>
-      </div>
-      <div class="sub-hint" id="k-hint"></div>
-      <div class="local-msg" id="k-msg" role="status" aria-live="polite"></div>
-      <pre class="local-log" id="cp-kiro-log"></pre>
-    </div>
-    <div class="card spot sub-card" id="claude-card">
-      <span class="beam" aria-hidden="true"></span>
-      <div class="local-head">
-        <span class="ico"><svg class="i"><use href="#i-terminal"/></svg></span>
-        <div class="t"><b>Claude CLI</b><small class="ver" id="cp-claude-ver">…</small></div>
-        <div class="comp-acts">
-          <button type="button" class="btn ghost" id="cp-claude-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
-          <button type="button" class="btn primary" id="cp-claude-update" hidden><svg class="i"><use href="#i-down"/></svg><span>更新</span></button>
-        </div>
-      </div>
-      <div class="sub-hint" id="cp-claude-note"></div>
-      <div class="local-msg" id="cp-claude-msg" role="status" aria-live="polite"></div>
-      <pre class="local-log" id="cp-claude-log"></pre>
-    </div>
-    <div class="card spot sub-card" id="agy-card">
-      <span class="beam" aria-hidden="true"></span>
-      <div class="local-head">
-        <span class="ico"><svg class="i"><use href="#i-terminal"/></svg></span>
-        <div class="t"><b>Antigravity CLI（agy）</b><small class="ver" id="cp-agy-ver">…</small></div>
-        <div class="comp-acts">
-          <button type="button" class="btn ghost" id="cp-agy-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
-          <button type="button" class="btn primary" id="cp-agy-update" hidden><svg class="i"><use href="#i-down"/></svg><span>更新</span></button>
-        </div>
-      </div>
-      <div class="sub-hint" id="cp-agy-note"></div>
-      <div class="local-msg" id="cp-agy-msg" role="status" aria-live="polite"></div>
-      <pre class="local-log" id="cp-agy-log"></pre>
-    </div>
-    <div class="card spot sub-card" id="browser-card">
-      <span class="beam" aria-hidden="true"></span>
-      <div class="local-head">
-        <span class="ico"><svg class="i"><use href="#i-globe"/></svg></span>
-        <div class="t"><b>内置浏览器</b><small class="ver" id="cp-browser-ver">…</small></div>
-        <div class="comp-acts">
-          <button type="button" class="btn ghost" id="cp-browser-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
-          <button type="button" class="btn primary" id="cp-browser-update" hidden><svg class="i"><use href="#i-down"/></svg><span>更新</span></button>
-        </div>
-      </div>
-      <div class="sub-hint" id="cp-browser-note"></div>
-      <div class="local-msg" id="cp-browser-msg" role="status" aria-live="polite"></div>
-      <pre class="local-log" id="cp-browser-log"></pre>
     </div>
   </section>
 
@@ -1330,13 +1296,13 @@
   async function lrefresh() {
     try { lst = await invoke('local_status'); } catch (e) { return; }
     $('local').hidden = false;
+    $('components').hidden = false;
+    $('comp-card').hidden = false;
     lrender();
-    subCards.forEach(function (c) {
-      if (!lst.running) c.setOffline();
-      else if (!c.st && !c.inFlight && !c.busy) c.refresh();
-    });
-    if (!lst.running) compPanels.forEach(function (p) { p.setOffline(); });
-    else if (compPanels.some(function (p) { return !p.st; })) compsFetch().catch(function () {});
+    // 服务端没运行时组件改由客户端直接读（每次要起一个 node 进程）：只在切换到离线、出错或有任务在跑时刷新
+    if (!lst.running) {
+      if (!compOffline || !compLoaded || compErr || compRows.some(function (r) { return r.jobRunning(); })) compsFetch().catch(function () {});
+    } else if (!compLoaded || compErr || compOffline) compsFetch().catch(function () {});
   }
   function errText(e) { return typeof e === 'string' ? e : (e && e.message) || String(e); }
   /** verLabel：执行期间版本那一行显示的字（安装 / 更新时用） */
@@ -1378,7 +1344,7 @@
       box.scrollTop = box.scrollHeight;
     }
   }
-  // ───── 共用远程服务卡片控制器（kiro.rs 与 Antigravity CLI 共用请求、日志轮询、离线/404/409 渲染） ─────
+  // ───── 服务卡片控制器（内置 Tailscale 在用：请求、日志轮询、离线 / 404 / 409 渲染） ─────
   function fmtDate(ms) {
     if (!ms || typeof ms !== 'number') return '';
     var d = new Date(ms);
@@ -1600,293 +1566,40 @@
     return card;
   }
 
-  // ───── kiro.rs 服务 ─────
-  var kStartMode = 'start';
-  var kAdminOpen = false;
-  // release tag（v0.9.9）原样显示；旧版本的 40 位 sha 才截成 7 位
-  function kVer(commit) {
-    if (!commit) return '';
-    return /^[0-9a-f]{40}$/i.test(commit) ? commit.slice(0, 7) : commit;
-  }
-  var PROXY_LABELS = { ready: '运行中', starting: '启动中', failed: '失败', stopped: '已停止' };
-
-  var kiroCard = createServiceCard({
-    cardId: 'kiro-card',
-    pillId: 'k-pill',
-    pillClass: 'pill sm',
-    offlinePill: '未连接',
-    offlineHint: '',
-    checkIds: [],
-    hintId: 'k-hint',
-    msgId: 'k-msg',
-    logId: 'cp-kiro-log',
-    confirmIds: { box: 'k-confirm', text: 'k-confirm-text', ok: 'k-confirm-ok', cancel: 'k-confirm-cancel' },
-    statusCmd: 'kiro_status',
-    logCmd: 'kiro_log',
-    unsupportedText: '当前服务端版本不支持 kiro.rs 服务管理。',
-    // 下载 / 更新引擎由标题行的「更新」负责（组件接口），这里只管服务启停
-    isJobRunning: function () { return false; },
-    onReset: function () { kStartMode = 'start'; kAdminOpen = false; },
-    onStatus: function (c, st) {
-      if (c.confirm && (!st || !st.service || st.service.running === 0)) c.confirm = null;
-      var items = st && st.service && Array.isArray(st.service.items) ? st.service.items : [];
-      if (items.length <= 1 || !st.engine || !st.engine.adminUi || st.service.enabled === false) kAdminOpen = false;
-    },
-    renderOfflineControls: function () {
-      kStartMode = 'start';
-      $('k-actions').hidden = true;
-      var sb = $('k-start');
-      sb.hidden = false;
-      sb.className = 'btn';
-      sb.querySelector('span').textContent = '启动';
-      sb.querySelector('use').setAttribute('href', '#i-play');
-      sb.disabled = true;
-      $('k-stop').hidden = true;
-      $('k-restart').hidden = true;
-      $('k-admin').disabled = true;
-      $('k-admin').title = '';
-      $('k-admin').setAttribute('aria-expanded', 'false');
-      $('k-admin-list').hidden = true;
-    },
-    renderOnline: function (c) {
-      var st = c.st;
-      var eng = st.engine || {};
-      var svc = st.service || {};
-      var busy = c.busy;
-      var installed = eng.source && eng.source !== 'none';
-      var running = (svc.running || 0) > 0;
-      var failed = (svc.failed || 0) > 0;
-      var accounts = svc.accounts || 0;
-      var outdated = svc.outdated || 0;
-      var hasAccounts = accounts > 0;
-      var items = Array.isArray(svc.items) ? svc.items : [];
-      var adminUi = eng.adminUi === true;
-      var adminReady = svc.enabled !== false && hasAccounts && items.length > 0 && adminUi;
-
-      var pill = $('k-pill');
-      pill.hidden = !installed;
-      var pk = running ? (outdated > 0 ? ['', '运行中（旧版）'] : ['ok', '运行中'])
-        : failed ? ['bad', '启动失败'] : svc.enabled === false ? ['', '已停止'] : ['', '未启动'];
-      pill.className = 'pill sm' + (pk[0] ? ' ' + pk[0] : '');
-      pill.querySelector('span').textContent = pk[1];
-
-      $('kiro-card').classList.toggle('busy', !!busy);
-      $('k-actions').hidden = !installed;
-
-      var hasService = !!(st.service && typeof st.service.accounts === 'number');
-      var addAccountMode = !!(installed && hasService && !hasAccounts && !running);
-      var sb = $('k-start');
-      sb.hidden = running;
-      if (addAccountMode) {
-        kStartMode = 'add';
-        sb.querySelector('span').textContent = '添加 Kiro 账号';
-        sb.querySelector('use').setAttribute('href', '#i-plus');
-        sb.className = 'btn primary';
-        sb.disabled = busy;
-      } else {
-        kStartMode = 'start';
-        sb.querySelector('span').textContent = '启动';
-        sb.querySelector('use').setAttribute('href', '#i-play');
-        sb.className = 'btn' + (installed && hasAccounts ? ' primary' : '');
-        // 停止后即使没有账号也要能重新启用，否则添加不了 Kiro 账号
-        sb.disabled = busy || !installed || (!hasAccounts && svc.enabled !== false);
-      }
-
-      $('k-stop').hidden = !running;
-      $('k-stop').disabled = busy || !running;
-
-      $('k-restart').hidden = !running;
-      $('k-restart').className = 'btn' + (outdated > 0 ? ' primary' : '');
-      $('k-restart').disabled = busy || !running;
-
-      $('k-admin').disabled = busy || !adminReady;
-      $('k-admin').title = (!busy && installed && hasService && !hasAccounts) ? '添加 Kiro 账号后可用' : '';
-      $('k-admin').setAttribute('aria-expanded', String(kAdminOpen && adminReady && items.length > 1));
-
-      var picker = $('k-admin-list');
-      if (kAdminOpen && adminReady && items.length > 1) {
-        picker.textContent = '';
-        items.forEach(function (it) {
-          var btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'admin-item';
-          btn.disabled = busy;
-          var nameEl = document.createElement('span');
-          nameEl.className = 'a-name';
-          nameEl.textContent = it.label || it.id;
-          var stateEl = document.createElement('span');
-          stateEl.className = 'a-state' + (it.proxy === 'ready' ? ' ok' : it.proxy === 'failed' ? ' bad' : '');
-          stateEl.textContent = PROXY_LABELS[it.proxy] || it.proxy || '';
-          btn.appendChild(nameEl);
-          btn.appendChild(stateEl);
-          btn.onclick = function () { kAdminOpen = false; kOpenAdmin(it.id); };
-          picker.appendChild(btn);
-        });
-        picker.hidden = false;
-      } else {
-        picker.hidden = true;
-      }
-
-      c.renderConfirm(busy);
-
-      var hints = [];
-      var hintLevel = '';
-      if (hasService && !hasAccounts) {
-        if (installed) {
-          hints.push('引擎已就绪，还没有 Kiro 账号。添加账号后服务会自动启动，无需再点启动。');
-        } else {
-          hints.push('kiro.rs 还没安装，点右上角「安装」。');
-        }
-      }
-      if (outdated > 0) {
-        hints.push('引擎已更新，服务还在用旧版，点「重启」后生效。');
-        if (!hintLevel) hintLevel = 'warn';
-      }
-      var hint = $('k-hint');
-      hint.className = 'sub-hint' + (hintLevel ? ' ' + hintLevel : '');
-      hint.textContent = hints.join('\n');
-    },
-  });
-
-  function kDoStart() {
-    if (kStartMode === 'add') {
-      var svc = kiroCard.st && kiroCard.st.service;
-      if (svc && svc.enabled === false) {
-        kiroCard.runAction('启用服务', function () {
-          return invoke('kiro_service', { action: 'start', force: false });
-        }, {
-          onResult: function (c, res) {
-            c.msg('');
-            if (res && typeof res === 'object') c.applyStatus(res);
-            connect(ensureLocalEntry(), '?add=kiro');
-          },
-        });
-      } else {
-        connect(ensureLocalEntry(), '?add=kiro');
-      }
-      return;
-    }
-    kDoService('start', false);
-  }
-
-  function kDoService(action, force) {
-    var label = action === 'start' ? '启动' : action === 'stop' ? '停止' : '重启';
-    kiroCard.runAction(label, function () { return invoke('kiro_service', { action: action, force: !!force }); }, {
-      clearConfirm: !!force,
-      onConflict: (action === 'stop' || action === 'restart') ? function (running) {
-        var verb = action === 'restart' ? '重启' : '停止';
-        return {
-          action: action,
-          text: '有 ' + running + ' 个 Kiro 会话正在执行，' + verb + '会中断它们。',
-          okLabel: '仍然' + verb,
-        };
-      } : null,
-    });
-  }
-
-  function kOpenAdmin(accountId) {
-    kiroCard.runAction('打开管理页面', function () { return invoke('kiro_admin', { account: accountId }); }, {
-      startMsg: '正在打开管理页面…',
-      clearConfirm: false,
-      onResult: function (c) { c.msg(''); },
-    });
-  }
-
-  // ───── 组件版本（Claude CLI / kiro.rs / agy / 内置浏览器）：每张卡片各管各的，检查更新，不是最新才出现「更新」 ─────
-  // 这几个组件的检查和更新由 Cosyee 服务端执行，服务端没运行时只显示「未连接」
+  // ───── 组件列表（kiro.rs / Claude CLI / agy / 内置浏览器）：一张卡片、一行一个组件 ─────
+  // 检查、更新、启停都由 Cosyee 服务端执行（/api/components），服务端没运行时整张卡片只显示一行
   function fmtTime(ms) {
     var d = fmtDate(ms);
     if (!d) return '';
     var x = new Date(ms), pad = function (n) { return n < 10 ? '0' + n : String(n); };
     return d + ' ' + pad(x.getHours()) + ':' + pad(x.getMinutes());
   }
-  /** ComponentStatus → 卡片要显示的东西 */
-  function compView(st, busy) {
-    var job = st.job || null;
-    var running = !!(job && job.state === 'running');
-    var installing = running && job.kind === 'install';
-    var canInstall = !st.installed && !!st.installable;
-    var avail = !!st.installed && !st.custom && !!st.updateAvailable;
-    var v = {
-      busy: !!busy || running, tone: '', title: '', notes: [], level: '',
-      check: !!st.installed && !st.custom,
-      update: running || canInstall || avail,
-      label: running ? (installing ? '安装中…' : '更新中…') : canInstall ? '安装' : '更新',
-      blocked: false,
-    };
-    var ver = st.version || '已安装';
-    if (running) { v.text = installing ? '正在安装…' : '正在更新…'; v.tone = 'up'; }
-    else if (st.custom) v.text = ver + ' · 自定义程序';
-    else if (!st.installed) { v.text = '未安装'; v.tone = 'warn'; }
-    else if (st.checkError) { v.text = ver + ' · 检查失败'; v.tone = 'warn'; }
-    else if (avail && st.latest) { v.text = ver + ' → ' + st.latest; v.tone = 'up'; }
-    else if (st.latest) { v.text = ver + ' · 已是最新'; v.tone = 'ok'; }
-    else v.text = ver;
-    var when = fmtTime(st.checkedAt);
-    if (when) v.title = '上次检查：' + when;
-    if (job && job.state === 'failed') {
-      v.notes.push((job.kind === 'install' ? '安装失败：' : '更新失败：') + (job.error || '未知错误'));
-      v.level = 'error';
-    }
-    if (st.checkError && !running) { v.notes.push('检查更新失败：' + st.checkError); v.level = v.level || 'warn'; }
-    if (st.custom) v.notes.push('这是你指定的程序（环境变量或源码运行），不检查更新。');
-    if (avail && !running && st.busy > 0) {
-      v.blocked = true;
-      v.notes.push('有 ' + st.busy + ' 个任务在用，' + (st.pending ? '结束后会自动更新。' : '等它们结束再更新。'));
-    }
-    if (!st.installed && !canInstall && !st.custom) {
-      v.notes.push(st.id === 'claude' ? '没找到 claude 命令，请先安装并登录 Claude Code。' : '还没有安装。');
-      v.level = v.level || 'warn';
-    }
-    return v;
+  // release tag（v0.9.9）原样显示；旧版本的 40 位 sha 才截成 7 位
+  function shortVer(v) { return /^[0-9a-f]{40}$/i.test(v || '') ? v.slice(0, 7) : (v || ''); }
+  function h(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
   }
-  /** 没有状态（服务端没运行 / 版本过旧 / 读取失败）时 */
-  function compViewUnavailable(id, err) {
-    var offline = err && err.kind === 'offline', unsupported = err && err.kind === 'unsupported';
-    var v = { busy: false, tone: '', title: '', notes: [], level: '', check: false, update: false, label: '更新', blocked: false };
-    if (offline && id === 'claude' && lst && lst.claude === false) {
-      v.text = '未安装'; v.tone = 'warn';
-      v.notes.push('没找到 claude 命令，请先安装并登录 Claude Code。'); v.level = 'warn';
-    } else if (offline) v.text = '未连接 · Cosyee 服务端没有运行';
-    else if (unsupported) { v.text = '服务端版本过旧'; v.tone = 'warn'; v.notes.push('当前服务端不支持组件管理，先更新上面的 Cosyee 服务端。'); v.level = 'warn'; }
-    else if (err) { v.text = '读取失败'; v.tone = 'warn'; v.notes.push(err.error || '无法读取组件状态'); v.level = 'error'; }
-    else v.text = '…';
-    return v;
+  function iconBtn(icon, title) {
+    var b = h('button', 'icon-btn');
+    b.type = 'button';
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.innerHTML = '<svg class="i"><use href="#' + icon + '"/></svg>';
+    return b;
   }
 
-  // 一次请求拿到全部组件，分发给各卡片；多处同时刷新时共用同一个在途请求
-  var compsInFlight = null;
-  function compFind(res, id) {
-    var list = res && Array.isArray(res.list) ? res.list : [];
-    return list.filter(function (c) { return c && c.id === id; })[0] || null;
-  }
-  function compsFetch() {
-    if (compsInFlight) return compsInFlight;
-    var p = invoke('components_status').then(function (res) {
-      compPanels.forEach(function (x) { x.setStatus(compFind(res, x.id)); });
-      return res;
-    }, function (e) {
-      var info = apiErrInfo(e);
-      compPanels.forEach(function (x) { if (!x.busy) x.setError(info); });
-      throw e;
-    });
-    compsInFlight = p;
-    var clear = function () { if (compsInFlight === p) compsInFlight = null; };
-    p.then(clear, clear);
-    return p;
-  }
-
-  /** 本页对一个组件的日志增量轮询（component_log） */
-  function createCompLog(id, boxId) {
+  /** 一个组件的日志增量轮询（component_log），写进 box */
+  function createCompLog(id, box) {
     var from = 0, timer = null, inflight = false;
     function poll() {
       if (inflight) return Promise.resolve();
       inflight = true;
       return invoke('component_log', { id: id, from: from }).then(function (r) {
-        var box = $(boxId);
         if (r && typeof r.next === 'number' && r.next < from) { from = 0; box.textContent = ''; }
         else if (r && Array.isArray(r.lines) && r.lines.length) {
-          box.classList.add('show');
           box.textContent += r.lines.join('\n') + '\n';
           box.scrollTop = box.scrollHeight;
           from = typeof r.next === 'number' ? r.next : from + r.lines.length;
@@ -1897,8 +1610,7 @@
       active: function () { return !!timer; },
       once: poll,
       start: function (reset) {
-        if (reset) { from = 0; $(boxId).textContent = ''; }
-        $(boxId).classList.add('show');
+        if (reset) { from = 0; box.textContent = ''; }
         if (!timer) timer = setInterval(poll, 500);
         poll();
       },
@@ -1909,83 +1621,306 @@
     };
   }
 
-  /** 一张组件卡片：标题行的版本、「检查更新」、「更新 / 安装」，下面是说明、提示和日志。o.msgId：提示写到别的元素；o.onJobDone：更新结束后回调 */
-  function createCompPanel(id, o) {
-    o = o || {};
-    var p = 'cp-' + id;
-    var log = createCompLog(id, p + '-log');
-    var panel = {
-      id: id, st: null, err: null, busy: false,
-      msg: function (text, isError) {
-        var m = $(o.msgId || p + '-msg');
-        m.textContent = text || '';
-        m.className = 'local-msg' + (isError ? ' error' : '');
-      },
+  /** ComponentStatus → 一行要显示的东西。hasService：这个组件带常驻服务（kiro.rs） */
+  function compView(st, hasService) {
+    var job = st.job || null;
+    var running = !!(job && job.state === 'running');
+    var installing = running && job.kind === 'install';
+    var canInstall = !st.installed && !!st.installable;
+    var avail = !!st.installed && !st.custom && !!st.updateAvailable;
+    var svc = st.installed && st.service ? st.service : null;
+    // 服务端没运行：程序照常检查、更新，服务的状态和启停按钮置灰
+    var svcOff = !svc && !!hasService && compOffline && !!st.installed;
+    var tips = [];
+    var v = {
+      ver: st.installed ? (shortVer(st.version) || '已安装') : '—', verTone: '',
+      text: '', tone: '', dot: '', err: '', add: false,
+      running: running, installing: installing, canInstall: canInstall, avail: avail, svc: svc, svcOff: svcOff,
+      blocked: avail && !running && st.busy > 0,
+    };
+    if (avail) v.verTone = 'up';
+    if (running) { v.text = installing ? '正在安装…' : '正在更新…'; v.tone = 'up'; }
+    else if (!st.installed) {
+      v.text = '未安装'; v.tone = 'warn';
+      if (!canInstall && !st.custom) tips.push(st.id === 'claude' ? '没找到 claude 命令，请先安装并登录 Claude Code。' : '还没有安装。');
+    } else if (svcOff) {
+      v.dot = 'idle'; v.text = '服务端未运行'; v.tone = 'off';
+      tips.push('kiro.rs 服务随 Cosyee 服务端启动，服务端运行后才能启停和打开管理页面。');
+      if (avail) tips.push('有新版' + (st.latest ? ' ' + st.latest : '') + '，可以直接更新。');
+    } else if (svc) {
+      var s = svc.state;
+      var acc = svc.accounts || { total: 0, usable: 0 };
+      if (s === 'failed') { v.dot = 'bad'; v.text = '启动失败'; v.tone = 'bad'; v.err = '启动失败：' + (svc.error || '未知错误'); }
+      else if (s === 'stopped') { v.dot = 'idle'; v.text = '已停止'; if (svc.enabled === false) tips.push('已手动停止，点 ▶ 启动。'); }
+      else if (s === 'starting') { v.dot = 'ok'; v.text = '启动中…'; }
+      else if (svc.outdated) { v.dot = 'warn'; v.text = '需重启生效'; v.tone = 'warn'; tips.push('kiro.rs 已更新，服务还在用旧版，点「重启」后生效。'); }
+      else if (!acc.total) { v.dot = 'ok'; v.text = '运行中 · 还没有账号'; v.add = true; }
+      else {
+        v.dot = 'ok';
+        v.text = '运行中 · ' + acc.usable + '/' + acc.total + ' 账号可用';
+        if (acc.usable < acc.total) {
+          v.tone = 'warn';
+          tips.push('有 ' + (acc.total - acc.usable) + ' 个账号额度用完或被 kiro.rs 停用，详情看账号列表或管理页面。');
+        }
+      }
+      if (svc.port && (s === 'ready' || s === 'starting')) tips.push('地址：127.0.0.1:' + svc.port);
+    } else if (st.custom) v.text = '自定义程序';
+    else if (st.checkError) { v.text = '检查失败'; v.tone = 'warn'; }
+    else if (avail) { v.text = '有新版' + (st.latest ? ' ' + shortVer(st.latest) : ''); v.tone = 'up'; }
+    else if (st.latest) { v.text = '已是最新'; v.tone = 'ok'; }
+    if (st.custom) tips.push('这是你指定的程序（环境变量或源码运行），不检查更新。');
+    if (st.checkError && !running) tips.push('检查更新失败：' + st.checkError);
+    if (job && job.state === 'failed') {
+      v.err = (v.err ? v.err + '\n' : '') + (job.kind === 'install' ? '安装失败：' : '更新失败：') + (job.error || '未知错误');
+    }
+    if (v.blocked) tips.push('有 ' + st.busy + ' 个任务在用，' + (st.pending ? '结束后会自动更新。' : '等它们结束再更新。'));
+    var when = fmtTime(st.checkedAt);
+    if (when) tips.push('上次检查：' + when);
+    tips.push('点击查看日志');
+    v.title = tips.join('\n');
+    return v;
+  }
+  /** 一行组件：名称、版本、状态文字、右侧按钮；下面的展开区平时收起，只在有日志 / 确认 / 错误时出现 */
+  function createCompRow(def) {
+    var id = def.id;
+    var root = h('div', 'comp-item');
+    var row = h('div', 'comp-row');
+    var ico = h('span', 'comp-ico');
+    ico.innerHTML = '<svg class="i"><use href="#' + def.icon + '"/></svg>';
+    var ver = h('span', 'comp-ver');
+    var state = h('button', 'comp-state');
+    state.type = 'button';
+    var dot = h('i');
+    var stText = h('span');
+    state.append(dot, stText);
+    var addLink = h('button', 'comp-link', '添加账号');
+    addLink.type = 'button';
+    var btns = h('div', 'comp-btns');
+    var bStart = iconBtn('i-play', '启动');
+    var bStop = iconBtn('i-stop', '停止');
+    var bRestart = iconBtn('i-power', '重启');
+    var bAdmin = iconBtn('i-open', '打开 kiro.rs 管理页面');
+    var bCheck = iconBtn('i-refresh', '检查更新');
+    var bUpdate = h('button', 'btn primary comp-up');
+    bUpdate.type = 'button';
+    btns.append(bStart, bStop, bRestart, bAdmin, bCheck, bUpdate);
+    row.append(ico, h('b', 'comp-name', def.name), ver, state, addLink, btns);
+    var more = h('div', 'comp-more');
+    var msgEl = h('p', 'comp-msg');
+    var conf = h('div', 'comp-confirm');
+    conf.setAttribute('role', 'alert');
+    var confText = h('span');
+    var confOk = h('button', 'btn danger');
+    var confNo = h('button', 'btn ghost', '取消');
+    confOk.type = confNo.type = 'button';
+    conf.append(confText, confOk, confNo);
+    var logBox = h('pre', 'comp-log');
+    more.append(msgEl, conf, logBox);
+    root.append(row, more);
+    var log = createCompLog(id, logBox);
+    var flashTimer = null;
+
+    var p = {
+      id: id, el: root, st: null, busy: false, busyText: '', msg: null, confirm: null, logOpen: false,
+      jobRunning: function () { return !!(p.st && p.st.job && p.st.job.state === 'running'); },
       setStatus: function (st) {
-        var wasRunning = !!(panel.st && panel.st.job && panel.st.job.state === 'running');
-        panel.st = st;
-        panel.err = st ? null : { kind: 'other', error: '服务端没有返回这个组件' };
+        p.st = st;
         var running = !!(st && st.job && st.job.state === 'running');
         if (running) { if (!log.active()) log.start(false); }
         else if (log.active()) log.stop(true);
-        if (wasRunning && !running && o.onJobDone) o.onJobDone();
-        panel.render();
+        var s = st && st.service && st.service.state;
+        if (p.confirm && s !== 'ready' && s !== 'starting') p.confirm = null;
+        p.render();
       },
-      setError: function (info) { panel.st = null; panel.err = info; log.stop(false); panel.render(); },
-      setOffline: function () { panel.setError({ kind: 'offline', error: '服务端未运行' }); },
+      reset: function () {
+        p.st = null; p.confirm = null; p.logOpen = false;
+        log.stop(false);
+        p.render();
+      },
+      flash: function (text) {
+        p.msg = { text: text, error: false };
+        if (flashTimer) clearTimeout(flashTimer);
+        var mine = p.msg;
+        flashTimer = setTimeout(function () { if (p.msg === mine) { p.msg = null; p.render(); } }, 3000);
+        p.render();
+      },
       render: function () {
-        var v = panel.st ? compView(panel.st, panel.busy) : compViewUnavailable(id, panel.err);
-        var ver = $(p + '-ver');
-        ver.textContent = v.text;
-        ver.className = 'ver' + (v.tone ? ' ' + v.tone : '');
-        ver.title = v.title;
-        var cb = $(p + '-check');
-        cb.hidden = !v.check;
-        cb.disabled = v.busy || !v.check;
-        var ub = $(p + '-update');
-        ub.hidden = !v.update;
-        ub.querySelector('span').textContent = v.label;
-        ub.disabled = v.busy || v.blocked;
-        var note = $(p + '-note');
-        note.className = 'sub-hint' + (v.level ? ' ' + v.level : '');
-        note.textContent = v.notes.join('\n');
-        $(id + '-card').classList.toggle('busy', v.busy);
-      },
-      run: async function (label, fn, withLog) {
-        panel.busy = true; panel.msg(''); panel.render();
-        if (withLog) log.start(true);
-        try {
-          var res = await fn();
-          if (res && typeof res === 'object' && res.id) panel.setStatus(res);
-          return res;
-        } catch (e) {
-          var info = apiErrInfo(e);
-          if (withLog) log.stop(false);
-          if (info.kind === 'offline') panel.setOffline();
-          panel.msg(label + '失败：' + (info.error || errText(e)), true);
-        } finally {
-          panel.busy = false; panel.render();
+        var st = p.st;
+        root.hidden = !st && compLoaded && !compErr; // 服务端版本旧、没有这个组件：不显示
+        if (!st) {
+          // 还没拿到状态（服务端没运行、读取中、读取失败）：只显示名称，状态写原因，不给操作
+          root.classList.remove('busy');
+          ver.textContent = '—'; ver.className = 'comp-ver'; ver.title = '';
+          stText.textContent = compIdleText(); state.className = 'comp-state'; state.title = '';
+          dot.hidden = true; addLink.hidden = true; btns.hidden = true; more.hidden = true;
+          return;
         }
+        btns.hidden = false;
+        var v = compView(st, !!def.service);
+        var busy = p.busy || v.running;
+        root.classList.toggle('busy', busy);
+        ver.textContent = v.ver;
+        ver.className = 'comp-ver' + (v.verTone ? ' ' + v.verTone : '');
+        ver.title = v.avail && st.latest ? '有新版：' + st.latest : st.installed && st.version ? st.version : '';
+        var text = p.busy && p.busyText ? p.busyText : v.text;
+        stText.textContent = text;
+        state.className = 'comp-state' + (v.tone && !(p.busy && p.busyText) ? ' ' + v.tone : '');
+        state.title = v.title;
+        dot.className = v.dot;
+        dot.hidden = !v.dot || v.running;
+        addLink.hidden = !v.add;
+        var svc = v.svc, s = svc && svc.state;
+        var up = s === 'ready' || s === 'starting';
+        bStart.hidden = !(svc || v.svcOff) || up;
+        bStop.hidden = !svc || !up;
+        bRestart.hidden = !svc || !up;
+        bAdmin.hidden = !(v.svcOff || (svc && s === 'ready'));
+        bStart.title = v.svcOff ? '服务端未运行' : '启动';
+        bAdmin.title = v.svcOff ? '服务端未运行' : '打开 kiro.rs 管理页面';
+        bCheck.hidden = !st.installed || !!st.custom;
+        bUpdate.hidden = !(v.running || v.canInstall || v.avail);
+        bUpdate.textContent = v.running ? (v.installing ? '安装中…' : '更新中…') : v.canInstall ? '安装' : '更新';
+        bUpdate.title = v.blocked ? '有 ' + st.busy + ' 个任务在用' + (st.pending ? '，结束后会自动更新' : '')
+          : v.avail && st.latest ? '更新到 ' + st.latest : '';
+        [bStart, bStop, bRestart, bAdmin, bCheck, addLink].forEach(function (b) { b.disabled = busy; });
+        if (v.svcOff) bStart.disabled = bAdmin.disabled = true;
+        bUpdate.disabled = busy || v.blocked;
+        // 展开区
+        var m = p.msg || (v.err ? { text: v.err, error: true } : null);
+        msgEl.hidden = !m;
+        msgEl.textContent = m ? m.text : '';
+        msgEl.className = 'comp-msg' + (m && m.error ? ' error' : '');
+        conf.hidden = !p.confirm;
+        if (p.confirm) {
+          confText.textContent = p.confirm.text;
+          confOk.textContent = p.confirm.okLabel;
+          confOk.disabled = confNo.disabled = p.busy;
+        }
+        logBox.hidden = !(v.running || p.logOpen);
+        more.hidden = msgEl.hidden && conf.hidden && logBox.hidden;
       },
     };
-    $(p + '-check').onclick = function () {
-      panel.run('检查更新', function () { return invoke('component_check', { id: id }); }).then(function (st) {
-        if (st && st.id && !st.checkError && !st.updateAvailable) panel.msg('已是最新版本。');
+
+    async function run(label, fn, opts) {
+      opts = opts || {};
+      p.busy = true; p.busyText = opts.busyText || ''; p.msg = null;
+      if (opts.clearConfirm) p.confirm = null;
+      p.render();
+      if (opts.withLog) log.start(true);
+      try {
+        var res = await fn();
+        p.confirm = null;
+        if (res && typeof res === 'object' && res.id) p.setStatus(res);
+        return res;
+      } catch (e) {
+        var info = apiErrInfo(e);
+        if (opts.withLog) log.stop(false);
+        if (opts.onConflict && info.kind === 'conflict' && typeof info.running === 'number' && info.running > 0) {
+          p.confirm = opts.onConflict(info.running);
+        } else {
+          p.msg = { text: label + '失败：' + (info.error || errText(e)), error: true };
+          if (info.kind === 'offline') compsFetch().catch(function () {}); // 服务端刚停：改成离线显示
+        }
+      } finally {
+        p.busy = false; p.busyText = '';
+        p.render();
+      }
+    }
+    function service(action, force) {
+      var verb = action === 'start' ? '启动' : action === 'stop' ? '停止' : '重启';
+      run(verb, function () { return invoke('component_service', { id: id, action: action, force: !!force }); }, {
+        busyText: '正在' + verb + '…',
+        clearConfirm: true,
+        onConflict: action === 'start' ? null : function (n) {
+          return { action: action, text: '有 ' + n + ' 个会话在执行，' + verb + '会中断它们', okLabel: '仍然' + verb };
+        },
+      });
+    }
+
+    bCheck.onclick = function () {
+      run('检查更新', function () { return invoke('component_check', { id: id }); }, { busyText: '正在检查…' }).then(function (st) {
+        if (st && st.id && !st.checkError && !st.updateAvailable) p.flash('已是最新版本。');
       });
     };
-    $(p + '-update').onclick = function () {
-      var st = panel.st;
-      var label = st && !st.installed ? '安装' : '更新';
-      panel.run(label, function () { return invoke('component_update', { id: id }); }, true);
+    bUpdate.onclick = function () {
+      var label = p.st && !p.st.installed ? '安装' : '更新';
+      run(label, function () { return invoke('component_update', { id: id }); }, { withLog: true });
     };
-    return panel;
+    bStart.onclick = function () { service('start', false); };
+    bStop.onclick = function () { service('stop', false); };
+    bRestart.onclick = function () { service('restart', false); };
+    bAdmin.onclick = function () {
+      run('打开管理页面', function () { return invoke('kiro_admin'); }, { busyText: '正在打开管理页面…' });
+    };
+    addLink.onclick = function () { connect(ensureLocalEntry(), '?add=kiro'); };
+    confOk.onclick = function () { if (p.confirm) service(p.confirm.action, true); };
+    confNo.onclick = function () { p.confirm = null; p.render(); };
+    state.onclick = async function () {
+      if (!p.st || (p.st.job && p.st.job.state === 'running')) return;
+      p.logOpen = !p.logOpen;
+      p.render();
+      if (p.logOpen && !logBox.textContent.trim()) {
+        await log.once();
+        if (!logBox.textContent.trim()) logBox.textContent = '暂无日志。\n';
+      }
+    };
+    return p;
   }
-  var claudePanel = createCompPanel('claude');
-  var kiroPanel = createCompPanel('kiro', { msgId: 'k-msg', onJobDone: function () { kiroCard.refresh(); } });
-  var agyPanel = createCompPanel('agy');
-  var browserPanel = createCompPanel('browser');
-  var compPanels = [claudePanel, kiroPanel, agyPanel, browserPanel];
-  var subCards = [kiroCard];
+
+  var compRows = [
+    { id: 'kiro', name: 'kiro.rs', icon: 'i-layers', service: true },
+    { id: 'claude', name: 'Claude CLI', icon: 'i-terminal' },
+    { id: 'agy', name: 'Antigravity CLI', icon: 'i-terminal' },
+    { id: 'browser', name: '内置浏览器', icon: 'i-globe' },
+  ].map(createCompRow);
+  compRows.forEach(function (r) { $('comp-list').appendChild(r.el); });
+  var compLoaded = false, compErr = null;
+  /** 当前列表来自客户端直接读（服务端没运行） */
+  var compOffline = false;
+  /** 没拿到状态的组件行显示的文字 */
+  function compIdleText() {
+    if (!compErr) return '正在读取…';
+    return compErr.kind === 'offline' ? '未连接' : '—';
+  }
+  function compRenderCard() {
+    var text = '', warn = false;
+    if (compErr) {
+      if (compErr.kind === 'offline') text = '服务端未运行。';
+      else if (compErr.kind === 'unsupported') { text = '服务端版本过旧，不支持组件管理。先更新「本机服务」里的 Cosyee 服务端。'; warn = true; }
+      else { text = '读取组件状态失败：' + (compErr.error || '未知错误'); warn = true; }
+    } else if (compOffline) text = '服务端未运行：组件照常检查、安装和更新；kiro.rs 服务要等服务端启动后才能启停。';
+    var off = $('comp-off');
+    off.textContent = text;
+    off.className = 'comp-off' + (warn ? ' warn' : '');
+    off.hidden = !text;
+  }
+  function compsSetError(info) {
+    compErr = info; compOffline = false;
+    compRows.forEach(function (r) { r.reset(); });
+    compRenderCard();
+  }
+  // 一次请求拿到全部组件，分给各行；多处同时刷新时共用同一个在途请求
+  var compsInFlight = null;
+  function compsFetch() {
+    if (compsInFlight) return compsInFlight;
+    var p = invoke('components_status').then(function (res) {
+      compLoaded = true; compErr = null; compOffline = !!(res && res.offline);
+      compRenderCard();
+      var list = res && Array.isArray(res.list) ? res.list : [];
+      compRows.forEach(function (r) {
+        r.setStatus(list.filter(function (c) { return c && c.id === r.id; })[0] || null);
+      });
+      return res;
+    }, function (e) {
+      if (!compRows.some(function (r) { return r.busy; })) compsSetError(apiErrInfo(e));
+      throw e;
+    });
+    compsInFlight = p;
+    var clear = function () { if (compsInFlight === p) compsInFlight = null; };
+    p.then(clear, clear);
+    return p;
+  }
+  compRenderCard();
 
   // ───── 内置 Tailscale（桌面为可选组件，Android 随客户端内置；不依赖本机服务端） ─────
   var isAndroid = document.documentElement.hasAttribute('data-cosyee-insets') || /Android/i.test(navigator.userAgent);
@@ -2377,6 +2312,7 @@
     onStatus: function (c, st) {
       tEverLoaded = true;
       $('components').hidden = false;
+      $('tailnet-card').hidden = false;
       var hadAuth = !!tAuthUrl;
       if (st.authURL) tAuthUrl = st.authURL;
       if (!(st.bundled || st.installed) || !st.enabled || st.state === 'Running') {
@@ -2581,10 +2517,7 @@
   if (invoke) {
     spotlight($('tailnet-card'), 0);
     spotlight($('local-card'), 0);
-    spotlight($('kiro-card'), 0);
-    spotlight($('agy-card'), 0);
-    spotlight($('claude-card'), 0);
-    spotlight($('browser-card'), 0);
+    spotlight($('comp-card'), 0);
 
     if (isAndroid) {
       $('h-components').textContent = '内置 Tailscale';
@@ -2765,17 +2698,6 @@
     $('l-open').onclick = function () { connect(ensureLocalEntry()); };
     $('l-link').onclick = function (e) { e.preventDefault(); connect(ensureLocalEntry()); };
 
-    $('k-start').onclick = function () { kDoStart(); };
-    $('k-stop').onclick = function () { kDoService('stop', false); };
-    $('k-restart').onclick = function () { kDoService('restart', false); };
-    $('k-admin').onclick = function () {
-      var items = kiroCard.st && kiroCard.st.service && Array.isArray(kiroCard.st.service.items) ? kiroCard.st.service.items : [];
-      if (items.length === 1) { kOpenAdmin(items[0].id); }
-      else if (items.length > 1) { kAdminOpen = !kAdminOpen; kiroCard.render(); }
-    };
-    $('k-confirm-ok').onclick = function () { if (kiroCard.confirm) kDoService(kiroCard.confirm.action, true); };
-    $('k-confirm-cancel').onclick = function () { kiroCard.confirm = null; kiroCard.render(); };
-
     // 标题栏菜单「停止本机服务」会带 ?stop=1 回到这里
     if (params.get('stop') === '1') lrefresh().then(function () { lrun('停止', function () { return invoke('local_stop'); }); });
     else lrefresh();
@@ -2783,7 +2705,6 @@
     setInterval(function () {
       if (!lbusy && !document.hidden) lrefresh();
       if (lst && lst.running && !document.hidden) {
-        subCards.forEach(function (c) { if (!c.busy && !c.inFlight) c.refresh(); });
         compsFetch().catch(function () {});
       }
     }, 3000);

@@ -3,7 +3,7 @@
 // 设备码登录给出验证码与登录页链接并轮询进度；只有点「取消」才会终止登录。
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountLogin, KiroLoginMethod, KiroStatus } from '@cosyee/shared';
+import type { AccountLogin, ComponentStatus, KiroLoginMethod, KiroStatus } from '@cosyee/shared';
 import { api, ApiError } from '../../core/api';
 import { Icon } from '../icons/Icon';
 import { useMorph } from '../motion/morph';
@@ -76,6 +76,8 @@ export function KiroAccountDialog({
   const reloginTitle = relogin?.title ?? reloginId;
 
   const [status, setStatus] = useState<KiroStatus | null>(null);
+  /** 组件列表里的 kiro.rs（是否已装、安装进度） */
+  const [comp, setComp] = useState<ComponentStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [login, setLogin] = useState<AccountLogin | null>(resume ?? null);
@@ -98,9 +100,11 @@ export function KiroAccountDialog({
   const loadStatus = useCallback(() => {
     setStatusLoading(true);
     setStatusError(null);
-    api.kiroStatus().then(
-      (s) => {
+    // 组件列表读不到不挡登录：只是看不到「未安装」的提示
+    Promise.all([api.kiroStatus(), api.components().catch(() => null)]).then(
+      ([s, c]) => {
         setStatus(s);
+        setComp(c?.list.find((x) => x.id === 'kiro') ?? null);
         setStatusLoading(false);
         if (pending(s.login)) {
           setLogin((cur) => cur ?? s.login);
@@ -117,18 +121,19 @@ export function KiroAccountDialog({
     loadStatus();
   }, [loadStatus]);
 
-  // 引擎下载中：轮询 build.state 与 step
-  const buildRunning = status?.engine.build.state === 'running';
+  // kiro.rs 安装中：轮询组件状态
+  const buildRunning = comp?.job?.state === 'running';
   useEffect(() => {
     if (!buildRunning) return;
     let alive = true;
     const t = window.setTimeout(() => {
-      api.kiroStatus().then(
-        (next) => {
+      api.components().then(
+        (list) => {
           if (!alive) return;
           setPollError(null);
-          setStatus(next);
-          if (next.engine.build.state === 'running') setBuildTick((n) => n + 1);
+          const next = list.list.find((x) => x.id === 'kiro') ?? null;
+          setComp(next);
+          if (next?.job?.state === 'running') setBuildTick((n) => n + 1);
         },
         (e) => {
           if (!alive) return;
@@ -184,8 +189,7 @@ export function KiroAccountDialog({
     setError(null);
     setPollError(null);
     try {
-      const next = await api.kiroBuild();
-      setStatus(next);
+      setComp(await api.updateComponent('kiro'));
     } catch (e) {
       setError(msg(e));
     } finally {
@@ -366,9 +370,9 @@ export function KiroAccountDialog({
         <button type="button" className="cz-acct-dlg__btn cz-acct-dlg__btn--primary" onClick={loadStatus}>重试</button>
       </>
     );
-  } else if (status && status.engine.source === 'none') {
-    const { build } = status.engine;
-    const isBuilding = build.state === 'running';
+  } else if (status && comp && !comp.installed) {
+    const isBuilding = comp.job?.state === 'running';
+    const failed = comp.job?.state === 'failed';
     const disabled = busy || isBuilding;
     body = (
       <>
@@ -380,12 +384,12 @@ export function KiroAccountDialog({
           </p>
           {isBuilding && (
             <p className="cz-acct-dlg__text" role="status">
-              正在下载 kiro.rs：{build.step ?? '准备中…'}
+              正在下载 kiro.rs…
             </p>
           )}
-          {build.state === 'failed' && (
+          {failed && (
             <p className="cz-acct-dlg__text cz-acct-dlg__text--error" role="alert">
-              下载失败：{build.error ?? '未知错误'}
+              下载失败：{comp.job?.error ?? '未知错误'}
             </p>
           )}
         </div>
@@ -400,7 +404,7 @@ export function KiroAccountDialog({
           disabled={disabled}
           onClick={() => void startBuild()}
         >
-          {isBuilding ? '正在下载…' : build.state === 'failed' ? '重试下载' : '下载 kiro.rs'}
+          {isBuilding ? '正在下载…' : failed ? '重试下载' : '下载 kiro.rs'}
         </button>
       </>
     );
@@ -420,7 +424,7 @@ export function KiroAccountDialog({
           {!reloginId && onChangeKind && <AddKindSeg kind="kiro" onChange={onChangeKind} />}
           {status && !status.service.enabled && (
             <div className="cz-kiro-warn" role="note">
-              kiro.rs 服务已停止，请先到客户端的「本机服务」启动。
+              kiro.rs 服务已停止，请先到客户端的「组件」里启动。
             </div>
           )}
           <p className="cz-acct-dlg__text">

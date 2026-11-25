@@ -1,5 +1,5 @@
 // 本机组件（Claude CLI / kiro.rs / agy / cosyee 服务端）的统一适配接口与公用工具。
-import type { ComponentId, ComponentStatus } from '@cosyee/shared';
+import type { ComponentId, ComponentService, ComponentStatus } from '@cosyee/shared';
 import { readTextLimited, sanitizeLogLine } from '../delegate/agyCli.js';
 
 /** 适配器给调度器的原始信息（不含开关、pending 等调度层才知道的字段） */
@@ -30,10 +30,19 @@ export interface ComponentAdapter {
   check(): Promise<void>;
   /** 执行更新，结束（成功或失败）时才返回；失败抛错。调用前调度器已确认 !custom && (installed || installable) */
   update(): Promise<void>;
+  /** 恢复上次检查的结果（服务端重启或命令行入口每次都是新进程，只有自己持久化了的组件不需要）；不联网 */
+  restore?(latest: string, checkedAt: number): void;
   /** 本次更新日志的增量 */
   log(from: number): { lines: string[]; next: number };
   /** 服务端退出时调用 */
   dispose?(): void;
+  /** 带常驻服务的组件（kiro.rs）：服务状态与启停。stop / restart 有任务在用且没带 force 时抛 RunningError */
+  service?: {
+    status(): ComponentService;
+    start(): Promise<void>;
+    stop(force: boolean): Promise<void>;
+    restart(force: boolean): Promise<void>;
+  };
 }
 
 export const FETCH_TIMEOUT_MS = 15_000;

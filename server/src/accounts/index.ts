@@ -15,7 +15,7 @@ import { nameFromOauth, planLabel, readClaudeJson } from '../account.js';
 import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
-import { type ApiConfig, apiHost, apiInfo, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
+import { type ApiConfig, apiHost, apiInfo, isLegacyKiro, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
 import { ensureLinks, unlinkShared } from './links.js';
 import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
@@ -40,8 +40,8 @@ export interface AccountsDeps {
   onChanged(e: { reset?: string; notify?: 'reload' | 'refresh' }): void;
   /** 测试替换：启动登录进程 */
   spawnLogin?: (env: NodeJS.ProcessEnv) => ChildProcess;
-  /** Kiro 账号代理状态查询（供 list() 下发 AccountKiroInfo） */
-  kiroProxyState?: (dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error'>;
+  /** Kiro 账号的服务与凭据状态（供 list() 下发 AccountKiroInfo） */
+  kiroState?: (id: string, dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error' | 'credential' | 'credentialReason'>;
   /** 移除 Kiro 账号前，把它在内置 kiro.rs 服务里的凭据 / Key / 分组一并删掉（失败只记日志，不阻止移除） */
   removeKiroAccount?: (id: string, dir: string) => Promise<void>;
 }
@@ -104,6 +104,14 @@ function sameClaudeIdentity(a: Pick<LocalInfo, 'uuid' | 'emailHash'>, b: Pick<Lo
   if (a.uuid && b.uuid) return a.uuid === b.uuid;
   if (a.emailHash && b.emailHash) return a.emailHash === b.emailHash;
   return false;
+}
+
+type DupKind = 'claude' | 'api' | 'kiro';
+
+/** Kiro 账号的身份：登录邮箱（小写）；旧格式或还没读到邮箱时为 null，不参与去重 */
+function kiroIdentity(k: NonNullable<ApiConfig['kiro']>): string | null {
+  const e = isLegacyKiro(k) ? null : k.email?.trim().toLowerCase();
+  return e || null;
 }
 
 /** 原子写回文件（临时文件 + rename） */
@@ -369,7 +377,7 @@ export class Accounts {
   }
 
   /** 把所有账号按真实身份分为「列表保留项」与「去重隐藏项」；优先级 当前账号 > 默认账号 > 最早添加 */
-  private partition(): { kept: AccountEntry[]; hiddenIds: string[] } {
+  private partition(): { kept: AccountEntry[]; hiddenIds: string[]; byKind: Partial<Record<DupKind, number>> } {
     const active = this.activeId();
     const def = localInfo(null);
     type Row = {
@@ -377,7 +385,9 @@ export class Accounts {
       createdAt: number;
       entry: AccountEntry;
       info: LocalInfo;
-      apiKeyId: string | null;
+      kind: DupKind;
+      /** API 账号：baseUrl + Key；Kiro 账号：登录邮箱（小写）；订阅账号为 null，用 info 比对 */
+      key: string | null;
     };
     const timeFields = (info: LocalInfo): Pick<AccountEntry, 'subscribedAt' | 'loginExpiresAt'> => ({
       ...(info.subscribedAt !== null ? { subscribedAt: info.subscribedAt } : {}),
@@ -389,7 +399,8 @@ export class Accounts {
         createdAt: -1,
         entry: { id: DEFAULT_ID, label: '', name: def.name, plan: def.plan, loggedIn: def.loggedIn, active: active === DEFAULT_ID, isDefault: true, ...timeFields(def) },
         info: def,
-        apiKeyId: null,
+        kind: 'claude',
+        key: null,
       },
     ];
     for (let k = 0; k < this.s.list.length; k++) {
@@ -408,11 +419,20 @@ export class Accounts {
       };
       // Kiro 账号不下发 api，改下发 kiro；普通 API 账号标题用备注名或主机名
       if (api?.kiro) {
-        const ps = this.deps.kiroProxyState?.(a.dir) ?? { proxy: 'stopped' as const, error: null };
+        const ps = this.deps.kiroState?.(a.id, a.dir) ?? { proxy: 'stopped' as const, error: null, credential: 'unknown' as const };
+        const email = isLegacyKiro(api.kiro) ? null : api.kiro.email ?? null;
         Object.assign(e, {
-          name: a.label || 'Kiro',
+          name: a.label || email || 'Kiro',
           plan: 'Kiro',
-          kiro: { method: api.kiro.method, proxy: ps.proxy, error: ps.error, ...(api.models ? { models: api.models } : {}) },
+          kiro: {
+            method: api.kiro.method,
+            proxy: ps.proxy,
+            error: ps.error,
+            credential: ps.credential,
+            ...(ps.credentialReason ? { credentialReason: ps.credentialReason } : {}),
+            email,
+            ...(api.models ? { models: api.models } : {}),
+          },
         });
       } else if (api) {
         Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
@@ -422,7 +442,8 @@ export class Accounts {
         createdAt: a.createdAt,
         entry: e,
         info: i,
-        apiKeyId: api && !api.kiro ? `${api.baseUrl}\0${api.apiKey}` : null,
+        kind: api?.kiro ? 'kiro' : api ? 'api' : 'claude',
+        key: api?.kiro ? kiroIdentity(api.kiro) : api ? `${api.baseUrl}\0${api.apiKey}` : null,
       });
     }
 
@@ -431,26 +452,40 @@ export class Accounts {
     const ordered = [...rows].sort((a, b) => rank(a) - rank(b) || a.createdAt - b.createdAt || a.idx - b.idx);
     const kept: Row[] = [];
     const hiddenIds: string[] = [];
+    const byKind: Partial<Record<DupKind, number>> = {};
     for (const r of ordered) {
       const dup = kept.some((k) => {
-        if (r.apiKeyId && k.apiKeyId) return r.apiKeyId === k.apiKeyId;
-        if (r.apiKeyId || k.apiKeyId) return false;
-        return sameClaudeIdentity(r.info, k.info);
+        if (r.kind !== k.kind) return false;
+        if (r.kind === 'claude') return sameClaudeIdentity(r.info, k.info);
+        return r.key !== null && r.key === k.key;
       });
-      if (dup) hiddenIds.push(r.entry.id);
-      else kept.push(r);
+      if (dup) {
+        hiddenIds.push(r.entry.id);
+        byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      } else kept.push(r);
     }
     kept.sort((a, b) => a.idx - b.idx);
-    return { kept: kept.map((r) => r.entry), hiddenIds };
+    return { kept: kept.map((r) => r.entry), hiddenIds, byKind };
+  }
+
+  /** 已有的 Kiro 账号里有没有这个登录邮箱（except 是自己，重新登录时排除） */
+  kiroEmailTaken(email: string, except?: string): boolean {
+    const want = email.trim().toLowerCase();
+    if (!want) return false;
+    return this.s.list.some((a) => {
+      if (a.id === except) return false;
+      const k = readApiConfig(a.dir)?.kiro;
+      return !!k && kiroIdentity(k) === want;
+    });
   }
 
   list(): AccountList {
-    const { kept, hiddenIds } = this.partition();
+    const { kept, hiddenIds, byKind } = this.partition();
     return {
       mode: this.s.mode,
       list: kept,
       login: this.login ? { ...this.login.state } : null,
-      ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length } : {}),
+      ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length, duplicateKinds: byKind } : {}),
     };
   }
 
@@ -592,6 +627,11 @@ export class Accounts {
   /** Kiro 模型映射重新拉取后变了：作废该账号的模型缓存并通知前端刷新 */
   kiroModelsChanged(id: string): void {
     this.deps.onChanged({ reset: id, notify: 'refresh' });
+  }
+
+  /** Kiro 账号的邮箱等显示信息变了：只刷新列表 */
+  kiroInfoChanged(): void {
+    this.deps.onChanged({ notify: 'refresh' });
   }
 
   /** Kiro 登录失败时清理未登记的新目录 */

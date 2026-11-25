@@ -251,7 +251,24 @@ function modelFact(m: ApiModelMap | undefined): Fact | null {
   return { label: '模型映射', value: lines.map((l, i) => <span key={i} className="cz-acard__line">{l}</span>) };
 }
 
-const PROXY_TEXT = { stopped: '未启动', starting: '启动中', ready: '运行中', failed: '异常' } as const;
+/** Kiro 账号「状态」一行：服务没在跑时说服务，在跑时说凭据 */
+export function kiroStateFact(k: NonNullable<AccountEntry['kiro']>, balance: KiroBalanceState | undefined): Fact {
+  if (k.proxy === 'failed') return { label: '状态', value: k.error ? `kiro.rs 启动失败：${k.error}` : 'kiro.rs 启动失败', tone: 'danger' };
+  if (k.proxy === 'stopped') return { label: '状态', value: 'kiro.rs 未运行', tone: 'danger' };
+  if (k.proxy === 'starting') return { label: '状态', value: 'kiro.rs 启动中' };
+  switch (k.credential) {
+    case 'ok': return { label: '状态', value: '可用' };
+    case 'quota': {
+      const at = balance?.status === 'ok' ? balance.info.resetsAt : null;
+      const d = at ? new Date(at) : null;
+      const when = d ? `，${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 重置` : '';
+      return { label: '状态', value: `额度已用完${when}`, tone: 'danger' };
+    }
+    case 'disabled': return { label: '状态', value: `已被 kiro.rs 停用${k.credentialReason ? `：${k.credentialReason}` : ''}`, tone: 'danger' };
+    case 'missing': return { label: '状态', value: '服务里找不到凭据，请重新登录', tone: 'danger' };
+    default: return { label: '状态', value: '读取中…' };
+  }
+}
 const KIRO_METHOD = {
   builderId: 'Builder ID', idc: 'IAM Identity Center', kiroIde: '导入自 Kiro IDE', kiroCli: '导入自 Kiro CLI', apiKey: 'API Key',
 } as const;
@@ -284,15 +301,11 @@ export function ClaudeCardBody({
     facts.push(modelFact(a.api.models) ?? { label: '模型映射', value: '未配置' });
   }
   if (a.kiro) {
+    if (a.kiro.email && a.kiro.email !== title) facts.push({ label: '邮箱', value: a.kiro.email });
     const sub = balance?.status === 'ok' ? balance.info.subscription : null;
     if (sub) facts.push({ label: '订阅', value: sub });
     facts.push({ label: '登录方式', value: KIRO_METHOD[a.kiro.method] });
-    const failed = a.kiro.proxy === 'failed';
-    facts.push({
-      label: 'kiro.rs',
-      value: failed && a.kiro.error ? `异常：${a.kiro.error}` : PROXY_TEXT[a.kiro.proxy],
-      tone: failed ? 'danger' : undefined,
-    });
+    facts.push(kiroStateFact(a.kiro, balance));
   }
   return (
     <Body

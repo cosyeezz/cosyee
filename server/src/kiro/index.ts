@@ -1,6 +1,8 @@
 // Kiro 服务总入口：组合 KiroEngine、KiroProxyManager（内置 kiro.rs 单实例）、KiroAccountAdmin、KiroLogin，对接 HTTP 路由与 server.ts 生命周期。
+// kiro.rs 装好且没被手动停止时随 cosyee 启动，退出时一起停。
 import path from 'node:path';
-import type { AccountLogin, KiroBalance, KiroServiceStatus, KiroStatus } from '@cosyee/shared';
+import type { AccountKiroInfo, AccountLogin, ComponentService, KiroBalance, KiroCredentialState, KiroServiceStatus, KiroStatus } from '@cosyee/shared';
+import { isLegacyKiro, readApiConfig } from '../accounts/api-config.js';
 import { RunningError } from '../accounts/index.js';
 import { cosyeeHome } from '../paths.js';
 import { HttpError } from '../workspaces.js';
@@ -15,14 +17,18 @@ export interface KiroServiceAccounts extends KiroAccountHooks {
   listKiroAccounts(): Array<{ id: string; dir: string; label: string }>;
   /** 账号的模型映射被后台刷新后调用（让该账号的会话重置） */
   modelsChanged?(accountId: string): void;
+  /** 账号显示用的信息（邮箱）变了后调用（刷新列表） */
+  infoChanged?(accountId: string): void;
 }
 
 export interface KiroServiceOptions {
   accounts: KiroServiceAccounts;
   engine?: Omit<KiroEngineOptions, 'hasKiroAccounts' | 'onUpgraded'>;
   proxy?: Omit<KiroProxyOptions, 'engine' | 'dataDir' | 'listKiroAccounts'>;
-  admin?: Omit<KiroAccountAdminOptions, 'onModelsChanged'>;
+  admin?: Omit<KiroAccountAdminOptions, 'onModelsChanged' | 'onInfoChanged'>;
   login?: Omit<KiroLoginOptions, 'engine' | 'admin' | 'accounts'>;
+  /** 凭据状态缓存多久后重新读（ms），默认 30 秒 */
+  credentialsTtlMs?: number;
 }
 
 export class KiroService {
@@ -31,20 +37,22 @@ export class KiroService {
   readonly admin: KiroAccountAdmin;
   readonly login: KiroLogin;
   private readonly accounts: KiroServiceAccounts;
-  private migrating: Promise<void> | null = null;
-  private migrateAgain = false;
+  /** 各账号凭据状态（来自 GET /api/admin/credentials），key = 账号 id */
+  private creds = new Map<string, { credential: KiroCredentialState; reason: string | null }>();
+  private credsAt = 0;
+  private credsLoading: Promise<void> | null = null;
+  private readonly credsTtlMs: number;
 
   constructor(opts: KiroServiceOptions) {
     this.accounts = opts.accounts;
+    this.credsTtlMs = opts.credentialsTtlMs ?? 30_000;
     this.engine = new KiroEngine({
       ...opts.engine,
       hasKiroAccounts: () => this.accounts.listKiroAccounts().length > 0,
       onUpgraded: () => {
-        // 没有执行中的 Kiro 会话就用新引擎重启服务；之后（或首次装好引擎后）补做旧账号迁移
-        void this.proxy
-          .restartIdle(() => this.busySessionCount() > 0)
-          .catch(() => undefined)
-          .then(() => this.migrate());
+        // 没有执行中的 Kiro 会话就用新引擎重启服务；首次装好（还没在跑）就直接启动
+        if (this.proxy.isRunning()) void this.proxy.restartIdle(() => this.busySessionCount() > 0).catch(() => undefined);
+        else this.autoStart();
       },
     });
     const rootDir = () => (opts.engine?.rootDir ? opts.engine.rootDir() : path.join(cosyeeHome(), 'kiro-rs'));
@@ -57,6 +65,7 @@ export class KiroService {
     this.admin = new KiroAccountAdmin(this.proxy, {
       ...opts.admin,
       onModelsChanged: (id) => this.accounts.modelsChanged?.(id),
+      onInfoChanged: (id) => this.accounts.infoChanged?.(id),
     });
     this.login = new KiroLogin({
       ...opts.login,
@@ -66,39 +75,15 @@ export class KiroService {
     });
   }
 
-  /** 服务启动时调用：有账号但没有引擎时后台下载，并在后台迁移旧格式（每账号一个进程）的 Kiro 账号 */
+  /** 服务启动时调用：没装 kiro.rs 但有 Kiro 账号时后台下载；装了且没被手动停止就启动服务 */
   init(): void {
     this.engine.maybeAutoInstall();
-    void this.migrate();
+    this.autoStart();
   }
 
-  /**
-   * 后台迁移旧格式账号到内置服务。同一时间只跑一轮；跑的过程中又被触发会在本轮结束后再跑一轮。
-   * 引擎没装好或总开关关着时什么都不做（引擎装好 / 服务启动时会再触发）。
-   */
-  private migrate(): Promise<void> {
-    if (this.migrating) {
-      this.migrateAgain = true;
-      return this.migrating;
-    }
-    const run = async (): Promise<void> => {
-      do {
-        this.migrateAgain = false;
-        if (!this.engine.isEnabled() || !this.engine.binaryPath()) return;
-        await this.admin.migrateAll(this.accounts.listKiroAccounts());
-      } while (this.migrateAgain);
-    };
-    this.migrating = run()
-      .catch(() => undefined)
-      .finally(() => {
-        this.migrating = null;
-      });
-    return this.migrating;
-  }
-
-  /** 等当前的迁移跑完（测试用） */
-  waitForMigration(): Promise<void> {
-    return this.migrating ?? Promise.resolve();
+  private autoStart(): void {
+    if (!this.engine.isEnabled() || !this.engine.binaryPath()) return;
+    void this.proxy.start().then(() => this.loadCredentials(), () => undefined);
   }
 
   serviceStatus(): KiroServiceStatus {
@@ -111,69 +96,115 @@ export class KiroService {
       failed: svc.proxy === 'failed' ? 1 : 0,
       busySessions: this.busySessionCount(),
       outdated: this.proxy.isOutdated() ? 1 : 0,
-      items: list.map((a) => ({ id: a.id, label: a.label, proxy: this.proxy.stateOf(a.dir).proxy })),
+      usable: this.usableCount(list),
     };
+  }
+
+  /** 组件列表里 kiro.rs 一行的服务状态 */
+  componentService(): ComponentService {
+    const list = this.accounts.listKiroAccounts();
+    const svc = this.proxy.serviceState();
+    return {
+      state: svc.proxy,
+      error: svc.error,
+      enabled: this.engine.isEnabled(),
+      outdated: this.proxy.isOutdated(),
+      port: this.proxy.port(),
+      accounts: { total: list.length, usable: this.usableCount(list) },
+    };
+  }
+
+  private usableCount(list: Array<{ id: string; dir: string }>): number {
+    return list.filter((a) => this.accountState(a.id, a.dir).credential === 'ok').length;
+  }
+
+  /** 账号在列表里显示的服务与凭据状态；缓存过期时后台重读，变了再通知刷新列表 */
+  accountState(accountId: string, dir: string): Pick<AccountKiroInfo, 'proxy' | 'error' | 'credential' | 'credentialReason'> {
+    const svc = this.proxy.serviceState();
+    const base = { proxy: svc.proxy, error: svc.error };
+    if (svc.proxy !== 'ready') return { ...base, credential: 'unknown' };
+    if (Date.now() - this.credsAt > this.credsTtlMs) void this.loadCredentials();
+    const api = readApiConfig(dir);
+    if (!api?.kiro || isLegacyKiro(api.kiro)) return { ...base, credential: 'missing' };
+    const c = this.creds.get(accountId);
+    if (!c) {
+      // 新加的账号还没读到：补读一次
+      void this.loadCredentials();
+      return { ...base, credential: 'unknown' };
+    }
+    return { ...base, credential: c.credential, ...(c.reason ? { credentialReason: c.reason } : {}) };
+  }
+
+  /** 从 kiro.rs 读全部凭据，按账号的 credentialId（或分组）对上账号；有变化就通知刷新 */
+  loadCredentials(): Promise<void> {
+    if (this.credsLoading) return this.credsLoading;
+    this.credsAt = Date.now();
+    const p = (async () => {
+      const list = await this.admin.listCredentials();
+      const next = new Map<string, { credential: KiroCredentialState; reason: string | null }>();
+      for (const a of this.accounts.listKiroAccounts()) {
+        const api = readApiConfig(a.dir);
+        if (!api?.kiro || isLegacyKiro(api.kiro)) continue;
+        const credId = api.kiro.credentialId;
+        const c = list.find((x) => x.id === credId) ?? list.find((x) => Array.isArray(x.groups) && x.groups.includes(a.id));
+        if (!c) next.set(a.id, { credential: 'missing', reason: null });
+        else if (c.disabled === true) {
+          const reason = typeof c.disabledReason === 'string' ? c.disabledReason : null;
+          next.set(a.id, { credential: reason === 'QuotaExceeded' ? 'quota' : 'disabled', reason });
+        } else next.set(a.id, { credential: 'ok', reason: null });
+      }
+      const changed = next.size !== this.creds.size
+        || [...next].some(([id, v]) => {
+          const o = this.creds.get(id);
+          return !o || o.credential !== v.credential || o.reason !== v.reason;
+        });
+      this.creds = next;
+      if (changed) this.accounts.infoChanged?.('');
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.credsLoading === p) this.credsLoading = null;
+      });
+    this.credsLoading = p;
+    return p;
   }
 
   status(): KiroStatus {
     return {
-      engine: this.engine.status(),
       service: this.serviceStatus(),
       imports: this.login.importsStatus(),
       login: this.login.currentLogin(),
     };
   }
 
-  async checkEngine(): Promise<KiroStatus> {
-    await this.engine.check();
-    return this.status();
-  }
-
-  buildEngine(): KiroStatus {
-    this.engine.startBuild();
-    return this.status();
-  }
-
-  engineLog(from = 0): { lines: string[]; next: number } {
-    return this.engine.getLog(from);
-  }
-
-  /** 打开总开关并启动服务 */
-  startService(): KiroStatus {
+  /** 打开总开关并启动服务（等就绪；失败抛错，原因也记在服务状态里） */
+  async startService(): Promise<void> {
     if (!this.engine.binaryPath()) throw new HttpError(409, KIRO_ENGINE_MISSING);
     this.engine.setEnabled(true);
-    try {
-      this.proxy.ensure({ force: true });
-    } catch { /* 失败记在服务状态里 */ }
-    void this.migrate();
-    return this.status();
+    await this.proxy.start({ force: true });
+    await this.loadCredentials();
+  }
+
+  private checkBusy(force: boolean, what: string): void {
+    const busy = this.busySessionCount();
+    if (busy > 0 && !force) throw new RunningError(busy, `有 ${busy} 个 Kiro 会话正在执行，${what}会中断它们`);
   }
 
   /** 关闭总开关（持久化）并停止服务；有执行中的 Kiro 会话且没带 force 时抛 RunningError(409) */
-  async stopService(force: boolean): Promise<KiroStatus> {
-    const busy = this.busySessionCount();
-    if (busy > 0 && !force) {
-      throw new RunningError(busy, `有 ${busy} 个 Kiro 会话正在执行，停止服务会中断它们`);
-    }
+  async stopService(force: boolean): Promise<void> {
+    this.checkBusy(force, '停止服务');
     this.engine.setEnabled(false);
-    await this.proxy.stopAll();
-    return this.status();
+    await this.proxy.stop();
   }
 
   /** 用当前引擎重启服务；有执行中的 Kiro 会话且没带 force 时抛 RunningError(409) */
-  async restartService(force: boolean): Promise<KiroStatus> {
+  async restartService(force: boolean): Promise<void> {
     if (!this.engine.binaryPath()) throw new HttpError(409, KIRO_ENGINE_MISSING);
-    const busy = this.busySessionCount();
-    if (busy > 0 && !force) {
-      throw new RunningError(busy, `有 ${busy} 个 Kiro 会话正在执行，重启服务会中断它们`);
-    }
+    this.checkBusy(force, '重启服务');
     this.engine.setEnabled(true);
-    await this.proxy.stopAll();
-    try {
-      this.proxy.ensure({ force: true });
-    } catch { /* 失败记在服务状态里 */ }
-    void this.migrate();
-    return this.status();
+    await this.proxy.stop();
+    await this.proxy.start({ force: true });
+    await this.loadCredentials();
   }
 
   startLogin(opts: StartKiroLoginOpts): AccountLogin {
@@ -189,12 +220,11 @@ export class KiroService {
   }
 
   async balance(accountId: string): Promise<KiroBalance> {
-    return this.admin.balance(this.accounts.existingKiroDir(accountId));
+    return this.admin.balance(this.accounts.existingKiroDir(accountId), accountId);
   }
 
-  /** 获取内置 kiro.rs 服务的管理页面地址与密钥（按需启动服务并等就绪）；账号只用于确认调用方选的是 Kiro 账号 */
-  async adminAccess(accountId: string): Promise<{ url: string; key: string }> {
-    this.accounts.existingKiroDir(accountId);
+  /** 内置 kiro.rs 服务的管理页面地址与密钥（按需启动服务并等就绪）；全部账号共用一个管理页面 */
+  adminAccess(): Promise<{ url: string; key: string }> {
     return this.proxy.adminEndpoint();
   }
 
@@ -216,14 +246,14 @@ export class KiroService {
   async dispose(): Promise<void> {
     this.engine.dispose();
     this.login.dispose();
-    await this.proxy.stopAll();
+    await this.proxy.stop();
   }
 
   /** 进程 exit 钩子里的同步强杀 */
   disposeSync(): void {
     this.engine.dispose();
     this.login.dispose();
-    this.proxy.stopAll(true);
+    this.proxy.killSync();
   }
 }
 

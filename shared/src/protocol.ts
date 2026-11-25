@@ -222,6 +222,8 @@ export interface AccountList {
   login: AccountLogin | null;
   /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
   duplicates?: number;
+  /** 上面的重复数按账号类型拆开：订阅（同一个 Claude 账号）、API（同一个地址 + Key）、Kiro（同一个登录邮箱） */
+  duplicateKinds?: Partial<Record<'claude' | 'api' | 'kiro', number>>;
 }
 
 export interface AccountDedupeResult {
@@ -234,15 +236,24 @@ export interface AccountDedupeResult {
 /** Kiro 账号的登录方式：builderId / idc = 设备码登录；kiroIde / kiroCli = 导入本机已有的登录；apiKey = Kiro API Key（ksk_…） */
 export type KiroLoginMethod = 'builderId' | 'idc' | 'kiroIde' | 'kiroCli' | 'apiKey';
 
-/** Kiro 账号的公开信息：不含令牌、clientSecret、密钥、邮箱 */
+/** Kiro 账号的公开信息：不含令牌、clientSecret、密钥 */
 export interface AccountKiroInfo {
   method: KiroLoginMethod;
-  /** 内置 kiro.rs 服务的状态（全部 Kiro 账号共用一个服务，按需启动）；该账号自己出错（如迁移失败）时为 failed */
+  /** 凭据的登录邮箱（kiro.rs 查过额度后才有；API Key 登录可能一直没有） */
+  email?: string | null;
+  /** 内置 kiro.rs 服务的状态（全部 Kiro 账号共用一个服务，随 cosyee 启动） */
   proxy: 'stopped' | 'starting' | 'ready' | 'failed';
   error: string | null;
+  /** 该账号凭据在 kiro.rs 里的状态（服务没在跑或还没读到 = unknown） */
+  credential: KiroCredentialState;
+  /** credential 为 disabled 时 kiro.rs 给的原因 */
+  credentialReason?: string | null;
   /** 从服务 /v1/models 自动拉取生成的模型映射；还没拉到 = 没有，菜单用 CLI 内置别名 */
   models?: ApiModelMap;
 }
+
+/** ok = 可用；quota = 额度用完被 kiro.rs 停用；disabled = 因其它原因被停用；missing = 服务里没有这个凭据 */
+export type KiroCredentialState = 'ok' | 'quota' | 'disabled' | 'missing' | 'unknown';
 
 export interface KiroBalance {
   subscription: string | null;
@@ -270,13 +281,7 @@ export interface KiroEngineStatus {
   latest: KiroEngineVersion | null;
   updateAvailable: boolean;
   checkedAt: number | null;
-  /** 旧版本地编译缺的工具；改为下载预编译包后恒为空，字段保留兼容 */
-  missingTools: string[];
   build: { state: 'idle' | 'running' | 'failed'; step: string | null; error: string | null };
-  /** 当前引擎是否带管理页面（预编译包已内置，恒为 true） */
-  adminUi: boolean;
-  /** 管理页面没构建成功的原因 */
-  adminUiError: string | null;
 }
 
 /** 内置 kiro.rs 服务：一个进程托管全部 Kiro 账号（每个账号 = 一个凭据 + 同名分组 + 绑定该分组的客户端 Key） */
@@ -292,8 +297,8 @@ export interface KiroServiceStatus {
   busySessions: number;
   /** 服务在运行但还是旧版引擎：0 或 1（重启后用新版） */
   outdated: number;
-  /** 逐个 Kiro 账号的状态 */
-  items: { id: string; label: string; proxy: AccountKiroInfo['proxy'] }[];
+  /** 凭据可用的 Kiro 账号数 */
+  usable: number;
 }
 
 /** Antigravity CLI（agy）本体的版本与运行情况；安装 / 升级都走官方渠道，不改它的文件 */
@@ -342,6 +347,20 @@ export interface ComponentStatus {
   /** 没安装时能否在「本机组件」里直接安装（目前只有内置浏览器） */
   installable?: boolean;
   job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
+  /** 带常驻服务的组件（目前只有 kiro.rs）：服务状态，可以启动 / 停止 / 重启 */
+  service?: ComponentService;
+}
+
+export interface ComponentService {
+  state: 'stopped' | 'starting' | 'ready' | 'failed';
+  error: string | null;
+  /** false = 用户手动停止（持久化），cosyee 启动时不再自动拉起 */
+  enabled: boolean;
+  /** 在运行但还是旧版：重启后用新版 */
+  outdated: boolean;
+  port: number | null;
+  /** kiro.rs：账号总数与凭据可用的账号数 */
+  accounts: { total: number; usable: number };
 }
 
 // ───────────── 内置浏览器（agent-browser） ─────────────
@@ -398,7 +417,6 @@ export interface ComponentList {
 }
 
 export interface KiroStatus {
-  engine: KiroEngineStatus;
   service: KiroServiceStatus;
   /** 本机有没有可导入的登录（只看文件 / 记录是否存在） */
   imports: { kiroIde: boolean; kiroCli: boolean };
@@ -806,26 +824,17 @@ export interface UsageInfo {
 // POST /api/accounts/label {id, label}      → { ok: true }   修改备注名
 // POST /api/accounts/api {id?, label?, baseUrl?, apiKey?, authType?} → { ok: true, id }   添加（不带 id）或修改 API 账号。
 //                                             baseUrl 空 = 官方地址；修改时 apiKey 留空 = 不变；该账号有执行中的会话时 409，空闲进程会先停掉
-// GET  /api/kiro                            → KiroStatus   kiro.rs 引擎状态、可导入的登录、进行中的登录
-// POST /api/kiro/engine/check               → KiroStatus   查询 ZyphrZero/kiro.rs 最新 release
-// POST /api/kiro/engine/build               → KiroStatus   后台下载最新 release 并校验 SHA256；仅本机连接，完成后服务空闲时自动重启换新版
-// GET  /api/kiro/engine/log?from=<n>        → { lines: string[]; next: number }   本次下载日志的增量
-// POST /api/kiro/service/admin?account=<id>  → { url, key }     内置 kiro.rs 服务的管理页面地址与管理密钥（全部账号共用）；服务没运行时先启动。仅本机的非浏览器请求（带 Origin / Sec-Fetch-Site 的一律 403），不写日志
-// GET  /api/components                      → ComponentList   本机组件版本与自动更新状态
+// GET  /api/kiro                            → KiroStatus   内置 kiro.rs 服务概况、可导入的登录、进行中的登录（安装 / 更新 / 启停走 /api/components/kiro/*）
+// POST /api/kiro/service/admin              → { url, key }     内置 kiro.rs 服务的管理页面地址与管理密钥（全部账号共用）；服务没运行时先启动。仅本机的非浏览器请求（带 Origin / Sec-Fetch-Site 的一律 403），不写日志
+// GET  /api/components                      → ComponentList   本机组件版本与自动更新状态；带服务的组件（kiro）附 service
 // POST /api/components/<id>/check           → ComponentStatus   立即查询最新版；仅本机连接
-// POST /api/components/<id>/update          → ComponentStatus   后台更新；仅本机连接；已在进行 / 组件忙 409；custom 或没安装 409；server 组件 409「由桌面客户端更新」
+// POST /api/components/<id>/update          → ComponentStatus   后台安装 / 更新；仅本机连接；已在进行 / 组件忙 409；custom 或没安装（且不可安装）409；server 组件 409「由桌面客户端更新」
 // POST /api/components/<id>/auto?enabled=0|1 → ComponentStatus   自动更新开关（持久化）；仅本机连接
 // GET  /api/components/<id>/log?from=<n>    → { lines: string[]; next: number }   本次更新日志的增量
+// POST /api/components/<id>/start           → ComponentStatus   启动组件的服务（kiro：打开总开关并启动 kiro.rs；没装 409）；仅本机连接；没有服务的组件 404
+// POST /api/components/<id>/stop[?force=1]  → ComponentStatus   停止服务（kiro：关闭总开关并持久化）；有执行中的会话且没带 force 时 409 { error, running }；仅本机连接
+// POST /api/components/<id>/restart[?force=1] → ComponentStatus 用当前版本重启服务；409 同上；仅本机连接
 //                                             components/* 的 POST 都没有请求体；<id> 不是 ComponentId 时 404
-// GET  /api/agy/cli                         → AgyCliStatus
-// POST /api/agy/cli/check                   → AgyCliStatus   查询官方最新版；仅本机连接
-// POST /api/agy/cli/update                  → AgyCliStatus   后台运行 agy update；没安装时走官方安装脚本；仅本机连接；已在进行 409
-// GET  /api/agy/cli/log?from=<n>            → { lines: string[]; next: number }
-// POST /api/agy/cli/restart[?force=1]       → AgyCliStatus   回收常驻的 agy acp 进程（下次委派重新启动）；有执行中任务且没带 force 时 409 { error, running }；仅本机连接
-// POST /api/kiro/service/start              → KiroStatus   打开总开关并启动内置 kiro.rs 服务；没装引擎 409；仅本机连接
-// POST /api/kiro/service/stop[?force=1]     → KiroStatus   关闭总开关（持久化）并停止服务；有执行中的 Kiro 会话且没带 force 时 409 { error, running }；仅本机连接
-// POST /api/kiro/service/restart[?force=1]  → KiroStatus   用当前引擎重启服务；409 同上；仅本机连接
-//                                             engine/* 与 service/* 的 POST 都没有请求体
 // POST /api/kiro/login {method, label?, accountId?, startUrl?, region?, apiKey?} → AccountLogin   添加或重新登录 Kiro 账号；同一时间只允许一个
 // GET  /api/kiro/login/:loginId             → AccountLogin
 // POST /api/kiro/login/:loginId/cancel      → { ok: true }

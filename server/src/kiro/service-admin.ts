@@ -1,16 +1,16 @@
 // Kiro 账号与内置 kiro.rs 服务的映射：每个 cosyee Kiro 账号 = 一个凭据 + 一个以账号 id 命名的分组 + 一个绑定该分组的客户端 Key。
 // 这里只通过 Admin API 操作（经 KiroProxyManager.request），系统 Key（id=0）绝不下发给账号。
-// 提供：添加账号、重新登录换凭据、移除账号、查余额、拉模型映射、旧版（每账号一个进程）到内置服务的迁移。
+// 提供：添加账号、重新登录换凭据、移除账号、查余额、读凭据状态、拉模型映射。
 import fs from 'node:fs';
 import path from 'node:path';
 import type { KiroBalance, KiroLoginMethod } from '@cosyee/shared';
-import { type KiroAccountMeta, isLegacyKiro, readApiConfig, writeApiConfig } from '../accounts/api-config.js';
+import { type KiroAccountMeta, cleanKiroEmail, isLegacyKiro, readApiConfig, writeApiConfig } from '../accounts/api-config.js';
 import { HttpError } from '../workspaces.js';
 import { fetchKiroModels, buildKiroModelMap } from './models.js';
 import { type AdminResponse, type KiroProxyManager, adminErrorMessage } from './proxy.js';
-import { type KiroCredentialEntry, buildKiroCredential, isValidRegion, sanitizeKiroError } from './sanitize.js';
+import { type KiroCredentialEntry, sanitizeKiroError } from './sanitize.js';
 
-/** 旧版每账号独立进程的数据目录名与迁移后的归档名 */
+/** 旧版每账号独立进程的数据目录名，重新登录后归档成的目录名 */
 const LEGACY_DIR = 'kiro';
 const MIGRATED_DIR = 'kiro.migrated';
 
@@ -21,6 +21,8 @@ export interface KiroAccountAdminOptions {
   log?: (message: string) => void;
   /** 模型映射被后台刷新后通知（账号需要重置会话） */
   onModelsChanged?: (accountId: string) => void;
+  /** 账号显示用的信息（邮箱）变了后通知（刷新列表，不用重置会话） */
+  onInfoChanged?: (accountId: string) => void;
 }
 
 export interface AddAccountParams {
@@ -29,10 +31,10 @@ export interface AddAccountParams {
   method: KiroLoginMethod;
   cred: KiroCredentialEntry;
   signal?: AbortSignal;
-  /** 凭据「已存在」时复用分组里已有的那条（迁移重试用），而不是报错 */
+  /** 凭据「已存在」时复用分组里已有的那条（旧版账号重新登录用），而不是报错 */
   reuseExisting?: boolean;
-  /** apiKey 方式添加后用余额接口验证（默认 true）；迁移时不验证，避免临时故障让原本可用的账号失败 */
-  verifyApiKey?: boolean;
+  /** 登录邮箱已经被别的 Kiro 账号用了：为真时回滚并报「已经添加过了」 */
+  emailTaken?: (email: string) => boolean;
 }
 
 export interface ReloginParams {
@@ -41,7 +43,11 @@ export interface ReloginParams {
   method: KiroLoginMethod;
   cred: KiroCredentialEntry;
   signal?: AbortSignal;
+  /** 同 AddAccountParams.emailTaken（调用方要排除这个账号自己） */
+  emailTaken?: (email: string) => boolean;
 }
+
+const KIRO_DUP_MESSAGE = '这个 Kiro 账号已经添加过了';
 
 /** 本次调用在服务里创建的东西（失败时只回滚这些） */
 interface Created {
@@ -60,30 +66,6 @@ function isId(v: unknown): v is number {
 
 function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-}
-
-/** 旧版 credentials.json（hank9999 格式）里的一条 → 内置服务的凭据 */
-function legacyToEntry(item: Record<string, unknown>): KiroCredentialEntry {
-  const am = (str(item.authMethod) ?? '').toLowerCase();
-  const region = (v: unknown): string | null => (isValidRegion(v) ? v.trim() : null);
-  if (am === 'api_key') {
-    const key = str(item.kiroApiKey);
-    if (!key) throw new Error('旧凭据缺少 Kiro API Key');
-    return buildKiroCredential({ authMethod: 'api_key', kiroApiKey: key, apiRegion: region(item.apiRegion) });
-  }
-  if (!str(item.refreshToken)) throw new Error('旧凭据缺少刷新令牌');
-  const idc = am === 'idc' || am === 'builder-id' || am === 'iam';
-  return buildKiroCredential({
-    authMethod: idc ? 'idc' : 'social',
-    refreshToken: str(item.refreshToken),
-    accessToken: str(item.accessToken),
-    expiresAt: str(item.expiresAt),
-    profileArn: str(item.profileArn),
-    clientId: idc ? str(item.clientId) : null,
-    clientSecret: idc ? str(item.clientSecret) : null,
-    authRegion: region(item.authRegion) ?? region(item.region),
-    apiRegion: region(item.apiRegion),
-  });
 }
 
 export class KiroAccountAdmin {
@@ -137,6 +119,23 @@ export class KiroAccountAdmin {
     return this.proxy.request('GET', `/credentials/${id}/balance`);
   }
 
+  /** 服务里的全部凭据（GET /credentials 的 credentials 数组）；读失败抛错 */
+  async listCredentials(): Promise<Record<string, unknown>[]> {
+    const r = await this.proxy.request('GET', '/credentials');
+    if (!r.ok) throw new Error(adminErrorMessage(r, `读取凭据列表失败（HTTP ${r.status}）`));
+    const list = asRecord(r.json).credentials;
+    return Array.isArray(list) ? list.map(asRecord) : [];
+  }
+
+  /** 凭据的登录邮箱（kiro.rs 在查过额度后才有）；读不到返回 null，不抛错 */
+  private async credentialEmail(id: number): Promise<string | null> {
+    try {
+      return cleanKiroEmail((await this.listCredentials()).find((c) => c.id === id)?.email);
+    } catch {
+      return null;
+    }
+  }
+
   private async quiet(label: string, fn: () => Promise<AdminResponse>): Promise<void> {
     try {
       const r = await fn();
@@ -165,7 +164,7 @@ export class KiroAccountAdmin {
       let credentialId: number;
       if ('duplicate' in added) {
         const existing = p.reuseExisting ? await this.findGroupCredential(p.accountId) : null;
-        if (existing === null) throw new Error('该凭据已在 kiro.rs 服务中存在（可能属于另一个账号）');
+        if (existing === null) throw new Error(KIRO_DUP_MESSAGE);
         credentialId = existing;
       } else {
         credentialId = added.id;
@@ -174,7 +173,7 @@ export class KiroAccountAdmin {
 
       p.signal?.throwIfAborted();
       const bal = await this.verifyBalance(credentialId);
-      if (!bal.ok && p.method === 'apiKey' && p.verifyApiKey !== false) {
+      if (!bal.ok && p.method === 'apiKey') {
         throw new Error(adminErrorMessage(bal, `Kiro API Key 验证失败（HTTP ${bal.status}）`));
       }
       if (!bal.ok) this.log(`查询新凭据额度失败（HTTP ${bal.status}），已忽略`);
@@ -186,7 +185,9 @@ export class KiroAccountAdmin {
       if (!isId(kj.id) || typeof kj.key !== 'string' || !kj.key) throw new Error('kiro.rs 服务返回的客户端 Key 无效');
       created.key = kj.id;
 
-      const meta: KiroAccountMeta = { method: p.method, credentialId, keyId: kj.id };
+      const email = await this.credentialEmail(credentialId);
+      if (email && p.emailTaken?.(email)) throw new Error(KIRO_DUP_MESSAGE);
+      const meta: KiroAccountMeta = { method: p.method, credentialId, keyId: kj.id, ...(email ? { email } : {}) };
       const prev = readApiConfig(p.dir);
       writeApiConfig(p.dir, {
         baseUrl: this.proxy.baseUrl(),
@@ -215,7 +216,7 @@ export class KiroAccountAdmin {
   /**
    * 重新登录：在同一分组里加入新凭据，成功后删除旧凭据并更新 credentialId，客户端 Key 不变。
    * 新凭据失败时旧凭据原样保留；服务里已有同一份凭据（已存在）时视为成功、凭据不变。
-   * 旧格式账号（还没迁移）重新登录等同于迁移：走添加流程再归档旧目录。
+   * 旧格式（每账号一个进程）的账号重新登录等同于重新添加：走添加流程再归档旧目录。
    */
   async relogin(p: ReloginParams): Promise<KiroAccountMeta> {
     const api = readApiConfig(p.dir);
@@ -223,7 +224,6 @@ export class KiroAccountAdmin {
     if (isLegacyKiro(api.kiro)) {
       const meta = await this.addAccount({ ...p, reuseExisting: true });
       this.archiveLegacy(p.dir);
-      this.proxy.setAccountError(p.dir, null);
       return meta;
     }
     const old = api.kiro;
@@ -252,12 +252,28 @@ export class KiroAccountAdmin {
       }
     }
 
-    const meta: KiroAccountMeta = { method: p.method, credentialId: added.id, keyId: old.keyId };
+    const email = await this.credentialEmail(added.id);
+    if (email && p.emailTaken?.(email)) {
+      // 重新登录成了另一个已添加的账号：删掉新凭据，原账号的旧凭据不动
+      await this.quiet('回滚凭据', () => this.proxy.request('DELETE', `/credentials/${added.id}`));
+      throw new Error(`${KIRO_DUP_MESSAGE}，原登录状态未改变`);
+    }
+    const meta: KiroAccountMeta = { method: p.method, credentialId: added.id, keyId: old.keyId, ...(email ? { email } : {}) };
     this.writeMeta(p.dir, meta);
     if (old.credentialId !== added.id) {
       await this.quiet('删除旧凭据', () => this.proxy.request('DELETE', `/credentials/${old.credentialId}`));
     }
     return meta;
+  }
+
+  /** 读凭据邮箱，和元数据里的不同就写回并通知；读不到时保留旧值 */
+  private async syncEmail(dir: string, credentialId: number, accountId?: string): Promise<void> {
+    const email = await this.credentialEmail(credentialId);
+    if (!email) return;
+    const cur = readApiConfig(dir);
+    if (!cur?.kiro || isLegacyKiro(cur.kiro) || cur.kiro.credentialId !== credentialId || cur.kiro.email === email) return;
+    writeApiConfig(dir, { ...cur, kiro: { ...cur.kiro, email } });
+    if (accountId) this.opts.onInfoChanged?.(accountId);
   }
 
   /** 只更新 cosyee-api.json 里的 kiro 元数据，其余字段保持不变 */
@@ -292,11 +308,11 @@ export class KiroAccountAdmin {
     }
   }
 
-  /** 查账号额度（按需启动服务） */
-  async balance(dir: string): Promise<KiroBalance> {
+  /** 查账号额度（按需启动服务）；顺带把凭据邮箱同步进账号元数据（传了 accountId 时变了就通知） */
+  async balance(dir: string, accountId?: string): Promise<KiroBalance> {
     const api = readApiConfig(dir);
     if (!api?.kiro) throw new HttpError(400, '不是 Kiro 账号');
-    if (isLegacyKiro(api.kiro)) throw new HttpError(409, '该账号正在迁移到内置 kiro.rs 服务，请稍后再试');
+    if (isLegacyKiro(api.kiro)) throw new HttpError(409, '这是旧版的 Kiro 账号，请重新登录');
     const r = await this.proxy.request('GET', `/credentials/${api.kiro.credentialId}/balance`);
     if (r.status === 404) throw new HttpError(409, '服务里没有该账号对应的凭据，请重新登录');
     if (!r.ok) throw new HttpError(502, adminErrorMessage(r, `查询额度失败（HTTP ${r.status}）`));
@@ -304,6 +320,7 @@ export class KiroAccountAdmin {
     const next = typeof j.nextResetAt === 'number' && Number.isFinite(j.nextResetAt) && j.nextResetAt > 0
       ? Math.round(j.nextResetAt * 1000)
       : null;
+    await this.syncEmail(dir, api.kiro.credentialId, accountId);
     return {
       subscription: str(j.subscriptionTitle),
       used: typeof j.currentUsage === 'number' && Number.isFinite(j.currentUsage) ? j.currentUsage : 0,
@@ -348,54 +365,5 @@ export class KiroAccountAdmin {
     } catch (e) {
       this.log(`归档旧版 kiro 目录失败：${sanitizeKiroError(e)}`);
     }
-  }
-
-  /**
-   * 迁移一个旧格式账号到内置服务。失败时不动账号文件，在 proxy 上记下「迁移失败：原因」，下次启动再试。
-   * 返回 true 表示迁移成功。
-   */
-  async migrateAccount(accountId: string, dir: string): Promise<boolean> {
-    const api = readApiConfig(dir);
-    if (!api?.kiro || !isLegacyKiro(api.kiro)) return false;
-    try {
-      const file = path.join(dir, LEGACY_DIR, 'credentials.json');
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      } catch {
-        throw new Error('无法读取旧版凭据文件');
-      }
-      const first = Array.isArray(parsed) ? parsed[0] : parsed;
-      const item = asRecord(first);
-      if (!Object.keys(item).length) throw new Error('旧版凭据文件里没有凭据');
-      await this.addAccount({
-        accountId,
-        dir,
-        method: api.kiro.method,
-        cred: legacyToEntry(item),
-        reuseExisting: true,
-        verifyApiKey: false,
-      });
-      this.archiveLegacy(dir);
-      this.proxy.setAccountError(dir, null);
-      await this.refreshModels(accountId, dir);
-      return true;
-    } catch (e) {
-      this.proxy.setAccountError(dir, `迁移失败：${sanitizeKiroError(e)}`);
-      return false;
-    }
-  }
-
-  /** 逐个迁移（互不影响）。返回成功数与失败数 */
-  async migrateAll(accounts: Array<{ id: string; dir: string }>): Promise<{ migrated: number; failed: number }> {
-    let migrated = 0;
-    let failed = 0;
-    for (const a of accounts) {
-      const api = readApiConfig(a.dir);
-      if (!api?.kiro || !isLegacyKiro(api.kiro)) continue;
-      if (await this.migrateAccount(a.id, a.dir)) migrated++;
-      else failed++;
-    }
-    return { migrated, failed };
   }
 }

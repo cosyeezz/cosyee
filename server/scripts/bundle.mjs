@@ -124,6 +124,8 @@ fs.writeFileSync(
       type: 'module',
       bin: { 'cosyee-server': 'cli.mjs' },
       main: 'server.mjs',
+      // 桌面客户端据此判断能不能用 `node server.mjs components …` 在服务端没运行时管理组件
+      cosyee: { componentsCli: 1 },
       engines: { node: '>=22' },
       license: 'UNLICENSED',
       repository: { type: 'git', url: 'https://github.com/cosyeezz/cosyee.git' },

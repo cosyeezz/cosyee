@@ -3,8 +3,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { applyApiEnv, readApiConfig } from '../accounts/api-config.js';
-import { activeConfigDir } from '../paths.js';
+import { applyApiEnv, apiSettingsEnv, readApiConfig } from '../accounts/api-config.js';
+import { activeConfigDir, cosyeeHome } from '../paths.js';
 
 const isWin = process.platform === 'win32';
 
@@ -43,6 +43,38 @@ export function claudeEnv(dir: string | null = activeConfigDir()): NodeJS.Proces
     if (api) applyApiEnv(env, api);
   }
   return env;
+}
+
+/**
+ * API / Kiro 账号启动 claude 时要放进 --settings 的 env（见 apiSettingsEnv，含密钥）；其它账号返回 null。
+ * 在 claudeEnv(dir) 之后调用：Kiro 账号那时已完成端口同步。
+ */
+export function apiFlagEnv(dir: string | null | undefined): Record<string, string> | null {
+  const api = readApiConfig(dir);
+  return api ? apiSettingsEnv(api) : null;
+}
+
+function runDir(): string {
+  return path.join(cosyeeHome(), 'run');
+}
+
+/** 把含密钥的 settings 写进私有文件（目录 0700、文件 0600），返回路径，供 --settings 使用；同名覆盖 */
+export function writePrivateSettings(name: string, settings: Record<string, unknown>): string {
+  const dir = runDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${name}.json`);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(settings), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+/** 删掉 writePrivateSettings 写的文件（不存在就算了） */
+export function removePrivateSettings(file: string | null | undefined): void {
+  if (!file) return;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch { /* ignore */ }
 }
 
 export function isFile(p: string): boolean {

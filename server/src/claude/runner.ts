@@ -25,7 +25,7 @@ import { sharedAgyBackend } from '../delegate/acp.js';
 import { listAgents } from '../delegate/agents.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { baseClaudeHome } from '../paths.js';
-import { claudeEnv, killTree, killTreeSync, resolveClaude, spawnSpec } from './bin.js';
+import { apiFlagEnv, claudeEnv, killTree, killTreeSync, removePrivateSettings, resolveClaude, spawnSpec, writePrivateSettings } from './bin.js';
 import { ControlTracker } from './control.js';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -188,7 +188,14 @@ export const DELEGATE_PROMPT =
   'specified in advance. You keep all final judgments.';
 
 /** 构造 claude 命令行参数（不含可执行文件）。 */
-export function buildArgs(sessionId: string, isNew: boolean, config: SessionConfig, extraSettings: Record<string, unknown> = {}, opts: { delegate?: boolean } = {}): string[] {
+export function buildArgs(
+  sessionId: string,
+  isNew: boolean,
+  config: SessionConfig,
+  extraSettings: Record<string, unknown> = {},
+  /** settingsFile：settings 含密钥时把它写进私有文件，返回路径代替命令行里的 JSON */
+  opts: { delegate?: boolean; settingsFile?: (settings: Record<string, unknown>) => string } = {},
+): string[] {
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -213,7 +220,7 @@ export function buildArgs(sessionId: string, isNew: boolean, config: SessionConf
   if (opts.delegate) args.push('--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: 'sdk', name: MCP_SERVER } } }));
   const settings: Record<string, unknown> = { ...extraSettings };
   if (config.ultracode) settings.ultracode = true;
-  if (Object.keys(settings).length) args.push('--settings', JSON.stringify(settings));
+  if (Object.keys(settings).length) args.push('--settings', opts.settingsFile ? opts.settingsFile(settings) : JSON.stringify(settings));
   args.push(isNew ? '--session-id' : '--resume', sessionId);
   return args;
 }
@@ -317,6 +324,8 @@ export class Runner {
   private readonly nativeAgents?: () => boolean;
   private readonly expandText?: (text: string) => string;
   private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown> };
+  /** API / Kiro 账号这次启动用的私有 settings 文件（含密钥），进程退出后删掉 */
+  private settingsFile: string | null = null;
 
   get status(): RunStatus {
     return this._status;
@@ -392,8 +401,16 @@ export class Runner {
     const delegate = !!this.mcp;
     const perms = (flags.permissions ?? {}) as { deny?: string[] };
     const deny = this.withNativeDeny(perms.deny ?? []);
-    const settings = deny.length ? { ...flags, permissions: { ...perms, deny } } : flags;
-    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate });
+    const withDeny = deny.length ? { ...flags, permissions: { ...perms, deny } } : flags;
+    // API / Kiro 账号：把 API 变量写进 --settings 的 env，压过共享 settings.json 里的同名变量（含密钥，走私有文件）
+    const apiEnv = apiFlagEnv(this.accountDir);
+    const settings = apiEnv ? { ...withDeny, env: { ...((withDeny.env as Record<string, unknown> | undefined) ?? {}), ...apiEnv } } : withDeny;
+    removePrivateSettings(this.settingsFile);
+    this.settingsFile = null;
+    const settingsFile = apiEnv
+      ? (s: Record<string, unknown>) => (this.settingsFile = writePrivateSettings(`session-${this.sessionId}`, s))
+      : undefined;
+    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate, settingsFile });
     // delegate 要跑很久：没有显式设置时把 MCP 工具超时放宽到 1 小时
     if (delegate && !Object.keys(env).some((k) => k.toUpperCase() === 'MCP_TOOL_TIMEOUT')) env.MCP_TOOL_TIMEOUT = '3600000';
     const spec = spawnSpec(this.claudePath, args);
@@ -1268,6 +1285,8 @@ export class Runner {
     this.clearPrompts(); // 待回应的请求也随进程失效（没法再写回）
     this.clearTimers();
     this.proc = null;
+    removePrivateSettings(this.settingsFile);
+    this.settingsFile = null;
 
     const wasTurn = this._status === 'running' || this._status === 'starting';
     const failed = !!why || (code !== null && code !== 0);

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { AccountEntry, AccountList, AccountLogin, KiroBalance, KiroStatus } from '@cosyee/shared';
+import type { AccountEntry, AccountList, AccountLogin, ComponentList, ComponentStatus, KiroBalance, KiroStatus } from '@cosyee/shared';
 import { AccountMenu, accountPage } from './AccountMenu';
 import { AddKindSeg, type AddKind } from './ApiAccountDialog';
 import { KiroAccountDialog } from './KiroAccountDialog';
@@ -38,27 +38,24 @@ let calls: Call[];
 let routes: Record<string, (body: unknown) => { status?: number; body: unknown }>;
 
 const kiroStatusOf = (over?: {
-  engine?: Partial<KiroStatus['engine']>;
   service?: Partial<KiroStatus['service']>;
   imports?: Partial<KiroStatus['imports']>;
   login?: AccountLogin | null;
 }): KiroStatus => ({
-  engine: {
-    source: 'managed',
-    current: { commit: 'v0.9.8', date: 1700000000000, title: 'init' },
-    latest: null,
-    updateAvailable: false,
-    checkedAt: null,
-    missingTools: [],
-    build: { state: 'idle', step: null, error: null },
-    adminUi: true,
-    adminUiError: null,
-    ...(over?.engine ?? {}),
-  },
-  service: { enabled: true, accounts: 0, running: 0, failed: 0, busySessions: 0, outdated: 0, items: [], ...(over?.service ?? {}) },
+  service: { enabled: true, accounts: 0, running: 0, failed: 0, busySessions: 0, outdated: 0, usable: 0, ...(over?.service ?? {}) },
   imports: { kiroIde: true, kiroCli: true, ...(over?.imports ?? {}) },
   login: over?.login ?? null,
 });
+
+/** /api/components 里的 kiro.rs 一项；默认已安装、服务在跑 */
+const kiroComp = (over?: Partial<ComponentStatus>): ComponentStatus => ({
+  id: 'kiro', name: 'kiro.rs', installed: true, custom: false, version: '0.9.8', latest: '0.9.8', updateAvailable: false,
+  checkedAt: null, checkError: null, autoUpdate: true, busy: 0, pending: false, updatedBy: 'server', installable: true, job: null,
+  service: { state: 'ready', error: null, enabled: true, outdated: false, port: 21395, accounts: { total: 0, usable: 0 } },
+  ...over,
+});
+const compsOf = (c: ComponentStatus): { body: ComponentList } => ({ body: { list: [c] } });
+const notInstalled = (job: ComponentStatus['job'] = null) => kiroComp({ installed: false, version: null, job, service: undefined });
 
 const acctEntry = (over: Partial<AccountEntry>): AccountEntry => ({
   id: 'default', label: '', name: 'cosyeey', plan: 'Pro', loggedIn: true, active: true, isDefault: true, ...over,
@@ -73,7 +70,8 @@ beforeEach(() => {
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ method, url, body });
-    const r = routes[`${method} ${url}`]?.(body) ?? { status: 404, body: { error: 'not found' } };
+    const fallback = url === '/api/components' ? compsOf(kiroComp()) : { status: 404, body: { error: 'not found' } };
+    const r = routes[`${method} ${url}`]?.(body) ?? fallback;
     return new Response(JSON.stringify(r.body), { status: r.status ?? 200 });
   }));
 });
@@ -121,9 +119,8 @@ describe('KiroAccountDialog', () => {
 
   it('无引擎：显示下载说明与「下载 kiro.rs」按钮，不再提示编译工具', async () => {
     routes = {
-      'GET /api/kiro': () => ({
-        body: kiroStatusOf({ engine: { source: 'none', current: null } }),
-      }),
+      'GET /api/kiro': () => ({ body: kiroStatusOf() }),
+      'GET /api/components': () => compsOf(notInstalled()),
     };
     mount(<KiroAccountDialog onClose={noop} onDone={noop} onSwitch={noop} />);
     await flush();
@@ -136,31 +133,27 @@ describe('KiroAccountDialog', () => {
     expect(dlgBtn('下载 kiro.rs')?.disabled).toBe(false);
   });
 
-  it('无引擎：点击下载触发 build、403 原样显示错误；下载中轮询 step 直到失败可重试、成功后进入登录表单', async () => {
+  it('无引擎：点击下载触发组件安装、403 原样显示错误；安装中轮询直到失败可重试、成功后进入登录表单', async () => {
     vi.useFakeTimers();
     let step = 0;
     routes = {
-      'GET /api/kiro': () => {
-        if (step === 0) return { body: kiroStatusOf({ engine: { source: 'none', current: null } }) };
+      'GET /api/kiro': () => ({ body: kiroStatusOf() }),
+      'GET /api/components': () => {
+        if (step === 0) return compsOf(notInstalled());
         if (step === 1) {
           step = 2;
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '下载 kiro-rs-linux.tar.gz', error: null } } }) };
+          return compsOf(notInstalled({ kind: 'install', state: 'running', error: null }));
         }
-        if (step === 2) {
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'failed', step: null, error: 'SHA256 校验失败' } } }) };
-        }
-        return { body: kiroStatusOf({ engine: { source: 'managed' } }) };
+        if (step === 2) return compsOf(notInstalled({ kind: 'install', state: 'failed', error: 'SHA256 校验失败' }));
+        return compsOf(kiroComp());
       },
-      'POST /api/kiro/engine/build': () => {
+      'POST /api/components/kiro/update': () => {
         if (step === 0) {
           step = 1;
-          return { status: 403, body: { error: '仅允许本机连接下载 kiro.rs' } };
+          return { status: 403, body: { error: '该操作仅允许本机连接' } };
         }
-        if (step === 1) {
-          return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '获取 Release 信息', error: null } } }) };
-        }
-        step = 3;
-        return { body: kiroStatusOf({ engine: { source: 'none', current: null, build: { state: 'running', step: '下载中', error: null } } }) };
+        if (step !== 1) step = 3;
+        return { body: notInstalled({ kind: 'install', state: 'running', error: null }) };
       },
     };
     try {
@@ -170,17 +163,17 @@ describe('KiroAccountDialog', () => {
       // 第一次 build 403 → 原样显示错误
       click(dlgBtn('下载 kiro.rs')!);
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('仅允许本机连接下载 kiro.rs');
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('该操作仅允许本机连接');
 
-      // 第二次 build → running → 轮询 step → failed
+      // 第二次 → running → 轮询 → failed
       click(dlgBtn('下载 kiro.rs')!);
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('获取 Release 信息');
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('正在下载 kiro.rs');
       expect(dlgBtn('正在下载…')?.disabled).toBe(true);
 
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('下载 kiro-rs-linux.tar.gz');
+      expect(dlgBtn('正在下载…')?.disabled).toBe(true);
 
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
@@ -336,25 +329,18 @@ describe('AccountMenu Kiro 集成', () => {
     .filter((d) => d.getAttribute('aria-label') !== '管理账号' && !d.classList.contains('cz-sidebar__confirm'))
     .at(-1) ?? null;
 
-  it('弹层 Kiro 行只显示月度额度；管理面板卡片显示额度、代理错误、重新登录，引擎维护入口也在面板里', async () => {
+  it('弹层 Kiro 行只显示月度额度；管理面板卡片显示额度、凭据状态、重新登录，面板里一行 kiro.rs 状态', async () => {
     vi.useFakeTimers();
     const base = new Date(2026, 10, 24, 10, 0).getTime();
     vi.setSystemTime(base);
-    let kiroSt = kiroStatusOf({
-      engine: {
-        current: { commit: 'v0.9.8', date: base - 86400_000, title: 'old' },
-        latest: { commit: 'v0.9.9', date: base, title: 'new release' },
-        updateAvailable: true,
-      },
-    });
     const kiroOk = acctEntry({
       id: 'k1', label: 'Kiro 主号', name: 'Kiro 主号', plan: null, loggedIn: true, active: false, isDefault: false,
       subscribedAt: base, loginExpiresAt: base + 86400_000,
-      kiro: { method: 'builderId', proxy: 'ready', error: null },
+      kiro: { method: 'builderId', proxy: 'ready', error: null, credential: 'ok' },
     });
     const kiroFail = acctEntry({
       id: 'k2', label: 'Kiro 异常', name: 'Kiro 异常', plan: null, loggedIn: true, active: false, isDefault: false,
-      kiro: { method: 'apiKey', proxy: 'failed', error: '端口占用' },
+      kiro: { method: 'apiKey', proxy: 'ready', error: null, credential: 'quota', credentialReason: 'QuotaExceeded' },
     });
     routes = {
       'GET /api/accounts': () => ({ body: { mode: 'switch', list: [acctEntry({}), kiroOk, kiroFail], login: null } satisfies AccountList }),
@@ -363,17 +349,11 @@ describe('AccountMenu Kiro 集成', () => {
         body: { subscription: 'Kiro Pro', used: 120, limit: 500, resetsAt: base + 2 * 3_600_000 } satisfies KiroBalance,
       }),
       'GET /api/kiro/balance?account=k2': () => ({ status: 500, body: { error: 'boom' } }),
-      'GET /api/kiro': () => ({ body: kiroSt }),
-      'POST /api/kiro/engine/check': () => ({ body: kiroSt }),
-      'POST /api/kiro/engine/build': () => {
-        kiroSt = kiroStatusOf({
-          engine: {
-            current: { commit: 'v0.9.8', date: base - 86400_000, title: 'old' },
-            build: { state: 'running', step: '正在下载', error: null },
-          },
-        });
-        return { body: kiroSt };
-      },
+      'GET /api/kiro': () => ({ body: kiroStatusOf() }),
+      'GET /api/components': () => compsOf(kiroComp({
+        version: '0.9.9',
+        service: { state: 'ready', error: null, enabled: true, outdated: false, port: 21395, accounts: { total: 2, usable: 1 } },
+      })),
     };
     try {
       await openManager();
@@ -401,24 +381,18 @@ describe('AccountMenu Kiro 集成', () => {
       expect(btnIn(ok, '重新登录')).toBeDefined();
       expect(btnIn(ok, '编辑')).toBeUndefined();
 
-      // Kiro 异常：显示 proxy failed error 与额度读取失败
+      // Kiro 异常：额度用完的红色标签与额度读取失败
       const bad = cardOf('Kiro 异常')!;
-      expect(bad.textContent).toContain('代理异常：端口占用');
+      expect(bad.querySelector('.cz-acct-chip.is-danger')?.textContent).toBe('额度用完');
+      expect(ok.querySelector('.cz-acct-chip.is-danger')).toBeNull();
       expect(bad.textContent).toContain('额度读取失败');
 
-      // 引擎行：在管理面板里，直接显示 release tag、有更新、更新、检查更新
+      // kiro.rs 一行：版本、运行中、可用账号数（不足时标黄），没有检查更新 / 更新按钮
       const eng = manager()!.querySelector('.cz-kiro-eng')!;
-      expect(eng.textContent).toContain('kiro.rs 引擎 v0.9.8');
-      expect(eng.textContent).toContain('有更新');
-
-      click(btnIn(eng, '检查更新')!);
-      await flush();
-      expect(calls.some((c) => c.url === '/api/kiro/engine/check')).toBe(true);
-
-      click(btnIn(eng, '更新')!);
-      await flush();
-      expect(calls.some((c) => c.url === '/api/kiro/engine/build')).toBe(true);
-      expect(eng.textContent).toContain('正在下载');
+      expect(eng.textContent).toContain('kiro.rs');
+      expect(eng.textContent).toContain('运行中 · 1/2 账号可用');
+      expect(eng.querySelector('.cz-kiro-eng__step.is-warn')).not.toBeNull();
+      expect(eng.querySelectorAll('button').length).toBe(0);
 
       // 卡片上的「重新登录」打开 KiroAccountDialog，叠在面板上
       click(btnIn(cardOf('Kiro 主号'), '重新登录')!);
@@ -430,32 +404,56 @@ describe('AccountMenu Kiro 集成', () => {
     }
   });
 
-  it('管理面板：service.enabled=false 时引擎行显示「已停止」、outdated>0 显示服务重启提示，且对话框提示先到客户端「本机服务」启动', async () => {
+  it('管理面板：手动停止时 kiro.rs 一行显示「已手动停止」，没装时只有「安装」；对话框提示到客户端「组件」启动', async () => {
     const kiroAcc = acctEntry({
       id: 'k1', label: 'Kiro 主号', name: 'Kiro 主号', plan: null, loggedIn: true, active: false, isDefault: false,
-      kiro: { method: 'builderId', proxy: 'stopped', error: null },
+      kiro: { method: 'builderId', proxy: 'stopped', error: null, credential: 'unknown' },
+    });
+    const comp = kiroComp({
+      service: { state: 'stopped', error: null, enabled: false, outdated: true, port: null, accounts: { total: 1, usable: 0 } },
     });
     routes = {
       'GET /api/accounts': () => ({ body: { mode: 'switch', list: [acctEntry({}), kiroAcc], login: null } satisfies AccountList }),
       'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
       'GET /api/kiro/balance?account=k1': () => ({ status: 500, body: { error: 'stopped' } }),
-      'GET /api/kiro': () => ({
-        body: kiroStatusOf({ service: { enabled: false, outdated: 1 } }),
-      }),
+      'GET /api/kiro': () => ({ body: kiroStatusOf({ service: { enabled: false, outdated: 1 } }) }),
+      'GET /api/components': () => compsOf(comp),
     };
     await openManager();
     click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);
     await flush();
 
     const eng = manager()!.querySelector('.cz-kiro-eng')!;
-    expect(eng.textContent).toContain('已停止');
-    expect(eng.textContent).toContain('kiro.rs 服务重启后用新版');
-    // web 不提供启动 / 停止 / 重启按钮
-    expect([...eng.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['检查更新']);
+    expect(eng.textContent).toContain('已手动停止');
+    expect(eng.textContent).toContain('重启后用新版');
+    expect(eng.querySelectorAll('button').length).toBe(0);
 
-    // 打开 Kiro 对话框：提示先到客户端的「本机服务」启动
+    // 打开 Kiro 对话框：提示到客户端的「组件」启动
     click(btnIn(cardOf('Kiro 主号'), '重新登录')!);
     await flush();
-    expect(topDlg()?.textContent).toContain('本机服务');
+    expect(topDlg()?.textContent).toContain('「组件」');
+  });
+
+  it('管理面板：kiro.rs 没装时只显示「安装」，点了走组件安装接口', async () => {
+    const kiroAcc = acctEntry({
+      id: 'k1', label: 'Kiro 主号', name: 'Kiro 主号', plan: null, loggedIn: true, active: false, isDefault: false,
+      kiro: { method: 'builderId', proxy: 'stopped', error: null, credential: 'unknown' },
+    });
+    routes = {
+      'GET /api/accounts': () => ({ body: { mode: 'switch', list: [acctEntry({}), kiroAcc], login: null } satisfies AccountList }),
+      'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
+      'GET /api/kiro/balance?account=k1': () => ({ status: 500, body: { error: 'stopped' } }),
+      'GET /api/components': () => compsOf(notInstalled()),
+      'POST /api/components/kiro/update': () => ({ body: notInstalled({ kind: 'install', state: 'running', error: null }) }),
+    };
+    await openManager();
+    click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);
+    await flush();
+    const eng = manager()!.querySelector('.cz-kiro-eng')!;
+    expect(eng.textContent).toContain('未安装');
+    click(btnIn(eng, '安装')!);
+    await flush();
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/api/components/kiro/update')).toBe(true);
+    expect(eng.textContent).toContain('正在安装');
   });
 });

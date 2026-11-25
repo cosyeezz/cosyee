@@ -24,7 +24,7 @@ import {
   agyWindows, claudeWindows, kiroWindow, nearestWindow, QuotaBrief, type KiroBalanceState, type QuotaState,
 } from './AccountQuota';
 import {
-  ActiveMark, agyTitle, Avatar, claudeKind, claudeUsable, entryTitle, loginPending, msg, PlanChip, planChip, type ClaudeKind,
+  ActiveMark, agyTitle, Avatar, claudeKind, claudeUsable, entryTitle, IssueChip, kiroIssue, loginPending, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { ThemeSwitch } from './ThemeSwitch';
 import { useDismiss } from './useDismiss';
@@ -71,10 +71,12 @@ const GROUPS: { kind: ClaudeKind | 'agy'; title: string; tip: string }[] = [
 
 /** 弹层里的一个账号：名字 + 套餐、选中勾 / 切换中，下面一条最近额度 */
 function PickRow({
-  title, plan, active, busy, disabled, quota, card, onPick,
+  title, plan, issue, active, busy, disabled, quota, card, onPick,
 }: {
   title: string;
   plan?: string | null;
+  /** 红色问题标签（Kiro 额度用完 / 已停用） */
+  issue?: string | null;
   active: boolean;
   busy: boolean;
   disabled: boolean;
@@ -95,6 +97,7 @@ function PickRow({
       <span className="cz-acct-pick__name">
         <b>{title}</b>
         <PlanChip plan={plan} tip={false} />
+        <IssueChip text={issue} />
       </span>
       {busy ? <span className="cz-sidebar__acct-tag">切换中…</span> : active ? <ActiveMark /> : <span />}
       {quota}
@@ -414,6 +417,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
             key={a.id}
             title={entryTitle(a)}
             plan={g.kind === 'kiro' && planChip(a.plan)?.toLowerCase() === 'kiro' ? null : a.plan}
+            issue={kiroIssue(a)}
             active={a.active}
             busy={switching === a.id}
             disabled={switching !== null && switching !== a.id}

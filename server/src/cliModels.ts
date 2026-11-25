@@ -2,12 +2,13 @@
 // （不调用模型、不耗额度、约 1 秒）。initialize 的响应里还有 account（含邮箱）等个人信息，这里只留模型字段。
 // 按账号缓存并落盘（cli-models.json）；CLI 版本变了、账号重新登录 / 改 API 配置时作废。
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EFFORTS, type CliModel, type CliModelList, type Effort } from '@cosyee/shared';
 import { LineSplitter } from './transcript.js';
-import { claudeEnv, resolveClaude, spawnSpec } from './claude/bin.js';
+import { apiFlagEnv, claudeEnv, removePrivateSettings, resolveClaude, spawnSpec, writePrivateSettings } from './claude/bin.js';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -67,12 +68,29 @@ export interface FetchedModels {
 export function fetchCliModels(dir?: string | null): Promise<FetchedModels | null> {
   return new Promise((resolve) => {
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence'];
+    // claudeEnv 要先于 apiFlagEnv：Kiro 账号在这里完成端口同步
+    // API / Kiro 账号：API 变量经 --settings 压过共享 settings.json 的 env（同 runner）
+    let env: NodeJS.ProcessEnv;
+    let settingsFile: string | null = null;
+    try {
+      env = claudeEnv(dir);
+      const apiEnv = apiFlagEnv(dir);
+      if (apiEnv) {
+        settingsFile = writePrivateSettings(`models-${process.pid}-${randomUUID()}`, { env: apiEnv });
+        args.push('--settings', settingsFile);
+      }
+    } catch {
+      removePrivateSettings(settingsFile);
+      resolve(null);
+      return;
+    }
     const spec = spawnSpec(resolveClaude(), args);
     let done = false;
     const finish = (v: FetchedModels | null) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      removePrivateSettings(settingsFile);
       try { proc.stdin?.end(); } catch { /* ignore */ }
       setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } }, 2000).unref();
       resolve(v);
@@ -81,12 +99,13 @@ export function fetchCliModels(dir?: string | null): Promise<FetchedModels | nul
     try {
       proc = spawn(spec.command, spec.args, {
         cwd: os.homedir(),
-        env: claudeEnv(dir),
+        env,
         stdio: ['pipe', 'pipe', 'ignore'],
         windowsHide: true,
         windowsVerbatimArguments: spec.verbatim,
       });
     } catch {
+      removePrivateSettings(settingsFile);
       resolve(null);
       return;
     }

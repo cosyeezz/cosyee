@@ -31,7 +31,7 @@ export function entryTitle(a: AccountEntry): string {
   return a.name ?? (a.label || (a.loggedIn ? 'Claude 账号' : '未登录账号'));
 }
 
-/** 副标题：备注名 · 需要登录；API 账号：主机名（套餐另做成名字后面的小标签，见 planChip） */
+/** 副标题：备注名 · 需要登录；API 账号：主机名；Kiro 账号：邮箱（套餐另做成名字后面的小标签，见 planChip） */
 export function entrySubtitle(a: AccountEntry): string {
   const parts: string[] = [];
   if (a.label && a.label !== entryTitle(a)) parts.push(a.label);
@@ -39,6 +39,7 @@ export function entrySubtitle(a: AccountEntry): string {
     const host = apiHost(a.api.baseUrl);
     if (host !== entryTitle(a)) parts.push(host);
   }
+  if (a.kiro?.email && a.kiro.email !== entryTitle(a)) parts.push(a.kiro.email);
   if (!a.loggedIn) parts.push('需要登录');
   return parts.join(' · ');
 }
@@ -107,6 +108,18 @@ export function PlanChip({ plan, tip = true }: { plan: string | null | undefined
   const chip = planChip(plan);
   if (!chip) return null;
   return <span className="cz-acct-chip" title={tip ? plan ?? undefined : undefined}>{chip}</span>;
+}
+
+/** Kiro 账号凭据被 kiro.rs 停用时名字后面的红色小标签文字；正常返回 null */
+export function kiroIssue(a: AccountEntry): string | null {
+  const c = a.kiro?.credential;
+  return c === 'quota' ? '额度用完' : c === 'disabled' ? '已停用' : null;
+}
+
+/** 名字后面的红色问题标签（额度用完 / 已停用） */
+export function IssueChip({ text }: { text: string | null | undefined }) {
+  if (!text) return null;
+  return <span className="cz-acct-chip is-danger">{text}</span>;
 }
 
 /** 选中账号的标记：实心小圆里一个勾 */
