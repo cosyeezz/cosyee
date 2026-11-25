@@ -90,26 +90,87 @@ describe('ContextPanel Skills', () => {
     for (const b of el.querySelectorAll<HTMLButtonElement>('.cz-ctx__mode')) expect(b.disabled).toBe(true);
   });
 
-  it('一键推荐配置：只改与推荐不同的已收录 skill；撤销恢复原状态', () => {
+  it('批量操作：勾选后只提交状态不同的项并清空勾选，支持撤销、全选 / indeterminate、禁用与退出', () => {
     const onSkillModes = vi.fn();
     const el = mount2({ onSkillModes });
     openFold(el, 'Skills');
-    const preset = el.querySelector<HTMLButtonElement>('.cz-ctx__preset')!;
-    expect(preset.disabled).toBe(false);
-    click(preset);
-    // mock：docx 开→关，pdf 开→手动，xlsx 已是关→手动；impeccable(开) 与 schedule(手动) 已是推荐
-    expect(onSkillModes).toHaveBeenLastCalledWith({
-      'anthropic-skills:docx': 'off',
-      'anthropic-skills:pdf': 'user-invocable-only',
-      'anthropic-skills:xlsx': 'user-invocable-only',
-    });
+
+    const batchBtn = () => el.querySelector<HTMLButtonElement>('.cz-ctx__batch-btn');
+    const modeBtn = (label: string) =>
+      [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__batch-mode')].find((b) => b.textContent?.trim() === label)!;
+    const allBox = () => el.querySelector<HTMLInputElement>('.cz-ctx__select-all input')!;
+    const checkOf = (name: string) => rowOf(el, name).querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+    expect(batchBtn()?.disabled).toBe(false);
+    click(batchBtn());
+
+    // 未选时三个状态按钮禁用
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 0 项');
+    expect(modeBtn('开').disabled).toBe(true);
+    expect(modeBtn('手动').disabled).toBe(true);
+    expect(modeBtn('关').disabled).toBe(true);
+
+    // 勾选两项：impeccable（on）和 xlsx（off）→ 部分选中 indeterminate
+    click(checkOf('impeccable'));
+    click(checkOf('xlsx'));
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 2 项');
+    expect(allBox().checked).toBe(false);
+    expect(allBox().indeterminate).toBe(true);
+    expect(rowOf(el, 'impeccable').classList.contains('is-checked')).toBe(true);
+    // 勾选模式点名字（label）只切换勾选，不展开详情
+    expect(rowOf(el, 'impeccable').querySelector('.cz-ctx__prompt')).toBeNull();
+
+    // 点「关」：只提交状态不同的 impeccable，清空勾选但留在勾选模式
+    click(modeBtn('关'));
+    expect(onSkillModes).toHaveBeenLastCalledWith({ impeccable: 'off' });
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 0 项');
+    expect(el.querySelector('.cz-ctx__batch-done')).not.toBeNull();
+
+    // 撤销恢复原状态
     click(el.querySelector('.cz-ctx__undo'));
-    expect(onSkillModes).toHaveBeenLastCalledWith({
-      'anthropic-skills:docx': 'on',
-      'anthropic-skills:pdf': 'on',
-      'anthropic-skills:xlsx': 'off',
-    });
+    expect(onSkillModes).toHaveBeenLastCalledWith({ impeccable: 'on' });
     expect(el.querySelector('.cz-ctx__undo')).toBeNull();
+
+    // 所选全部已是某状态时，该状态按钮禁用并提示原因
+    click(checkOf('impeccable'));
+    click(checkOf('pdf'));
+    expect(modeBtn('开').disabled).toBe(true);
+    expect(modeBtn('开').title).toBe('所选已全部是此状态');
+    expect(modeBtn('手动').disabled).toBe(false);
+
+    // 全选 / 取消全选
+    click(allBox());
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 5 项');
+    expect(allBox().checked).toBe(true);
+    expect(allBox().indeterminate).toBe(false);
+    click(allBox());
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 0 项');
+
+    // 选中后该 skill 从 usage 里消失 → 不计数、不提交
+    click(checkOf('impeccable'));
+    click(checkOf('pdf'));
+    const shrunk: ContextUsage = { ...mockContextUsage, skills: mockContextUsage.skills.filter((s) => s.name !== 'impeccable') };
+    act(() => root!.render(<ContextPanel usage={shrunk} loading={false} onRefresh={() => undefined} onCompact={() => undefined} onSkillModes={onSkillModes} />));
+    expect(el.querySelector('.cz-ctx__select-count')?.textContent).toBe('已选 1 项');
+    onSkillModes.mockClear();
+    click(modeBtn('手动'));
+    expect(onSkillModes).toHaveBeenCalledWith({ 'anthropic-skills:pdf': 'user-invocable-only' });
+
+    // 点「完成」退出勾选模式
+    click(el.querySelector('.cz-ctx__batch-done'));
+    expect(batchBtn()).not.toBeNull();
+
+    // 折叠再展开后自动退出勾选模式并清空勾选
+    click(batchBtn());
+    click(checkOf('pdf'));
+    openFold(el, 'Skills');
+    openFold(el, 'Skills');
+    expect(batchBtn()).not.toBeNull();
+    expect(el.querySelector('.cz-ctx__batch-done')).toBeNull();
+
+    // 不传 onSkillModes 时按钮禁用
+    act(() => root!.render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />));
+    expect(batchBtn()?.disabled).toBe(true);
   });
 
   it('下拉里的「移除」：可移除的先行内确认再回调；插件 skill 的移除项禁用', () => {
@@ -141,6 +202,37 @@ describe('ContextPanel Skills', () => {
     click(removeItem());
     click(row.querySelector('.cz-ctx__confirm-btn.is-danger'));
     expect(onSkillRemove).toHaveBeenCalledWith('impeccable');
+  });
+
+  it('下拉里的「打开文件位置」：磁盘上有的可点并回调；磁盘上没有的禁用；不传 onSkillReveal 时不显示', () => {
+    const onSkillReveal = vi.fn();
+    const el = mount2({ onSkillMode: () => undefined, onSkillReveal });
+    openFold(el, 'Skills');
+    const items = () => [...document.querySelectorAll('[role^="menuitem"]')];
+    const revealItem = () => items().find((o) => /^打开文件位置/.test(o.textContent ?? '')) as HTMLElement | undefined;
+
+    // 用户级 skill（onDisk: true）：可点并回调完整名
+    click(rowOf(el, 'impeccable').querySelector('.cz-ctx__mode'));
+    click(revealItem());
+    expect(onSkillReveal).toHaveBeenLastCalledWith('impeccable');
+
+    // 远程同步 skill（无 onDisk）：禁用、点了不回调
+    onSkillReveal.mockClear();
+    click(rowOf(el, 'pdf').querySelector('.cz-ctx__mode'));
+    expect(revealItem()?.textContent).toContain('磁盘上没有找到');
+    click(revealItem());
+    expect(onSkillReveal).not.toHaveBeenCalled();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+
+    // 插件 skill（onDisk: true）：可点并回调完整名
+    click(rowOf(el, 'xlsx').querySelector('.cz-ctx__mode'));
+    click(revealItem());
+    expect(onSkillReveal).toHaveBeenLastCalledWith('anthropic-skills:xlsx');
+
+    // 不传 onSkillReveal（远程连接）：没有这一项
+    act(() => root!.render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} onSkillMode={() => undefined} />));
+    click(rowOf(el, 'impeccable').querySelector('.cz-ctx__mode'));
+    expect(revealItem()).toBeUndefined();
   });
 
   it('悬浮显示中文用途与建议', () => {

@@ -2,6 +2,7 @@
 // 规则来自 spike/FINDINGS2.md（B2）。这里不做 IO，方便单测。
 import { StringDecoder } from 'node:string_decoder';
 import type { SessionDetail } from '@cosyee/shared';
+import { stripSkillBlock } from './skillMention.js';
 
 /** 把字节流切成行：处理半行、\r\n、多字节字符被切断。 */
 export class LineSplitter {
@@ -90,7 +91,7 @@ function truncate(s: string, max = TITLE_MAX): string {
 
 /** 清洗用户原始文本：排除空文本与系统注入前缀，将 <command-*> 还原为 /name args。 */
 function cleanUserText(raw: string): { text: string; command: boolean } | null {
-  const text = raw.trim();
+  const text = stripSkillBlock(raw).trim();
   if (!text) return null;
   if (SKIP_PREFIXES.some((p) => text.startsWith(p))) return null;
   if (text.startsWith('<command-')) {
@@ -234,6 +235,20 @@ function dropImages(content: unknown[], toolName: (id: string) => string | undef
   return changed ? out : content;
 }
 
+/** 用户消息的文字块去掉附加的 skill 正文；没有改动时返回原数组 */
+function stripTextBlocks(content: unknown[]): unknown[] {
+  let changed = false;
+  const out = content.map((c) => {
+    const b = c as Json;
+    if (b?.type !== 'text' || typeof b.text !== 'string') return c;
+    const text = stripSkillBlock(b.text);
+    if (text === b.text) return c;
+    changed = true;
+    return { ...b, text };
+  });
+  return changed ? out : content;
+}
+
 /**
  * 附件只留一种：执行中送达的消息（用户插话、委派完成通知）。CLI 把它们存成 queued_command 附件，没有 user 条目，
  * 丢掉的话插话会从历史里消失、后台委派也落定不了。只留文字与前端要用的字段；
@@ -256,7 +271,7 @@ function queuedPrompt(e: Json): Json | null {
     sessionId: e.sessionId,
     timestamp: e.timestamp,
     ...(e.isSidechain ? { isSidechain: true } : {}),
-    attachment: { type: 'queued_command', commandMode: 'prompt', prompt: text, ...(typeof a.source_uuid === 'string' ? { source_uuid: a.source_uuid } : {}) },
+    attachment: { type: 'queued_command', commandMode: 'prompt', prompt: stripSkillBlock(text), ...(typeof a.source_uuid === 'string' ? { source_uuid: a.source_uuid } : {}) },
   };
 }
 
@@ -278,8 +293,9 @@ export function filterEntry(e: Json, toolName: (id: string) => string | undefine
   if (out.type === 'assistant' && out.message?.usage && typeof out.message.usage === 'object') {
     out.message = { ...out.message, usage: slimUsage(out.message.usage) };
   }
-  if (out.type === 'user' && Array.isArray(out.message?.content)) {
-    const content = dropImages(out.message.content, toolName);
+  if (out.type === 'user' && out.message?.content) {
+    const raw = out.message.content;
+    const content = typeof raw === 'string' ? stripSkillBlock(raw) : Array.isArray(raw) ? stripTextBlocks(dropImages(raw, toolName)) : raw;
     if (content !== out.message.content) out.message = { ...out.message, content };
   }
   return out;

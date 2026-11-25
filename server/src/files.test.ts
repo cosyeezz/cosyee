@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { decodeFileText, hasReservedName, isInside, lexicalTarget, previewFile, resolveTarget, sniffMedia, TEXT_LIMIT } from './files.js';
+import { attachmentDisposition } from './http.js';
 import { encodeCwd } from './paths.js';
-import { openTerminal, revealFileCommand, revealPath, terminalCommands } from './reveal.js';
+import { isRunnableFile, openFileCommand, openPath, openTerminal, revealCommand, revealFileCommand, revealPath, terminalCommands } from './reveal.js';
 import { type RunningServer, startServer } from './server.js';
 
 const isWin = process.platform === 'win32';
@@ -42,8 +43,12 @@ beforeAll(() => {
   fs.writeFileSync(path.join(cwd, 'pic.png'), PNG);
   fs.writeFileSync(path.join(cwd, 'fake.png'), 'not really a png'); // 扩展名骗人
   fs.writeFileSync(path.join(cwd, 'vec.svg'), SVG);
+  fs.writeFileSync(path.join(cwd, 'page.html'), '<!doctype html><script>alert(1)</script>');
+  fs.writeFileSync(path.join(cwd, 'empty.bin'), Buffer.alloc(0));
   fs.writeFileSync(path.join(cwd, 'doc.pdf'), '%PDF-1.4\n%%EOF\n');
   fs.writeFileSync(path.join(cwd, 'bin.dat'), Buffer.from([1, 2, 0, 3, 4]));
+  fs.writeFileSync(path.join(cwd, 'app.apk'), 'fake-apk');
+  fs.writeFileSync(path.join(cwd, 'run.bat'), '@echo hi\n');
   fs.writeFileSync(path.join(cwd, 'a#b.md'), '# hash\n');
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'TOP SECRET');
   // 指向 cwd 之外的符号链接 / junction
@@ -176,11 +181,14 @@ describe('读取与类型识别', () => {
     expect(decodeFileText(Buffer.from([0xff, 0xfe, 0x41, 0x00]))).toMatchObject({ text: 'A', encoding: 'UTF-16LE' });
   });
 
-  it('含 NUL 的二进制 → unsupported + 原因', async () => {
+  it('含 NUL 的二进制与 apk 等已知二进制扩展名 → unsupported + 原因', async () => {
     const r = await previewFile(cwd, 'bin.dat');
     expect(r.kind).toBe('unsupported');
     expect(r.reason).toBeTruthy();
     expect(r.text).toBeUndefined();
+    const apk = await previewFile(cwd, 'app.apk');
+    expect(apk.kind).toBe('unsupported');
+    expect(apk.reason).toContain('请用本地应用打开');
   });
 
   it('图片按魔数识别（不信扩展名）；SVG 单独识别；PDF', async () => {
@@ -264,6 +272,50 @@ describe('reveal / terminal 命令构造', () => {
     const none = await openTerminal(cwd, () => Promise.resolve(false));
     expect(none).toBe(false);
   });
+
+  it('openFileCommand：各平台命令构造（Windows 规范化反斜杠 + verbatim 引号）', () => {
+    const w = openFileCommand('F:/我的 项目/a, b.apk', 'win32');
+    expect(w).toEqual({
+      cmd: 'explorer.exe',
+      args: ['"F:\\我的 项目\\a, b.apk"'],
+      opts: { windowsVerbatimArguments: true },
+    });
+    expect(openFileCommand('/Users/a/b c/d.pdf', 'darwin')).toEqual({ cmd: 'open', args: ['/Users/a/b c/d.pdf'] });
+    expect(openFileCommand('/home/a/b c/d.pdf', 'linux')).toEqual({ cmd: 'xdg-open', args: ['/home/a/b c/d.pdf'] });
+  });
+
+  it('isRunnableFile：识别脚本 / 可执行扩展名 / 末尾点空格 / 大写 / 无扩展名可执行位 / .app 目录；放行 apk/html/txt', () => {
+    const fileStat = { isFile: () => true, mode: 0o100644 };
+    const execStat = { isFile: () => true, mode: 0o100755 };
+    const dirStat = { isFile: () => false, mode: 0o040755 };
+    for (const p of ['a.bat', 'a.js', 'a.lnk', 'a.BAT', 'a.JS', 'evil.bat. ', 'evil.cmd .']) {
+      expect(isRunnableFile(p, fileStat, 'win32'), p).toBe(true);
+      expect(isRunnableFile(p, fileStat, 'linux'), p).toBe(true);
+    }
+    // 目录：只有 macOS 的 .app 这类包算；别处只是普通目录
+    expect(isRunnableFile('/tmp/My.app', dirStat, 'darwin')).toBe(true);
+    expect(isRunnableFile('/tmp/next.js', dirStat, 'linux')).toBe(false);
+    expect(isRunnableFile('C:\tmp\next.js', dirStat, 'win32')).toBe(false);
+    // 非 win32：无扩展名且带可执行位的普通文件算可执行；win32 不看 POSIX 权限位；目录不算
+    expect(isRunnableFile('/tmp/tool', execStat, 'linux')).toBe(true);
+    expect(isRunnableFile('/tmp/tool', execStat, 'darwin')).toBe(true);
+    expect(isRunnableFile('/tmp/tool', fileStat, 'linux')).toBe(false);
+    expect(isRunnableFile('/tmp/tool', dirStat, 'linux')).toBe(false);
+    expect(isRunnableFile('C:\\tmp\\tool', execStat, 'win32')).toBe(false);
+    // 普通文档 / 安装包 / 网页必须不在名单内
+    for (const p of ['app.apk', 'index.html', 'notes.txt', 'doc.pdf', 'a.ts', 'a.zip', 'a.docx', 'pic.png']) {
+      expect(isRunnableFile(p, fileStat, 'win32'), p).toBe(false);
+      expect(isRunnableFile(p, execStat, 'linux'), p).toBe(false);
+    }
+  });
+
+  it('openPath：missing / failed 返回正确状态', async () => {
+    const missing = await openPath(path.join(cwd, 'nope.txt'), path.join(cwd, 'nope.txt'), () => true);
+    expect(missing).toBe('missing');
+    const readme = path.join(cwd, 'README.md');
+    expect(await openPath(readme, readme, () => false)).toBe('failed');
+    expect(await openPath(readme, readme, () => Promise.reject(new Error('boom')))).toBe('failed');
+  });
 });
 
 describe('/api/files/* 接口', () => {
@@ -273,8 +325,10 @@ describe('/api/files/* 接口', () => {
   let calls: { cmd: string; args: string[]; opts?: unknown }[];
   const prev = (rel: string, session = SID) => fetch(`${base}/api/files/preview?session=${session}&path=${encodeURIComponent(rel)}`);
   const raw = (rel: string) => fetch(`${base}/api/files/raw?session=${SID}&path=${encodeURIComponent(rel)}`);
-  const post = (route: 'reveal' | 'terminal', body: unknown) =>
-    fetch(`${base}/api/files/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const dl = (rel: string, session = SID, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/files/download?session=${session}&path=${encodeURIComponent(rel)}`, { headers });
+  const post = (route: 'reveal' | 'terminal' | 'open', body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/files/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
   beforeAll(async () => {
     const dir = path.join(tmp, 'claude', 'projects', encodeCwd(cwd));
@@ -361,6 +415,93 @@ describe('/api/files/* 接口', () => {
     expect((await raw(path.join(outside, 'secret.txt'))).status).toBe(403);
   });
 
+  it('attachmentDisposition：中文 / 引号 / 反斜杠 / 换行 / RFC5987 符号 / 孤立代理项安全编码', () => {
+    const cn = attachmentDisposition('中文 文件.md');
+    expect(cn).toBe(`attachment; filename="__ __.md"; filename*=UTF-8''${encodeURIComponent('中文 文件.md')}`);
+    const special = attachmentDisposition(`a"b\\c%d'()*!.txt`);
+    expect(special).toContain('filename="a_b_c_d\'()*!.txt"');
+    expect(special).toContain("filename*=UTF-8''a%22b%5Cc%25d%27%28%29%2A!.txt");
+    const crlf = attachmentDisposition('a\r\nX-Evil: 1.txt');
+    expect(crlf).not.toMatch(/[\r\n]/);
+    expect(crlf).toContain('filename="a__X-Evil: 1.txt"');
+    // 孤立高/低代理项不抛错；合法代理对正常编码
+    const loneHigh = attachmentDisposition('bad\uD800name.txt');
+    const loneLow = attachmentDisposition('bad\uDC00name.txt');
+    expect(loneHigh).toContain("filename*=UTF-8''bad%EF%BF%BDname.txt");
+    expect(loneLow).toContain("filename*=UTF-8''bad%EF%BF%BDname.txt");
+    expect(attachmentDisposition('😀.txt')).toContain("filename*=UTF-8''%F0%9F%98%80.txt");
+  });
+
+  it('download：字节一致、安全响应头、中文名、空文件、html/svg 也强制 octet-stream、支持 >20MB 与远程连接', async () => {
+    // 常规二进制文件与所有安全响应头
+    const png = await dl('pic.png');
+    expect(png.status).toBe(200);
+    expect(png.headers.get('content-type')).toBe('application/octet-stream');
+    expect(png.headers.get('content-length')).toBe(String(PNG.length));
+    expect(png.headers.get('content-disposition')).toBe(attachmentDisposition('pic.png'));
+    expect(png.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(png.headers.get('cache-control')).toBe('private, no-store');
+    expect(png.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'");
+    expect(Buffer.from(await png.arrayBuffer()).equals(PNG)).toBe(true);
+
+    // 中文文件名
+    const zh = await dl('文档 目录/中文 文件.md');
+    expect(zh.status).toBe(200);
+    expect(zh.headers.get('content-disposition')).toBe(attachmentDisposition('中文 文件.md'));
+    expect(await zh.text()).toBe('# 中文\n');
+
+    // 空文件
+    const empty = await dl('empty.bin');
+    expect(empty.status).toBe(200);
+    expect(empty.headers.get('content-length')).toBe('0');
+    expect((await empty.arrayBuffer()).byteLength).toBe(0);
+
+    // html / svg 绝不以可渲染类型返回
+    const html = await dl('page.html');
+    expect(html.status).toBe(200);
+    expect(html.headers.get('content-type')).toBe('application/octet-stream');
+    expect(await html.text()).toBe('<!doctype html><script>alert(1)</script>');
+    const svg = await dl('vec.svg');
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get('content-type')).toBe('application/octet-stream');
+    expect(await svg.text()).toBe(SVG);
+
+    // 超过 20MB 的文件能完整下载
+    const bigPath = path.join(cwd, 'over20m.bin');
+    const bigSize = 21 * 1024 * 1024 + 123;
+    const bigBuf = Buffer.alloc(bigSize, 0x5a);
+    bigBuf[0] = 0x11;
+    bigBuf[bigSize - 1] = 0x22;
+    fs.writeFileSync(bigPath, bigBuf);
+    try {
+      const bigRes = await dl('over20m.bin');
+      expect(bigRes.status).toBe(200);
+      expect(bigRes.headers.get('content-length')).toBe(String(bigSize));
+      const got = Buffer.from(await bigRes.arrayBuffer());
+      expect(got.length).toBe(bigSize);
+      expect(got[0]).toBe(0x11);
+      expect(got[bigSize - 1]).toBe(0x22);
+    } finally {
+      fs.rmSync(bigPath, { force: true });
+    }
+
+    // 会话提到过的 cwd 外文件可下载；带 x-forwarded-for 远程头也允许
+    const shot = path.join(tmp, 'shots', 'shot.png');
+    const remoteRes = await dl(shot, SID, { 'x-forwarded-for': '100.1.2.3' });
+    expect(remoteRes.status).toBe(200);
+    expect(remoteRes.headers.get('content-type')).toBe('application/octet-stream');
+    expect(Buffer.from(await remoteRes.arrayBuffer()).equals(PNG)).toBe(true);
+  });
+
+  it('download：目录 400、越界 403、不存在 404、会话 id 不合法 400', async () => {
+    expect((await dl('src')).status).toBe(400);
+    expect((await dl(path.join(outside, 'secret.txt'))).status).toBe(403);
+    expect((await dl('../outside/secret.txt')).status).toBe(403);
+    expect((await dl('nope.txt')).status).toBe(404);
+    expect((await dl('README.md', '../x')).status).toBe(400);
+    expect((await fetch(`${base}/api/files/download?path=README.md`)).status).toBe(400);
+  });
+
   it('reveal：文件 → 选中；经注入的 spawner，不启动真实进程', async () => {
     calls.length = 0;
     const abs = path.join(cwd, '文档 目录', '中文 文件.md');
@@ -390,9 +531,62 @@ describe('/api/files/* 接口', () => {
     expect(calls).toEqual([]);
   });
 
-  it('reveal / terminal：会话 id 不合法 400', async () => {
+  it('reveal / terminal / open：会话 id 不合法 400', async () => {
     expect((await post('reveal', { session: '../x', path: 'a' })).status).toBe(400);
     expect((await post('terminal', { path: 'a' })).status).toBe(400);
+    expect((await post('open', { session: '../x', path: 'a' })).status).toBe(400);
+    expect((await post('open', { path: 'a' })).status).toBe(400);
+  });
+
+  it('open：普通文件默认打开（revealed:false）、脚本只 reveal（revealed:true）、目录用 revealCommand', async () => {
+    // 普通文件（.apk）
+    calls.length = 0;
+    const apk = path.join(cwd, 'app.apk');
+    const r1 = await post('open', { session: SID, path: 'app.apk' });
+    expect(r1.status).toBe(200);
+    expect(await r1.json()).toEqual({ ok: true, revealed: false });
+    expect(calls).toHaveLength(1);
+    const wantApk = openFileCommand(apk);
+    expect(calls[0]).toMatchObject({ cmd: wantApk.cmd, args: wantApk.args });
+
+    // 脚本（.bat）：改为在文件管理器中选中
+    calls.length = 0;
+    const bat = path.join(cwd, 'run.bat');
+    const r2 = await post('open', { session: SID, path: 'run.bat' });
+    expect(r2.status).toBe(200);
+    expect(await r2.json()).toEqual({ ok: true, revealed: true });
+    expect(calls).toHaveLength(1);
+    const wantBat = revealFileCommand(bat);
+    expect(calls[0]).toMatchObject({ cmd: wantBat.cmd, args: wantBat.args });
+
+    // 目录：用 revealCommand 打开
+    calls.length = 0;
+    const srcDir = path.join(cwd, 'src');
+    const r3 = await post('open', { session: SID, path: 'src' });
+    expect(r3.status).toBe(200);
+    expect(await r3.json()).toEqual({ ok: true, revealed: false });
+    expect(calls).toHaveLength(1);
+    const wantDir = revealCommand(srcDir);
+    expect(calls[0]).toMatchObject({ cmd: wantDir.cmd, args: wantDir.args });
+  });
+
+  it('open：越界 403、不存在 404 且不 spawn；会话提到过的 cwd 外文件可打开；远程连接 403', async () => {
+    calls.length = 0;
+    expect((await post('open', { session: SID, path: path.join(outside, 'secret.txt') })).status).toBe(403);
+    expect((await post('open', { session: SID, path: '../outside/secret.txt' })).status).toBe(403);
+    expect((await post('open', { session: SID, path: 'nope.txt' })).status).toBe(404);
+    expect((await post('open', { session: SID, path: 'app.apk' }, { 'x-forwarded-for': '100.1.2.3' })).status).toBe(403);
+    expect((await post('open', { session: SID, path: 'app.apk' }, { 'tailscale-user-login': 'alice@example.com' })).status).toBe(403);
+    expect(calls).toEqual([]);
+
+    // 会话里提到过的 cwd 外文件（shots/shot.png 已在前一个测试里写入会话记录）
+    const shot = path.join(tmp, 'shots', 'shot.png');
+    const r = await post('open', { session: SID, path: shot });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true, revealed: false });
+    expect(calls).toHaveLength(1);
+    const wantShot = openFileCommand(shot);
+    expect(calls[0]).toMatchObject({ cmd: wantShot.cmd, args: wantShot.args });
   });
 
   it('bootstrap：本机回环连接 remote=false', async () => {

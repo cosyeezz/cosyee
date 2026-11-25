@@ -3,6 +3,7 @@
 // 客户端不处理任何业务逻辑，也没有令牌：访问控制由服务端的 Tailscale 模式负责。
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+mod http_client;
 #[cfg(desktop)]
 mod local;
 #[cfg(desktop)]
@@ -141,6 +142,7 @@ pub fn run() {
         probe,
         set_servers,
         tailnet::tailnet_status,
+        tailnet::tailnet_peers,
         tailnet::tailnet_check,
         tailnet::tailnet_install,
         tailnet::tailnet_uninstall,
@@ -169,6 +171,7 @@ pub fn run() {
         probe,
         set_servers,
         tailnet::tailnet_status,
+        tailnet::tailnet_peers,
         tailnet::tailnet_check,
         tailnet::tailnet_install,
         tailnet::tailnet_uninstall,

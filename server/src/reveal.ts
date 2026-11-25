@@ -62,6 +62,97 @@ export function revealFileCommand(file: string, platform: NodeJS.Platform = proc
   return revealCommand(path.posix.dirname(file.replace(/\\/g, '/')), platform);
 }
 
+/**
+ * 「用系统默认应用打开文件」：
+ * - Windows：`explorer.exe "<path>"`，同样 windowsVerbatimArguments 自己加引号并规范化反斜杠，
+ *   避免路径含空格或逗号时被 explorer 拆开；
+ * - macOS：`open <path>`；
+ * - Linux：`xdg-open <path>`。
+ */
+export function openFileCommand(file: string, platform: NodeJS.Platform = process.platform): Command {
+  if (platform === 'win32') {
+    const p = path.win32.normalize(file);
+    return { cmd: 'explorer.exe', args: [`"${p}"`], opts: { windowsVerbatimArguments: true } };
+  }
+  if (platform === 'darwin') return { cmd: 'open', args: [file] };
+  return { cmd: 'xdg-open', args: [file] };
+}
+
+/**
+ * 用默认应用打开等于「直接执行」或高风险启动的文件扩展名（全平台统一，宁多勿少）。
+ * 注意：.apk / .zip / .docx / .pdf / .md / .txt / .json / .ts / .html 与常见图片音视频不在此列。
+ */
+const RUNNABLE_EXT = new Set([
+  // Windows 可执行 / 脚本 / 快捷方式 / 安装包 / 配置
+  'exe', 'com', 'bat', 'cmd', 'scr', 'pif', 'cpl', 'msi', 'msp', 'msc', 'msix', 'appx', 'appxbundle', 'msixbundle',
+  'application', 'gadget', 'hta', 'vb', 'vbs', 'vbe', 'js', 'jse', 'mjs', 'cjs', 'ws', 'wsf', 'wsh', 'wsc', 'sct',
+  'ps1', 'psm1', 'psd1', 'ps1xml', 'ps2', 'ps2xml', 'psc1', 'psc2', 'msh', 'msh1', 'msh2', 'mshxml', 'msh1xml', 'msh2xml',
+  'reg', 'inf', 'scf', 'lnk', 'url', 'website', 'library-ms', 'search-ms', 'settingcontent-ms', 'appref-ms',
+  'chm', 'hlp', 'diagcab', 'theme', 'themepack', 'deskthemepack', 'mht', 'mhtml', 'rdp', 'wsb',
+  'xll', 'wll', 'xla', 'xlam', 'docm', 'dotm', 'xlsm', 'xltm', 'pptm', 'potm', 'ppam', 'ppsm', 'sldm',
+  'ade', 'adp', 'bas', 'crt', 'ins', 'isp', 'mad', 'maf', 'mag', 'mam', 'maq', 'mar', 'mas', 'mat', 'mav', 'maw',
+  'mda', 'mdb', 'mde', 'mdt', 'mdw', 'mdz', 'ops', 'pcd', 'prf', 'prg', 'shb', 'shs', 'vsmacros', 'vsw',
+  'ocx', 'sys', 'drv', 'dll', 'ahk', 'au3',
+  // 跨平台脚本 / 字节码 / JVM
+  'jar', 'jnlp', 'py', 'pyw', 'pyc', 'pyz', 'pyzw', 'rb', 'pl', 'php',
+  // Unix / macOS / Linux 可执行与启动器 / 包 / 磁盘镜像
+  'sh', 'bash', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'command', 'tool', 'workflow', 'scpt', 'scptd', 'applescript',
+  'app', 'action', 'prefpane', 'qlgenerator', 'saver', 'kext', 'plugin', 'bundle', 'service', 'osax',
+  'desktop', 'appimage', 'run', 'bin', 'out', 'elf', 'so', 'dylib', 'terminal', 'fileloc', 'inetloc', 'webloc',
+  'iso', 'img', 'vhd', 'vhdx', 'dmg', 'pkg', 'mpkg', 'deb', 'rpm', 'snap', 'flatpak', 'flatpakref', 'cab',
+]);
+
+/** 判断「用默认应用打开等于执行」的文件（含 macOS 的 .app / .workflow 目录与非 Windows 无扩展名可执行文件）。 */
+export function isRunnableFile(
+  realPath: string,
+  stat: Pick<fs.Stats, 'isFile' | 'mode'>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  // 目录只有在 macOS 上才可能是可执行的包；别处名为 next.js、foo.app 的目录就是普通目录
+  if (!stat.isFile() && platform !== 'darwin') return false;
+  const base = (realPath.split(/[\\/]/).pop() ?? '').replace(/[. ]+$/, '');
+  const ext = path.posix.extname(base).slice(1).toLowerCase();
+  if (ext && RUNNABLE_EXT.has(ext)) return true;
+  if (platform !== 'win32' && !ext && stat.isFile() && (stat.mode & 0o111) !== 0) return true;
+  return false;
+}
+
+export type OpenPathResult = 'opened' | 'revealed' | 'missing' | 'failed';
+
+/**
+ * 用系统默认应用打开路径（abs 为请求路径，real 为授权后的 realpath）：
+ * - 可执行类（abs 或 real 任一命中）：不直接运行，改为在文件管理器中选中（.app 目录也是选中）；
+ * - 其它目录：在文件管理器中打开；
+ * - 其它文件：用默认应用打开 real 路径。
+ */
+export async function openPath(
+  abs: string,
+  real: string,
+  spawner: Spawner = defaultSpawner,
+  platform: NodeJS.Platform = process.platform,
+): Promise<OpenPathResult> {
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(real);
+  } catch {
+    return 'missing';
+  }
+  const runnable = isRunnableFile(real, st, platform) || isRunnableFile(abs, st, platform);
+  const c = runnable
+    ? revealFileCommand(real, platform)
+    : st.isDirectory()
+      ? revealCommand(real, platform)
+      : openFileCommand(real, platform);
+  let ok: unknown;
+  try {
+    ok = await spawner(c.cmd, c.args, c.opts);
+  } catch {
+    ok = false;
+  }
+  if (ok === false) return 'failed';
+  return runnable ? 'revealed' : 'opened';
+}
+
 /** 目录存在才打开；返回是否真的发出了命令 */
 export function revealFolder(dir: string, spawner: Spawner = defaultSpawner): boolean {
   let isDir = false;

@@ -13,6 +13,14 @@ describe('api 文件预览', () => {
     expect(url.searchParams.get('path')).toBe('a%23b%25c%3F.png#L3');
   });
 
+  it('fileDownloadUrl：session / path / cwd 进查询串，路径转义且不带行号', () => {
+    const url = new URL(api.fileDownloadUrl({ session: 's 1', cwd: 'F:\\proj', path: 'a#b%c?.apk', line: 9 }), 'http://x');
+    expect(url.pathname).toBe('/api/files/download');
+    expect(url.searchParams.get('session')).toBe('s 1');
+    expect(url.searchParams.get('cwd')).toBe('F:\\proj');
+    expect(url.searchParams.get('path')).toBe('a%23b%25c%3F.apk');
+  });
+
   it('filePreview：GET /api/files/preview；服务端错误信息作为异常抛出', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: '路径不在工作目录内' }) });
     vi.stubGlobal('fetch', fetchMock);
@@ -21,18 +29,24 @@ describe('api 文件预览', () => {
     expect(fetchMock.mock.calls[0]![1].method).toBe('GET');
   });
 
-  it('revealFile / openTerminalAt：POST，body 带 session、cwd 和转义后的 path', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  it('revealFile / openTerminalAt / openFile：POST，body 带 session、cwd 和转义后的 path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, revealed: false }) });
     vi.stubGlobal('fetch', fetchMock);
     await api.revealFile({ session: 's', cwd: 'F:\\proj', path: 'F:\\proj\\a#1.md' });
     await api.openTerminalAt({ session: 's', cwd: 'F:\\proj', path: 'F:\\proj' });
+    const res = await api.openFile({ session: 's', cwd: 'F:\\proj', path: 'F:\\proj\\app#1.apk' });
     const [u1, o1] = fetchMock.mock.calls[0]!;
     const [u2, o2] = fetchMock.mock.calls[1]!;
+    const [u3, o3] = fetchMock.mock.calls[2]!;
     expect(u1).toBe('/api/files/reveal');
     expect(u2).toBe('/api/files/terminal');
+    expect(u3).toBe('/api/files/open');
     expect(o1.method).toBe('POST');
+    expect(o3.method).toBe('POST');
     expect(JSON.parse(o1.body)).toEqual({ session: 's', cwd: 'F:\\proj', path: 'F:\\proj\\a%231.md' });
     expect(JSON.parse(o2.body).path).toBe('F:\\proj');
+    expect(JSON.parse(o3.body)).toEqual({ session: 's', cwd: 'F:\\proj', path: 'F:\\proj\\app%231.apk' });
+    expect(res).toEqual({ ok: true, revealed: false });
   });
 });
 

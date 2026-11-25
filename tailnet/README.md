@@ -1,6 +1,6 @@
 # cosyee-tailnet
 
-Cosyee 客户端可选内置 Tailscale 组件（基于 `tailscale.com/tsnet`，用户态运行，不建 TUN、不改系统路由/DNS）。
+Cosyee 客户端内置 Tailscale 组件（基于 `tailscale.com/tsnet`，用户态运行，不建 TUN、不改系统路由/DNS）。桌面端（Windows / macOS）作为可选下载组件分发；Android 端（arm64）直接随客户端 APK 打进 `jniLibs/arm64-v8a/libcosyee_tailnet.so`，默认关闭，用户点登录或手动开启时加载。
 
 ## 目录结构
 

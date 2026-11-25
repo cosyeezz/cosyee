@@ -805,7 +805,7 @@ export function MainApp() {
     });
   }, [sel, patch, flash, refreshContext]);
 
-  // 批量设置 skill（一键推荐配置 / 撤销）：同样乐观更新
+  // 批量设置 skill（勾选批量操作 / 撤销）：同样乐观更新
   const setSkillModes = useCallback((modes: Record<string, SkillMode>) => {
     const id = sel?.id;
     if (id) {
@@ -843,6 +843,13 @@ export function MainApp() {
         refreshContext();
       });
   }, [sel, patch, flash, refreshContext]);
+
+  // 在服务端文件管理器中选中该 skill 的 SKILL.md
+  const revealSkill = useCallback((name: string) => {
+    if (!sel) return;
+    api.revealSkill(name, isDraft(sel) ? null : sel.id, sel.cwd)
+      .catch((e) => flash(`打开文件位置失败：${errText(e)}`));
+  }, [sel, flash]);
 
   // 内置工具开关：乐观更新；失败则提示并重新采集
   const toggleTool = useCallback((name: string, enabled: boolean) => {
@@ -1106,10 +1113,20 @@ export function MainApp() {
       open: openPreview,
       platform: boot?.platform,
       exec: (lang: string, code: string, signal: AbortSignal) => api.execSnippet({ session: selId, cwd: selDir, lang, code }, signal),
-      ...(remote ? {} : {
-        reveal: (path: string) => { api.revealFile({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开文件管理器失败：${errText(e)}`)); },
-        terminal: (path: string) => { api.openTerminalAt({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开终端失败：${errText(e)}`)); },
-      }),
+      ...(remote
+        ? {
+            downloadUrl: (path: string) => api.fileDownloadUrl({ session: selId, cwd: selDir, path }),
+          }
+        : {
+            reveal: (path: string) => { api.revealFile({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开文件管理器失败：${errText(e)}`)); },
+            terminal: (path: string) => { api.openTerminalAt({ session: selId, cwd: selDir, path }).catch((e) => flash(`打开终端失败：${errText(e)}`)); },
+            openLocal: (path: string) => {
+              api.openFile({ session: selId, cwd: selDir, path }).then(
+                (r) => { if (r.revealed) flash('可执行文件和脚本不直接运行，已在文件管理器中显示'); },
+                (e) => flash(`打开文件失败：${errText(e)}`),
+              );
+            },
+          }),
     };
   }, [selId, selDir, openPreview, flash, remote, boot?.platform]);
 
@@ -1312,6 +1329,7 @@ export function MainApp() {
             onSkillMode={setSkillMode}
             onSkillModes={setSkillModes}
             onSkillRemove={removeSkill}
+            onSkillReveal={remote ? undefined : revealSkill}
             tools={sel && view?.id === sel.id ? view.conv.meta.tools : undefined}
             onToolToggle={toggleTool}
             agents={sel && view?.id === sel.id ? view.conv.meta.agents : undefined}

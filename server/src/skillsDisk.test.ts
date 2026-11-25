@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listDiskSkills, readSkillContent, removeDiskSkill } from './skillsDisk.js';
+import { listDiskSkills, listSyncedSkills, readSkillContent, removeDiskSkill } from './skillsDisk.js';
 
 let tmp: string;
 beforeEach(() => {
@@ -107,5 +107,53 @@ describe('readSkillContent', () => {
     expect(readSkillContent('pdf', cfg, null)).toBeNull();
     expect(readSkillContent('../../etc/passwd', cfg, null)).toBeNull();
     expect(readSkillContent('nope', cfg, null)).toBeNull();
+  });
+});
+
+describe('listSyncedSkills', () => {
+  const ORG = '11111111-2222-4333-8444-555555555555';
+  const ACC = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const OTHER_ORG = '99999999-2222-4333-8444-555555555555';
+  const OTHER_ACC = 'ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+  it('只精确匹配当前账号的桶，返回 anthropic-skills:<名字> -> 目录；不影响 listDiskSkills', () => {
+    const cfg = path.join(tmp, 'cfg');
+    const cjson = path.join(tmp, '.claude.json');
+    fs.writeFileSync(cjson, JSON.stringify({ oauthAccount: { organizationUuid: ORG, accountUuid: ACC } }));
+    const pdfDir = mkSkill(path.join(cfg, 'skills', 'synced', `${ORG}_${ACC}`), 'pdf');
+    mkSkill(path.join(cfg, 'skills', 'synced', `${OTHER_ORG}_${OTHER_ACC}`), 'docx');
+
+    const map = listSyncedSkills(cfg, cjson);
+    expect([...map.entries()]).toEqual([['anthropic-skills:pdf', pdfDir]]);
+    expect(map.has('anthropic-skills:docx')).toBe(false);
+    // 不并入 listDiskSkills
+    expect(listDiskSkills(cfg, null)).toEqual([]);
+  });
+
+  it('uuid 非法 / 缺少 oauthAccount / .claude.json 不存在 / 桶目录不存在时均返回空', () => {
+    const cfg = path.join(tmp, 'cfg');
+    mkSkill(path.join(cfg, 'skills', 'synced', `${ORG}_${ACC}`), 'pdf');
+
+    // 不存在的 .claude.json
+    expect(listSyncedSkills(cfg, path.join(tmp, 'missing.json')).size).toBe(0);
+
+    // 缺少 oauthAccount
+    const noOauth = path.join(tmp, 'no-oauth.json');
+    fs.writeFileSync(noOauth, JSON.stringify({ theme: 'dark' }));
+    expect(listSyncedSkills(cfg, noOauth).size).toBe(0);
+
+    // uuid 非法（含路径穿越）
+    const badUuid = path.join(tmp, 'bad-uuid.json');
+    fs.writeFileSync(badUuid, JSON.stringify({ oauthAccount: { organizationUuid: '../escape', accountUuid: ACC } }));
+    expect(listSyncedSkills(cfg, badUuid).size).toBe(0);
+
+    const notUuid = path.join(tmp, 'not-uuid.json');
+    fs.writeFileSync(notUuid, JSON.stringify({ oauthAccount: { organizationUuid: ORG, accountUuid: 'not-a-uuid' } }));
+    expect(listSyncedSkills(cfg, notUuid).size).toBe(0);
+
+    // 合法 uuid 但桶目录不存在
+    const emptyBucket = path.join(tmp, 'empty-bucket.json');
+    fs.writeFileSync(emptyBucket, JSON.stringify({ oauthAccount: { organizationUuid: OTHER_ORG, accountUuid: OTHER_ACC } }));
+    expect(listSyncedSkills(cfg, emptyBucket).size).toBe(0);
   });
 });

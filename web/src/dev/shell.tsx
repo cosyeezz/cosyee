@@ -305,6 +305,7 @@ export default function ShellDev() {
           onSkillMode={(name, mode) => setSkillModes({ [name]: mode })}
           onSkillModes={setSkillModes}
           onSkillRemove={(name) => setUsage((u) => (u ? { ...u, skills: u.skills?.filter((s) => s.name !== name) } : u))}
+          onSkillReveal={(name) => console.info('[dev] reveal skill', name)}
           onMcpToggle={(server, enabled) =>
             setUsage((u) =>
               u ? { ...u, mcpServers: u.mcpServers?.map((s) => (s.name === server ? { ...s, status: enabled ? 'connected' : 'disabled' } : s)) } : u,

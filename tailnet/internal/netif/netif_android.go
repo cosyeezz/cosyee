@@ -55,6 +55,21 @@ func Register() {
 	})
 }
 
+// HasChangePoller reports whether this platform needs periodic interface polling.
+// Android uses netmon's pollingMon with a 10-minute interval, so we run a lightweight 5s poller.
+func HasChangePoller() bool {
+	return true
+}
+
+// PollSnapshot returns a normalized snapshot of current Android interfaces/outbound addresses.
+func PollSnapshot() (Snapshot, error) {
+	ifaces, err := getInterfaces()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return BuildSnapshot(ifaces), nil
+}
+
 func getInterfaces() ([]netmon.Interface, error) {
 	ifaces, err := getInterfacesBionic()
 	if err == nil && len(ifaces) > 0 {
@@ -90,6 +105,9 @@ func getInterfacesBionic() ([]netmon.Interface, error) {
 					Name:  name,
 					Flags: convertFlags(uint32(ifa.ifa_flags)),
 				},
+				// Always initialize to a non-nil slice so netmon.Interface.Addrs() never falls back
+				// to net.Interface.Addrs() (NETLINK_ROUTE, blocked on Android 11+) for IP-less NICs.
+				AltAddrs: []net.Addr{},
 			}
 			byName[name] = entry
 			order = append(order, name)
@@ -140,7 +158,7 @@ func sockaddrToIPNet(addr, mask *C.struct_sockaddr) *net.IPNet {
 		ip := make(net.IP, net.IPv4len)
 		copy(ip, unsafe.Slice((*byte)(unsafe.Pointer(&sin.sin_addr)), net.IPv4len))
 		var ipMask net.IPMask
-		if mask != nil && mask.sa_family == C.AF_INET {
+		if mask != nil && (mask.sa_family == C.AF_INET || mask.sa_family == C.AF_UNSPEC) {
 			msin := (*C.struct_sockaddr_in)(unsafe.Pointer(mask))
 			ipMask = make(net.IPMask, net.IPv4len)
 			copy(ipMask, unsafe.Slice((*byte)(unsafe.Pointer(&msin.sin_addr)), net.IPv4len))
@@ -154,7 +172,7 @@ func sockaddrToIPNet(addr, mask *C.struct_sockaddr) *net.IPNet {
 		ip := make(net.IP, net.IPv6len)
 		copy(ip, unsafe.Slice((*byte)(unsafe.Pointer(&sin6.sin6_addr)), net.IPv6len))
 		var ipMask net.IPMask
-		if mask != nil && mask.sa_family == C.AF_INET6 {
+		if mask != nil && (mask.sa_family == C.AF_INET6 || mask.sa_family == C.AF_UNSPEC) {
 			msin6 := (*C.struct_sockaddr_in6)(unsafe.Pointer(mask))
 			ipMask = make(net.IPMask, net.IPv6len)
 			copy(ipMask, unsafe.Slice((*byte)(unsafe.Pointer(&msin6.sin6_addr)), net.IPv6len))

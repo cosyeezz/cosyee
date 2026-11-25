@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import zlib from 'node:zlib';
 import { WebSocket } from 'ws';
 import { sendJsonMaybeGzip } from './http.js';
+import { type Command, revealFileCommand } from './reveal.js';
 import { type RunningServer, startServer } from './server.js';
 
 let tmp: string;
@@ -466,6 +467,44 @@ describe('GET /api/skills/content', () => {
     expect((await fetch(`${base}/api/skills/content?name=nope`, { headers: auth })).status).toBe(404);
     expect((await fetch(`${base}/api/skills/content?name=${encodeURIComponent('a b')}`, { headers: auth })).status).toBe(400);
     expect((await fetch(`${base}/api/skills/content`, { headers: auth })).status).toBe(400);
+  });
+});
+
+describe('POST /api/skills/reveal', () => {
+  it('选中磁盘上 skill 的 SKILL.md；未知 404、非法名 400、远程头 403 且均不 spawn', async () => {
+    const dir = path.join(tmp, 'claude', 'skills', 'reveal-skill');
+    fs.mkdirSync(dir, { recursive: true });
+    const skillFile = path.join(dir, 'SKILL.md');
+    fs.writeFileSync(skillFile, '# reveal\n');
+    const calls: Command[] = [];
+    const s = await startServer({
+      port: 0,
+      webDist: null,
+      stateFile: path.join(tmp, 'state-skill-reveal.json'),
+      spawner: (cmd, args, opts) => {
+        calls.push(opts ? { cmd, args, opts } : { cmd, args });
+      },
+    });
+    try {
+      const url = `http://127.0.0.1:${s.port}/api/skills/reveal`;
+      const post = (body: unknown, extraHeaders: Record<string, string> = {}) =>
+        fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json', ...extraHeaders }, body: JSON.stringify(body) });
+
+      const ok = await post({ name: 'reveal-skill' });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true });
+      expect(calls).toEqual([revealFileCommand(skillFile)]);
+
+      calls.length = 0;
+      expect((await post({ name: 'nope' })).status).toBe(404);
+      expect((await post({ name: 'a b' })).status).toBe(400);
+      expect((await post({})).status).toBe(400);
+      expect((await post({ name: 'reveal-skill' }, { 'x-forwarded-for': '100.64.0.9' })).status).toBe(403);
+      expect((await post({ name: 'reveal-skill' }, { 'tailscale-user-login': 'u@example.com' })).status).toBe(403);
+      expect(calls).toEqual([]);
+    } finally {
+      await s.stop();
+    }
   });
 });
 

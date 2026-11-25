@@ -105,19 +105,22 @@ describe('toContextUsage', () => {
       { name: 'gone', source: 'userSettings' as const, dir: '/u/gone', removable: true },
     ];
     const r = toContextUsage({ skills: { skillFrontmatter: [{ name: 'mine', source: 'userSettings', tokens: 7 }] } }, 1, {
-      initSkills: ['mine'],
+      initSkills: ['mine', 'anthropic-skills:docx'],
       diskSkills: disk,
+      syncedSkills: new Set(['anthropic-skills:docx']),
       hidden: ['gone'],
       // settings.json 里关掉的、磁盘上没有的内置 skill 也要列出来
       overrides: { 'skill-creator': 'off', verify: 'on' },
     });
-    expect(r.skills.map((x) => x.name).sort()).toEqual(['anthropic-skills:pdf', 'mine', 'proj', 'skill-creator']);
+    expect(r.skills.map((x) => x.name).sort()).toEqual(['anthropic-skills:docx', 'anthropic-skills:pdf', 'mine', 'proj', 'skill-creator']);
     const by = (n: string) => r.skills.find((x) => x.name === n)!;
-    expect(by('mine')).toMatchObject({ mode: 'on', tokens: 7, removable: true });
+    expect(by('mine')).toMatchObject({ mode: 'on', tokens: 7, removable: true, onDisk: true });
     // 磁盘上有、进程里没加载：用磁盘来源，状态按 on 处理但没有 token
-    expect(by('proj')).toMatchObject({ mode: 'on', tokens: null, source: 'projectSettings', removable: true });
-    expect(by('anthropic-skills:pdf')).toMatchObject({ source: 'plugin', removable: false });
-    expect(by('skill-creator')).toMatchObject({ mode: 'off', tokens: null });
+    expect(by('proj')).toMatchObject({ mode: 'on', tokens: null, source: 'projectSettings', removable: true, onDisk: true });
+    expect(by('anthropic-skills:pdf')).toMatchObject({ source: 'plugin', removable: false, onDisk: true });
+    // 云端同步到本地磁盘的 skill：onDisk 为 true，removable 仍为 false
+    expect(by('anthropic-skills:docx')).toMatchObject({ removable: false, onDisk: true });
+    expect(by('skill-creator')).toMatchObject({ mode: 'off', tokens: null, removable: false, onDisk: false });
   });
 
   it('skills：init 还没到时（null）不推定已删除，保留 cosyeeOverrides 里的 on 状态 skill', () => {

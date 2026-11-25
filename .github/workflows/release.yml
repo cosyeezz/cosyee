@@ -134,6 +134,10 @@ jobs:
           fi
       - uses: actions/setup-node@v4
         with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: dtolnay/rust-toolchain@stable
@@ -143,10 +147,18 @@ jobs:
       - name: NDK
         run: |
           echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           ls "$ANDROID_NDK_LATEST_HOME" > /dev/null
       - run: npm ci
       - name: 写入版本号
         run: node client/scripts/set-version.mjs "$VERSION"
+      - name: 构建内置 Tailscale 库（android-arm64）
+        run: |
+          tv="$(tr -d '\r\n' < tailnet/VERSION)"
+          echo "COSYEE_TAILNET_VERSION=$tv" >> "$GITHUB_ENV"
+          node tailnet/scripts/build.mjs --target android-arm64 --version "$tv" --out-dir tailnet/dist
+          so="tailnet/dist/libcosyee_tailnet_${tv}_android_arm64.so"
+          [ -f "$so" ] || { echo "::error::找不到构建好的 $so"; exit 1; }
       - name: 生成 Android 工程
         working-directory: client
         run: |
@@ -165,6 +177,15 @@ jobs:
           fi
           grep -q 'androidx.webkit:webkit' "$gradle" \
             || { echo "::error::未能确保 androidx.webkit 依赖"; exit 1; }
+          # R8 保留 Rust 经 JNI 调用的 MainActivity 方法，先确认模板会自动收集 app 目录下的 **/*.pro
+          if ! (grep -q 'proguardFiles' "$gradle" && grep -q 'include("\*\*/\*\.pro")' "$gradle"); then
+            echo "::error::build.gradle.kts 未自动收集 **/*.pro（Tauri 模板变了？）"; exit 1
+          fi
+          cp android/proguard-cosyee.pro src-tauri/gen/android/app/proguard-cosyee.pro
+          # 打进 APK 的内置 Tailscale 动态库
+          mkdir -p src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
+          cp "../tailnet/dist/libcosyee_tailnet_${COSYEE_TAILNET_VERSION}_android_arm64.so" \
+            src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libcosyee_tailnet.so
           # 语音输入要用麦克风（运行时由 WebView 的权限请求触发系统授权弹窗）
           manifest=src-tauri/gen/android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$manifest"
@@ -196,6 +217,18 @@ jobs:
           "$bt/apksigner" verify --print-certs "out/Cosyee_${VERSION}_android_arm64.apk"
           rm -f "$RUNNER_TEMP/release.p12"
           ls -la out
+      - name: 校验 APK 内容（R8 保留方法与内置 .so）
+        run: |
+          apk="out/Cosyee_${VERSION}_android_arm64.apk"
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/libcosyee_tailnet.so' \
+            || { echo "::error::APK 中缺少 lib/arm64-v8a/libcosyee_tailnet.so"; exit 1; }
+          unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/all.dex"
+          for sym in setTailnetProxy clearTailnetProxy relaunchApp; do
+            grep -aq "$sym" "$RUNNER_TEMP/all.dex" \
+              || { echo "::error::APK dex 中缺少方法（可能被 R8 裁剪）：$sym"; exit 1; }
+          done
+          rm -f "$RUNNER_TEMP/all.dex"
+          echo "APK 校验通过：libcosyee_tailnet.so 与 3 个 JNI 方法均存在"
       - uses: actions/upload-artifact@v4
         with: { name: android, path: out/*, if-no-files-found: error }
 

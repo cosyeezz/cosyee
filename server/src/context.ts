@@ -18,6 +18,8 @@ export interface ContextExtra {
   cosyeeOverrides?: Record<string, SkillMode> | null;
   /** 磁盘扫描到的全部 skill（含没加载 / 已关闭的）：保证它们都列在面板上，并标出哪些能移除 */
   diskSkills?: DiskSkill[] | null;
+  /** 云端同步到磁盘的 skill 名（只用于判断能否打开文件位置，不额外增行也不影响可移除性） */
+  syncedSkills?: ReadonlySet<string> | null;
   /** 刚被移除的 skill（正在运行的进程里还加载着它，列表里要藏起来） */
   hidden?: string[] | null;
   /** mcp_status 的响应 */
@@ -67,6 +69,7 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
   };
   const hidden = new Set(extra.hidden ?? []);
   const disk = new Map((extra.diskSkills ?? []).map((d) => [d.name, d]));
+  const synced = extra.syncedSkills ?? null;
   const out: ContextSkill[] = [];
   const seen = new Set<string>();
   const used = new Set<number>();
@@ -79,7 +82,7 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
       mode,
       tokens: f && mode === 'on' ? num(f.tokens) : null,
       source: typeof f?.source === 'string' ? f.source : (disk.get(name)?.source ?? (name.includes(':') ? 'plugin' : null)),
-      ...(extra.diskSkills ? { removable: disk.get(name)?.removable === true } : {}),
+      ...(extra.diskSkills ? { removable: disk.get(name)?.removable === true, onDisk: disk.has(name) || !!synced?.has(name) } : {}),
       ...descOf(name),
     });
   };

@@ -91,15 +91,16 @@ Host / Origin 白名单额外放行 Tailscale IP、本机名（MagicDNS 短名�
 - 回到服务器列表：`Ctrl+Shift+L`（macOS `⌘⇧L`），或点标题栏左上角菜单 → 服务器列表、标题栏上的当前服务器名；Android 用返回键。
 - 本地开发：`npm run dev:client`；本地打包：`npm run build:client`（需要 Rust 工具链）。改图标：改 `client/scripts/make-icon.mjs` 后 `npm run icon -w client`。
 
-#### 内置 Tailscale（可选组件）
+#### 内置 Tailscale
 
-服务器列表下面的「组件 → 内置 Tailscale」可以安装一个只给客户端用的 Tailscale 节点（基于 `tsnet`，源码在 `tailnet/`）。不装就和以前一样，使用系统里的 Tailscale。
+服务器列表下面的「内置 Tailscale」提供一个只给客户端用的 Tailscale 节点（基于 `tsnet`，源码在 `tailnet/`）：
 
+- **桌面端（Windows x64、macOS 14+）**：仍是可选下载组件，在「组件 → 内置 Tailscale」安装；不装就和以前一样，使用系统里的 Tailscale。安装 / 更新从 GitHub Releases 的 `tailnet-latest` 拉清单，验 Ed25519 签名和 sha256 后才会使用。
+- **Android（arm64）**：随 APK 直接内置，无需单独下载安装，默认关闭；点「登录」或手动开启后才会加载并启用（全程无需重启客户端）。
 - 不建虚拟网卡、不改系统路由和 DNS：系统里的 Tailscale、其它 VPN 照常工作，互不影响。客户端退出（包括崩溃）时组件跟着退出。
 - 只有客户端自己的 WebView 经它访问 tailnet：本机代理只把 `100.x`、`*.ts.net`、MagicDNS 短名转给组件，其余直连；组件没登录 / 没运行时也直连。
 - 第一次使用点「登录」，在浏览器里授权，它会作为一台独立设备（`cosyee-<主机名>`）加入 tailnet。
 - 组件的底层流量（WireGuard UDP、DERP 443）仍走系统默认出口：开着全局 VPN 时通常仍能连上（可能走 DERP 中继）；VPN 屏蔽 UDP 和 443 出站或开了 kill switch 时连不上。
-- 平台：Windows x64、macOS 14+、Android arm64。安装 / 更新从 GitHub Releases 的 `tailnet-latest` 拉清单，验 Ed25519 签名和 sha256 后才会使用。
 
 ### 3. 其它电脑也想用本机后端
 

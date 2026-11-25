@@ -13,7 +13,7 @@ import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
 import { runSnippet } from './exec.js';
-import { mentionForms, openRaw, previewFile, resolveForAction, type OutsideCheck } from './files.js';
+import { mentionForms, openDownload, openRaw, previewFile, resolveForAction, type OutsideCheck } from './files.js';
 import { gitBranch } from './git.js';
 import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 import { readSkillContent } from './skillsDisk.js';
@@ -21,7 +21,7 @@ import { PASTE_LIMIT, PasteTypeError, pasteTarget, savePaste } from './pastes.js
 import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
 import type { Previews } from './preview.js';
-import { type Spawner, defaultSpawner, openTerminal, revealFolder, revealPath } from './reveal.js';
+import { type Spawner, defaultSpawner, openPath, openTerminal, revealFolder, revealPath } from './reveal.js';
 import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAuthorized, tokenOk } from './security.js';
 import type { Sessions } from './sessions.js';
 import { MAX_STT_SECONDS, type Speech, SpeechNotReady } from './speech/index.js';
@@ -200,6 +200,19 @@ const MIME: Record<string, string> = {
 /** 选择窗口同一时间只允许一个。 */
 class PickLock {
   busy = false;
+}
+
+/**
+ * 构造下载响应的 Content-Disposition：
+ * - filename="..."：ASCII 兜底（非可打印 ASCII、引号、反斜杠、% 统一换为 _，杜绝换行注入）；
+ * - filename*=UTF-8''...：按 RFC 5987 编码（先修正孤立代理项防 encodeURIComponent 抛错，再额外转义 ' ( ) *）。
+ */
+export function attachmentDisposition(name: string): string {
+  const raw = name || 'download';
+  const fallback = raw.replace(/[^\x20-\x7e]|["\\%]/g, '_') || 'download';
+  const wellFormed = raw.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+  const encoded = encodeURIComponent(wellFormed).replace(/['()*]/g, (ch) => '%' + ch.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
 /**
@@ -817,6 +830,19 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true, backup: r.backup });
     }
 
+    // 在系统文件管理器中选中该 skill 的 SKILL.md（仅服务端本机；路径只取自磁盘扫描结果，不拼外部输入）
+    if (method === 'POST' && p === '/api/skills/reveal') {
+      onlyLocal(req);
+      const body = await readJson(req);
+      if (typeof body.name !== 'string' || !SKILL_NAME_RE.test(body.name)) throw new HttpError(400, 'skill 名不合法');
+      const session = typeof body.session === 'string' && isSafeId(body.session) ? body.session : null;
+      const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? normalizeDir(body.cwd) : null;
+      const dir = deps.manager.skillDir(session, body.name, cwd);
+      if (!dir) throw new HttpError(404, '磁盘上找不到这个 skill 的文件');
+      if (!revealPath(path.join(dir, 'SKILL.md'), deps.spawner ?? defaultSpawner)) throw new HttpError(404, '文件不存在');
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (method === 'POST' && p === '/api/pick') {
       onlyLocal(req);
       const body = await readJson(req);
@@ -919,7 +945,38 @@ export function createHandler(deps: HttpDeps) {
       return;
     }
 
-    if (method === 'POST' && (p === '/api/files/reveal' || p === '/api/files/terminal')) {
+    if (method === 'GET' && p === '/api/files/download') {
+      const cwd = await sessionCwd(q.get('session'), q.get('cwd'));
+      const t = await openDownload(cwd, q.get('path'), mentionedIn(q.get('session')!));
+      if (res.destroyed) { // 打开文件期间客户端已断开：close 事件不会再来，自己释放句柄
+        await t.handle.close();
+        return;
+      }
+      res.setTimeout(0); // 慢速远程链路下载大文件时不受默认超时打断
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': t.size,
+        'content-disposition': attachmentDisposition(t.name),
+        'x-content-type-options': 'nosniff',
+        'cache-control': 'private, no-store',
+        'content-security-policy': "sandbox; default-src 'none'",
+      });
+      if (t.size === 0) {
+        void t.handle.close();
+        res.end();
+        return;
+      }
+      // 句柄已按 O_NOFOLLOW + dev/ino 校验过；流结束 / 出错 / 客户端断开时由 autoClose 关闭
+      const stream = t.handle.createReadStream({ start: 0, end: t.size - 1, autoClose: true });
+      // 下载期间文件被截短：字节数凑不够 content-length，断开让对方看到失败（要在 pipe 之前注册）
+      stream.on('end', () => { if (stream.bytesRead < t.size) res.destroy(); });
+      stream.on('error', () => res.destroy());
+      res.on('close', () => stream.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    if (method === 'POST' && (p === '/api/files/reveal' || p === '/api/files/terminal' || p === '/api/files/open')) {
       onlyLocal(req);
       const body = await readJson(req);
       const cwd = await sessionCwd(body.session, body.cwd);
@@ -927,6 +984,11 @@ export function createHandler(deps: HttpDeps) {
       const spawner = deps.spawner ?? defaultSpawner;
       if (p === '/api/files/reveal') {
         if (!revealPath(target.abs, spawner)) throw new HttpError(404, '文件不存在');
+      } else if (p === '/api/files/open') {
+        const r = await openPath(target.abs, target.real, spawner);
+        if (r === 'missing') throw new HttpError(404, '文件不存在');
+        if (r === 'failed') throw new HttpError(500, '无法打开文件');
+        return sendJson(res, 200, { ok: true, revealed: r === 'revealed' });
       } else if (!(await openTerminal(target.isDir ? target.abs : path.dirname(target.abs), spawner))) {
         throw new HttpError(500, '无法打开终端');
       }

@@ -24,8 +24,7 @@ type Backend interface {
 	Close() error
 	Dial(ctx context.Context, network, address string) (net.Conn, error)
 	Status(ctx context.Context) (*ipnstate.Status, error)
-	// Peers returns the full status including the peer map (heavier than Status).
-	Peers(ctx context.Context) (*ipnstate.Status, error)
+	StatusWithPeers(ctx context.Context) (*ipnstate.Status, error)
 	StartLoginInteractive(ctx context.Context) error
 	Logout(ctx context.Context) error
 	WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt) (IPNWatcher, error)
@@ -77,7 +76,7 @@ func (b *tsnetBackend) Status(ctx context.Context) (*ipnstate.Status, error) {
 	return b.lc.StatusWithoutPeers(ctx)
 }
 
-func (b *tsnetBackend) Peers(ctx context.Context) (*ipnstate.Status, error) {
+func (b *tsnetBackend) StatusWithPeers(ctx context.Context) (*ipnstate.Status, error) {
 	if b.lc == nil {
 		return nil, fmt.Errorf("backend not started")
 	}
@@ -103,4 +102,18 @@ func (b *tsnetBackend) WatchIPNBus(ctx context.Context, mask ipn.NotifyWatchOpt)
 		return nil, fmt.Errorf("backend not started")
 	}
 	return b.lc.WatchIPNBus(ctx, mask)
+}
+
+// InjectNetworkEvent triggers tsnet's underlying netmon.Monitor to re-evaluate network state.
+func (b *tsnetBackend) InjectNetworkEvent() {
+	if b.srv == nil {
+		return
+	}
+	sys := b.srv.Sys()
+	if sys == nil {
+		return
+	}
+	if mon, ok := sys.NetMon.GetOK(); ok && mon != nil {
+		mon.InjectEvent()
+	}
 }

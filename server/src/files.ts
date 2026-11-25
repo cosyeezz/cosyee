@@ -39,7 +39,8 @@ const languages: Record<string, string> = {
 const MARKDOWN_EXT = new Set(['md', 'markdown', 'mdown']);
 /** 已知的二进制扩展名：不读内容，直接给原因 */
 const BINARY_EXT = new Set([
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'gz', 'tgz', '7z', 'rar', 'tar', 'exe', 'dll', 'so', 'dylib',
+  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'gz', 'tgz', '7z', 'rar', 'tar', 'xz', 'bz2', 'zst',
+  'exe', 'dll', 'so', 'dylib', 'msi', 'dmg', 'iso', 'img', 'deb', 'rpm', 'pkg', 'apk', 'aab', 'ipa', 'appimage',
   'ico', 'woff', 'woff2', 'ttf', 'otf', 'mp4', 'mov', 'mkv', 'mp3', 'wav', 'flac', 'db', 'sqlite', 'wasm', 'class', 'jar',
 ]);
 
@@ -372,8 +373,32 @@ export async function openRaw(cwd: string, input: unknown, outsideOk?: OutsideCh
   }
 }
 
-/** 供 reveal / terminal 用：授权并返回要操作的路径与类型（文件 → 选中；目录 → 打开）。 */
-export async function resolveForAction(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<{ abs: string; isDir: boolean }> {
+export interface DownloadFile {
+  handle: fs.promises.FileHandle;
+  size: number;
+  name: string;
+}
+
+/**
+ * 文件下载：返回已校验的文件句柄、大小和文件名（调用方负责 createReadStream 并关闭）。
+ * 授权规则与预览完全一致；目录返回 400；不限类型、不限大小。
+ */
+export async function openDownload(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<DownloadFile> {
   const t = await resolveTarget(cwd, input, outsideOk);
-  return { abs: t.abs, isDir: t.stat.isDirectory() };
+  if (t.stat.isDirectory()) throw new HttpError(400, '目录不能下载');
+  const h = await openChecked(t);
+  try {
+    const info = await h.stat();
+    await verifyUnchanged(cwd, t, h, info);
+    return { handle: h, size: info.size, name: path.basename(t.abs) || 'download' };
+  } catch (e) {
+    await h.close();
+    throw e;
+  }
+}
+
+/** 供 reveal / terminal / open 用：授权并返回要操作的路径与类型（文件 → 选中 / 打开；目录 → 打开）。 */
+export async function resolveForAction(cwd: string, input: unknown, outsideOk?: OutsideCheck): Promise<{ abs: string; real: string; isDir: boolean }> {
+  const t = await resolveTarget(cwd, input, outsideOk);
+  return { abs: t.abs, real: t.real, isDir: t.stat.isDirectory() };
 }

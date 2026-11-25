@@ -196,19 +196,34 @@ fn parse_server_latest(body: &[u8]) -> Result<String, String> {
     }
 }
 
-/// 客户端自己查服务端最新版（用系统自带的 curl），不需要服务端在运行
+/// 客户端自己查服务端最新版（走公共 HTTP 客户端，自动支持系统代理），不需要服务端在运行
 #[tauri::command]
 pub async fn server_latest() -> Result<String, String> {
     blocking(|| {
-        let out = command("curl", &["-fsSL", "--max-time", "15", SERVER_LATEST_URL])
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("无法运行 curl：{e}"))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(if err.is_empty() { "读取最新版本失败".into() } else { format!("读取最新版本失败：{err}") });
-        }
-        parse_server_latest(&out.stdout)
+        let (agent, _) =
+            crate::http_client::build_external_agent(Some(Duration::from_secs(15)));
+        let bytes = agent
+            .get(SERVER_LATEST_URL)
+            .call()
+            .map_err(|e| {
+                crate::http_client::format_github_error(
+                    "读取最新版本失败",
+                    "raw.githubusercontent.com",
+                    &e,
+                )
+            })?
+            .body_mut()
+            .with_config()
+            .limit(256 * 1024)
+            .read_to_vec()
+            .map_err(|e| {
+                crate::http_client::format_github_error(
+                    "读取最新版本失败",
+                    "raw.githubusercontent.com",
+                    &e,
+                )
+            })?;
+        parse_server_latest(&bytes)
     })
     .await?
 }

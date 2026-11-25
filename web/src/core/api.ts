@@ -210,9 +210,12 @@ export const api = {
   filePreview: (t: FileTarget) => req<FilePreview>('GET', `/api/files/preview?${fileQuery(t)}`),
   /** 图片 / PDF 的原始内容地址（<img src> / <iframe src>） */
   fileRawUrl: (t: FileTarget) => `/api/files/raw?${fileQuery(t)}`,
-  /** 在文件管理器中显示（文件会被选中） / 在该路径所在目录打开终端 */
+  /** 下载文件到本地设备（不带行号，始终作为附件返回） */
+  fileDownloadUrl: (t: FileTarget) => `/api/files/download?${fileQuery({ ...t, line: undefined })}`,
+  /** 在文件管理器中显示（文件会被选中） / 在该路径所在目录打开终端 / 用系统默认应用打开 */
   revealFile: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/reveal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   openTerminalAt: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/terminal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
+  openFile: (t: FileTarget) => req<{ ok: true; revealed: boolean }>('POST', '/api/files/open', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   /** 在会话工作目录里运行代码块；signal 中止请求后服务端会杀掉进程 */
   execSnippet: async (t: { session: string; cwd?: string; lang: string; code: string }, signal?: AbortSignal): Promise<ExecResult> => {
     const res = await fetch('/api/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(t), signal });
@@ -231,6 +234,9 @@ export const api = {
   setSkillMode: (name: string, mode: SkillMode) => req<{ ok: true }>('POST', '/api/skills', { name, mode }),
   removeSkill: (name: string, session: string | null, cwd: string | null) =>
     req<{ ok: true; backup: string }>('POST', '/api/skills/remove', { name, session, cwd }),
+  /** 在服务端文件管理器中选中该 skill 的 SKILL.md（仅服务端本机） */
+  revealSkill: (name: string, session: string | null, cwd: string | null) =>
+    req<{ ok: true }>('POST', '/api/skills/reveal', { name, session, cwd }),
   /** 读磁盘上的 SKILL.md（技能面板兜底：实时的 /技能 输入拿不到注入正文）；cwd 用来找项目级 skill；找不到时抛错 */
   getSkillContent: (name: string, cwd?: string) => req<SkillContent>('GET', `/api/skills/content?${q(cwd ? { name, cwd } : { name })}`),
   setSkillModes: (modes: Record<string, SkillMode>) => req<{ ok: true }>('POST', '/api/skills', { modes }),

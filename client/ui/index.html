@@ -173,18 +173,28 @@
     flex: none; font-size: 11px; line-height: 18px; font-weight: 500; padding: 0 7px; border-radius: 999px;
     color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent);
   }
-  .srv .del {
+  .srv .srv-acts { flex: none; display: flex; align-items: center; gap: 2px; }
+  .srv .edit, .srv .del {
     display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 9px; padding: 0;
     background: none; color: var(--text-3); cursor: pointer; opacity: 0; transition: opacity .15s, background-color .15s, color .15s;
   }
+  .srv:hover .edit, .srv:focus-within .edit,
   .srv:hover .del, .srv:focus-within .del { opacity: 1; }
+  .srv .edit:hover { color: var(--text); background: var(--bg-hover); }
   .srv .del:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .srv .rename-input {
+    width: 100%; min-width: 0; height: 28px; padding: 0 8px;
+    font: 600 14px/1.35 var(--font-sans); color: var(--text);
+    background: var(--bg-input); border: 1px solid var(--accent); border-radius: var(--r-sm);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .srv.editing { cursor: default; }
   .srv .go { display: grid; place-items: center; width: 24px; color: var(--text-3); transition: color .2s, translate .3s var(--ease-out); }
   .srv:hover .go { color: var(--text); translate: 2px 0; }
   .srv.busy .go .chev, .srv:not(.busy) .go .spin { display: none; }
   .srv.failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--card-edge)); }
   .srv.leaving { opacity: 0; translate: 0 -4px; }
-  @media (hover: none) { .srv .del { opacity: 1; } }
+  @media (hover: none) { .srv .edit, .srv .del { opacity: 1; } }
 
   .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -328,23 +338,23 @@
   .checks dd.bad { color: var(--warn); }
   .checks dd.wait { color: var(--text-3); }
   .checks dd.wait svg, .checks dd:not(.ok):not(.bad) svg { display: none; }
-  .local-addr { margin: 10px 0 14px; font: 12px/1.5 var(--font-mono); color: var(--text-3); }
+  .local-addr { margin: 10px 0 14px; font: 12px/1.5 var(--font-mono); color: var(--text-3); overflow-wrap: anywhere; }
   .local-addr a { color: var(--accent); text-decoration: none; }
   .local-addr a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .divider { height: 1px; background: var(--border); margin: 14px 0 2px; }
-  #local-msg, .local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; margin: 0 0 12px; }
+  #local-msg, .local-msg { font-size: 12px; color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 12px; }
   #local-msg:empty, .local-msg:empty { display: none; }
   #local-msg.error, .local-msg.error { color: var(--danger); }
   #local-log, .local-log {
     display: none; margin: 0 0 14px; max-height: 200px; overflow: auto; padding: 10px 12px;
     background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: var(--r-md);
-    font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap;
+    font: 11.5px/1.6 var(--font-mono); color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere;
   }
   #local-log.show, .local-log.show { display: block; }
   .sub-card .local-msg { margin: 12px 0 0; }
   .sub-card .local-log { margin: 12px 0 0; }
   /* 组件卡片：标题行 = 名字 + 版本一行字，右边「检查更新」，不是最新才出现「更新」 */
-  .local-head .t b { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .local-head .t b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
   .pill.sm { height: 20px; padding: 0 8px; gap: 6px; font-size: 11px; }
   .pill.sm i { width: 6px; height: 6px; }
   .local-head .t small.ver { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -359,7 +369,8 @@
   @starting-style { .comp-acts .btn { opacity: 0; transform: scale(.96); } }
   .svc-actions { margin-top: 14px; }
   .checks.two { grid-template-columns: repeat(2, 1fr); }
-  .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; }
+  .t-desc { margin: 12px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
+  .sub-hint { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); white-space: pre-wrap; overflow-wrap: anywhere; }
   .sub-hint:empty { display: none; }
   .sub-hint.error { color: var(--danger); }
   .sub-hint.warn { color: var(--warn); }
@@ -396,6 +407,66 @@
     text-decoration: none; word-break: break-all;
   }
   .auth-box a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  /* tailnet 本机一行摘要与其它设备列表 */
+  .t-self-line {
+    margin: 10px 0 0; font: 12px/1.5 var(--font-mono); color: var(--text-3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .t-peers { margin: 12px 0 14px; }
+  .t-peers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .t-peers-toggle {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 2px; border: 0; border-radius: 7px;
+    background: none; color: var(--text-2); font: 600 12.5px/1.3 var(--font-sans); cursor: pointer;
+    transition: color .15s, background-color .15s;
+  }
+  .t-peers-toggle:hover { color: var(--text); background: var(--bg-hover); }
+  .t-peers-chev { width: 14px; height: 14px; transition: transform .2s var(--ease-out); }
+  .t-peers-toggle[aria-expanded="true"] .t-peers-chev { transform: rotate(90deg); }
+  .t-peers-count { font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .t-peers-refresh { width: 28px; height: 28px; padding: 0; }
+  .t-peers-refresh svg { width: 14px; height: 14px; }
+  .t-peers-list {
+    border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elev); overflow: hidden;
+  }
+  .t-peer {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border-top: 1px solid var(--border);
+  }
+  .t-peer:first-child { border-top: 0; }
+  .t-peer-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; }
+  .t-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-3); opacity: .5; }
+  .t-dot.online { background: var(--ok); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .t-peer-name {
+    font-size: 13px; font-weight: 500; color: var(--text); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .t-peer.offline .t-peer-name { color: var(--text-3); }
+  .t-badge {
+    flex: none; font-size: 11px; line-height: 18px; font-weight: 500; padding: 0 7px; border-radius: 999px; white-space: nowrap;
+  }
+  .t-badge.cosyee { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+  .t-peer-act { flex: none; }
+  .t-peer-act .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+  .t-peers-offline-toggle {
+    display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px;
+    border: 0; border-top: 1px solid var(--border); background: none; color: var(--text-3);
+    font: 500 12px/1.3 var(--font-sans); text-align: left; cursor: pointer;
+    transition: background-color .15s, color .15s;
+  }
+  .t-peers-offline-toggle:first-child { border-top: 0; }
+  .t-peers-offline-toggle:hover { background: var(--bg-hover); color: var(--text-2); }
+  .t-peers-offline-toggle svg { width: 13px; height: 13px; transition: transform .2s var(--ease-out); }
+  .t-peers-offline-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+  .t-peers-msg {
+    padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: var(--r-md);
+    font-size: 12px; line-height: 1.5; color: var(--text-3);
+  }
+  .t-peers-msg.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+  .t-peers-msg.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+  #t-actions { margin-top: 12px; align-items: center; }
+  #t-actions:not(:has(> .btn:not([hidden]))) { display: none; }
+  .t-log-btn { height: 28px; padding: 0 8px; font-size: 12px; color: var(--text-3); }
+  .t-log-btn svg { width: 13px; height: 13px; }
   /* 组件列表：一张卡片，一行一个组件（约 40px），行间 1px 分隔线；展开区只在有日志 / 确认 / 错误时出现 */
   #comp-card { padding: 2px 0; }
   .comp-off { margin: 0; padding: 11px 16px; font-size: 12.5px; color: var(--text-3); }
@@ -454,7 +525,7 @@
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 
   @media (max-width: 520px) {
-    .checks { grid-template-columns: 1fr; }
+    .checks, .checks.two { grid-template-columns: 1fr; }
     .local-head { flex-wrap: wrap; }
     .comp-acts { flex: 1 1 100%; }
     .head { margin-bottom: 24px; }
@@ -474,6 +545,7 @@
   <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11" rx="2"/><path d="M8.5 19.5h7M12 15.5v4"/></symbol>
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.2 3.6 8.5s-1.2 6.2-3.6 8.5c-2.4-2.3-3.6-5.2-3.6-8.5s1.2-6.2 3.6-8.5Z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 4.5h4M6.5 7l.8 11.2a2 2 0 0 0 2 1.8h5.4a2 2 0 0 0 2-1.8L17.5 7M10 11v5M14 11v5"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M16.5 4.5a2.12 2.12 0 0 1 3 3L8.5 18.5l-4 1 1-4L16.5 4.5Z"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
@@ -548,17 +620,27 @@
       <span class="beam" aria-hidden="true"></span>
       <div class="local-head">
         <span class="ico"><svg class="i"><use href="#i-shield"/></svg></span>
-        <div class="t"><b>内置 Tailscale<span class="pill sm" id="t-pill"><i></i><span>检查中</span></span></b><small class="ver" id="t-ver">…</small></div>
+        <div class="t"><b>内置 Tailscale<span class="pill sm" id="t-pill"><i></i><span>检查中</span></span></b><small class="ver" id="t-ver" hidden></small></div>
         <div class="comp-acts">
           <button type="button" class="btn ghost" id="t-check-btn"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
           <button type="button" class="btn primary" id="t-install-btn" hidden><svg class="i"><use href="#i-down"/></svg><span>安装</span></button>
         </div>
       </div>
-      <dl class="checks two" id="t-checks">
-        <div><dt>设备</dt><dd id="t-self" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
-        <div><dt>IP</dt><dd id="t-ip" class="wait"><svg class="i"><use href="#i-check"/></svg><span>…</span></dd></div>
-      </dl>
-      <p class="local-addr" id="t-net" hidden>Tailnet · <span id="t-net-val"></span></p>
+      <p class="t-self-line" id="t-self-line" hidden></p>
+      <div class="t-peers" id="t-peers" hidden>
+        <div class="t-peers-head">
+          <button type="button" class="t-peers-toggle" id="t-peers-toggle" aria-expanded="true" aria-controls="t-peers-body">
+            <svg class="i t-peers-chev"><use href="#i-chev"/></svg>
+            <span>设备</span>
+            <span class="t-peers-count" id="t-peers-count"></span>
+          </button>
+          <button type="button" class="btn ghost t-peers-refresh" id="t-peers-refresh" title="刷新设备列表" aria-label="刷新设备列表"><svg class="i"><use href="#i-refresh"/></svg></button>
+        </div>
+        <div id="t-peers-body">
+          <div class="t-peers-msg" id="t-peers-msg" hidden></div>
+          <div class="t-peers-list" id="t-peers-list" hidden></div>
+        </div>
+      </div>
       <div class="sub-banner" id="t-restart-banner" role="status" hidden>
         <p>重启客户端后生效。</p>
         <button type="button" class="btn primary" id="t-relaunch-btn"><svg class="i"><use href="#i-refresh"/></svg>立即重启</button>
@@ -571,11 +653,12 @@
         <a id="t-auth-link" href="#" target="_blank" rel="noopener noreferrer"></a>
       </div>
       <div class="actions" id="t-actions">
+        <button type="button" class="btn primary" id="t-enable-btn" hidden><svg class="i"><use href="#i-play"/></svg>启用</button>
         <button type="button" class="btn primary" id="t-login-btn" hidden><svg class="i"><use href="#i-login"/></svg>登录</button>
         <button type="button" class="btn" id="t-logout-btn" hidden><svg class="i"><use href="#i-logout"/></svg>退出登录</button>
         <button type="button" class="btn" id="t-restart-btn" hidden><svg class="i"><use href="#i-refresh"/></svg>重启组件</button>
-        <button type="button" class="btn ghost" id="t-log-btn" hidden><svg class="i"><use href="#i-file"/></svg>日志</button>
         <button type="button" class="btn danger" id="t-uninstall-btn" hidden><svg class="i"><use href="#i-trash"/></svg>卸载</button>
+        <button type="button" class="btn ghost t-log-btn" id="t-log-btn" hidden><svg class="i"><use href="#i-file"/></svg>日志</button>
       </div>
       <div id="t-toggle-wrap" hidden>
         <div class="divider"></div>
@@ -630,12 +713,81 @@
 <script>
 (function () {
   'use strict';
-  var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto';
+  var KEY = 'cosyee.servers', LAST = 'cosyee.last', AUTO = 'cosyee.auto', PEER_NAMES_KEY = 'cosyee.tailnet.names';
+  var DEFAULT_SERVER_PORT = 7878;
   var $ = function (id) { return document.getElementById(id); };
   var T = window.__TAURI__;
   var invoke = T && T.core && T.core.invoke;
   var params = new URLSearchParams(location.search);
   var reduce = matchMedia('(prefers-reduced-motion: reduce)');
+
+  // 开发与预览 mock 场景（仅在非 Tauri 环境且地址带 ?mock= 时启用：peers / peers-empty / peers-outdated）
+  if (!invoke && params.has('mock')) {
+    (function setupMock() {
+      var mode = params.get('mock') || 'peers';
+      if (mode === 'peers') {
+        try {
+          var cur = JSON.parse(localStorage.getItem(KEY) || '[]');
+          if (!Array.isArray(cur) || cur.length === 0) {
+            localStorage.setItem(KEY, JSON.stringify([
+              { id: 'mock-workstation-ip', name: '100.64.0.21', url: 'http://100.64.0.21:7878' },
+              { id: 'mock-dev-box', name: '公司开发机', url: 'http://dev-box:7878', autoName: false },
+            ]));
+          }
+        } catch (e) { /* 忽略 */ }
+      }
+      invoke = async function (cmd, args) {
+        if (cmd === 'set_servers') return null;
+        if (cmd === 'tailnet_status') {
+          return {
+            supported: true,
+            unsupportedReason: null,
+            bundled: false,
+            installed: mode === 'peers-outdated' ? '1.0.0' : '1.1.0',
+            enabled: true,
+            loggedIn: true,
+            running: true,
+            state: 'Running',
+            authURL: null,
+            self: { name: 'cosyee-win', dnsName: 'cosyee-win.demo.ts.net', ips: ['100.64.0.10'] },
+            tailnet: 'demo.ts.net',
+            latest: '1.1.0',
+            checkedAt: Date.now(),
+            busy: false,
+            proxyActive: true,
+            needsRestart: false,
+            error: null,
+          };
+        }
+        if (cmd === 'tailnet_peers') {
+          if (mode === 'peers-empty') {
+            return { state: 'Running', peers: [], outdated: false, error: null };
+          }
+          if (mode === 'peers-outdated') {
+            return { state: null, peers: [], outdated: true, error: '组件版本过旧，更新组件后可列出设备' };
+          }
+          return {
+            state: 'Running',
+            outdated: false,
+            error: null,
+            peers: [
+              { name: 'dev-box', dnsName: 'dev-box.demo.ts.net', shortName: 'dev-box', ips: ['100.64.0.22', 'fd7a:115c:a1e0::22'], os: 'macos', online: true, lastSeen: '2026-11-25T07:10:00Z' },
+              { name: 'home-nas', dnsName: 'home-nas.demo.ts.net', shortName: 'home-nas', ips: ['100.64.0.23'], os: 'linux', online: true, lastSeen: '2026-11-25T07:12:00Z' },
+              { name: 'workstation', dnsName: 'workstation.demo.ts.net', shortName: 'workstation', ips: ['100.64.0.21'], os: 'linux', online: true, lastSeen: '2026-11-25T07:14:00Z' },
+              { name: 'pixel-9', dnsName: 'pixel-9.demo.ts.net', shortName: 'pixel-9', ips: ['100.64.0.24'], os: 'android', online: false, lastSeen: '2026-11-24T12:00:00Z' },
+            ],
+          };
+        }
+        if (cmd === 'probe') {
+          var h = args && args.host ? String(args.host) : '';
+          var p = args && args.port ? Number(args.port) : 0;
+          return p === DEFAULT_SERVER_PORT && (h === '100.64.0.21' || h === 'workstation' || h === '100.64.0.22' || h === 'dev-box');
+        }
+        if (cmd === 'tailnet_log') return { lines: [], next: 0 };
+        throw { kind: 'offline', error: 'mock 模式下未启用该命令：' + cmd };
+      };
+    })();
+  }
 
   // 窗口底色跟主题走（拖动缩放时露出的底色）
   try {
@@ -670,6 +822,75 @@
     return u.origin;
   }
   function isLocal(url) { try { var h = new URL(url).hostname; return h === '127.0.0.1' || h === 'localhost' || h === '[::1]'; } catch (e) { return false; } }
+
+  // ───── Tailscale 设备名缓存与自动同步 ─────
+  function urlHost(url) {
+    try { return tNormHost(new URL(url).hostname); } catch (e) { return ''; }
+  }
+  function fallbackHostName(url) {
+    try { return new URL(url).hostname; } catch (e) { return String(url || ''); }
+  }
+  /** 判断服务器是否跟随 Tailscale 设备名：显式 autoName 优先；旧数据无此字段时，name 等于 URL hostname 视为自动 */
+  function isAutoName(s) {
+    if (!s) return false;
+    if (typeof s.autoName === 'boolean') return s.autoName;
+    try {
+      var h = new URL(s.url).hostname;
+      return s.name === h || tNormHost(s.name) === tNormHost(h);
+    } catch (e) {
+      return false;
+    }
+  }
+  function loadPeerNames() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(PEER_NAMES_KEY) || '{}');
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    } catch (e) { return {}; }
+  }
+  function savePeerNames(map) {
+    try { localStorage.setItem(PEER_NAMES_KEY, JSON.stringify(map)); } catch (e) { /* 忽略 */ }
+  }
+  function peerDisplayName(p) {
+    // 优先 MagicDNS 机器名（Tailscale 管理后台改名改的是它，与设备列表显示一致），没有再用系统主机名
+    return String((p && (p.shortName || p.name)) || '').trim();
+  }
+  /** 将 peers 写入本地主机→名称缓存，并同步所有 autoName 服务器的显示名；仅在列表变化时 save() 并按需 render() */
+  function applyPeerNames(peers, skipRender) {
+    var cache = loadPeerNames();
+    if (Array.isArray(peers) && peers.length) {
+      var cacheChanged = false;
+      peers.forEach(function (p) {
+        var dname = peerDisplayName(p);
+        if (!dname) return;
+        var keys = [p.shortName, p.dnsName, p.name];
+        if (Array.isArray(p.ips)) keys = keys.concat(p.ips);
+        keys.forEach(function (k) {
+          var nh = tNormHost(k);
+          if (nh && cache[nh] !== dname) {
+            cache[nh] = dname;
+            cacheChanged = true;
+          }
+        });
+      });
+      if (cacheChanged) savePeerNames(cache);
+    }
+    var list = load();
+    var changed = false;
+    list.forEach(function (s) {
+      if (!isAutoName(s)) return;
+      var h = urlHost(s.url);
+      var mapped = h && cache[h];
+      if (mapped && s.name !== mapped) {
+        s.name = mapped;
+        s.autoName = true;
+        changed = true;
+      }
+    });
+    if (changed) {
+      save(list);
+      if (!skipRender) render();
+    }
+  }
 
   // ───── 聚光：光斑跟随光标，卡片轻微倾斜（≤2°） ─────
   function spotlight(el, tilt) {
@@ -745,50 +966,183 @@
   }
 
   // ───── 服务器列表 ─────
+  var editingId = null;
+  var cancelEditing = null;
+  var commitEditing = null;
+
+  function findServerLi(id) {
+    var ul = $('list');
+    if (!ul) return null;
+    for (var i = 0; i < ul.children.length; i++) {
+      if (ul.children[i].dataset && ul.children[i].dataset.id === id) return ul.children[i];
+    }
+    return null;
+  }
+
+  function startRename(id) {
+    if (editingId === id) return;
+    if (editingId && commitEditing) commitEditing();
+    var li = findServerLi(id);
+    var list = load();
+    var cur = list.filter(function (x) { return x.id === id; })[0];
+    if (!cur || !li) return;
+    var nameBox = li.querySelector('.name');
+    if (!nameBox) return;
+
+    editingId = id;
+    li.classList.add('editing');
+    nameBox.textContent = '';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'rename-input';
+    input.value = cur.name;
+    input.placeholder = '留空恢复自动名称';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', '重命名服务器');
+    nameBox.appendChild(input);
+
+    var finished = false;
+    function finish(commit, refocus) {
+      if (finished) return;
+      finished = true;
+      if (editingId === id) {
+        editingId = null;
+        cancelEditing = null;
+        commitEditing = null;
+      }
+      if (commit) {
+        var val = input.value.trim();
+        var latest = load();
+        var item = latest.filter(function (x) { return x.id === id; })[0];
+        if (item) {
+          if (val) {
+            item.name = val;
+            item.autoName = false;
+          } else {
+            item.autoName = true;
+            var h = urlHost(item.url);
+            var cached = h && loadPeerNames()[h];
+            item.name = cached || fallbackHostName(item.url);
+          }
+          save(latest);
+        }
+      }
+      render();
+      if (refocus) {
+        var nextLi = findServerLi(id);
+        if (nextLi) nextLi.focus({ preventScroll: true });
+      }
+    }
+
+    cancelEditing = function () { finish(false, true); };
+    commitEditing = function () { finish(true, false); };
+
+    input.onclick = function (ev) { ev.stopPropagation(); };
+    input.onmousedown = function (ev) { ev.stopPropagation(); };
+    input.onkeydown = function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true, true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false, true); }
+    };
+    input.onblur = function () { finish(true, false); };
+
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+
+  function buildServerItem(s, last) {
+    var li = document.createElement('li');
+    li.className = 'srv card' + (s.id === busyId ? ' busy' : '') + (s.id === failId ? ' failed' : '');
+    li.dataset.id = s.id;
+    li.tabIndex = 0;
+    li.setAttribute('aria-label', '连接 ' + s.name + '，' + s.url);
+    li.innerHTML = '<span class="beam" aria-hidden="true"></span>'
+      + '<span class="ico">' + svg(isLocal(s.url) ? 'monitor' : 'globe') + '</span>'
+      + '<div class="info"><div class="name"><span></span></div><div class="url"></div></div>'
+      + '<span class="srv-acts">'
+      + '<button type="button" class="edit" title="重命名这个服务器">' + svg('edit') + '</button>'
+      + '<button type="button" class="del" title="删除这个服务器">' + svg('trash') + '</button>'
+      + '</span>'
+      + '<span class="go" aria-hidden="true"><svg class="i chev"><use href="#i-chev"/></svg><span class="spin"></span></span>';
+    li.querySelector('.name span').textContent = s.name;
+    li.querySelector('.url').textContent = s.url;
+    var editBtn = li.querySelector('.edit');
+    editBtn.setAttribute('aria-label', '重命名 ' + s.name);
+    var delBtn = li.querySelector('.del');
+    delBtn.setAttribute('aria-label', '删除 ' + s.name);
+    if (s.id === last) {
+      var t = document.createElement('span'); t.className = 'tag'; t.textContent = '上次';
+      li.querySelector('.name').appendChild(t);
+    }
+    editBtn.onmousedown = function (e) { e.stopPropagation(); e.preventDefault(); };
+    editBtn.onclick = function (e) {
+      e.stopPropagation();
+      startRename(s.id);
+    };
+    editBtn.onkeydown = function (e) { e.stopPropagation(); };
+    delBtn.onmousedown = function (e) { e.stopPropagation(); e.preventDefault(); };
+    delBtn.onclick = function (e) {
+      e.stopPropagation();
+      if (editingId === s.id) { editingId = null; cancelEditing = null; commitEditing = null; }
+      li.classList.add('leaving');
+      setTimeout(function () {
+        save(load().filter(function (x) { return x.id !== s.id; }));
+        if (busyId === s.id || failId === s.id) { connecting++; busyId = failId = null; hideStatus(); }
+        render();
+      }, reduce.matches ? 0 : 200);
+    };
+    delBtn.onkeydown = function (e) { e.stopPropagation(); };
+    li.onclick = function () { if (editingId === s.id) return; connect(s); };
+    li.onkeydown = function (e) { if (editingId === s.id) return; if (e.key === 'Enter' && e.target === li) connect(s); };
+    spotlight(li, 2);
+    return li;
+  }
+
   function render() {
     var list = load(), last = localStorage.getItem(LAST);
     var ul = $('list');
     var focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('.srv');
     var focusId = focused && focused.dataset.id;
-    ul.textContent = '';
+
+    // 改名期间保留正在编辑的那一行 DOM，避免重绘打断输入与焦点
+    var keepLi = null;
+    if (editingId) {
+      var exists = list.some(function (x) { return x.id === editingId; });
+      if (exists) keepLi = findServerLi(editingId);
+      if (!keepLi) { editingId = null; cancelEditing = null; commitEditing = null; }
+    }
+
+    if (keepLi) {
+      Array.prototype.slice.call(ul.children).forEach(function (child) {
+        if (child !== keepLi) ul.removeChild(child);
+      });
+    } else {
+      ul.textContent = '';
+    }
+
     $('empty').hidden = list.length > 0;
     $('count').textContent = list.length ? String(list.length) : '';
+
+    var seenKeep = false;
     list.forEach(function (s) {
-      var li = document.createElement('li');
-      li.className = 'srv card' + (s.id === busyId ? ' busy' : '') + (s.id === failId ? ' failed' : '');
-      li.dataset.id = s.id;
-      li.tabIndex = 0;
-      li.setAttribute('aria-label', '连接 ' + s.name + '，' + s.url);
-      li.innerHTML = '<span class="beam" aria-hidden="true"></span>'
-        + '<span class="ico">' + svg(isLocal(s.url) ? 'monitor' : 'globe') + '</span>'
-        + '<div class="info"><div class="name"><span></span></div><div class="url"></div></div>'
-        + '<button type="button" class="del" title="删除这个服务器" aria-label="删除 ' + s.name.replace(/"/g, '&quot;') + '">' + svg('trash') + '</button>'
-        + '<span class="go" aria-hidden="true"><svg class="i chev"><use href="#i-chev"/></svg><span class="spin"></span></span>';
-      li.querySelector('.name span').textContent = s.name;
-      li.querySelector('.url').textContent = s.url;
-      if (s.id === last) {
-        var t = document.createElement('span'); t.className = 'tag'; t.textContent = '上次';
-        li.querySelector('.name').appendChild(t);
+      if (keepLi && s.id === editingId) {
+        keepLi.classList.toggle('busy', s.id === busyId);
+        keepLi.classList.toggle('failed', s.id === failId);
+        seenKeep = true;
+        return;
       }
-      li.querySelector('.del').onclick = function (e) {
-        e.stopPropagation();
-        li.classList.add('leaving');
-        setTimeout(function () {
-          save(load().filter(function (x) { return x.id !== s.id; }));
-          if (busyId === s.id || failId === s.id) { connecting++; busyId = failId = null; hideStatus(); }
-          render();
-        }, reduce.matches ? 0 : 200);
-      };
-      li.onclick = function () { connect(s); };
-      li.onkeydown = function (e) { if (e.key === 'Enter' && e.target === li) connect(s); };
-      spotlight(li, 2);
-      ul.appendChild(li);
-      if (s.id === focusId) li.focus({ preventScroll: true });
+      var li = buildServerItem(s, last);
+      if (keepLi && !seenKeep) ul.insertBefore(li, keepLi);
+      else ul.appendChild(li);
+      if (s.id === focusId && !keepLi) li.focus({ preventScroll: true });
     });
+    if (typeof tRenderPeers === 'function') tRenderPeers();
   }
 
   // ───── 添加：按钮原位展开成表单 ─────
   var adder = $('adder');
+  var prefillInfo = null;
   function morph(open) {
     if (adder.classList.contains('open') === open) return;
     var from = adder.offsetHeight;
@@ -804,8 +1158,9 @@
   $('add-open').onclick = function () { morph(true); };
   $('add-close').onclick = function () { morph(false); };
   $('add').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.preventDefault(); morph(false); } });
-  // 安卓返回手势：展开着的添加表单先收起（列表为空时表单就是主界面，不收）
+  // 安卓返回手势：改名编辑时先取消编辑；展开着的添加表单再收起（列表为空时表单就是主界面，不收）
   window.addEventListener('cosyee:back', function (e) {
+    if (editingId && cancelEditing) { e.preventDefault(); cancelEditing(); return; }
     if (adder.classList.contains('open') && load().length) { e.preventDefault(); morph(false); }
   });
 
@@ -822,8 +1177,13 @@
     if (!url) { addError('地址格式不对。例如 100.106.9.14、my-pc:7878 或 https://my-pc.tailxxxx.ts.net'); return; }
     var list = load();
     if (list.some(function (x) { return x.url === url; })) { addError('这个服务器已经在列表里了：' + url); return; }
-    var name = $('name').value.trim() || new URL(url).hostname;
-    var s = { id: String(Date.now()), name: name, url: url };
+    var rawName = $('name').value.trim();
+    var isPrefillUnchanged = !!(prefillInfo && prefillInfo.url === url && rawName === prefillInfo.name);
+    var autoName = !rawName || isPrefillUnchanged;
+    var host = urlHost(url);
+    var name = rawName || (host && loadPeerNames()[host]) || fallbackHostName(url);
+    var s = { id: String(Date.now()), name: name, url: url, autoName: autoName };
+    prefillInfo = null;
     list.push(s);
     save(list);
     $('addr').value = ''; $('name').value = '';
@@ -837,6 +1197,7 @@
   auto.checked = localStorage.getItem(AUTO) !== '0';
   auto.onchange = function () { localStorage.setItem(AUTO, auto.checked ? '1' : '0'); };
 
+  applyPeerNames(null, true);
   render();
   spotlight(adder, 0);
   if (!load().length) { adder.classList.add('open'); $('add-open').setAttribute('aria-expanded', 'true'); }
@@ -1561,15 +1922,317 @@
   }
   compRenderCard();
 
-  // ───── 内置 Tailscale 组件（桌面和手机共用，不依赖本机服务端） ─────
+  // ───── 内置 Tailscale（桌面为可选组件，Android 随客户端内置；不依赖本机服务端） ─────
+  var isAndroid = document.documentElement.hasAttribute('data-cosyee-insets') || /Android/i.test(navigator.userAgent);
   var tEverLoaded = false;
   var tAuthUrl = '';
   var tPollTimer = null;
   var tCopyTimer = null;
+  var tPeersOpen = true;
+  var tPeersOfflineOpen = false;
+  var tPeersVisible = true;
+  var tPeersTimer = null;
+  var tPeersInFlight = false;
+  var tPeersLoaded = false;
+  var tPeersData = [];
+  var tPeersOutdated = false;
+  var tPeersErr = '';
+  var tPeersProbe = {};
+  var tPeersProbeGen = 0;
+  var tWasRunning = false;
 
+  function tIsRunningState(st) {
+    return !!(st && st.supported !== false && (st.bundled || st.installed) && st.enabled && st.state === 'Running');
+  }
+  function tNormHost(h) {
+    return String(h || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  }
+  function tPeerAddHost(p) {
+    if (!p) return '';
+    return p.shortName || firstIpv4(p.ips) || p.dnsName || (Array.isArray(p.ips) && p.ips[0]) || '';
+  }
+  function tPeerProbeHost(p) {
+    if (!p) return '';
+    return firstIpv4(p.ips) || p.shortName || p.dnsName || (Array.isArray(p.ips) && p.ips[0]) || '';
+  }
+  function tFormatAddrWithPort(host, port) {
+    if (!host) return '';
+    return host.indexOf(':') !== -1 ? '[' + host + ']:' + port : host + ':' + port;
+  }
+  function tAddedHostSet() {
+    var set = {};
+    load().forEach(function (s) {
+      try {
+        var h = tNormHost(new URL(s.url).hostname);
+        if (h) set[h] = true;
+      } catch (e) { /* 忽略 */ }
+    });
+    return set;
+  }
+  function tIsPeerAdded(p, addedSet) {
+    if (!p) return false;
+    var cands = [];
+    if (p.shortName) cands.push(p.shortName);
+    if (p.dnsName) cands.push(p.dnsName);
+    if (Array.isArray(p.ips)) cands = cands.concat(p.ips);
+    for (var i = 0; i < cands.length; i++) {
+      var h = tNormHost(cands[i]);
+      if (h && addedSet[h]) return true;
+    }
+    return false;
+  }
+  function tFmtOs(os) {
+    var s = String(os || '').trim().toLowerCase();
+    if (!s) return '';
+    var map = { linux: 'Linux', windows: 'Windows', macos: 'macOS', darwin: 'macOS', android: 'Android', ios: 'iOS' };
+    return map[s] || os;
+  }
+  function tPrefillAddPeer(p) {
+    var host = tPeerAddHost(p);
+    if (!host) return;
+    var addrVal = tFormatAddrWithPort(host, DEFAULT_SERVER_PORT);
+    var prefillName = peerDisplayName(p) || host;
+    $('addr').value = addrVal;
+    $('name').value = prefillName;
+    prefillInfo = { url: normalize(addrVal), name: prefillName };
+    $('add-err').textContent = '';
+    $('addr').removeAttribute('aria-invalid');
+    morph(true);
+    try {
+      adder.scrollIntoView({ behavior: reduce.matches ? 'auto' : 'smooth', block: 'nearest' });
+    } catch (e) { /* 忽略 */ }
+    $('addr').focus({ preventScroll: true });
+  }
+  function tPeerTitle(p) {
+    var parts = [];
+    var display = p.shortName || p.name || p.dnsName;
+    if (p.name && p.name !== display) parts.push(p.name);
+    var ip = firstIpv4(p.ips);
+    if (ip) parts.push(ip);
+    var osText = tFmtOs(p.os);
+    if (osText) parts.push(osText);
+    if (p.online) parts.push('在线');
+    else if (p.lastSeen) {
+      var seen = fmtTime(Date.parse(p.lastSeen));
+      parts.push(seen ? '离线 · ' + seen : '离线');
+    } else parts.push('离线');
+    return parts.join(' · ');
+  }
+  function tBuildPeerRow(p, addedSet) {
+    var row = document.createElement('div');
+    row.className = 't-peer' + (p.online ? '' : ' offline');
+    row.title = tPeerTitle(p);
+
+    var main = document.createElement('div');
+    main.className = 't-peer-main';
+
+    var dot = document.createElement('span');
+    dot.className = 't-dot' + (p.online ? ' online' : '');
+    dot.setAttribute('aria-hidden', 'true');
+    main.appendChild(dot);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 't-peer-name';
+    nameEl.textContent = p.shortName || p.name || p.dnsName || '未命名设备';
+    main.appendChild(nameEl);
+
+    var probeHost = tPeerProbeHost(p);
+    var hasCosyee = !!(p.online && probeHost && tPeersProbe[probeHost] === true);
+    if (hasCosyee) {
+      var srvBadge = document.createElement('span');
+      srvBadge.className = 't-badge cosyee';
+      srvBadge.textContent = 'Cosyee';
+      main.appendChild(srvBadge);
+    }
+
+    row.appendChild(main);
+
+    var added = tIsPeerAdded(p, addedSet);
+    var act = document.createElement('div');
+    act.className = 't-peer-act';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn' + (!added && hasCosyee ? ' primary' : '');
+    btn.textContent = added ? '已添加' : '添加';
+    btn.disabled = added || !tPeerAddHost(p);
+    btn.onclick = function () { tPrefillAddPeer(p); };
+    act.appendChild(btn);
+    row.appendChild(act);
+
+    return row;
+  }
+  function tRenderPeers() {
+    var wrap = $('t-peers');
+    if (!wrap) return;
+    var running = tIsRunningState(tailnetCard && tailnetCard.st);
+    wrap.hidden = !running;
+    if (!running) return;
+
+    $('t-peers-toggle').setAttribute('aria-expanded', String(tPeersOpen));
+    $('t-peers-body').hidden = !tPeersOpen;
+    $('t-peers-refresh').disabled = tPeersInFlight;
+    $('t-peers-count').textContent = tPeersLoaded && !tPeersErr && !tPeersOutdated ? String(tPeersData.length) : '';
+
+    var msgEl = $('t-peers-msg');
+    var listEl = $('t-peers-list');
+    if (tPeersOutdated) {
+      msgEl.className = 't-peers-msg warn';
+      msgEl.textContent = tPeersErr || '组件版本过旧，更新组件后可列出设备';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (tPeersErr) {
+      msgEl.className = 't-peers-msg error';
+      msgEl.textContent = '获取设备失败：' + tPeersErr;
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (!tPeersLoaded) {
+      msgEl.className = 't-peers-msg';
+      msgEl.textContent = '正在加载设备…';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+    if (!tPeersData.length) {
+      msgEl.className = 't-peers-msg';
+      msgEl.textContent = '当前 tailnet 中没有其它设备。';
+      msgEl.hidden = false;
+      listEl.hidden = true;
+      return;
+    }
+
+    msgEl.hidden = true;
+    listEl.hidden = false;
+    listEl.textContent = '';
+    var addedSet = tAddedHostSet();
+    var onlinePeers = [];
+    var offlinePeers = [];
+    tPeersData.forEach(function (p) {
+      if (p && p.online) onlinePeers.push(p);
+      else if (p) offlinePeers.push(p);
+    });
+
+    onlinePeers.forEach(function (p) {
+      listEl.appendChild(tBuildPeerRow(p, addedSet));
+    });
+
+    if (offlinePeers.length) {
+      var offBtn = document.createElement('button');
+      offBtn.type = 'button';
+      offBtn.className = 't-peers-offline-toggle';
+      offBtn.setAttribute('aria-expanded', String(tPeersOfflineOpen));
+      offBtn.innerHTML = '<svg class="i"><use href="#i-chev"/></svg><span></span>';
+      offBtn.querySelector('span').textContent = '离线 ' + offlinePeers.length + ' 台';
+      offBtn.onclick = function () {
+        tPeersOfflineOpen = !tPeersOfflineOpen;
+        tRenderPeers();
+      };
+      listEl.appendChild(offBtn);
+
+      if (tPeersOfflineOpen) {
+        offlinePeers.forEach(function (p) {
+          listEl.appendChild(tBuildPeerRow(p, addedSet));
+        });
+      }
+    }
+  }
+  function tShouldPollPeers() {
+    return tIsRunningState(tailnetCard && tailnetCard.st) && tPeersOpen && tPeersVisible && !document.hidden;
+  }
+  function tStopPeersPoll() {
+    if (tPeersTimer) {
+      clearInterval(tPeersTimer);
+      tPeersTimer = null;
+    }
+  }
+  function tSyncPeersPoll(immediate, forceOnce) {
+    if (!tIsRunningState(tailnetCard && tailnetCard.st)) {
+      tStopPeersPoll();
+      tWasRunning = false;
+      tPeersLoaded = false;
+      tPeersData = [];
+      tPeersOutdated = false;
+      tPeersErr = '';
+      tPeersProbe = {};
+      tPeersProbeGen++;
+      tRenderPeers();
+      return;
+    }
+    if (tShouldPollPeers()) {
+      if (!tPeersTimer) {
+        tPeersTimer = setInterval(function () {
+          if (tShouldPollPeers() && !tPeersInFlight) tFetchPeers();
+        }, 15000);
+      }
+      if ((immediate || forceOnce || !tPeersLoaded) && !tPeersInFlight) tFetchPeers();
+    } else {
+      tStopPeersPoll();
+      // 首次进入 Running 或状态刚变为 Running 时，即使卡片不可见也拉取一次以更新服务器名称
+      if (forceOnce && !tPeersInFlight) tFetchPeers();
+    }
+  }
+  async function tFetchPeers() {
+    if (!invoke || tPeersInFlight || !tIsRunningState(tailnetCard && tailnetCard.st)) return;
+    tPeersInFlight = true;
+    tRenderPeers();
+    try {
+      var res = await invoke('tailnet_peers');
+      tPeersLoaded = true;
+      if (res && res.outdated) {
+        tPeersOutdated = true;
+        tPeersErr = res.error || '组件版本过旧，更新组件后可列出设备';
+        tPeersData = [];
+      } else if (res && res.error) {
+        tPeersOutdated = false;
+        tPeersErr = String(res.error);
+        tPeersData = [];
+      } else {
+        tPeersOutdated = false;
+        tPeersErr = '';
+        tPeersData = res && Array.isArray(res.peers) ? res.peers : [];
+        applyPeerNames(tPeersData);
+        // 并发探测在线设备的 Cosyee 默认端口
+        var gen = ++tPeersProbeGen;
+        var nextProbe = {};
+        tPeersData.forEach(function (p) {
+          var host = tPeerProbeHost(p);
+          if (p.online && host) {
+            if (typeof tPeersProbe[host] === 'boolean') nextProbe[host] = tPeersProbe[host];
+          }
+        });
+        tPeersProbe = nextProbe;
+        tPeersData.forEach(function (p) {
+          var host = tPeerProbeHost(p);
+          if (!p.online || !host) return;
+          invoke('probe', { host: host, port: DEFAULT_SERVER_PORT }).then(function (ok) {
+            if (gen !== tPeersProbeGen) return;
+            tPeersProbe[host] = !!ok;
+            tRenderPeers();
+          }).catch(function () {
+            if (gen !== tPeersProbeGen) return;
+            tPeersProbe[host] = false;
+          });
+        });
+      }
+    } catch (e) {
+      tPeersLoaded = true;
+      var msg = errText(e);
+      tPeersOutdated = msg.indexOf('组件版本过旧') !== -1;
+      tPeersErr = msg;
+      tPeersData = [];
+    } finally {
+      tPeersInFlight = false;
+      tRenderPeers();
+    }
+  }
+
+  function tIsBundled(st) { return st ? !!st.bundled : isAndroid; }
   function fmtVer(v) {
     if (!v) return '';
-    return /^[vV]/.test(v) ? v : 'v' + v;
+    return /^\d/.test(v) ? 'v' + v : String(v);
   }
   function isNewerVer(latest, current) {
     if (!latest || !current) return false;
@@ -1609,14 +2272,15 @@
   }
   function tVer(text, tone, title) {
     var el = $('t-ver');
-    el.textContent = text;
+    el.hidden = !text;
+    el.textContent = text || '';
     el.className = 'ver' + (tone ? ' ' + tone : '');
     el.title = title || '';
   }
   function tNeedsPoll(st) {
     if (!st || !st.supported) return false;
     if (st.busy) return true;
-    if (!st.installed || !st.enabled) return false;
+    if (!(st.bundled || st.installed) || !st.enabled) return false;
     return st.state === 'Starting' || st.state === 'NeedsLogin' || st.state === 'NeedsMachineAuth';
   }
   function tSyncPoll(st) {
@@ -1635,7 +2299,7 @@
   var tailnetCard = createServiceCard({
     cardId: 'tailnet-card',
     pillId: 't-pill',
-    checkIds: ['t-self', 't-ip'],
+    checkIds: [],
     pillClass: 'pill sm',
     hintId: 't-hint',
     msgId: 't-msg',
@@ -1643,7 +2307,7 @@
     confirmIds: { box: 't-confirm', text: 't-confirm-text', ok: 't-confirm-ok', cancel: 't-confirm-cancel' },
     statusCmd: 'tailnet_status',
     logCmd: 'tailnet_log',
-    unsupportedText: '当前客户端版本不支持内置 Tailscale 组件。',
+    unsupportedText: '当前客户端版本不支持内置 Tailscale。',
     isJobRunning: function (st) { return !!(st && st.busy); },
     onStatus: function (c, st) {
       tEverLoaded = true;
@@ -1651,25 +2315,38 @@
       $('tailnet-card').hidden = false;
       var hadAuth = !!tAuthUrl;
       if (st.authURL) tAuthUrl = st.authURL;
-      if (!st.installed || !st.enabled || st.state === 'Running') {
+      if (!(st.bundled || st.installed) || !st.enabled || st.state === 'Running') {
         tAuthUrl = '';
         if (hadAuth && st.state === 'Running') c.msg('');
       }
       if (c.confirm) {
-        if (!st.installed) c.confirm = null;
+        if (!(st.bundled || st.installed)) c.confirm = null;
+        else if (st.bundled && c.confirm.action === 'uninstall') c.confirm = null;
         else if (c.confirm.action === 'logout' && (!st.enabled || (st.state !== 'Running' && st.state !== 'NeedsMachineAuth'))) c.confirm = null;
       }
+      var nowRunning = tIsRunningState(st);
+      var becameRunning = nowRunning && !tWasRunning;
+      tWasRunning = nowRunning;
       tSyncPoll(st);
+      tSyncPeersPoll(false, becameRunning);
+    },
+    onReset: function () {
+      tWasRunning = false;
     },
     renderOfflineControls: function () {
-      tVer('…');
-      $('t-net').hidden = true;
+      var bundled = tIsBundled(tailnetCard.st);
+      $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
+      tVer('');
+      $('t-self-line').hidden = true;
+      $('t-peers').hidden = true;
+      tStopPeersPoll();
       $('t-restart-banner').hidden = true;
       $('t-auth').hidden = true;
       $('t-toggle-wrap').hidden = true;
       $('t-confirm-opt').hidden = true;
       $('t-install-btn').hidden = true;
-      $('t-check-btn').hidden = false;
+      $('t-check-btn').hidden = bundled;
+      $('t-enable-btn').hidden = true;
       $('t-login-btn').hidden = true;
       $('t-logout-btn').hidden = true;
       $('t-restart-btn').hidden = true;
@@ -1680,11 +2357,12 @@
     renderOnline: function (c) {
       var st = c.st;
       var supported = st.supported !== false;
-      var installed = !!st.installed;
+      var bundled = !!st.bundled;
+      var installed = bundled || !!st.installed;
       var enabled = !!st.enabled;
       var state = st.state || '';
       var busy = c.busy || !!st.busy;
-      var updateAvail = installed && isNewerVer(st.latest, st.installed);
+      var updateAvail = !bundled && installed && isNewerVer(st.latest, st.installed);
       var selfInfo = st.self && typeof st.self === 'object' ? st.self : null;
       var selfName = selfInfo && selfInfo.name ? selfInfo.name : '';
       var ipv4 = selfInfo ? firstIpv4(selfInfo.ips) : '';
@@ -1694,47 +2372,35 @@
       var isNeedsLogin = installed && enabled && state === 'NeedsLogin';
       var isNeedsAuth = installed && enabled && state === 'NeedsMachineAuth';
       var isErrorState = installed && enabled && (state === 'Error' || hasError);
+      var hasAccount = typeof st.loggedIn === 'boolean'
+        ? st.loggedIn
+        : !!(selfName || ipv4 || st.tailnet);
 
-      $('t-checks').hidden = !(supported && installed);
-      if (!supported) {
-        tVer('当前平台不支持', 'warn');
+      $('h-components').textContent = bundled ? '内置 Tailscale' : '组件';
+      // 头部版本：Android 内置不显示；桌面仅「未安装」或「有更新」时显示
+      if (!supported || bundled) {
+        tVer('');
+      } else if (!installed) {
+        tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
+      } else if (updateAvail) {
+        tVer(fmtVer(st.installed) + ' → ' + fmtVer(st.latest), 'up');
       } else {
-        if (!installed) tVer('未安装' + (st.latest ? ' · 最新 ' + fmtVer(st.latest) : ''), 'warn');
-        else if (updateAvail) tVer(fmtVer(st.installed) + ' → ' + fmtVer(st.latest), 'up');
-        else if (st.latest) tVer(fmtVer(st.installed) + ' · 已是最新', 'ok');
-        else tVer(fmtVer(st.installed));
-
-        if (isRunning) {
-          setCheck('t-self', selfName || '已连接', 'ok');
-          setCheck('t-ip', ipv4 || '—', ipv4 ? 'ok' : 'wait');
-        } else if (isStarting) {
-          setCheck('t-self', '启动中…', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isNeedsLogin) {
-          setCheck('t-self', '需要登录', 'bad');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isNeedsAuth) {
-          setCheck('t-self', selfName || '等待审批', 'bad');
-          setCheck('t-ip', ipv4 || '—', ipv4 ? 'ok' : 'wait');
-        } else if (installed && !enabled) {
-          setCheck('t-self', '已停用', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        } else if (isErrorState) {
-          setCheck('t-self', '出错', 'bad');
-          setCheck('t-ip', '—', 'wait');
-        } else {
-          setCheck('t-self', '—', 'wait');
-          setCheck('t-ip', '—', 'wait');
-        }
+        tVer('');
       }
 
-      var netEl = $('t-net');
-      if (isRunning && st.tailnet) {
-        $('t-net-val').textContent = st.tailnet;
-        netEl.hidden = false;
+      // 仅已连接时显示一行「本机名 · IPv4」
+      var selfLine = $('t-self-line');
+      var selfParts = [];
+      if (selfName) selfParts.push(selfName);
+      if (ipv4) selfParts.push(ipv4);
+      if (isRunning && selfParts.length) {
+        selfLine.textContent = selfParts.join(' · ');
+        selfLine.hidden = false;
       } else {
-        netEl.hidden = true;
+        selfLine.textContent = '';
+        selfLine.hidden = true;
       }
+      tRenderPeers();
 
       var pill = $('t-pill');
       if (busy) {
@@ -1747,7 +2413,7 @@
         pill.className = 'pill';
         pill.querySelector('span').textContent = '未安装';
       } else if (!enabled) {
-        pill.className = 'pill';
+        pill.className = 'pill' + (bundled && hasError ? ' bad' : '');
         pill.querySelector('span').textContent = '已停用';
       } else if (isRunning) {
         pill.className = 'pill ok';
@@ -1771,10 +2437,10 @@
 
       $('tailnet-card').classList.toggle('busy', !!busy);
 
-      $('t-restart-banner').hidden = !st.needsRestart;
+      $('t-restart-banner').hidden = bundled || !st.needsRestart;
       $('t-relaunch-btn').disabled = busy;
 
-      var authUrl = (installed && enabled && !isRunning) ? (st.authURL || tAuthUrl) : '';
+      var authUrl = (installed && (enabled || (bundled && !!tAuthUrl)) && !isRunning) ? (st.authURL || tAuthUrl) : '';
       var authBox = $('t-auth');
       if (authUrl) {
         var link = $('t-auth-link');
@@ -1786,12 +2452,16 @@
       }
 
       var ibtn = $('t-install-btn');
-      ibtn.hidden = !(supported && (!installed || updateAvail));
+      ibtn.hidden = bundled || !(supported && (!installed || updateAvail));
       ibtn.querySelector('span').textContent = installed ? '更新' : '安装';
       ibtn.disabled = busy;
 
+      var enableBtn = $('t-enable-btn');
+      enableBtn.hidden = !(bundled && supported && !enabled && hasAccount);
+      enableBtn.disabled = busy;
+
       var loginBtn = $('t-login-btn');
-      loginBtn.hidden = !(supported && isNeedsLogin);
+      loginBtn.hidden = !(supported && (isNeedsLogin || (bundled && !enabled && !hasAccount)));
       loginBtn.disabled = busy;
 
       var logoutBtn = $('t-logout-btn');
@@ -1799,12 +2469,12 @@
       logoutBtn.disabled = busy;
 
       var restartBtn = $('t-restart-btn');
-      restartBtn.hidden = !(supported && installed && enabled);
+      restartBtn.hidden = !(supported && installed && enabled && isErrorState);
       restartBtn.className = 'btn' + (isErrorState && !updateAvail ? ' primary' : '');
       restartBtn.disabled = busy;
 
       var checkBtn = $('t-check-btn');
-      checkBtn.hidden = !(supported && installed);
+      checkBtn.hidden = bundled || !(supported && installed);
       checkBtn.disabled = busy;
 
       var logBtn = $('t-log-btn');
@@ -1812,7 +2482,7 @@
       logBtn.disabled = false;
 
       var uninstBtn = $('t-uninstall-btn');
-      uninstBtn.hidden = !(supported && installed);
+      uninstBtn.hidden = bundled || !(supported && installed);
       uninstBtn.disabled = busy;
 
       $('t-toggle-wrap').hidden = !(supported && installed);
@@ -1849,7 +2519,29 @@
     spotlight($('local-card'), 0);
     spotlight($('comp-card'), 0);
 
+    if (isAndroid) {
+      $('h-components').textContent = '内置 Tailscale';
+      $('t-check-btn').hidden = true;
+      $('t-install-btn').hidden = true;
+      $('t-uninstall-btn').hidden = true;
+    }
+
+    function tSetEnabled(next) {
+      tailnetCard.runAction(next ? '启用' : '停用', function () {
+        return invoke('tailnet_set_enabled', { enabled: next });
+      }, {
+        clearConfirm: true,
+        onResult: function (c, res) {
+          if (res && !res.enabled) tAuthUrl = '';
+          var bundled = !!(c.st && c.st.bundled);
+          c.msg((res && res.enabled ? '已启用' : '已停用') + (!bundled && res && res.needsRestart ? '，重启客户端后生效。' : '。'));
+          c.refresh();
+        },
+      });
+    }
+
     $('t-install-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       var label = tailnetCard.st && tailnetCard.st.installed ? '更新' : '安装';
       tailnetCard.runAction(label, function () { return invoke('tailnet_install'); }, {
         startMsg: label + '中…',
@@ -1864,6 +2556,7 @@
       });
     };
     $('t-check-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       tailnetCard.runAction('检查更新', function () { return invoke('tailnet_check'); }, {
         startMsg: '正在检查更新…',
         onResult: function (c, res) {
@@ -1874,13 +2567,14 @@
         },
       });
     };
+    $('t-enable-btn').onclick = function () { tSetEnabled(true); };
     $('t-login-btn').onclick = function () {
       tailnetCard.runAction('登录', function () { return invoke('tailnet_login'); }, {
         startMsg: '正在获取登录链接…',
         clearConfirm: true,
         onResult: function (c, res) {
-          if (res && res.authURL) tAuthUrl = res.authURL;
-          c.msg('已打开登录页面；如未自动打开，请复制下方链接。');
+          tAuthUrl = (res && res.authURL) || '';
+          c.msg(tAuthUrl ? '已打开登录页面；如未自动打开，请复制下方链接。' : '已启用，无需重新登录。');
           c.render();
           c.refresh();
         },
@@ -1911,6 +2605,7 @@
       });
     };
     $('t-uninstall-btn').onclick = function () {
+      if (tailnetCard.st && tailnetCard.st.bundled) return;
       $('t-keep-state').checked = true;
       tailnetCard.confirm = {
         action: 'uninstall',
@@ -1929,6 +2624,7 @@
           onResult: function (c) { tAuthUrl = ''; c.msg('已退出登录。'); c.refresh(); },
         });
       } else if (act === 'uninstall') {
+        if (tailnetCard.st && tailnetCard.st.bundled) return;
         var keepState = $('t-keep-state').checked;
         tailnetCard.runAction('卸载', function () { return invoke('tailnet_uninstall', { keepState: keepState }); }, {
           clearConfirm: true,
@@ -1943,19 +2639,7 @@
       }
     };
     $('t-confirm-cancel').onclick = function () { tailnetCard.confirm = null; tailnetCard.render(); };
-    $('t-enabled').onchange = function () {
-      var next = $('t-enabled').checked;
-      tailnetCard.runAction(next ? '启用' : '停用', function () {
-        return invoke('tailnet_set_enabled', { enabled: next });
-      }, {
-        clearConfirm: true,
-        onResult: function (c, res) {
-          if (res && !res.enabled) tAuthUrl = '';
-          c.msg((res && res.enabled ? '已启用' : '已停用') + (res && res.needsRestart ? '，重启客户端后生效。' : '。'));
-          c.refresh();
-        },
-      });
-    };
+    $('t-enabled').onchange = function () { tSetEnabled($('t-enabled').checked); };
     $('t-relaunch-btn').onclick = function () {
       tailnetCard.runAction('重启客户端', function () { return invoke('app_relaunch'); }, {
         startMsg: '正在重启客户端…',
@@ -1973,10 +2657,32 @@
       if (!box.textContent.trim()) box.textContent = '暂无日志。\n';
     };
 
+    $('t-peers-toggle').onclick = function () {
+      tPeersOpen = !tPeersOpen;
+      tRenderPeers();
+      tSyncPeersPoll(tPeersOpen);
+    };
+    $('t-peers-refresh').onclick = function () {
+      if (!tPeersOpen) tPeersOpen = true;
+      tFetchPeers();
+      tSyncPeersPoll(false);
+    };
+    if (typeof IntersectionObserver === 'function') {
+      var peersIo = new IntersectionObserver(function (entries) {
+        var vis = entries.some(function (en) { return en.isIntersecting; });
+        if (vis !== tPeersVisible) {
+          tPeersVisible = vis;
+          tSyncPeersPoll(vis);
+        }
+      }, { threshold: 0.05 });
+      peersIo.observe($('tailnet-card'));
+    }
+
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden && tEverLoaded && tNeedsPoll(tailnetCard.st) && !tailnetCard.busy && !tailnetCard.inFlight) {
         tailnetCard.refresh();
       }
+      tSyncPeersPoll(!document.hidden);
     });
     // 内置 Tailscale 桌面和手机均加载；若旧客户端未注册命令，refresh 失败且 #components 保持隐藏
     tailnetCard.refresh();

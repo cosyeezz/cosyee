@@ -15,7 +15,7 @@ type Json = Record<string, any>;
 const FIX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../shared/fixtures');
 
 /** 造一个带假进程的 Runner：不 spawn，只用 handleMessage 喂消息。 */
-function make(timings: Record<string, number> = {}) {
+function make(timings: Record<string, number> = {}, expandText?: (text: string) => string) {
   const log = { status: [] as string[], events: [] as any[], turnEnds: 0, exits: 0, settings: [] as any[], queues: [] as any[][], prompts: [] as any[][] };
   const writes: Json[] = [];
   const r = new Runner({
@@ -23,6 +23,7 @@ function make(timings: Record<string, number> = {}) {
     cwd: process.cwd(),
     isNew: true,
     config: { model: 'haiku', effort: 'low' },
+    expandText,
     timings: { idleMs: 60_000, limboQuietMs: 1000, limboBusyMs: 5000, interruptKillMs: 500, requestTimeoutMs: 1000, ...timings },
     hooks: {
       onEvent: (e) => log.events.push(e),
@@ -540,6 +541,21 @@ describe('排队消息（steering / follow-up / 撤回 / 立即发送 / 回退�
     r.handleMessage(echo(U1, 'hi'));
     expect(log.events.map((e) => e.type)).toEqual(['cosyee_user', 'system']);
     expect(log.queues).toEqual([]);
+  });
+
+  it('expandText 只改写给 CLI 的文字：界面与排队用原文，系统通知不改写，改写出错发原文', async () => {
+    const run = async (fn: (t: string) => string) => {
+      const { r, log, writes } = make({}, fn);
+      r.send('开轮', cfg, U1);
+      r.send('插话', cfg, U2);
+      r.inject('通知', cfg);
+      await flush();
+      expect(users(log.events).map((e) => e.text)).toEqual(['开轮']);
+      expect(log.queues.at(-1)!.map((q) => q.text)).toEqual(['插话']);
+      return writes.filter((w) => w.type === 'user').map((w) => w.message.content[0].text);
+    };
+    expect(await run((t) => `${t}+`)).toEqual(['开轮+', '插话+', '通知']);
+    expect(await run(() => { throw new Error('x'); })).toEqual(['开轮', '插话', '通知']);
   });
 
   it('运行中发送：写入带 priority（缺省 next），进排队列表，不发 cosyee_user', async () => {
