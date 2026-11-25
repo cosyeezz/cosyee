@@ -8,6 +8,8 @@ export function createKiroAdapter(kiro: Pick<KiroService, 'engine' | 'serviceSta
     id: 'kiro',
     name: 'kiro.rs',
     updatedBy: 'server',
+    // 没装时「更新」就是下载
+    installable: true,
 
     async info(): Promise<AdapterInfo> {
       const s = engine.status();
@@ -25,7 +27,7 @@ export function createKiroAdapter(kiro: Pick<KiroService, 'engine' | 'serviceSta
         job:
           build.state === 'idle'
             ? null
-            : { kind: 'update', state: build.state, error: build.state === 'failed' ? build.error : null },
+            : { kind: s.source === 'none' ? 'install' : 'update', state: build.state, error: build.state === 'failed' ? build.error : null },
       };
     },
 

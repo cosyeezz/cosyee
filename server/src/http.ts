@@ -28,6 +28,8 @@ import { MAX_STT_SECONDS, type Speech, SpeechNotReady } from './speech/index.js'
 import type { Trash } from './trash.js';
 import type { StateStore, Workspaces } from './workspaces.js';
 import { type ComponentUpdater, componentRoutes } from './components/updater.js';
+import type { BrowserManager } from './browser/manager.js';
+import { elementTarget, toElement } from './browser/elements.js';
 import { type AgyCli, agyCliRoutes } from './delegate/agyCli.js';
 import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
 
@@ -51,6 +53,8 @@ export interface HttpDeps {
   agyCli?: AgyCli;
   /** 本机组件版本与自动更新；不传则 /api/components 返回 404（旧测试） */
   components?: ComponentUpdater;
+  /** 内置浏览器（agent-browser）；不传则 /api/browser 接口返回 404（旧测试） */
+  browser?: BrowserManager;
   /** Kiro 账号与 kiro.rs 引擎 / 代理；不传则 /api/kiro 接口返回 404（旧测试） */
   kiro?: KiroService;
   /** 额度：传 session 时取该会话所用账号的额度，否则取当前账号的 */
@@ -445,6 +449,67 @@ export function createHandler(deps: HttpDeps) {
     throw new HttpError(404, '未找到');
   }
 
+  // 内置浏览器：画面走 WebSocket /api/browser/stream（server.ts），这里是导航 / 视口 / 抓取
+  async function browserRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string, browser: BrowserManager): Promise<void> {
+    const point = (b: Json): { x: number; y: number } => {
+      const x = Number(b.x);
+      const y = Number(b.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 10000 || y > 10000) throw new HttpError(400, '坐标不合法');
+      return { x, y };
+    };
+    if (method === 'GET' && p === '/api/browser') return sendJson(res, 200, browser.status());
+    if (method === 'POST' && p === '/api/browser/open') {
+      const url = (await readJson(req)).url;
+      if (typeof url !== 'string') throw new HttpError(400, '缺少 url');
+      return sendJson(res, 200, await browser.open(url));
+    }
+    if (method === 'POST' && p === '/api/browser/nav') {
+      const action = (await readJson(req)).action;
+      if (action !== 'back' && action !== 'forward' && action !== 'reload') throw new HttpError(400, 'action 不合法');
+      await browser.nav(action);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/browser/viewport') {
+      const b = await readJson(req);
+      const w = Number(b.width);
+      const h = Number(b.height);
+      const s = Number(b.scale ?? 1);
+      if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(s)) throw new HttpError(400, '视口参数不合法');
+      await browser.viewport(w, h, s);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/browser/hover') {
+      const { x, y } = point(await readJson(req));
+      return sendJson(res, 200, await browser.hover(x, y));
+    }
+    if (method === 'POST' && p === '/api/browser/pick') {
+      const { x, y } = point(await readJson(req));
+      const out = await browser.pick(x, y);
+      const [item] = deps.previews.register([{ path: out.md, kind: 'file' }]);
+      return sendJson(res, 200, { item, element: toElement(out.raw) });
+    }
+    // 按文件名读抓取的元素（会话流里历史标签没有预览令牌）：只认生成的文件名
+    let m: RegExpExecArray | null;
+    if (method === 'GET' && (m = /^\/api\/browser\/elements\/([^/]+)\/(info|raw)$/.exec(p))) {
+      const t = await elementTarget(decodeURIComponent(m[1]!));
+      if (m[2] === 'info') {
+        const info: PreviewInfo = { path: t.file, kind: 'file', size: t.size, mtime: t.mtime, isImage: t.type === 'image/png', childCount: null };
+        return sendJson(res, 200, info);
+      }
+      res.writeHead(200, {
+        'content-type': t.type,
+        'content-length': t.size,
+        'cache-control': 'private, max-age=3600',
+        'x-content-type-options': 'nosniff',
+      });
+      const stream = fs.createReadStream(t.file);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
+    throw new HttpError(404, '未找到');
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const method = req.method ?? 'GET';
     const p = url.pathname;
@@ -647,6 +712,7 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, r.status, r.body);
     }
     if (p === '/api/kiro' || p.startsWith('/api/kiro/')) return kiroRoutes(req, res, method, p, q);
+    if (deps.browser && (p === '/api/browser' || p.startsWith('/api/browser/'))) return browserRoutes(req, res, method, p, deps.browser);
 
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
     if (method === 'GET' && p === '/api/models') {

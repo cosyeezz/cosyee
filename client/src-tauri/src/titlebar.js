@@ -131,6 +131,7 @@
   };
   var KEY = mac ? '⌘⇧L' : 'Ctrl+Shift+L';
   var RELOAD_KEY = mac ? '⌘R' : 'Ctrl+R';
+  var BROWSER_KEY = mac ? '⇧⌘P' : 'Ctrl+Shift+P';
 
   var CSS = [
     ':host{all:initial;position:fixed;inset:0 0 auto 0;height:' + H + 'px;z-index:2147483646;display:block;',
@@ -163,6 +164,9 @@
     '.crumb svg{flex:none;color:var(--_fg3)}',
     '.crumb .sw{width:14px;height:14px;opacity:.7}',
     '.grow{flex:1;align-self:stretch}',
+    '.tools{display:flex;align-items:center;gap:2px;margin-right:' + (mac ? 8 : 4) + 'px}',
+    '.tools[hidden]{display:none}',
+    '.ib[aria-pressed=true]{background:var(--_hover);color:var(--_accent)}',
     '.win{display:flex;align-self:stretch}',
     '.wb{display:grid;place-items:center;width:46px;height:100%;color:var(--_fg2);transition:background-color .1s,color .1s}',
     '.wb:hover{background:var(--_hover);color:var(--_fg)}',
@@ -225,6 +229,12 @@
         + icon('server') + '<span></span>' + icon('swap').replace('<svg ', '<svg class="sw" ') + '</button>';
     }
     html += '<div class="grow"></div>';
+    // 右侧工具：内置浏览器。页面（cosyee 网页）支持时才显示：页面加载后发 cosyee:browser-ready
+    if (!isHome) {
+      html += '<div class="tools" hidden>'
+        + '<button class="ib" id="b" aria-label="内置浏览器" aria-pressed="false" title="内置浏览器 ' + BROWSER_KEY + '">' + icon('globe') + '</button>'
+        + '</div>';
+    }
     if (!mac) {
       html += '<div class="win">'
         + '<button class="wb" id="w-min" aria-label="最小化" title="最小化">' + WIN.min + '</button>'
@@ -253,6 +263,16 @@
       smenu.addEventListener('keydown', onServersKey);
     }
     root.getElementById('m').onclick = function () { toggle(); };
+    var browserBtn = root.getElementById('b');
+    if (browserBtn) {
+      browserBtn.onclick = function () { window.dispatchEvent(new CustomEvent('cosyee:browser')); };
+      var showTools = function () { browserBtn.parentNode.hidden = false; };
+      if (window.__cosyeeBrowserReady) showTools();
+      window.addEventListener('cosyee:browser-ready', showTools);
+      window.addEventListener('cosyee:browser-state', function (e) {
+        browserBtn.setAttribute('aria-pressed', String(!!(e.detail && e.detail.open)));
+      });
+    }
     items.forEach(function (b, i) {
       b.addEventListener('pointerenter', function () { setHot(i); });
       b.onclick = function () { run(b.getAttribute('data-a')); };

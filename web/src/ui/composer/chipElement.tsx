@@ -4,7 +4,7 @@ import type { ChipKind } from '../../core/composer';
 import { Icon, type IconName } from '../icons/Icon';
 import { CHIP_CLASS, type ChipData } from './editorDom';
 
-export const CHIP_ICON: Record<ChipKind, IconName> = { file: 'file', img: 'image', folder: 'folder' };
+export const CHIP_ICON: Record<ChipKind, IconName> = { file: 'file', img: 'image', folder: 'folder', el: 'pick' };
 
 const iconCache = new Map<string, string>();
 export function iconMarkup(kind: ChipKind, size = 14): string {

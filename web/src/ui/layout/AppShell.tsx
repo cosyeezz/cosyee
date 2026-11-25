@@ -12,7 +12,7 @@ export interface AppShellProps {
   context: ReactNode;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
-  /** 侧栏收起时顶部左侧的新建会话按钮（在展开按钮左边）；不传就不显示 */
+  /** 侧栏收起时顶部左侧的新建会话按钮（在展开按钮右边）；不传就不显示 */
   onNewSession?: () => void;
   /** 右侧上下文栏收起（收起按钮在面板里，展开按钮在顶部右侧） */
   contextCollapsed?: boolean;
@@ -47,6 +47,15 @@ export function AppShell({
         <div className="cz-shell__top" ref={topRef}>
           {sidebarCollapsed && (
             <div className="cz-shell__lead">
+              <button
+                type="button"
+                className="cz-shell__expand"
+                onClick={onToggleSidebar}
+                title="展开侧栏"
+                aria-label="展开侧栏"
+              >
+                <Icon name="sidebar-expand" size={18} />
+              </button>
               {onNewSession && (
                 <button
                   type="button"
@@ -58,15 +67,6 @@ export function AppShell({
                   <Icon name="new-chat" size={18} />
                 </button>
               )}
-              <button
-                type="button"
-                className="cz-shell__expand"
-                onClick={onToggleSidebar}
-                title="展开侧栏"
-                aria-label="展开侧栏"
-              >
-                <Icon name="sidebar-expand" size={18} />
-              </button>
             </div>
           )}
           <div className="cz-shell__header">{header}</div>

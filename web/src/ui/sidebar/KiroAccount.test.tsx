@@ -66,7 +66,6 @@ const acctEntry = (over: Partial<AccountEntry>): AccountEntry => ({
 
 beforeEach(() => {
   localStorage.clear();
-  localStorage.setItem('cz-acct-groups-v2', JSON.stringify({ claude: true, agy: false }));
   calls = [];
   routes = {};
   vi.spyOn(accountPage, 'reload').mockImplementation(() => {});
@@ -320,7 +319,24 @@ describe('KiroAccountDialog', () => {
 });
 
 describe('AccountMenu Kiro 集成', () => {
-  it('Kiro 行显示标签、proxy 错误、kiroBalance 额度（不请求 Claude usage）、重新登录按钮，以及引擎更新入口', async () => {
+  const openManager = async () => {
+    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await flush();
+  };
+  const pickOf = (name: string) => [...document.querySelectorAll<HTMLElement>('.cz-acct-pick')]
+    .find((b) => b.querySelector('.cz-acct-pick__name b')?.textContent === name);
+  const manager = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="管理账号"]');
+  const cardOf = (name: string) => [...(manager()?.querySelectorAll<HTMLElement>('.cz-acct-card') ?? [])]
+    .find((c) => c.querySelector('.cz-acct-card__name b')?.textContent === name);
+  const btnIn = (el: Element | null | undefined, text: string) =>
+    [...(el?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find((b) => b.textContent === text);
+  /** 叠在管理面板上的登录对话框 */
+  const topDlg = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+    .filter((d) => d.getAttribute('aria-label') !== '管理账号' && !d.classList.contains('cz-sidebar__confirm'))
+    .at(-1) ?? null;
+
+  it('弹层 Kiro 行只显示月度额度；管理面板卡片显示额度、代理错误、重新登录，引擎维护入口也在面板里', async () => {
     vi.useFakeTimers();
     const base = new Date(2026, 10, 24, 10, 0).getTime();
     vi.setSystemTime(base);
@@ -360,9 +376,7 @@ describe('AccountMenu Kiro 集成', () => {
       },
     };
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
-      await flush();
+      await openManager();
 
       // 只对 Claude 订阅账号请求 /api/usage，不对 Kiro 账号请求
       expect(calls.filter((c) => c.url.startsWith('/api/usage')).map((c) => c.url)).toEqual(['/api/usage?account=default']);
@@ -371,45 +385,52 @@ describe('AccountMenu Kiro 集成', () => {
         '/api/kiro/balance?account=k2',
       ]);
 
-      const rows = document.querySelectorAll('.cz-acct-row');
-      // Kiro 主号：显示 Kiro 标签、used / limit 与重置时间、无日期行、操作按钮是「重新登录」
-      expect(rows[1].querySelector('.cz-acct-chip')?.textContent).toBe('Kiro');
-      expect(rows[1].textContent).toContain('120 / 500');
-      expect(rows[1].textContent).toContain('2小时后重置');
-      expect(rows[1].querySelector('.cz-acct-row__dates')).toBeNull();
-      expect(rows[1].querySelector('[aria-label="重新登录"]')).not.toBeNull();
-      expect(rows[1].querySelector('[aria-label="修改 API 账号与模型映射"]')).toBeNull();
+      // 弹层：Kiro 行没有套餐标签，一条「本月」进度条，用量放在悬停提示
+      const pick = pickOf('Kiro 主号')!;
+      expect(pick.querySelector('.cz-acct-chip')).toBeNull();
+      expect(pick.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('120 / 500');
+      expect(document.querySelector('.cz-kiro-eng')).toBeNull();
+
+      click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);
+      await flush();
+      // Kiro 主号：used / limit 与重置时间、没有订阅日期、操作是「重新登录」而不是「编辑」
+      const ok = cardOf('Kiro 主号')!;
+      expect(ok.textContent).toContain('120 / 500');
+      expect(ok.textContent).toContain('2小时后重置');
+      expect(ok.textContent).not.toContain('订阅约');
+      expect(btnIn(ok, '重新登录')).toBeDefined();
+      expect(btnIn(ok, '编辑')).toBeUndefined();
 
       // Kiro 异常：显示 proxy failed error 与额度读取失败
-      expect(rows[2].textContent).toContain('代理异常：端口占用');
-      expect(rows[2].textContent).toContain('额度读取失败');
+      const bad = cardOf('Kiro 异常')!;
+      expect(bad.textContent).toContain('代理异常：端口占用');
+      expect(bad.textContent).toContain('额度读取失败');
 
-      // 引擎行：直接显示 release tag、有更新、更新、检查更新
-      const eng = document.querySelector('.cz-kiro-eng')!;
+      // 引擎行：在管理面板里，直接显示 release tag、有更新、更新、检查更新
+      const eng = manager()!.querySelector('.cz-kiro-eng')!;
       expect(eng.textContent).toContain('kiro.rs 引擎 v0.9.8');
       expect(eng.textContent).toContain('有更新');
 
-      const checkBtn = [...eng.querySelectorAll('button')].find((b) => b.textContent === '检查更新')!;
-      click(checkBtn);
+      click(btnIn(eng, '检查更新')!);
       await flush();
       expect(calls.some((c) => c.url === '/api/kiro/engine/check')).toBe(true);
 
-      const updateBtn = [...eng.querySelectorAll('button')].find((b) => b.textContent === '更新')!;
-      click(updateBtn);
+      click(btnIn(eng, '更新')!);
       await flush();
       expect(calls.some((c) => c.url === '/api/kiro/engine/build')).toBe(true);
       expect(eng.textContent).toContain('正在下载');
 
-      // 点 Kiro 行的「重新登录」打开 KiroAccountDialog
-      click(rows[1].querySelector('[aria-label="重新登录"]')!);
+      // 卡片上的「重新登录」打开 KiroAccountDialog，叠在面板上
+      click(btnIn(cardOf('Kiro 主号'), '重新登录')!);
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新登录 Kiro：Kiro 主号');
+      expect(topDlg()?.textContent).toContain('重新登录 Kiro：Kiro 主号');
+      expect(manager()).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('service.enabled=false 时引擎行显示「已停止」、outdated>0 显示服务重启提示，且对话框提示先到客户端「本机服务」启动', async () => {
+  it('管理面板：service.enabled=false 时引擎行显示「已停止」、outdated>0 显示服务重启提示，且对话框提示先到客户端「本机服务」启动', async () => {
     const kiroAcc = acctEntry({
       id: 'k1', label: 'Kiro 主号', name: 'Kiro 主号', plan: null, loggedIn: true, active: false, isDefault: false,
       kiro: { method: 'builderId', proxy: 'stopped', error: null },
@@ -422,19 +443,19 @@ describe('AccountMenu Kiro 集成', () => {
         body: kiroStatusOf({ service: { enabled: false, outdated: 1 } }),
       }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await openManager();
+    click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);
     await flush();
 
-    const eng = document.querySelector('.cz-kiro-eng')!;
+    const eng = manager()!.querySelector('.cz-kiro-eng')!;
     expect(eng.textContent).toContain('已停止');
     expect(eng.textContent).toContain('kiro.rs 服务重启后用新版');
     // web 不提供启动 / 停止 / 重启按钮
     expect([...eng.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['检查更新']);
 
     // 打开 Kiro 对话框：提示先到客户端的「本机服务」启动
-    click(document.querySelectorAll('.cz-acct-row')[1].querySelector('[aria-label="重新登录"]')!);
+    click(btnIn(cardOf('Kiro 主号'), '重新登录')!);
     await flush();
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('本机服务');
+    expect(topDlg()?.textContent).toContain('本机服务');
   });
 });

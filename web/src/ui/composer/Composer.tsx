@@ -3,7 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ApiModelMap, CliModel, PickedItem, PreviewInfo, QueueItem, QueueMode, SessionConfig, UsageInfo } from '@cosyee/shared';
 import type { Attachment } from '@cosyee/shared';
-import { itemKind, labelChips, parseUserText, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
+import { itemKind, labelChips, type ChipKind, parseUserText, serialize, splitMentions, toAttachments, trimSegments } from '../../core/composer';
 import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
 import { api } from '../../core/api';
 import { ensureSpeech } from '../../core/speech/ensure';
@@ -116,6 +116,8 @@ export interface ComposerHandle {
   hasContent: () => boolean;
   /** 等同按 Enter：有内容就发送 */
   submit: () => void;
+  /** 在光标处（没有光标则末尾）插入标签并聚焦；输入框不可用时返回 false */
+  insertChips: (chips: { kind: ChipKind; path: string; token?: string }[]) => boolean;
 }
 
 interface SlashState {
@@ -356,6 +358,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     },
     submit() {
       send('next');
+    },
+    insertChips(chips) {
+      const ed = editorRef.current;
+      if (!ed || disabled) return false;
+      if (!chips.length) return true;
+      const saved = savedRange.current ? savedRange.current.cloneRange() : null;
+      if (isEditorEmpty(ed)) ed.innerHTML = '';
+      const nodes: Node[] = [];
+      for (const c of chips) {
+        nodes.push(createChipElement({ kind: c.kind, path: c.path, label: '', token: c.token }));
+        nodes.push(document.createTextNode(' '));
+      }
+      ed.focus();
+      insertNodesAt(ed, saved, nodes);
+      afterChange();
+      return true;
     },
   }), [disabled, afterChange, send]);
 

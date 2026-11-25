@@ -31,6 +31,8 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
 
 4. **把优化后的规格简要告诉用户**（几行即可），然后实现，并在浏览器里实际看一遍效果。
    - `.shots/` 脚本只在 Windows 那台机器上（未入库）；macOS 上没有时，自己写个一次性 CDP 脚本放 `/tmp`，用 `/Applications/Google Chrome.app` 的 `--headless=new` + 独立 `--user-data-dir`，Node 22 自带 `WebSocket` / `fetch`，不用装依赖。
+   - 桌面客户端页 `client/ui/index.html` 直接用 `file://` 打开截图：`Page.addScriptToEvaluateOnNewDocument` 注入假的 `window.__TAURI__.core.invoke`（按命令名返回 local_status / components_status / kiro_status / tailnet_status 等），主题写 `localStorage['cosyee.theme']`。服务端没运行的场景让组件相关命令抛 `{kind:'offline'}`。要截 760 和 480（≤520px 断点）两种宽度。
+   - 这个页面的样式坑：`.local-head .t small` 的颜色优先级比 `.ver.ok` 这类状态类高，状态色要写成 `.local-head .t small.ver.ok`，否则截图里版本行全是灰的。按钮全隐藏时外层用 `:not(:has(> .btn:not([hidden])))` 收掉，窄屏换行后才不会留一行空白。不可用的按钮（例如服务端没运行时的「检查更新」）直接隐藏，别置灰占位。
    - Cosyee 截图：`.shots/cdp-shot.mjs <url> <out.png> '<步骤JSON>' '<clip表达式>'`；切主题用步骤 `localStorage.setItem("cz-theme","dark")` + `!{"method":"Page.reload",...}`；clip 要写成 `({x:..,y:..,width:..,height:..})`（不加括号会被当成代码块）。
    - 主界面连的是用户真实后端：点按钮要用精确的类名选择器，**别按文字匹配**（「自动」「Opus 5.5」会先命中侧栏会话标题，点成切换会话）。只为看效果时优先用 `?dev=shell|flow|composer|motion` 调试页。
    - 上下文栏多宽度截图 + 溢出检测：先 `npx vite --port 5199`，再 `.shots/ctx.mjs <前缀> [theme]`（`WIDTHS`、`H`、`PRE`=页面内 JS，返回字符串会打印）。检测通过不等于好看，**截图必须逐张看**（吸顶文字重叠就没被检测出来）；交互场景要让 `PRE` 返回证据，确认真的触发了。

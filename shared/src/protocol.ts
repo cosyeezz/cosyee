@@ -313,9 +313,9 @@ export interface AgyCliStatus {
   job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
 }
 
-/** 本机组件：Claude CLI、kiro.rs 引擎、Antigravity CLI、cosyee 服务端 */
-export type ComponentId = 'claude' | 'kiro' | 'agy' | 'server';
-export const COMPONENT_IDS: readonly ComponentId[] = ['claude', 'kiro', 'agy', 'server'];
+/** 本机组件：Claude CLI、kiro.rs 引擎、Antigravity CLI、内置浏览器（agent-browser）、cosyee 服务端 */
+export type ComponentId = 'claude' | 'kiro' | 'agy' | 'browser' | 'server';
+export const COMPONENT_IDS: readonly ComponentId[] = ['claude', 'kiro', 'agy', 'browser', 'server'];
 
 /** 本机组件的版本与自动更新状态（GET /api/components） */
 export interface ComponentStatus {
@@ -339,7 +339,58 @@ export interface ComponentStatus {
   pending: boolean;
   /** 谁执行更新：server 组件由桌面客户端停服务、npm 安装、再启动 */
   updatedBy: 'server' | 'client';
-  job: { kind: 'update'; state: 'running' | 'failed'; error: string | null } | null;
+  /** 没安装时能否在「本机组件」里直接安装（目前只有内置浏览器） */
+  installable?: boolean;
+  job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
+}
+
+// ───────────── 内置浏览器（agent-browser） ─────────────
+
+/** 页面坐标系（CSS px，相对视口左上角）里的矩形 */
+export interface BrowserRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** GET /api/browser：内置浏览器的状态 */
+export interface BrowserStatus {
+  /** agent-browser 是否已安装（没装时面板里直接安装） */
+  installed: boolean;
+  /** 后台浏览器是否在运行 */
+  running: boolean;
+  url: string | null;
+  title: string | null;
+}
+
+/** 抓取模式里鼠标悬停的元素（只用于画高亮框） */
+export interface BrowserHover {
+  rect: BrowserRect | null;
+  /** 简短描述：tag#id.class */
+  label: string;
+}
+
+/** 抓取到的元素 */
+export interface BrowserElement {
+  url: string;
+  title: string;
+  tag: string;
+  /** 尽量唯一的 CSS 选择器 */
+  selector: string;
+  /** 可见文字（截断） */
+  text: string;
+  rect: BrowserRect;
+  viewport: { width: number; height: number };
+  scroll: { x: number; y: number };
+  /** 是否在 iframe 里（此时选择器相对 iframe 文档） */
+  inFrame: boolean;
+}
+
+/** POST /api/browser/pick：元素描述存成文件后，按「选出的文件」登记，前端当附件标签用 */
+export interface BrowserPickResult {
+  item: PickedItem;
+  element: BrowserElement;
 }
 
 export interface ComponentList {

@@ -75,6 +75,7 @@ interface CheckRecord {
 }
 
 interface JobRecord {
+  kind: 'install' | 'update';
   state: 'running' | 'failed';
   error: string | null;
 }
@@ -147,9 +148,7 @@ export class ComponentUpdater {
     const checkedAt = own || info.checkedAt !== null ? Math.max(own?.at ?? 0, infoAt) : null;
     const checkError = own && own.at >= infoAt ? own.error : info.checkError;
     const autoUpdate = this.settings.autoUpdate(a.id);
-    const job: ComponentStatus['job'] = this.jobs.get(a.id)
-      ? { kind: 'update', ...this.jobs.get(a.id)! }
-      : info.job;
+    const job: ComponentStatus['job'] = this.jobs.get(a.id) ?? info.job;
     const jobRunning = job?.state === 'running';
     const eligible = !info.custom && info.installed && info.updateAvailable && autoUpdate;
     return {
@@ -167,6 +166,7 @@ export class ComponentUpdater {
       // 有新版、开关开着、不是 custom，但组件忙：等空闲后自动更新（server 组件由客户端更新，同样显示）
       pending: eligible && info.busy > 0 && !jobRunning && !this.coolingDown(a.id),
       updatedBy: a.updatedBy,
+      ...(a.installable ? { installable: true } : {}),
       job,
     };
   }
@@ -223,22 +223,22 @@ export class ComponentUpdater {
     if (a.updatedBy === 'client') throw new HttpError(409, SERVER_UPDATE_BY_CLIENT);
     const info = await a.info();
     if (info.custom) throw new HttpError(409, '已用环境变量指定或源码运行，不支持自动更新');
-    if (!info.installed) throw new HttpError(409, `${a.name} 未安装`);
+    if (!info.installed && !a.installable) throw new HttpError(409, `${a.name} 未安装`);
     if (this.running.has(a.id) || info.job?.state === 'running') throw new HttpError(409, '正在更新中，请稍候');
     if (info.busy > 0) throw new HttpError(409, `有 ${info.busy} 个任务正在使用，等任务结束后再更新`);
-    this.launch(a);
+    this.launch(a, info.installed ? 'update' : 'install');
     return this.status(id);
   }
 
-  private launch(a: ComponentAdapter): void {
-    this.jobs.set(a.id, { state: 'running', error: null });
+  private launch(a: ComponentAdapter, kind: 'install' | 'update' = 'update'): void {
+    this.jobs.set(a.id, { kind, state: 'running', error: null });
     this.lastAttempt.set(a.id, this.now());
     const p = (async () => {
       try {
         await a.update();
         this.jobs.delete(a.id);
       } catch (e) {
-        this.jobs.set(a.id, { state: 'failed', error: errText(e) });
+        this.jobs.set(a.id, { kind, state: 'failed', error: errText(e) });
       }
     })();
     this.running.set(a.id, p);

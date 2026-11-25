@@ -7,6 +7,8 @@ export function createAgyAdapter(cli: Pick<AgyCli, 'status' | 'check' | 'update'
     id: 'agy',
     name: 'Antigravity CLI',
     updatedBy: 'server',
+    // 没装时用官方安装脚本安装
+    installable: true,
 
     async info(): Promise<AdapterInfo> {
       const s = await cli.status();
@@ -19,7 +21,7 @@ export function createAgyAdapter(cli: Pick<AgyCli, 'status' | 'check' | 'update'
         checkedAt: s.checkedAt,
         checkError: s.checkError,
         busy: s.busy,
-        job: s.job ? { kind: 'update', state: s.job.state, error: s.job.error } : null,
+        job: s.job ? { kind: s.job.kind, state: s.job.state, error: s.job.error } : null,
       };
     },
 

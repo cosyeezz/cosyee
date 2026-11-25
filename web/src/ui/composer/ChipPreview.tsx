@@ -2,6 +2,8 @@
 // 不含任何可聚焦元素；容器 mousedown 默认 preventDefault，使焦点留在编辑区（路径文字除外，允许选中复制）。
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { PreviewInfo } from '@cosyee/shared';
+import { api } from '../../core/api';
+import { elementName } from '../../core/composer';
 import { Icon } from '../icons/Icon';
 import { readChip, type ChipData } from './editorDom';
 import { CHIP_ICON } from './chipElement';
@@ -47,6 +49,8 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
   const chip = chipProp ?? readChip(anchor);
   const token = chip.token;
   const isImage = chip.kind === 'img';
+  // 抓取的元素：描述文件旁边有同名截图（iframe / shadow DOM 里的元素没有截图，加载失败就不显示）
+  const element = chip.kind === 'el' ? elementName(chip.path) : null;
   const [pos, setPos] = useState<Place>(() => place(anchor));
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
@@ -99,7 +103,7 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
     };
   }, [anchor, onClose]);
 
-  const rawUrl = isImage && token ? previewRawUrl(token) : '';
+  const rawUrl = element ? api.elementRawUrl(`${element}.png`) : isImage && token ? previewRawUrl(token) : '';
   const path = info?.path ?? chip.path;
   const meta: string[] = [];
   if (info?.size != null && info.kind === 'file') meta.push(formatSize(info.size));
@@ -113,7 +117,7 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
         if (!(e.target as Element).closest('.cz-preview__path')) e.preventDefault();
       }}
     >
-      {isImage && rawUrl && !imgFailed && (
+      {rawUrl && !imgFailed && (
         <div className="cz-preview__thumb">
           <img src={rawUrl} alt={chip.label} onError={() => setImgFailed(true)} />
         </div>

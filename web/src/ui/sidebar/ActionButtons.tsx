@@ -57,6 +57,9 @@ export interface ConfirmActionButtonProps {
   requireConfirm?: boolean;
   /** 非危险操作（如批量恢复）：按钮悬停与确认键不用红色 */
   safe?: boolean;
+  /** 文字按钮：显示这段文字代替图标（className 换掉默认的方形图标按钮样式） */
+  text?: string;
+  className?: string;
 }
 
 interface PopPos {
@@ -81,6 +84,8 @@ export function ConfirmActionButton({
   onConfirm,
   requireConfirm,
   safe,
+  text,
+  className,
 }: ConfirmActionButtonProps) {
   const [pos, setPos] = useState<PopPos | null>(null);
   const wrapRef = useRef<HTMLSpanElement>(null);
@@ -154,7 +159,7 @@ export function ConfirmActionButton({
       <button
         ref={btnRef}
         type="button"
-        className={`cz-sidebar__act${safe ? '' : ' cz-sidebar__act--danger'}`}
+        className={className ?? `cz-sidebar__act${safe ? '' : ' cz-sidebar__act--danger'}`}
         title={disabled ? disabledTitle ?? label : label}
         aria-label={label}
         aria-haspopup="dialog"
@@ -163,7 +168,7 @@ export function ConfirmActionButton({
         onClick={onClick}
         onDoubleClick={onDoubleClick}
       >
-        <Icon name={icon} size={ACTION_ICON_SIZE} />
+        {text ?? <Icon name={icon} size={ACTION_ICON_SIZE} />}
       </button>
       {mounted && shown && createPortal(
         <div

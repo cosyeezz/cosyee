@@ -13,6 +13,7 @@ export default defineConfig({
     strictPort: true,
     fs: { allow: [path.resolve(__dirname, '..')] },
     proxy: {
+      '/api/browser/stream': { target: 'ws://127.0.0.1:7878', ws: true },
       '/api': 'http://127.0.0.1:7878',
       '/ws': { target: 'ws://127.0.0.1:7878', ws: true },
     },

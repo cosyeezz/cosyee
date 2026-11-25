@@ -9,7 +9,7 @@ import type { Attachment, PreviewInfo } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { parseQuotes } from '../../core/quote';
 import { api } from '../../core/api';
-import { expandLabels } from '../../core/composer';
+import { elementName, expandLabels } from '../../core/composer';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
 import { Menu } from '../menus/Menu';
@@ -22,7 +22,7 @@ import './userMessage.css';
 /** 气泡内容高度超过该阈值时默认折叠到 240px（flow.css），避免长任务提示把下方内容顶走 */
 const COLLAPSE_THRESHOLD = 320;
 
-const KIND_ICON: Record<Attachment['kind'], IconName> = { file: 'file', img: 'image', folder: 'folder' };
+const KIND_ICON: Record<Attachment['kind'], IconName> = { file: 'file', img: 'image', folder: 'folder', el: 'pick' };
 
 /** 粘贴的图片（存在 <cosyee 目录>/pastes/ 下、名字由服务端生成）→ 文件名；其它路径返回 null */
 export function pasteName(path: string): string | null {
@@ -32,7 +32,7 @@ export function pasteName(path: string): string | null {
 
 /**
  * 附件标签：点击弹出和输入框里标签一样的预览浮窗（路径 / 大小 / 修改时间 / 图片缩略图）。
- * 历史消息没有预览令牌：粘贴的图片按文件名走粘贴图片接口；其它走「会话工作目录内的文件预览」接口，
+ * 历史消息没有预览令牌：粘贴的图片按文件名走粘贴图片接口，抓取的元素按文件名走元素接口；其它走「会话工作目录内的文件预览」接口，
  * 没有会话上下文或在工作目录之外时只显示路径。
  */
 export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attachment: Attachment }) {
@@ -44,6 +44,8 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
     async (path: string): Promise<PreviewInfo> => {
       const paste = pasteName(path);
       if (paste) return api.pasteInfo(paste);
+      const element = elementName(path);
+      if (element) return api.elementInfo(`${element}.md`);
       if (!session) throw new Error('no session');
       const p = await api.filePreview({ session, cwd, path });
       const dir = p.kind === 'directory';
@@ -61,6 +63,8 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
   const rawUrl = useCallback((path: string) => {
     const paste = pasteName(path);
     if (paste) return api.pasteRawUrl(paste);
+    const element = elementName(path);
+    if (element) return api.elementRawUrl(`${element}.png`);
     return session ? api.fileRawUrl({ session, cwd, path }) : '';
   }, [session, cwd]);
   const close = useCallback(() => setAnchor(null), []);

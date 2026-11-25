@@ -32,7 +32,11 @@ export type IconName =
   // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行
   | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap'
   // 权限模式：自动（闪电）/ 计划（清单）
-  | 'mode-auto' | 'mode-plan';
+  | 'mode-auto' | 'mode-plan'
+  // 内置浏览器：地球、后退 / 前进、抓取元素（准星）
+  | 'globe' | 'arrow-left' | 'arrow-right' | 'pick'
+  // 账号弹层：管理账号
+  | 'users';
 
 export interface IconProps {
   name: IconName;
@@ -178,6 +182,12 @@ const SIMPLE: Record<string, JSX.Element> = {
   ),
   // 编辑：斜放的铅笔（竖向 y 2.5–13.5，与置顶 / 删除视觉等高）
   pencil: <path d="M10.6 2.9l2.5 2.5-7.4 7.4-3.2.7.7-3.2zM9.3 4.2l2.5 2.5" />,
+  users: (
+    <>
+      <circle cx="6" cy="5.5" r="2.3" />
+      <path d="M1.8 13c.4-2.3 2.1-3.6 4.2-3.6s3.8 1.3 4.2 3.6M10.4 3.4a2.2 2.2 0 010 4.3M11.6 9.6c1.4.4 2.3 1.6 2.6 3.4" />
+    </>
+  ),
   // 恢复：逆时针回转的箭头
   restore: <path d="M3 3v3.2h3.2M3.4 6.2A5 5 0 118 13" />,
   check: <path d="M3.5 8.5l3 3 6-7" />,
@@ -217,6 +227,22 @@ const SIMPLE: Record<string, JSX.Element> = {
   'chevron-up': <path d="M4 10l4-4 4 4" />,
   'arrow-up': <path d="M8 13V3M3.8 7.2L8 3l4.2 4.2" />,
   'arrow-down': <path d="M8 3v10M3.8 8.8L8 13l4.2-4.2" />,
+  'arrow-left': <path d="M13 8H3M7.2 3.8L3 8l4.2 4.2" />,
+  'arrow-right': <path d="M3 8h10M8.8 3.8L13 8l-4.2 4.2" />,
+  globe: (
+    <>
+      <circle cx="8" cy="8" r="5.7" />
+      <path d="M2.3 8h11.4M8 2.3c1.7 1.6 2.6 3.5 2.6 5.7S9.7 12.1 8 13.7C6.3 12.1 5.4 10.2 5.4 8S6.3 3.9 8 2.3z" />
+    </>
+  ),
+  // 抓取元素：准星
+  pick: (
+    <>
+      <circle cx="8" cy="8" r="4.6" />
+      <circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none" />
+      <path d="M8 1.6v2.2M8 12.2v2.2M1.6 8h2.2M12.2 8h2.2" />
+    </>
+  ),
   mic: (
     <>
       <rect x="6" y="1.8" width="4" height="7.4" rx="2" />

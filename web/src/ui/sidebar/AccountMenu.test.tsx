@@ -34,8 +34,6 @@ let reload: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   localStorage.clear();
-  // 分组默认都折叠；大部分用例要看 Claude 行，先记成展开（默认值由「分组默认折叠」用例单独验证）
-  localStorage.setItem('cz-acct-groups-v2', JSON.stringify({ claude: true, agy: false }));
   calls = [];
   reload = vi.fn();
   vi.spyOn(accountPage, 'reload').mockImplementation(reload);
@@ -57,6 +55,59 @@ afterEach(() => {
 });
 
 const list = (l: AccountEntry[], mode: AccountMode = 'switch'): AccountList => ({ mode, list: l, login: null });
+
+const openMenu = async () => {
+  mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+  click(document.querySelector('[aria-label="账户菜单"]')!);
+  await flush();
+};
+/** 账号弹层 */
+const menu = () => document.querySelector<HTMLElement>('.cz-acct-menu');
+const picks = () => [...document.querySelectorAll<HTMLButtonElement>('.cz-acct-pick')];
+const pickOf = (name: string) => picks().find((b) => b.querySelector('.cz-acct-pick__name b')?.textContent === name);
+/** 管理账号面板 */
+const manager = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="管理账号"]');
+const openManager = async () => {
+  await openMenu();
+  click(button('管理账号')!);
+  await flush();
+};
+const section = (title: string) => manager()?.querySelector<HTMLElement>(`section[aria-label="${title}"]`) ?? null;
+const cards = (title: string) => [...(section(title)?.querySelectorAll<HTMLElement>('.cz-acct-card') ?? [])];
+const cardOf = (title: string, name: string) =>
+  cards(title).find((c) => c.querySelector('.cz-acct-card__name b')?.textContent === name);
+const btnIn = (el: Element | null | undefined, text: string) =>
+  [...(el?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find((b) => b.textContent === text);
+/** 最上层的添加 / 登录对话框（不算管理面板和移除确认气泡） */
+const dlg = () =>
+  [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+    .filter((d) => d.getAttribute('aria-label') !== '管理账号' && !d.classList.contains('cz-sidebar__confirm'))
+    .at(-1) ?? null;
+const dlgBtn = (text: string) =>
+  // 取最后一个：模型映射表里也有个「添加」（加自定义模型），底部提交按钮在它后面
+  [...(dlg()?.querySelectorAll<HTMLButtonElement>('button') ?? [])].reverse().find((b) => b.textContent === text)!;
+const dblclick = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
+const type = (el: HTMLInputElement, v: string) => act(() => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, v);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+});
+const press = (el: EventTarget, key: string) => act(() => {
+  el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+});
+const apiEntry = entry({
+  id: 'a2', label: '代理', name: '代理', plan: 'API', active: false, isDefault: false,
+  api: { baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', keyHint: '3456' },
+});
+/** 各类账号都有：当前 / 可切换 / 没登录 / 登录已失效 / API / Kiro */
+const mixedList = () => list([
+  entry({}),
+  entry({ id: 'a1', label: '工作', name: 'Bob', active: false, isDefault: false }),
+  entry({ id: 'a3', label: '没登录', name: null, plan: null, loggedIn: false, active: false, isDefault: false }),
+  entry({ id: 'a4', name: 'Expired', active: false, isDefault: false, loginExpiresAt: Date.now() - 1000 }),
+  apiEntry,
+  entry({ id: 'k1', name: 'Kiro 主号', plan: 'Kiro', active: false, isDefault: false, kiro: { method: 'builderId', proxy: 'ready', error: null } }),
+]);
+
 
 describe('entryTitle / entrySubtitle', () => {
   it('不出现「默认账号」：副标题只放备注名 / 需要登录，套餐做成名字后的小标签', () => {
@@ -81,59 +132,33 @@ describe('entryTitle / entrySubtitle', () => {
   });
 });
 
-describe('AccountMenu', () => {
-  it('点击账户栏展示账号列表，当前账号打勾', async () => {
-    routes = { 'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', label: '工作', name: 'Bob', active: false, isDefault: false })]) }) };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    const items = document.querySelectorAll('.cz-sidebar__menu-item');
-    expect(items.length).toBe(2); // 两个账号（底部不再有「添加账号」，走分组标题的「＋」）
-    expect(items[0].classList.contains('is-active')).toBe(true);
-    expect(items[0].querySelector('.cz-sidebar__acct-check')).not.toBeNull();
-    expect(items[1].textContent).toContain('Bob');
-    expect(items[1].textContent).toContain('工作');
-    expect(button('添加账号')).toBeUndefined();
-    expect(document.querySelector('[aria-label="添加 Claude 账号"]')).not.toBeNull();
-    // 每行都有移除按钮：默认 / 当前账号置灰并说明原因，其它账号可点
-    const rm0 = items[0].querySelector<HTMLButtonElement>('[aria-label="移除账号"]')!;
-    expect(rm0.disabled).toBe(true);
-    expect(rm0.title).toBe('默认账号不能移除');
-    expect(items[1].querySelector<HTMLButtonElement>('[aria-label="移除账号"]')!.disabled).toBe(false);
+
+describe('AccountMenu 弹层', () => {
+  it('只列出可用的账号，按类型分组，当前账号打勾；没有说明文字和添加 / 移除入口，底部是「管理账号」', async () => {
+    routes = { 'GET /api/accounts': () => ({ body: mixedList() }) };
+    await openMenu();
+    const groups = [...menu()!.querySelectorAll('.cz-acct-pick-sec')].map((g) => g.getAttribute('aria-label'));
+    expect(groups).toEqual(['Claude 订阅', 'API', 'Kiro']);
+    const rows = picks();
+    expect(rows.map((r) => r.querySelector('.cz-acct-pick__name b')?.textContent)).toEqual(['cosyeey', 'Bob', '代理', 'Kiro 主号']);
+    expect(rows[0].classList.contains('is-active')).toBe(true);
+    expect(rows[0].getAttribute('aria-current')).toBe('true');
+    expect(rows[0].querySelector('.cz-sidebar__acct-check')).not.toBeNull();
+    expect(rows[1].querySelector('.cz-sidebar__acct-check')).toBeNull();
+    // Kiro 账号不再重复显示「Kiro」套餐标签；API 账号没有额度，只占一行
+    expect(rows[3].querySelector('.cz-acct-chip')).toBeNull();
+    expect(rows[2].classList.contains('is-single')).toBe(true);
+    const text = menu()!.textContent!;
+    expect(text).not.toContain('需要登录');
+    expect(text).not.toContain('工作'); // 备注名等副标题不进弹层
+    expect(text).not.toContain('默认账号');
+    expect(menu()!.querySelector('[aria-label^="添加"]')).toBeNull();
+    expect(menu()!.querySelector('[aria-label^="移除"]')).toBeNull();
+    expect(menu()!.querySelector('.cz-acct-dup')).toBeNull();
+    expect(button('管理账号')).toBeDefined();
   });
 
-  it('有隐藏的重复账号时显示提示，点「清理」调用 dedupe 并刷新列表，报告跳过的个数', async () => {
-    let dup = 2;
-    routes = {
-      'GET /api/accounts': () => ({ body: { ...list([entry({})]), duplicates: dup } }),
-      'POST /api/accounts/dedupe': () => {
-        dup = 1;
-        return { body: { removed: 1, skipped: 1 } };
-      },
-    };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(document.querySelector('.cz-acct-dup')?.textContent).toContain('有 2 个重复的账号已隐藏');
-    click(button('清理')!);
-    await flush();
-    expect(calls.some((c) => c.method === 'POST' && c.url === '/api/accounts/dedupe')).toBe(true);
-    const note = document.querySelector('.cz-acct-dup')!.textContent!;
-    expect(note).toContain('有 1 个重复的账号已隐藏');
-    expect(note).toContain('已清理 1 个；1 个正在使用');
-    // 剩下的 1 个就是刚才跳过的那个：不再给「清理」按钮
-    expect(button('清理')).toBeUndefined();
-  });
-
-  it('没有重复账号时不显示清理提示', async () => {
-    routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }) };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(document.querySelector('.cz-acct-dup')).toBeNull();
-  });
-
-  it('菜单打开时并行读取每个已登录账号的额度，显示进度条与重置说明；失败只显示淡提示', async () => {
+  it('读取额度：弹层每个账号只显示最先重置的那个窗口「5h ━━ 32%」，详情在悬停提示；失败或没登录不显示', async () => {
     const soon = Date.now() + (2 * 60 + 14) * 60_000;
     routes = {
       'GET /api/accounts': () => ({ body: list([
@@ -152,25 +177,23 @@ describe('AccountMenu', () => {
     // 额度请求还没返回前显示骨架
     expect(document.querySelectorAll('[data-testid="quota-skeleton"]').length).toBeLessThanOrEqual(2);
     await flush();
-    const items = document.querySelectorAll('.cz-sidebar__menu-item');
-    expect(items[0].textContent).toContain('会话 32% · 2小时14分后重置');
-    expect(items[0].textContent).toContain('本周 91%');
-    const bars = items[0].querySelectorAll('[role="progressbar"]');
-    expect(bars.length).toBe(2);
+    const row0 = pickOf('cosyeey')!;
+    const brief = row0.querySelector('.cz-acctq-brief')!;
+    expect(brief.textContent).toBe('5h32%');
+    expect(brief.classList.contains('is-normal')).toBe(true);
+    expect(brief.getAttribute('title')).toBe('5h 32% · 2小时14分后重置');
+    const bars = row0.querySelectorAll('[role="progressbar"]');
+    expect(bars.length).toBe(1);
     expect(bars[0].getAttribute('aria-valuenow')).toBe('32');
-    expect(items[0].querySelector('.cz-acctq__row.is-warning')).not.toBeNull();
-    expect(items[1].textContent).toContain('额度读取失败');
-    // 没登录的账号不取额度
+    // 读取失败不显示额度，也不影响切换
+    expect(pickOf('Bob')!.querySelector('.cz-acctq-brief')).toBeNull();
+    expect(pickOf('Bob')!.disabled).toBe(false);
+    // 没登录的账号不取额度，也不在弹层里
     expect(calls.filter((c) => c.url.startsWith('/api/usage')).map((c) => c.url).sort()).toEqual(['/api/usage?account=a1', '/api/usage?account=default']);
-    expect(document.body.textContent).not.toContain('默认账号');
-    // 额度读取失败不影响切换
-    expect((items[1].querySelector('.cz-sidebar__menu-main') as HTMLButtonElement).disabled).toBe(false);
-    // 重置时间行：有 resetsAt 时渲染，为 null 时不渲染
-    expect(items[0].querySelectorAll('.cz-acctq__reset').length).toBe(1);
-    expect(items[0].querySelector('.cz-acctq__row')?.getAttribute('title')).toBeNull();
+    expect(picks().length).toBe(2);
   });
 
-  it('菜单开着时倒计时每分钟刷新一次，关闭后清理计时器', async () => {
+  it('弹层开着时额度提示每分钟刷新一次，关闭后清理计时器', async () => {
     vi.useFakeTimers();
     const base = new Date(2026, 10, 24, 10, 0).getTime();
     vi.setSystemTime(base);
@@ -183,13 +206,11 @@ describe('AccountMenu', () => {
       ] } }),
     };
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
-      await flush();
-      expect(document.querySelector('.cz-acctq__reset')?.textContent).toContain('10分钟后重置');
+      await openMenu();
+      expect(document.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('10分钟后重置');
 
       await act(async () => { vi.advanceTimersByTime(60_000); });
-      expect(document.querySelector('.cz-acctq__reset')?.textContent).toContain('9分钟后重置');
+      expect(document.querySelector('.cz-acctq-brief')?.getAttribute('title')).toContain('9分钟后重置');
 
       const beforeClose = clearSpy.mock.calls.length;
       click(document.querySelector('[aria-label="账户菜单"]')!);
@@ -200,7 +221,102 @@ describe('AccountMenu', () => {
     }
   });
 
-  it('账号到期时间：显示推算订阅到期与登录有效期（正常 / 7天内警告 / 已失效 / API 与缺项不显示）', async () => {
+  it('有执行中的会话时提示，强制切换带 force 并刷新页面', async () => {
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })]) }),
+      'POST /api/accounts/switch': (b) => ((b as { force?: boolean }).force
+        ? { body: { ok: true } }
+        : { status: 409, body: { error: '有会话正在执行', running: 2 } }),
+    };
+    await openMenu();
+    click(pickOf('Bob')!);
+    await flush();
+    expect(menu()!.textContent).toContain('有 2 个会话正在执行，切换到「Bob」会停止它们。');
+    expect(reload).not.toHaveBeenCalled();
+    click(button('强制切换')!);
+    await flush();
+    const sw = calls.filter((c) => c.url === '/api/accounts/switch');
+    expect(sw.map((c) => c.body)).toEqual([{ id: 'a1', force: false }, { id: 'a1', force: true }]);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('点当前账号只关闭弹层，不发切换请求', async () => {
+    routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }) };
+    await openMenu();
+    click(pickOf('cosyeey')!);
+    await flush();
+    expect(menu()).toBeNull();
+    expect(calls.some((c) => c.url === '/api/accounts/switch')).toBe(false);
+  });
+});
+
+describe('管理账号面板', () => {
+  it('从弹层底部打开：按组列出全部账号（包括没登录 / 已失效），卡片带状态标记与对应操作；Esc 关闭', async () => {
+    routes = { 'GET /api/accounts': () => ({ body: mixedList() }) };
+    await openManager();
+    expect(manager()).not.toBeNull();
+    expect(menu()).toBeNull();
+    // agy 请求失败：不显示 Antigravity 组，其它组照常
+    expect([...manager()!.querySelectorAll('section')].map((s) => s.getAttribute('aria-label'))).toEqual(['Claude 订阅', 'API', 'Kiro']);
+    expect(cards('Claude 订阅').length).toBe(4);
+    expect(section('Claude 订阅')!.querySelector('.cz-acct-mgr__count')?.textContent).toBe('4');
+    // 每组有自己的添加按钮
+    expect(btnIn(section('Claude 订阅'), '用 claude.ai 登录')).toBeDefined();
+    expect(btnIn(section('API'), '添加 API Key')).toBeDefined();
+    expect(btnIn(section('Kiro'), '登录 Kiro')).toBeDefined();
+
+    const cur = cardOf('Claude 订阅', 'cosyeey')!;
+    expect(cur.classList.contains('is-active')).toBe(true);
+    expect(cur.querySelector('.cz-acct-card__badge')?.textContent).toBe('当前');
+    expect(btnIn(cur, '切换')).toBeUndefined();
+    expect(btnIn(cur, '改名')).toBeUndefined(); // 默认账号不能改名
+    const rm = cur.querySelector<HTMLButtonElement>('[aria-label="移除账号「cosyeey」"]')!;
+    expect(rm.disabled).toBe(true);
+    expect(rm.title).toBe('默认账号不能移除');
+
+    const bob = cardOf('Claude 订阅', 'Bob')!;
+    expect(bob.querySelector('.cz-acct-card__sub')?.textContent).toBe('工作');
+    expect(btnIn(bob, '切换')).toBeDefined();
+    expect(btnIn(bob, '改名')).toBeDefined();
+    expect(bob.querySelector<HTMLButtonElement>('[aria-label="移除账号「Bob」"]')!.disabled).toBe(false);
+
+    const off = cardOf('Claude 订阅', '没登录')!;
+    expect(off.classList.contains('is-off')).toBe(true);
+    expect(off.querySelector('.cz-acct-card__badge.is-danger')?.textContent).toBe('需要登录');
+    expect(btnIn(off, '重新登录')).toBeDefined();
+    expect(btnIn(off, '切换')).toBeUndefined();
+    const exp = cardOf('Claude 订阅', 'Expired')!;
+    expect(exp.querySelector('.cz-acct-card__badge')?.textContent).toBe('登录已失效');
+    expect(btnIn(exp, '重新登录')).toBeDefined();
+
+    press(document, 'Escape');
+    await flush();
+    expect(manager()).toBeNull();
+  });
+
+  it('卡片显示全部额度，一条一行带重置时间；读取失败显示淡提示', async () => {
+    const soon = Date.now() + (2 * 60 + 14) * 60_000;
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })]) }),
+      'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [
+        { kind: 'session', percent: 32, severity: 'normal', resetsAt: soon },
+        { kind: 'weekly', percent: 91, severity: 'warning', resetsAt: null },
+      ] } }),
+      'GET /api/usage?account=a1': () => ({ status: 500, body: { error: 'x' } }),
+    };
+    await openManager();
+    const lines = [...cardOf('Claude 订阅', 'cosyeey')!.querySelectorAll('.cz-acctq__line')];
+    expect(lines.map((l) => l.querySelector('.cz-acctq__name')?.textContent)).toEqual(['5h', '本周']);
+    expect(lines[0].textContent).toContain('32%');
+    expect(lines[0].querySelector('.cz-acctq__reset')?.textContent).toContain('2小时14分后重置');
+    expect(lines[1].classList.contains('is-warning')).toBe(true);
+    expect(lines[1].textContent).toContain('91%');
+    expect(cardOf('Claude 订阅', 'Bob')!.textContent).toContain('额度读取失败');
+    // 打开面板不会重复读额度
+    expect(calls.filter((c) => c.url === '/api/usage?account=default').length).toBe(1);
+  });
+
+  it('账号到期时间：显示推算订阅到期与登录有效期（正常 / 7天内警告）；已失效改成标记；API 只显示计费说明', async () => {
     vi.useFakeTimers();
     const now = new Date(2026, 10, 24, 12, 0).getTime();
     vi.setSystemTime(now);
@@ -214,132 +330,134 @@ describe('AccountMenu', () => {
       ]) }),
       'GET /api/usage?account=default': () => ({ body: { at: now, limits: [] } }),
       'GET /api/usage?account=a1': () => ({ body: { at: now, limits: [] } }),
-      'GET /api/usage?account=a2': () => ({ body: { at: now, limits: [] } }),
     };
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
-      await flush();
-      const items = document.querySelectorAll('.cz-sidebar__menu-item');
-      // 1. 正常订阅 + 正常登录
-      const d0 = items[0].querySelector('.cz-acct-row__dates')!;
-      expect(d0.textContent).toBe('订阅约 12/09 到期 · 登录至 12/16');
-      expect(d0.querySelector('.cz-acct-row__date')?.getAttribute('title')).toContain('按订阅开始日 2026/11/09 每月推算');
-      // 2. 缺订阅时间 + 7 天内登录警告
-      const d1 = items[1].querySelector('.cz-acct-row__dates')!;
-      expect(d1.textContent).toBe('登录 3 天后失效');
-      expect(d1.querySelector('.cz-acct-row__date.is-warn')).not.toBeNull();
-      // 3. 无 plan 不显示订阅推算，只显示已失效（danger）
-      const d2 = items[2].querySelector('.cz-acct-row__dates')!;
-      expect(d2.textContent).toBe('登录已失效');
-      expect(d2.querySelector('.cz-acct-row__date.is-danger')).not.toBeNull();
-      // 4. API 账号不显示日期行
-      expect(items[3].querySelector('.cz-acct-row__dates')).toBeNull();
+      await openManager();
+      const meta = (sec: string, name: string) =>
+        [...(cardOf(sec, name)?.querySelectorAll('.cz-acct-card__meta > span') ?? [])].map((s) => s.textContent);
+      expect(meta('Claude 订阅', 'cosyeey')).toEqual(['订阅约 12/09 到期', '登录至 12/16']);
+      expect(cardOf('Claude 订阅', 'cosyeey')!.querySelector('.cz-acct-card__meta > span')?.getAttribute('title')).toContain('按订阅开始日 2026/11/09 每月推算');
+      expect(meta('Claude 订阅', 'WarnUser')).toEqual(['登录 3 天后失效']);
+      expect(cardOf('Claude 订阅', 'WarnUser')!.querySelector('.cz-acct-card__meta .is-warn')).not.toBeNull();
+      const exp = cardOf('Claude 订阅', 'ExpUser')!;
+      expect(exp.querySelector('.cz-acct-card__meta')).toBeNull();
+      expect(exp.querySelector('.cz-acct-card__badge')?.textContent).toBe('登录已失效');
+      expect(meta('API', 'ApiAcc')).toEqual(['按量计费 · 未配置模型映射']);
+      // 已失效的账号不取额度，也不在弹层里
+      expect(calls.some((c) => c.url === '/api/usage?account=a2')).toBe(false);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('有执行中的会话时提示，强制切换带 force 并刷新页面', async () => {
+  it('有隐藏的重复账号时显示提示，点「清理」调用 dedupe 并刷新列表，报告跳过的个数', async () => {
+    let dup = 2;
+    routes = {
+      'GET /api/accounts': () => ({ body: { ...list([entry({})]), duplicates: dup } }),
+      'POST /api/accounts/dedupe': () => {
+        dup = 1;
+        return { body: { removed: 1, skipped: 1 } };
+      },
+    };
+    await openManager();
+    const note = () => section('Claude 订阅')!.querySelector('.cz-acct-dup');
+    expect(note()?.textContent).toContain('有 2 个重复的账号已隐藏');
+    click(btnIn(note(), '清理')!);
+    await flush();
+    expect(calls.some((c) => c.method === 'POST' && c.url === '/api/accounts/dedupe')).toBe(true);
+    expect(note()!.textContent).toContain('有 1 个重复的账号已隐藏');
+    expect(note()!.textContent).toContain('已清理 1 个；1 个正在使用');
+    // 剩下的 1 个就是刚才跳过的那个：不再给「清理」按钮
+    expect(btnIn(note(), '清理')).toBeUndefined();
+  });
+
+  it('没有重复账号时不显示清理提示', async () => {
+    routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }) };
+    await openManager();
+    expect(document.querySelector('.cz-acct-dup')).toBeNull();
+  });
+
+  it('卡片上切换遇到执行中的会话：提示放在面板里，强制切换后刷新页面', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })]) }),
       'POST /api/accounts/switch': (b) => ((b as { force?: boolean }).force
         ? { body: { ok: true } }
-        : { status: 409, body: { error: '有会话正在执行', running: 2 } }),
+        : { status: 409, body: { error: '有会话正在执行', running: 1 } }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await openManager();
+    click(btnIn(cardOf('Claude 订阅', 'Bob'), '切换')!);
     await flush();
-    click(button('Bob')!);
+    expect(manager()!.querySelector('.cz-sidebar__acct-confirm')?.textContent).toContain('有 1 个会话正在执行');
+    click(btnIn(manager(), '强制切换')!);
     await flush();
-    expect(document.body.textContent).toContain('有 2 个会话正在执行');
-    expect(reload).not.toHaveBeenCalled();
-    click(button('强制切换')!);
-    await flush();
-    const sw = calls.filter((c) => c.url === '/api/accounts/switch');
-    expect(sw.map((c) => c.body)).toEqual([{ id: 'a1', force: false }, { id: 'a1', force: true }]);
+    expect(calls.filter((c) => c.url === '/api/accounts/switch').map((c) => c.body)).toEqual([{ id: 'a1', force: false }, { id: 'a1', force: true }]);
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it('没有登录凭据的账号点击后重新登录', async () => {
+  it('没登录的账号点「重新登录」：带 accountId 发起登录，对话框叠在面板上', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', label: '工作', name: null, loggedIn: false, active: false, isDefault: false })]) }),
       'POST /api/accounts/login': () => ({ body: { loginId: 'L1', status: 'waiting', url: 'https://claude.ai/oauth/authorize?x=1', accountId: null, error: null } }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    click(button('工作')!);
+    await openManager();
+    click(btnIn(cardOf('Claude 订阅', '工作'), '重新登录')!);
     await flush();
     expect(calls.find((c) => c.url === '/api/accounts/login')?.body).toEqual({ accountId: 'a1' });
     expect(calls.some((c) => c.url === '/api/accounts/switch')).toBe(false);
-    const dlg = document.querySelector('[role="dialog"]')!;
-    expect(dlg.textContent).toContain('重新登录：工作');
-    expect(dlg.querySelector('a')?.getAttribute('href')).toBe('https://claude.ai/oauth/authorize?x=1');
+    expect(dlg()!.textContent).toContain('重新登录：工作');
+    expect(dlg()!.querySelector('a')?.getAttribute('href')).toBe('https://claude.ai/oauth/authorize?x=1');
+    // 面板还在下面
+    expect(manager()).not.toBeNull();
   });
 
-  const type = (el: HTMLInputElement, v: string) => act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, v);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  const dlgBtn = (text: string) =>
-    // 取最后一个：模型映射表里也有个「添加」（加自定义模型），底部提交按钮在它后面
-    [...document.querySelectorAll('[role="dialog"] button')].reverse().find((b) => b.textContent === text) as HTMLButtonElement;
-  const apiEntry = entry({
-    id: 'a2', label: '代理', name: '代理', plan: 'API', active: false, isDefault: false,
-    api: { baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', keyHint: '3456' },
-  });
-
-  it('API 账号：副标题显示主机名，不取额度；添加时可切到 API Key 方式并提交 Base URL / 密钥', async () => {
+  it('API 组：卡片副标题是主机名、不取额度；「添加 API Key」直接打开 API 表单并提交 Base URL / 密钥', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({}), apiEntry]) }),
       'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
       'POST /api/accounts/api': () => ({ body: { ok: true, id: 'a3' } }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
+    await openManager();
     expect(entrySubtitle(apiEntry)).toBe('proxy.example.com');
+    const card = cardOf('API', '代理')!;
+    expect(card.querySelector('.cz-acct-card__sub')?.textContent).toBe('proxy.example.com');
+    expect(btnIn(card, '编辑')).toBeDefined();
+    expect(btnIn(card, '改名')).toBeUndefined(); // API 账号在编辑里改名
     expect(calls.filter((c) => c.url.startsWith('/api/usage')).map((c) => c.url)).toEqual(['/api/usage?account=default']);
-    // 当前账号不能删，但 API 账号（非当前）有修改和移除
-    expect(document.querySelector('[aria-label="修改 API 账号与模型映射"]')).not.toBeNull();
 
-    click(document.querySelector<HTMLElement>('[aria-label="添加 Claude 账号"]')!);
+    click(btnIn(section('API'), '添加 API Key')!);
     await flush();
-    click([...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'API Key')!);
-    await flush();
-    const dlg = document.querySelector('[role="dialog"]')!;
+    const d = dlg()!;
+    // 入口已经定了类型：没有「添加方式」切换
+    expect(d.querySelector('[role="radiogroup"][aria-label="添加方式"]')).toBeNull();
     // 主字段：备注名 / Base URL / API Key（模型映射表里的输入框都带 cz-mmap__input，排除掉）
-    const inputs = dlg.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
+    const inputs = d.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
     expect(inputs.length).toBe(3);
     expect(dlgBtn('添加').disabled).toBe(true); // 没填密钥
     type(inputs[1], 'https://gw.example.com/');
     type(inputs[2], 'sk-test-123456789');
-    click([...dlg.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Bearer')!);
+    click([...d.querySelectorAll('[role="radio"]')].find((b) => b.textContent === 'Bearer')!);
     click(dlgBtn('添加'));
     await flush();
     expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
       label: '', baseUrl: 'https://gw.example.com/', apiKey: 'sk-test-123456789', authType: 'authToken', models: null,
     });
-    expect(document.body.textContent).toContain('已添加');
-    expect(button('切换到该账号')).toBeDefined();
+    expect(dlg()!.textContent).toContain('已添加');
+    expect(dlgBtn('切换到该账号')).toBeDefined();
   });
 
-  it('修改 API 账号：预填 Base URL，密钥留空不提交', async () => {
+  it('修改 API 账号：预填 Base URL，密钥留空不提交；保存后回到面板', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({}), apiEntry]) }),
       'GET /api/usage?account=default': () => ({ body: { at: 1, limits: [] } }),
       'POST /api/accounts/api': () => ({ body: { ok: true, id: 'a2' } }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await openManager();
+    click(btnIn(cardOf('API', '代理'), '编辑')!);
     await flush();
-    click(document.querySelector('[aria-label="修改 API 账号与模型映射"]')!);
-    await flush();
-    const dlg = document.querySelector('[role="dialog"]')!;
-    expect(dlg.textContent).toContain('修改 API 账号：代理');
-    expect(dlg.querySelector('[role="radiogroup"][aria-label="添加方式"]')).toBeNull();
-    const inputs = dlg.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
+    const d = dlg()!;
+    expect(d.textContent).toContain('修改 API 账号：代理');
+    expect(d.querySelector('[role="radiogroup"][aria-label="添加方式"]')).toBeNull();
+    const inputs = d.querySelectorAll<HTMLInputElement>('.cz-acct-dlg__input:not(.cz-mmap__input)');
     expect(inputs[1].value).toBe('https://proxy.example.com/v1');
     expect(inputs[2].placeholder).toContain('…3456');
     click(dlgBtn('保存'));
@@ -348,36 +466,82 @@ describe('AccountMenu', () => {
     expect(calls.find((c) => c.url === '/api/accounts/api')?.body).toEqual({
       id: 'a2', label: '代理', baseUrl: 'https://proxy.example.com/v1', authType: 'authToken', models: null,
     });
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(dlg()).toBeNull();
+    expect(manager()).not.toBeNull();
+  });
+
+  it('改名：Esc 只取消改名不关面板，Enter 保存；移除走确认（双击直接移除）', async () => {
+    let accts = [entry({}), entry({ id: 'a1', label: '工作', name: 'Bob', active: false, isDefault: false })];
+    routes = {
+      'GET /api/accounts': () => ({ body: list(accts) }),
+      'POST /api/accounts/label': (b) => {
+        const { id, label } = b as { id: string; label: string };
+        accts = accts.map((x) => (x.id === id ? { ...x, label } : x));
+        return { body: { ok: true } };
+      },
+      'POST /api/accounts/remove': (b) => {
+        accts = accts.filter((x) => x.id !== (b as { id: string }).id);
+        return { body: { ok: true } };
+      },
+    };
+    await openManager();
+    click(btnIn(cardOf('Claude 订阅', 'Bob'), '改名')!);
+    await flush();
+    const inp = manager()!.querySelector<HTMLInputElement>('[aria-label="修改备注名"]')!;
+    expect(inp.value).toBe('工作');
+    press(inp, 'Escape');
+    await flush();
+    expect(manager()!.querySelector('[aria-label="修改备注名"]')).toBeNull();
+    expect(manager()).not.toBeNull();
+
+    click(btnIn(cardOf('Claude 订阅', 'Bob'), '改名')!);
+    await flush();
+    const inp2 = manager()!.querySelector<HTMLInputElement>('[aria-label="修改备注名"]')!;
+    type(inp2, '团队');
+    press(inp2, 'Enter');
+    await flush();
+    expect(calls.find((c) => c.url === '/api/accounts/label')?.body).toEqual({ id: 'a1', label: '团队' });
+    expect(cardOf('Claude 订阅', 'Bob')!.querySelector('.cz-acct-card__sub')?.textContent).toBe('团队');
+
+    dblclick(cardOf('Claude 订阅', 'Bob')!.querySelector('[aria-label="移除账号「Bob」"]')!);
+    await flush();
+    expect(calls.find((c) => c.url === '/api/accounts/remove')?.body).toEqual({ id: 'a1' });
+    expect(cardOf('Claude 订阅', 'Bob')).toBeUndefined();
   });
 });
 
 describe('并行模式', () => {
-  it('账号菜单里选另一个账号：只换新会话用的账号，不刷新页面', async () => {
+  it('弹层里选另一个账号：只换新会话用的账号，不刷新页面，关闭弹层', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })], 'parallel') }),
       'POST /api/accounts/switch': () => ({ body: { ok: true } }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(document.body.textContent).toContain('选择新会话使用的账号');
-    click(button('Bob')!);
+    await openMenu();
+    expect(menu()!.textContent).not.toContain('选择新会话使用的账号');
+    click(pickOf('Bob')!);
     await flush();
     expect(calls.find((c) => c.url === '/api/accounts/switch')?.body).toEqual({ id: 'a1', force: false });
     expect(reload).not.toHaveBeenCalled();
-    expect(document.querySelector('.cz-sidebar__menu')).toBeNull();
+    expect(menu()).toBeNull();
   });
 
-  const openMenu = async () => {
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
+  it('管理面板里切换：不刷新页面，面板保持打开', async () => {
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })], 'parallel') }),
+      'POST /api/accounts/switch': () => ({ body: { ok: true } }),
+    };
+    await openManager();
+    click(btnIn(cardOf('Claude 订阅', 'Bob'), '切换')!);
     await flush();
-  };
+    expect(calls.find((c) => c.url === '/api/accounts/switch')?.body).toEqual({ id: 'a1', force: false });
+    expect(reload).not.toHaveBeenCalled();
+    expect(manager()).not.toBeNull();
+  });
+
   const seg = (label: string) =>
     [...document.querySelectorAll('[role="radio"]')].find((b) => b.textContent === label) as HTMLButtonElement;
 
-  it('模式切换在菜单里第一个账号上方，分段选择；默认切换模式，选并行模式不刷新页面', async () => {
+  it('模式切换在弹层顶部、第一个账号上方，说明放在悬停提示里；默认切换模式，选并行模式不刷新页面', async () => {
     let mode: AccountMode = 'switch';
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})], mode) }),
@@ -385,11 +549,11 @@ describe('并行模式', () => {
     };
     await openMenu();
     expect(document.querySelector('[role="switch"]')).toBeNull();
-    const menu = document.querySelector('.cz-sidebar__menu')!;
-    const group = menu.querySelector('[role="radiogroup"]')!;
-    expect(group.compareDocumentPosition(menu.querySelector('.cz-sidebar__menu-item')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const group = menu()!.querySelector('[role="radiogroup"]')!;
+    expect(group.compareDocumentPosition(menu()!.querySelector('.cz-acct-pick')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(seg('切换模式').getAttribute('aria-checked')).toBe('true');
     expect(seg('并行模式').getAttribute('aria-checked')).toBe('false');
+    expect(seg('并行模式').title).not.toBe('');
     click(seg('切换模式'));
     await flush();
     expect(calls.some((c) => c.url === '/api/accounts/mode')).toBe(false);
@@ -438,15 +602,7 @@ describe('Antigravity 多账号', () => {
   const agyList = (l: AgyAccountEntry[], installed = true, login: AccountLogin | null = null): AgyAccountList => ({
     installed, list: l, login,
   });
-  const type = (el: HTMLInputElement, v: string) => act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, v);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  const press = (el: EventTarget, key: string) => act(() => {
-    el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
-  });
-  const groupBtn = (name: string) =>
-    [...document.querySelectorAll<HTMLButtonElement>('.cz-acct-grp__head')].find((b) => b.textContent?.includes(name));
+  const dlgInput = () => dlg()!.querySelector<HTMLInputElement>('.cz-acct-dlg__input')!;
 
   it('agyTitle / agySubtitle：没备注名用邮箱当标题，默认账号兜底「本机登录」，任务数缩短为「N 个执行中」', () => {
     expect(agyTitle(agyEntry({}))).toBe('本机登录');
@@ -459,64 +615,38 @@ describe('Antigravity 多账号', () => {
     expect(agySubtitle(agyEntry({ id: 'a3', label: '个人', plan: null, loggedIn: null, isDefault: false }))).toBe('检测中…');
   });
 
-  it('分组默认折叠、localStorage 记忆、agy 请求失败不影响 Claude', async () => {
-    // 0. 没有记忆时两个分组都折叠（旧键 cz-acct-groups 里的展开状态不再生效）
-    localStorage.clear();
-    localStorage.setItem('cz-acct-groups', JSON.stringify({ claude: true, agy: true }));
-    routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }), 'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([agyEntry({})]) }) };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(groupBtn('Claude')?.getAttribute('aria-expanded')).toBe('false');
-    expect(groupBtn('Antigravity')?.getAttribute('aria-expanded')).toBe('false');
-    expect(document.querySelectorAll('.cz-acct-row').length).toBe(0);
-    act(() => root?.unmount());
-    localStorage.setItem('cz-acct-groups-v2', JSON.stringify({ claude: true, agy: false }));
-
-    // 1. agy 请求 404 时不显示 Antigravity 组，Claude 照常工作
+  it('弹层只列出已登录的 Antigravity 账号（检测中 / 没登录的不出现），分组名悬停说明用途；agy 请求失败不影响 Claude', async () => {
     routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }) };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(groupBtn('Claude')?.getAttribute('aria-expanded')).toBe('true');
-    expect(groupBtn('Antigravity')).toBeUndefined();
+    await openMenu();
+    expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
+    expect(picks().length).toBe(1);
     act(() => root?.unmount());
 
-    // 2. agy 返回数据：默认折叠，不渲染 agy 行；展开后写入 localStorage 并在重挂载后记住
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([agyEntry({}), agyEntry({ id: 'w', label: '工作', active: false, isDefault: false })]) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([
+        agyEntry({}),
+        agyEntry({ id: 'w', label: '工作', active: false, isDefault: false }),
+        agyEntry({ id: 'p', label: '个人', plan: null, loggedIn: null, active: false, isDefault: false }),
+        agyEntry({ id: 'x', label: '备用', plan: null, loggedIn: false, active: false, isDefault: false }),
+      ]) }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(groupBtn('Antigravity')?.getAttribute('aria-expanded')).toBe('false');
-    expect(document.querySelectorAll('.cz-acct-row--agy').length).toBe(0);
-    click(groupBtn('Antigravity')!);
-    await flush();
-    expect(groupBtn('Antigravity')?.getAttribute('aria-expanded')).toBe('true');
-    expect(document.querySelectorAll('.cz-acct-row--agy').length).toBe(2);
-    expect(JSON.parse(localStorage.getItem('cz-acct-groups-v2')!)).toEqual({ claude: true, agy: true });
-
-    // 重新挂载读取 localStorage
-    act(() => root?.unmount());
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    expect(groupBtn('Antigravity')?.getAttribute('aria-expanded')).toBe('true');
-    expect(document.querySelectorAll('.cz-acct-row--agy').length).toBe(2);
+    await openMenu();
+    const sec = menu()!.querySelector('[aria-label="Antigravity"]')!;
+    expect([...sec.querySelectorAll('.cz-acct-pick__name b')].map((b) => b.textContent)).toEqual(['本机登录', '工作']);
+    expect(sec.querySelector('.cz-acct-pick-grp')?.getAttribute('title')).toContain('委派任务');
   });
 
-  it('agy 行：没备注名显示邮箱、套餐缩成小标签、显示各组 5h / 本周额度；没登录的不显示额度；打开菜单带 refresh', async () => {
-    localStorage.setItem('cz-acct-groups-v2', JSON.stringify({ claude: true, agy: true }));
+  it('agy 额度：弹层取最先重置的窗口，管理面板按模型组列出全部窗口；没登录的不显示额度；打开时带 refresh', async () => {
+    const t = Date.now();
     const quota = {
       at: 1,
       groups: [
         { name: 'Gemini', buckets: [
-          { window: '5h', percent: 12, severity: 'normal' as const, resetsAt: null },
-          { window: 'weekly', percent: 85, severity: 'warning' as const, resetsAt: null },
+          { window: '5h', percent: 12, severity: 'normal' as const, resetsAt: t + 3 * 3_600_000 },
+          { window: 'weekly', percent: 85, severity: 'warning' as const, resetsAt: t + 3 * 86_400_000 },
         ] },
-        { name: 'Claude · GPT', buckets: [{ window: '5h', percent: 100, severity: 'critical' as const, resetsAt: null }] },
+        { name: 'Claude · GPT', buckets: [{ window: '5h', percent: 100, severity: 'critical' as const, resetsAt: t + 3_600_000 }] },
       ],
     };
     routes = {
@@ -526,47 +656,72 @@ describe('Antigravity 多账号', () => {
         agyEntry({ id: 'w', label: '工作', email: 'w@example.com', quota: null, plan: null, loggedIn: false, active: false, isDefault: false }),
       ]) }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
+    await openMenu();
     expect(calls.some((c) => c.url === '/api/agy-accounts?refresh=1')).toBe(true);
-    const rows = document.querySelectorAll('.cz-acct-row--agy');
-    expect(rows[0].querySelector('.cz-sidebar__menu-name')?.textContent).toBe('me@example.com');
-    const chip = rows[0].querySelector('.cz-acct-chip');
+    const row = pickOf('me@example.com')!;
+    const chip = row.querySelector('.cz-acct-chip');
     expect(chip?.textContent).toBe('Pro');
     expect(chip?.getAttribute('title')).toBe('Google AI Pro');
-    const bars = [...rows[0].querySelectorAll('[role="progressbar"]')];
-    expect(bars.map((b) => b.getAttribute('aria-label'))).toEqual(['Gemini 5 小时已用', 'Gemini 本周已用', 'Claude · GPT 5 小时已用']);
+    const brief = row.querySelector('.cz-acctq-brief')!;
+    expect(brief.classList.contains('is-critical')).toBe(true);
+    expect(brief.textContent).toBe('5h100%');
+    expect(brief.getAttribute('title')).toMatch(/^Claude · GPT 5h 100% · /);
+    expect(row.querySelector('[role="progressbar"]')?.getAttribute('aria-label')).toBe('Claude · GPT 5h已用');
+
+    click(button('管理账号')!);
+    await flush();
+    const card = cardOf('Antigravity', 'me@example.com')!;
+    const bars = [...card.querySelectorAll('[role="progressbar"]')];
+    expect(bars.map((b) => b.getAttribute('aria-label'))).toEqual(['Gemini 5h已用', 'Gemini 本周已用', 'Claude · GPT 5h已用']);
     expect(bars.map((b) => b.getAttribute('aria-valuenow'))).toEqual(['12', '85', '100']);
-    expect(rows[0].querySelector('.cz-acctq__grp.is-critical')?.textContent).toContain('Claude · GPT');
-    expect(rows[0].querySelector('.cz-acctq__win.is-warning')?.textContent).toContain('85%');
-    // 有备注名时邮箱进副标题；没登录不显示额度
-    expect(rows[1].querySelector('.cz-sidebar__menu-name')?.textContent).toBe('工作');
-    expect(rows[1].querySelector('.cz-sidebar__menu-path')?.textContent).toBe('w@example.com · 需要登录');
-    expect(rows[1].querySelector('.cz-acctq')).toBeNull();
+    expect([...card.querySelectorAll('.cz-acctq__grp-name')].map((g) => g.textContent)).toEqual(['Gemini', 'Claude · GPT']);
+    expect(card.querySelector('.cz-acctq__line.is-warning')?.textContent).toContain('85%');
+    // 有备注名时邮箱进副标题；没登录不显示额度，给「重新登录」
+    const off = cardOf('Antigravity', '工作')!;
+    expect(off.querySelector('.cz-acct-card__sub')?.textContent).toBe('w@example.com');
+    expect(off.querySelector('.cz-acct-card__badge')?.textContent).toBe('需要登录');
+    expect(off.querySelector('.cz-acctq-lines')).toBeNull();
+    expect(btnIn(off, '重新登录')).toBeDefined();
   });
 
-  it('未安装 Antigravity CLI：显示组与说明、不显示＋按钮，「添加到」里禁用 Antigravity', async () => {
+  it('未安装 Antigravity CLI：弹层不显示该组；管理面板里说明没安装，不给添加按钮', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
       'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([], false) }),
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
+    await openManager();
+    expect(section('Antigravity')!.textContent).toContain('没有安装 Antigravity CLI');
+    expect(btnIn(section('Antigravity'), '登录 Antigravity')).toBeUndefined();
+    expect(cards('Antigravity').length).toBe(0);
+    press(document, 'Escape');
+    await flush();
     click(document.querySelector('[aria-label="账户菜单"]')!);
     await flush();
-    expect(document.querySelector('[aria-label="添加 Antigravity 账号"]')).toBeNull();
-    click(groupBtn('Antigravity')!);
-    await flush();
-    expect(document.body.textContent).toContain('没有安装 Antigravity CLI');
-
-    click(document.querySelector<HTMLElement>('[aria-label="添加 Claude 账号"]')!);
-    await flush();
-    const agyRadio = [...document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="添加到"] [role="radio"]')]
-      .find((b) => b.textContent === 'Antigravity')!;
-    expect(agyRadio.disabled).toBe(true);
+    expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
   });
 
-  it('切换 agy 账号不刷新页面、不关菜单；loggedIn=null 非当前行也允许切换；默认/当前/running>0 不可移除', async () => {
+  it('弹层里切换 agy 账号不刷新页面、不关弹层', async () => {
+    let agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', plan: 'Ultra', active: false, isDefault: false })];
+    routes = {
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys) }),
+      'POST /api/agy-accounts/switch': (b) => {
+        const id = (b as { id: string }).id;
+        agys = agys.map((x) => ({ ...x, active: x.id === id }));
+        return { body: { ok: true } };
+      },
+    };
+    await openMenu();
+    click(pickOf('工作')!);
+    await flush();
+    expect(calls.find((c) => c.url === '/api/agy-accounts/switch')?.body).toEqual({ id: 'w' });
+    expect(reload).not.toHaveBeenCalled();
+    expect(menu()).not.toBeNull();
+    expect(pickOf('工作')!.classList.contains('is-active')).toBe(true);
+    expect(pickOf('本机登录')!.classList.contains('is-active')).toBe(false);
+  });
+
+  it('管理面板 agy 卡片：默认不能改名 / 移除；执行中不能移除；检测中的也能切换，切换后面板不关', async () => {
     let agys = [
       agyEntry({}),
       agyEntry({ id: 'w', label: '工作', plan: 'Ultra', active: false, isDefault: false, running: 2 }),
@@ -581,35 +736,32 @@ describe('Antigravity 多账号', () => {
         return { body: { ok: true } };
       },
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    click(groupBtn('Antigravity')!);
-    await flush();
-    // 每行都有移除按钮：默认账号不能改名，移除置灰；非默认运行中可改名、移除置灰；id='p' 可改名可移除
-    const agyRows = [...document.querySelectorAll<HTMLElement>('.cz-acct-row--agy')];
-    const rmBtn = (r: HTMLElement) => r.querySelector<HTMLButtonElement>('[aria-label="移除账号"]')!;
-    expect(agyRows[0].style.getPropertyValue('--acts')).toBe('1');
-    expect(agyRows[0].querySelector('[aria-label="修改备注名"]')).toBeNull();
-    expect(rmBtn(agyRows[0]).disabled).toBe(true);
-    expect(rmBtn(agyRows[0]).title).toBe('默认账号不能移除');
-    expect(agyRows[1].classList.contains('has-actions')).toBe(true);
-    expect(agyRows[1].querySelector('[aria-label="修改备注名"]')).not.toBeNull();
-    expect(rmBtn(agyRows[1]).disabled).toBe(true);
-    expect(rmBtn(agyRows[1]).title).toBe('有 2 个委派任务正在执行，结束后才能移除');
-    expect(agyRows[1].querySelector('.cz-sidebar__menu-path')?.getAttribute('title')).toBe('2 个执行中');
-    expect(rmBtn(agyRows[2]).disabled).toBe(false);
+    await openManager();
+    const rm = (name: string) => cardOf('Antigravity', name)!.querySelector<HTMLButtonElement>(`[aria-label="移除账号「${name}」"]`)!;
+    const def = cardOf('Antigravity', '本机登录')!;
+    expect(btnIn(def, '改名')).toBeUndefined();
+    expect(rm('本机登录').disabled).toBe(true);
+    expect(rm('本机登录').title).toBe('默认账号不能移除');
 
-    // 点击 loggedIn=null 的非当前行「个人」
-    click(agyRows[2].querySelector('.cz-acct-row__main')!);
+    const busy = cardOf('Antigravity', '工作')!;
+    expect(busy.querySelector('.cz-acct-card__sub')?.textContent).toBe('2 个委派执行中');
+    expect(btnIn(busy, '改名')).toBeDefined();
+    expect(rm('工作').disabled).toBe(true);
+    expect(rm('工作').title).toBe('有 2 个委派任务正在执行，结束后才能移除');
+
+    const pending = cardOf('Antigravity', '个人')!;
+    expect(pending.querySelector('.cz-acct-card__sub')?.textContent).toBe('检测中…');
+    expect(pending.classList.contains('is-off')).toBe(false);
+    expect(rm('个人').disabled).toBe(false);
+    click(btnIn(pending, '切换')!);
     await flush();
     expect(calls.find((c) => c.url === '/api/agy-accounts/switch')?.body).toEqual({ id: 'p' });
     expect(reload).not.toHaveBeenCalled();
-    expect(document.querySelector('.cz-sidebar__menu')).not.toBeNull();
-    expect(document.querySelectorAll('.cz-acct-row--agy')[2].classList.contains('is-active')).toBe(true);
+    expect(manager()).not.toBeNull();
+    expect(cardOf('Antigravity', '个人')!.classList.contains('is-active')).toBe(true);
   });
 
-  it('＋按钮预选对应组且不触发折叠；行内改名 Esc 不关菜单、Enter 保存', async () => {
+  it('agy 改名：Esc 只取消改名不关面板，Enter 保存', async () => {
     let agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', active: false, isDefault: false })];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
@@ -620,43 +772,27 @@ describe('Antigravity 多账号', () => {
         return { body: { ok: true } };
       },
     };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
+    await openManager();
+    click(btnIn(cardOf('Antigravity', '工作'), '改名')!);
     await flush();
-    // Antigravity 组此时折叠：点＋直接预选 Antigravity，且不展开该组
-    click(document.querySelector('[aria-label="添加 Antigravity 账号"]')!);
-    await flush();
-    expect(groupBtn('Antigravity')?.getAttribute('aria-expanded')).toBe('false');
-    const agyRadio = [...document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="添加到"] [role="radio"]')]
-      .find((b) => b.textContent === 'Antigravity')!;
-    expect(agyRadio.getAttribute('aria-checked')).toBe('true');
-    click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
-    await flush();
-
-    // 展开后测试行内改名：Esc 取消但不关菜单，再进入改名 Enter 保存
-    click(groupBtn('Antigravity')!);
-    await flush();
-    const editBtn = document.querySelectorAll('.cz-acct-row--agy')[1].querySelector('[aria-label="修改备注名"]')!;
-    click(editBtn);
-    await flush();
-    const inp = document.querySelector<HTMLInputElement>('.cz-acct-row__edit-input')!;
+    const inp = manager()!.querySelector<HTMLInputElement>('[aria-label="修改备注名"]')!;
     expect(inp.value).toBe('工作');
-    press(document, 'Escape');
+    press(inp, 'Escape');
     await flush();
-    expect(document.querySelector('.cz-acct-row__edit-input')).toBeNull();
-    expect(document.querySelector('.cz-sidebar__menu')).not.toBeNull();
+    expect(manager()!.querySelector('[aria-label="修改备注名"]')).toBeNull();
+    expect(manager()).not.toBeNull();
 
-    click(document.querySelectorAll('.cz-acct-row--agy')[1].querySelector('[aria-label="修改备注名"]')!);
+    click(btnIn(cardOf('Antigravity', '工作'), '改名')!);
     await flush();
-    const inp2 = document.querySelector<HTMLInputElement>('.cz-acct-row__edit-input')!;
+    const inp2 = manager()!.querySelector<HTMLInputElement>('[aria-label="修改备注名"]')!;
     type(inp2, '团队');
     press(inp2, 'Enter');
     await flush();
     expect(calls.find((c) => c.url === '/api/agy-accounts/label')?.body).toEqual({ id: 'w', label: '团队' });
-    expect(document.querySelectorAll('.cz-acct-row--agy')[1].textContent).toContain('团队');
+    expect(cardOf('Antigravity', '团队')).toBeDefined();
   });
 
-  it('添加到选择、授权码失败后重新获取登录链接重试、以及取消登录', async () => {
+  it('「登录 Antigravity」：授权码失败后重新获取登录链接重试、成功后用于新的委派任务；以及取消登录', async () => {
     vi.useFakeTimers();
     let seq = 0;
     let pollState: AccountLogin = { loginId: 'L0', status: 'waiting', url: 'https://accounts.google.com/mock', accountId: null, error: null };
@@ -687,59 +823,52 @@ describe('Antigravity 多账号', () => {
     };
 
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
+      await openManager();
+      click(btnIn(section('Antigravity'), '登录 Antigravity')!);
       await flush();
-      click(document.querySelector<HTMLElement>('[aria-label="添加 Claude 账号"]')!);
-      await flush();
-      // 默认选中 Claude，切到 Antigravity
-      const agyRadio = [...document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="添加到"] [role="radio"]')]
-        .find((b) => b.textContent === 'Antigravity')!;
-      click(agyRadio);
-      await flush();
-
-      const labelInput = document.querySelector<HTMLInputElement>('[role="dialog"] .cz-acct-dlg__input')!;
-      type(labelInput, '副号');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '登录')!);
+      // 入口已经定了类型：没有「添加到」切换
+      expect(dlg()!.querySelector('[role="radiogroup"][aria-label="添加到"]')).toBeNull();
+      type(dlgInput(), '副号');
+      click(dlgBtn('登录'));
       await flush();
       expect(calls.find((c) => c.url === '/api/agy-accounts/login')?.body).toEqual({ label: '副号' });
-      expect(document.querySelector('[role="dialog"] a')?.getAttribute('href')).toBe('https://accounts.google.com/mock?s=1');
+      expect(dlg()!.querySelector('a')?.getAttribute('href')).toBe('https://accounts.google.com/mock?s=1');
 
       // 第一次提交授权码 → failed
-      type(document.querySelector<HTMLInputElement>('[role="dialog"] .cz-acct-dlg__input')!, 'bad-code');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '提交')!);
+      type(dlgInput(), 'bad-code');
+      click(dlgBtn('提交'));
       await flush();
       await act(async () => { vi.advanceTimersByTime(400); });
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('授权码无效或已过期');
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('旧的登录链接已失效');
+      expect(dlg()!.textContent).toContain('授权码无效或已过期');
+      expect(dlg()!.textContent).toContain('旧的登录链接已失效');
 
-      // 点「重新获取登录链接」：保留之前填的备注名「副号」
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '重新获取登录链接')!);
+      // 「重新获取登录链接」保留之前填的备注名
+      click(dlgBtn('重新获取登录链接'));
       await flush();
-      const loginCalls = calls.filter((c) => c.url === '/api/agy-accounts/login');
-      expect(loginCalls.map((c) => c.body)).toEqual([{ label: '副号' }, { label: '副号' }]);
+      expect(calls.filter((c) => c.url === '/api/agy-accounts/login').map((c) => c.body)).toEqual([{ label: '副号' }, { label: '副号' }]);
 
-      // 第二次提交授权码 → done → 点「用于新的委派任务」
-      type(document.querySelector<HTMLInputElement>('[role="dialog"] .cz-acct-dlg__input')!, 'good-code');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '提交')!);
+      // 第二次提交 → done → 用于新的委派任务
+      type(dlgInput(), 'good-code');
+      click(dlgBtn('提交'));
       await flush();
       await act(async () => { vi.advanceTimersByTime(400); });
       await flush();
       expect(submitCount).toBe(2);
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('登录成功');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '用于新的委派任务')!);
+      expect(dlg()!.textContent).toContain('登录成功');
+      click(dlgBtn('用于新的委派任务'));
       await flush();
       expect(calls.find((c) => c.url === '/api/agy-accounts/switch')?.body).toEqual({ id: 'agy-new' });
 
       // 取消登录流程
-      click(document.querySelector('[aria-label="添加 Antigravity 账号"]')!);
+      click(btnIn(section('Antigravity'), '登录 Antigravity')!);
       await flush();
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '登录')!);
+      click(dlgBtn('登录'));
       await flush();
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
+      click(dlgBtn('取消'));
       await flush();
       expect(calls.some((c) => c.url === '/api/agy-accounts/login/L3/cancel')).toBe(true);
+      expect(manager()).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -763,42 +892,35 @@ describe('Antigravity 多账号', () => {
       },
     };
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
+      await openManager();
+      click(btnIn(section('Antigravity'), '登录 Antigravity')!);
       await flush();
-      click(document.querySelector('[aria-label="添加 Antigravity 账号"]')!);
-      await flush();
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '登录')!);
+      click(dlgBtn('登录'));
       await flush();
 
-      // 提交授权码报错，保留该错误
-      type(document.querySelector<HTMLInputElement>('[role="dialog"] .cz-acct-dlg__input')!, 'bad');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '提交')!);
+      type(dlgInput(), 'bad');
+      click(dlgBtn('提交'));
       await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('授权码格式不对');
+      expect(dlg()!.textContent).toContain('授权码格式不对');
 
-      // 第 1 次轮询 502：显示轮询错误，但继续轮询
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
       expect(pollCount).toBe(1);
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('临时网络波动');
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('授权码格式不对');
+      expect(dlg()!.textContent).toContain('临时网络波动');
+      expect(dlg()!.textContent).toContain('授权码格式不对');
 
-      // 第 2 次轮询恢复 waiting：清掉轮询错误，但提交授权码错误仍在
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
       expect(pollCount).toBe(2);
-      expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain('临时网络波动');
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('授权码格式不对');
+      expect(dlg()!.textContent).not.toContain('临时网络波动');
+      expect(dlg()!.textContent).toContain('授权码格式不对');
 
-      // 第 3 次轮询 404：停止轮询并进入失败态，提供「重新获取登录链接」
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
       expect(pollCount).toBe(3);
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('登录已结束');
-      expect([...document.querySelectorAll('[role="dialog"] button')].some((b) => b.textContent === '重新获取登录链接')).toBe(true);
+      expect(dlg()!.textContent).toContain('登录已结束');
+      expect(dlgBtn('重新获取登录链接')).toBeDefined();
 
-      // 确认不再继续轮询
       await act(async () => { vi.advanceTimersByTime(3000); });
       await flush();
       expect(pollCount).toBe(3);
@@ -807,12 +929,11 @@ describe('Antigravity 多账号', () => {
     }
   });
 
-  it('接续重新登录（resume.accountId 非空）保留重新登录标题与 accountId；点未登录账号遇 409 显示错误且可关闭', async () => {
+  it('接续进行中的重新登录：保留标题与 accountId；卡片上重新登录遇 409 显示错误，关闭时不取消别的登录', async () => {
     vi.useFakeTimers();
     const ongoing: AccountLogin = {
       loginId: 'L-re', status: 'waiting', url: 'https://accounts.google.com/re', accountId: 'a2', error: null,
     };
-    let loginState: AccountLogin = ongoing;
     const agys = [
       agyEntry({}),
       agyEntry({ id: 'a2', label: '备用账号', plan: null, loggedIn: false, active: false, isDefault: false }),
@@ -820,7 +941,7 @@ describe('Antigravity 多账号', () => {
     ];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys, true, loginState) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys, true, ongoing) }),
       'GET /api/agy-accounts/login/L-re': () => ({ body: { ...ongoing, status: 'failed', error: '授权已过期' } }),
       'POST /api/agy-accounts/login': (b) => {
         const body = b as { accountId?: string };
@@ -829,42 +950,27 @@ describe('Antigravity 多账号', () => {
       },
     };
     try {
-      mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />);
-      click(document.querySelector('[aria-label="账户菜单"]')!);
+      await openManager();
+      // 有进行中的登录：「登录 Antigravity」接续它
+      click(btnIn(section('Antigravity'), '登录 Antigravity')!);
       await flush();
-
-      // 1. 通过 Antigravity 分组标题的「＋」接续 a2 的重新登录
-      click(document.querySelector('[aria-label="添加 Antigravity 账号"]')!);
-      await flush();
-      expect(document.querySelector('[role="dialog"] .cz-acct-dlg__title')?.textContent).toBe('重新登录：备用账号');
-
-      // 轮询变为 failed，点「重新获取登录链接」应带 accountId: 'a2'
+      expect(dlg()!.querySelector('.cz-acct-dlg__title')?.textContent).toBe('重新登录：备用账号');
       await act(async () => { vi.advanceTimersByTime(1000); });
       await flush();
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '重新获取登录链接')!);
+      click(dlgBtn('重新获取登录链接'));
       await flush();
       expect(calls.filter((c) => c.url === '/api/agy-accounts/login').at(-1)?.body).toEqual({ accountId: 'a2' });
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
+      click(dlgBtn('取消'));
       await flush();
 
-      // 2. 通过 Antigravity 组「＋」接续同样显示「重新登录：备用账号」
-      click(document.querySelector('[aria-label="添加 Antigravity 账号"]')!);
+      click(btnIn(cardOf('Antigravity', '三号'), '重新登录')!);
       await flush();
-      expect(document.querySelector('[role="dialog"] .cz-acct-dlg__title')?.textContent).toBe('重新登录：备用账号');
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
-      await flush();
-
-      // 3. 展开 Antigravity 组点未登录的「三号」→ 409 冲突错误可展示且能关闭（不误杀别的登录）
-      click(groupBtn('Antigravity')!);
-      await flush();
-      const row3 = [...document.querySelectorAll('.cz-acct-row--agy')].find((r) => r.textContent?.includes('三号'))!;
-      click(row3.querySelector('.cz-acct-row__main')!);
-      await flush();
-      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('已有另一个登录正在进行');
+      expect(dlg()!.textContent).toContain('已有另一个登录正在进行');
       const cancelBefore = calls.filter((c) => c.url.endsWith('/cancel')).length;
-      click([...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === '取消')!);
+      click(dlgBtn('取消'));
       await flush();
-      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(dlg()).toBeNull();
+      expect(manager()).not.toBeNull();
       expect(calls.filter((c) => c.url.endsWith('/cancel')).length).toBe(cancelBefore);
     } finally {
       vi.useRealTimers();

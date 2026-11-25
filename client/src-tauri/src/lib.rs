@@ -120,6 +120,7 @@ pub fn run() {
         local::local_install,
         local::local_start,
         local::local_stop,
+        local::server_latest,
         local::kiro_status,
         local::kiro_check,
         local::kiro_build,

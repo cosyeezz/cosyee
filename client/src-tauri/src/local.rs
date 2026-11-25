@@ -176,6 +176,43 @@ pub async fn local_status() -> Result<Status, String> {
     .await
 }
 
+/// 服务端最新版本清单（与服务端 components/server.ts 的 SERVER_LATEST_URL 相同）
+const SERVER_LATEST_URL: &str = "https://raw.githubusercontent.com/cosyeezz/cosyee/server-dist/package.json";
+
+/// 从 package.json 里取 version，只接受 `X.Y.Z` 或 `X.Y.Z-main.N`
+fn parse_server_latest(body: &[u8]) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_slice(body).map_err(|_| "最新版本信息不是有效的 JSON".to_string())?;
+    let ver = v.get("version").and_then(|x| x.as_str()).unwrap_or("").trim();
+    let (base, main) = match ver.split_once("-main.") {
+        Some((b, m)) => (b, Some(m)),
+        None => (ver, None),
+    };
+    let num = |s: &str| !s.is_empty() && s.len() <= 9 && s.bytes().all(|c| c.is_ascii_digit());
+    let parts: Vec<&str> = base.strip_prefix('v').unwrap_or(base).split('.').collect();
+    if parts.len() == 3 && parts.iter().all(|p| num(p)) && main.is_none_or(num) {
+        Ok(ver.to_string())
+    } else {
+        Err("服务端最新版本号格式无效".into())
+    }
+}
+
+/// 客户端自己查服务端最新版（用系统自带的 curl），不需要服务端在运行
+#[tauri::command]
+pub async fn server_latest() -> Result<String, String> {
+    blocking(|| {
+        let out = command("curl", &["-fsSL", "--max-time", "15", SERVER_LATEST_URL])
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("无法运行 curl：{e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { "读取最新版本失败".into() } else { format!("读取最新版本失败：{err}") });
+        }
+        parse_server_latest(&out.stdout)
+    })
+    .await?
+}
+
 /// 读安装日志：返回第 from 行之后的内容
 #[tauri::command]
 pub fn local_log(from: usize) -> Vec<String> {
@@ -685,11 +722,11 @@ pub async fn agy_restart(force: Option<bool>) -> Result<serde_json::Value, Local
     local_api_request("POST", path.into(), Duration::from_secs(30)).await
 }
 
-// ───────────── 本机组件（Claude CLI / kiro.rs / agy / cosyee 服务端）版本管理 ─────────────
+// ───────────── 本机组件（Claude CLI / kiro.rs / agy / 内置浏览器 / cosyee 服务端）版本管理 ─────────────
 
-const COMPONENT_IDS: [&str; 4] = ["claude", "kiro", "agy", "server"];
+const COMPONENT_IDS: [&str; 5] = ["claude", "kiro", "agy", "browser", "server"];
 
-/// id 只能是四个固定值，拼进请求路径前先校验。
+/// id 只能是这几个固定值，拼进请求路径前先校验。
 fn component_id(id: &str) -> Result<&'static str, LocalApiError> {
     COMPONENT_IDS.iter().copied().find(|c| *c == id).ok_or_else(|| LocalApiError::Other {
         status: None,
@@ -981,11 +1018,22 @@ mod tests {
 
     #[test]
     fn component_id_whitelist() {
-        for id in ["claude", "kiro", "agy", "server"] {
+        for id in ["claude", "kiro", "agy", "browser", "server"] {
             assert_eq!(component_id(id).unwrap(), id);
         }
         for bad in ["", "Claude", "../x", "kiro/check", "agy?x=1", "other"] {
             assert!(component_id(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn server_latest_version_parsing() {
+        for ok in ["0.1.6", "v0.1.6", "0.1.6-main.12"] {
+            let body = format!(r#"{{"name":"cosyee-server","version":"{ok}"}}"#);
+            assert_eq!(parse_server_latest(body.as_bytes()).unwrap(), ok);
+        }
+        for bad in [r#"{"version":"0.1"}"#, r#"{"version":"0.1.6-beta"}"#, r#"{"version":"0.1.6-main."}"#, r#"{}"#, "nope"] {
+            assert!(parse_server_latest(bad.as_bytes()).is_err(), "{bad}");
         }
     }
 }

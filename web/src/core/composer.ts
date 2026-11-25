@@ -2,18 +2,20 @@
 // 发送时：标签 → `@"<绝对路径>"`；加载历史 / 实时回显时：把 `@"..."` 还原成占位名 + attachments。
 import type { Attachment, PickedItem } from '@cosyee/shared';
 
-export type ChipKind = 'file' | 'img' | 'folder';
+/** el = 内置浏览器里抓取的页面元素（路径是服务端生成的元素描述文件） */
+export type ChipKind = 'file' | 'img' | 'folder' | 'el';
 
 export type Segment =
   | { t: 'text'; text: string }
   | { t: 'chip'; kind: ChipKind; path: string; label: string };
 
-/** 占位名前缀就是 kind 本身：file1 / img1 / folder1 */
+/** 占位名前缀就是 kind 本身：file1 / img1 / folder1 / el1 */
 export const labelOf = (kind: ChipKind, n: number): string => `${kind}${n}`;
 
 /** PickedItem → 标签类型 */
 export function itemKind(p: PickedItem): ChipKind {
   if (p.kind === 'folder') return 'folder';
+  if (elementName(p.path)) return 'el';
   return p.isImage ? 'img' : 'file';
 }
 
@@ -24,7 +26,7 @@ export function itemKind(p: PickedItem): ChipKind {
  * 返回新数组，不修改入参。
  */
 export function labelChips(segments: Segment[]): Segment[] {
-  const n: Record<ChipKind, number> = { file: 0, img: 0, folder: 0 };
+  const n: Record<ChipKind, number> = { file: 0, img: 0, folder: 0, el: 0 };
   return segments.map((s) => (s.t === 'chip' ? { ...s, label: labelOf(s.kind, ++n[s.kind]) } : s));
 }
 
@@ -79,14 +81,24 @@ export function serialize(segments: Segment[]): string {
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 
+/** 抓取元素的描述文件：<cosyee 目录>/browser/elements/element-<毫秒>-<12 位 hex>.md（名字由服务端生成） */
+const ELEMENT_FILE_RE = /[\\/]browser[\\/]elements[\\/](element-\d{1,16}-[0-9a-f]{12})\.md$/;
+
+/** 元素描述文件的名字（不含扩展名），不是元素文件返回 null */
+export function elementName(path: string): string | null {
+  return ELEMENT_FILE_RE.exec(path)?.[1] ?? null;
+}
+
 /**
  * 路径 → kind 的启发式（历史消息里没有 stat 信息，只能猜）：
+ *  - 内置浏览器抓取的元素描述文件 → el
  *  - 扩展名是图片 → img
  *  - 以 / 或 \ 结尾，或最后一段没有扩展名 → folder（所以无扩展名文件如 Makefile 会被当成文件夹）
  *  - 否则 file（以点开头的隐藏文件如 .gitignore 视为 file）
  */
 export function guessKind(path: string): ChipKind {
   if (/[\\/]$/.test(path)) return 'folder';
+  if (elementName(path)) return 'el';
   const base = path.split(/[\\/]/).pop() ?? '';
   const dot = base.lastIndexOf('.');
   if (base.startsWith('.') && dot === 0) return 'file';
@@ -110,7 +122,7 @@ const TRAILING_PUNCT_RE = /[,.;:!?)\]}，。；：！？）]+$/;
  */
 export function parseUserText(text: string): { userText: string; attachments: Attachment[] } {
   const attachments: Attachment[] = [];
-  const n: Record<ChipKind, number> = { file: 0, img: 0, folder: 0 };
+  const n: Record<ChipKind, number> = { file: 0, img: 0, folder: 0, el: 0 };
   const userText = text.replace(MENTION_RE, (_all, quoted: string | undefined, bare: string | undefined) => {
     let path = quoted ?? bare ?? '';
     let tail = '';

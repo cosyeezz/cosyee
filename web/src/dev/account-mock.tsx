@@ -9,7 +9,6 @@ import '../ui/sidebar/Sidebar.css';
 import './account-mock.css';
 import { Icon } from '../ui/icons/Icon';
 import { GooeyIndicator } from '../ui/motion/GooeyIndicator';
-import { AccountQuota, AgyQuotaView, KiroQuotaView } from '../ui/sidebar/AccountQuota';
 import { ThemeSwitch } from '../ui/sidebar/ThemeSwitch';
 import { avatarColor, avatarInitial } from '../ui/sidebar/avatar';
 import { planChip } from '../ui/sidebar/AccountMenu';
@@ -120,6 +119,56 @@ function Switcher({ onManage }: { onManage: () => void }) {
     </div>
   );
 }
+/** 进度条一行：窗口名 ━━━ 百分比 重置时间 */
+function QLine({ label, percent, severity, value, reset, kiro }: { label: string; percent: number; severity: UsageSeverity; value?: string; reset: string; kiro?: boolean }) {
+  return (
+    <span className={`cz-acctq__line is-${severity}${kiro ? ' is-kiro' : ''}`}>
+      <span>{label}</span>
+      <span className="cz-acctq__track"><span className="cz-acctq__fill" style={{ '--p': Math.min(100, percent) / 100 } as CSSProperties} /></span>
+      <span className="cz-acctq__pct">{value ?? `${percent}%`}</span>
+      <span className="mk-q__reset" title={reset}>{reset}</span>
+    </span>
+  );
+}
+
+const WIN: Record<string, string> = { '5h': '5h', weekly: '本周' };
+
+/** 管理面板卡片里的全部额度，一条一行；Claude 的会话窗口也叫 5h，和弹层一致 */
+function FullQuota({ a }: { a: MockAccount }) {
+  if (a.usage?.limits.length) {
+    return (
+      <div className="mk-q">
+        {a.usage.limits.map((l, i) => (
+          <QLine key={i} label={l.kind === 'session' ? '5h' : limitShortTitle(l)} percent={l.percent} severity={l.severity} reset={resetShort(l.resetsAt, NOW)} />
+        ))}
+      </div>
+    );
+  }
+  if (a.quota?.groups.length) {
+    return (
+      <div className="mk-q">
+        {a.quota.groups.map((g) => (
+          <div key={g.name} style={{ display: 'contents' }}>
+            <span className="mk-q__grp">{g.name}</span>
+            {g.buckets.map((b) => (
+              <QLine key={b.window} label={WIN[b.window] ?? b.window} percent={b.percent} severity={b.severity} reset={resetShort(b.resetsAt, NOW)} />
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (a.kiro) {
+    const p = a.kiro.limit > 0 ? Math.round((a.kiro.used / a.kiro.limit) * 100) : 0;
+    return (
+      <div className="mk-q">
+        <QLine kiro label="本月" percent={p} severity={p >= 100 ? 'critical' : p >= 80 ? 'warning' : 'normal'} value={`${a.kiro.used} / ${a.kiro.limit}`} reset={resetShort(a.kiro.resetsAt, NOW)} />
+      </div>
+    );
+  }
+  return null;
+}
+
 /** 管理面板里一张账号卡片：全部信息 + 操作 */
 function Card({ a }: { a: MockAccount }) {
   const ok = usable(a);
@@ -148,15 +197,13 @@ function Card({ a }: { a: MockAccount }) {
           {a.kind === 'api' && <span>按量计费 · {a.mapped ? `已映射 ${a.mapped} 个模型` : '未配置模型映射'}</span>}
         </div>
       )}
-      {ok && a.usage && <AccountQuota state={{ status: 'ok', info: a.usage }} now={NOW} />}
-      {ok && a.kiro && <KiroQuotaView state={{ status: 'ok', info: a.kiro }} now={NOW} />}
-      {ok && a.quota && <AgyQuotaView quota={a.quota} now={NOW} />}
+      {ok && <FullQuota a={a} />}
       <div className="mk-acts">
         {!ok ? <button type="button" className="mk-btn is-primary">重新登录</button>
-          : !a.active && <button type="button" className="mk-btn">切换到此账号</button>}
+          : !a.active && <button type="button" className="mk-btn">切换</button>}
         {a.kind === 'api' && <button type="button" className="mk-btn">编辑</button>}
         {a.kind === 'kiro' && ok && <button type="button" className="mk-btn">重新登录</button>}
-        {!a.isDefault && a.kind !== 'api' && <button type="button" className="mk-btn">改备注名</button>}
+        {!a.isDefault && a.kind !== 'api' && <button type="button" className="mk-btn">改名</button>}
         <button type="button" className="mk-btn is-danger" disabled={!!removeBlock} title={removeBlock ?? undefined}>移除</button>
       </div>
     </div>

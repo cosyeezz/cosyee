@@ -260,7 +260,7 @@ describe('调度', () => {
     const s = await u.setAuto('claude', false);
     expect(s.autoUpdate).toBe(false);
     const file = path.join(tmp, 'components.json');
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ auto: { claude: false, kiro: true, agy: true, server: true } });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ auto: { claude: false, kiro: true, agy: true, server: true, browser: true } });
     if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     await u.tick();
     f.st.busy = 0;
@@ -433,10 +433,10 @@ describe('HTTP 接线', () => {
     await srv.stop();
   });
 
-  it('GET /api/components 返回四项；源码运行的 server 是 custom；写操作按规则返回', async () => {
+  it('GET /api/components 返回五项；源码运行的 server 是 custom；写操作按规则返回', async () => {
     const base = `http://127.0.0.1:${srv.port}`;
     const list = (await (await fetch(`${base}/api/components`)).json()) as { list: Array<{ id: string; custom: boolean; installed: boolean }> };
-    expect(list.list.map((c) => c.id)).toEqual(['claude', 'kiro', 'agy', 'server']);
+    expect(list.list.map((c) => c.id)).toEqual(['claude', 'kiro', 'agy', 'browser', 'server']);
     expect(list.list.find((c) => c.id === 'server')).toMatchObject({ custom: true, installed: true });
     expect(list.list.find((c) => c.id === 'claude')).toMatchObject({ custom: true, installed: false });
     expect((await fetch(`${base}/api/components/zzz/check`, { method: 'POST' })).status).toBe(404);

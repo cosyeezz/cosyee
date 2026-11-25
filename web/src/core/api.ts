@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgentModelConfig, AgyAccountList, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgentModelConfig, AgyAccountList, BrowserHover, BrowserPickResult, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -172,14 +172,9 @@ export const api = {
   removeAgyAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/agy-accounts/remove', { id }),
   dedupeAgyAccounts: () => req<AccountDedupeResult>('POST', '/api/agy-accounts/dedupe', {}),
   setAgyLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/agy-accounts/label', { id, label }),
-  /** 本机组件版本与自动更新：列表、检查、更新、自动更新开关、更新日志增量（POST 仅本机连接，非本机 403） */
+  /** 本机组件：列表 / 安装或更新（内置浏览器面板里装 agent-browser 用；POST 仅本机连接，非本机 403） */
   components: () => req<ComponentList>('GET', '/api/components'),
-  checkComponent: (id: ComponentId) => reqDetailed<ComponentStatus>('POST', `/api/components/${id}/check`),
   updateComponent: (id: ComponentId) => reqDetailed<ComponentStatus>('POST', `/api/components/${id}/update`),
-  setComponentAuto: (id: ComponentId, enabled: boolean) =>
-    reqDetailed<ComponentStatus>('POST', `/api/components/${id}/auto?enabled=${enabled ? 1 : 0}`),
-  componentLog: (id: ComponentId, from = 0) =>
-    req<{ lines: string[]; next: number }>('GET', `/api/components/${id}/log?from=${from}`),
   pick: (mode?: 'mixed' | 'files' | 'folders') => req<{ items: PickedItem[]; supportsMixed: boolean }>('POST', '/api/pick', { mode }),
   /** 远程连接的网页版选择窗口：列出服务端目录（path 为空 = 当前工作空间）/ 登记选好的路径 */
   browse: (path?: string) => req<BrowseDir>('GET', `/api/browse${path ? `?${q({ path })}` : ''}`),
@@ -194,6 +189,19 @@ export const api = {
   /** 按文件名读粘贴的图片（会话流里历史图片标签用，没有预览令牌）；名字见 pasteName */
   pasteInfo: (name: string) => req<PreviewInfo>('GET', `/api/pastes/${encodeURIComponent(name)}/info`),
   pasteRawUrl: (name: string) => `/api/pastes/${encodeURIComponent(name)}/raw`,
+  /** 内置浏览器（agent-browser）：状态 / 打开地址 / 前进后退刷新 / 视口 / 抓取模式悬停与抓取 */
+  browserStatus: () => req<BrowserStatus>('GET', '/api/browser'),
+  browserOpen: (url: string) => req<{ url: string | null; title: string | null }>('POST', '/api/browser/open', { url }),
+  browserNav: (action: 'back' | 'forward' | 'reload') => req<{ ok: true }>('POST', '/api/browser/nav', { action }),
+  browserViewport: (width: number, height: number, scale: number) =>
+    req<{ ok: true }>('POST', '/api/browser/viewport', { width, height, scale }),
+  browserHover: (x: number, y: number) => req<BrowserHover | null>('POST', '/api/browser/hover', { x, y }),
+  browserPick: (x: number, y: number) => req<BrowserPickResult>('POST', '/api/browser/pick', { x, y }),
+  /** 画面推流（WebSocket）地址 */
+  browserStreamUrl: () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/browser/stream`,
+  /** 按文件名读抓取的元素（会话流里历史标签用）；name 是 element-….md / element-….png */
+  elementInfo: (name: string) => req<PreviewInfo>('GET', `/api/browser/elements/${encodeURIComponent(name)}/info`),
+  elementRawUrl: (name: string) => `/api/browser/elements/${encodeURIComponent(name)}/raw`,
   previewInfo: (t: string) => req<PreviewInfo>('GET', `/api/preview/${t}/info`),
   /** 图片预览地址（<img src>） */
   previewRawUrl: (t: string) => `/api/preview/${t}/raw`,

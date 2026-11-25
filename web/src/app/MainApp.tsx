@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BUILTIN_PRICES, hasModelMapping,
-  type Account, type AccountList, type AgentModelConfig, type Attachment, type Bootstrap, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  type Account, type AccountList, type AgentModelConfig, type Attachment, type Bootstrap, type BrowserPickResult, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
   type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace, type Turn,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
@@ -33,6 +33,8 @@ import { FlowMetaContext, defaultSkillLoader, type FlowMeta } from '../ui/flow/f
 import { DelegateContext, type DelegateActions } from '../ui/flow/delegateContext';
 import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/FileContext';
 import { FilePreview } from '../ui/files/FilePreview';
+import { BrowserPanel } from '../ui/browser/BrowserPanel';
+import { isBrowserToggle } from '../ui/browser/input';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
@@ -134,6 +136,34 @@ export function MainApp() {
   /** 选中回复带来的引用文字（可累积多段）；由输入框负责拼进消息并在发送后清除 */
   const [quotes, setQuotes] = useState<readonly QuoteReply[]>([]);
   const composerRef = useRef<ComposerHandle>(null);
+  /** 内置浏览器面板：标题栏地球按钮（cosyee:browser 事件）或 ⇧⌘P / Ctrl+Shift+P 开关 */
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const closeBrowser = useCallback(() => setBrowserOpen(false), []);
+  const onBrowserPick = useCallback(
+    (r: BrowserPickResult) => composerRef.current?.insertChips([{ kind: 'el', path: r.item.path, token: r.item.previewToken }]) ?? false,
+    [],
+  );
+  useEffect(() => {
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const toggle = () => setBrowserOpen((o) => !o);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || !isBrowserToggle(e, mac)) return;
+      e.preventDefault();
+      toggle();
+    };
+    window.addEventListener('cosyee:browser', toggle);
+    window.addEventListener('keydown', onKey);
+    // 告诉桌面客户端的标题栏：可以显示浏览器按钮了
+    (window as { __cosyeeBrowserReady?: boolean }).__cosyeeBrowserReady = true;
+    window.dispatchEvent(new Event('cosyee:browser-ready'));
+    return () => {
+      window.removeEventListener('cosyee:browser', toggle);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('cosyee:browser-state', { detail: { open: browserOpen } }));
+  }, [browserOpen]);
 
   const configs = useRef(new Map<string, SessionConfig>());
   /** 本页已发过消息的会话（决定 isNew） */
@@ -1322,6 +1352,7 @@ export function MainApp() {
       {preview && selId && selDir && (
         <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />
       )}
+      {browserOpen && <BrowserPanel onClose={closeBrowser} onPick={onBrowserPick} />}
     </DelegateContext.Provider>
     </FlowMetaContext.Provider>
     </FilesContext.Provider>

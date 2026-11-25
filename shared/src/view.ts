@@ -95,8 +95,9 @@ export interface SkillLoad {
 }
 
 export interface Attachment {
-  kind: 'file' | 'img' | 'folder';
-  /** 占位名：file1 / img1 / folder1，每条消息内编号 */
+  /** el = 内置浏览器里抓取的页面元素（路径指向元素描述文件） */
+  kind: 'file' | 'img' | 'folder' | 'el';
+  /** 占位名：file1 / img1 / folder1 / el1，每条消息内编号 */
   label: string;
   path: string;
 }

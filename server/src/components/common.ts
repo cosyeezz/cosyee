@@ -22,11 +22,13 @@ export interface ComponentAdapter {
   name: string;
   /** server 组件由桌面客户端更新，本进程不执行 */
   updatedBy: 'server' | 'client';
+  /** 没安装时 update() 负责安装（内置浏览器） */
+  installable?: boolean;
   /** 读取当前状态，不访问网络，不抛错 */
   info(): Promise<AdapterInfo>;
   /** 查询最新版并记入自身状态；失败抛错 */
   check(): Promise<void>;
-  /** 执行更新，结束（成功或失败）时才返回；失败抛错。调用前调度器已确认 !custom && installed */
+  /** 执行更新，结束（成功或失败）时才返回；失败抛错。调用前调度器已确认 !custom && (installed || installable) */
   update(): Promise<void>;
   /** 本次更新日志的增量 */
   log(from: number): { lines: string[]; next: number };

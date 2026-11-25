@@ -14,7 +14,10 @@ import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
+import { BrowserInstall } from './browser/install.js';
+import { BrowserManager } from './browser/manager.js';
 import { createAgyAdapter } from './components/agy.js';
+import { createBrowserAdapter } from './components/browser.js';
 import { createClaudeAdapter } from './components/claude.js';
 import { createKiroAdapter } from './components/kiro.js';
 import { createServerAdapter } from './components/server.js';
@@ -351,6 +354,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
 
+  // 内置浏览器（agent-browser）：程序装在 <数据目录>/agent-browser，浏览器数据在 <数据目录>/browser
+  const dataHome = () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome());
+  const browserInstall = new BrowserInstall({ rootDir: () => path.join(dataHome(), 'agent-browser') });
+  const browser = new BrowserManager({ install: browserInstall, dataDir: () => path.join(dataHome(), 'browser') });
+
   // 本机组件版本与自动更新。服务端自己：源码运行（没有打包注入的版本）或桌面版（带访问令牌）只显示不更新
   const components = new ComponentUpdater({
     home: () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome()),
@@ -358,6 +366,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       createClaudeAdapter({ claudePath: opts.claudePath, running: () => manager.runningCount() }),
       createKiroAdapter(kiro),
       createAgyAdapter(agyCli),
+      createBrowserAdapter(browserInstall, browser),
       createServerAdapter({
         version: opts.version ?? readVersion(),
         custom: opts.version === undefined || opts.authToken !== undefined,
@@ -382,6 +391,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     agyAccounts,
     agyCli,
     components,
+    browser,
     kiro,
     usage,
     cliModels,
@@ -413,6 +423,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     if (!connectionAllowed(socket.localAddress, socket.remoteAddress, bindHost)) socket.destroy();
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  // 内置浏览器画面：转发 agent-browser 的推流（帧是服务端发出的，前端只发输入，消息很小）
+  const browserWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
     const reject = (code: number, text: string) => {
@@ -422,10 +434,14 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     try {
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${actualPort}`);
       if (opts.authToken && !requestAuthorized(req.headers, actualPort, opts.authToken)) return reject(403, 'Forbidden');
-      if (url.pathname !== '/ws') return reject(404, 'Not Found');
+      if (url.pathname !== '/ws' && url.pathname !== '/api/browser/stream') return reject(404, 'Not Found');
       if (!hostAllowed(req.headers.host, actualPort, bindHost)) return reject(403, 'Forbidden');
       const origin = req.headers.origin;
       if (!originAllowed(typeof origin === 'string' ? origin : undefined, actualPort, bindHost)) return reject(403, 'Forbidden');
+      if (url.pathname === '/api/browser/stream') {
+        browserWss.handleUpgrade(req, socket, head, (ws) => void browser.attach(ws));
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
     } catch {
       reject(400, 'Bad Request');
@@ -489,6 +505,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       agyAccounts?.dispose();
       agyCli.dispose();
       components.stop();
+      browser.dispose();
+      browserWss.close();
       setBeforeClaudeEnv(null);
       process.off('exit', onExitKiro);
       await kiro?.dispose();
