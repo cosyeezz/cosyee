@@ -1,7 +1,7 @@
 // manifest 拉取、Ed25519 签名校验、组件下载（sha256 + size 校验）、原子安装与旧版本清理。
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,6 +9,8 @@ use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::http_client;
 
 /// 滚动 release 的 manifest 地址与签名地址
 pub const MANIFEST_URL: &str =
@@ -19,7 +21,10 @@ pub const MANIFEST_SIG_URL: &str =
 /// 写死在客户端的 Ed25519 原始公钥（32 字节 base64），见 CONTRACT.md
 pub const PUBLIC_KEY_B64: &str = "cRew2agsYGnnrphfIwIjmlvFFToCaaidYmpvylSKB64=";
 
-const USER_AGENT: &str = "cosyee-client";
+const MANIFEST_MAX_RETRIES: usize = 2;
+const MANIFEST_RETRY_DELAY: Duration = Duration::from_secs(2);
+const DOWNLOAD_MAX_RETRIES: usize = 3;
+const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Manifest {
@@ -36,14 +41,6 @@ pub struct ManifestAsset {
     pub url: String,
     pub sha256: String,
     pub size: u64,
-}
-
-fn build_agent(timeout_secs: u64) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(timeout_secs)))
-        .user_agent(USER_AGENT)
-        .build()
-        .into()
 }
 
 /// 校验 manifest.json 原始字节的 Ed25519 签名（base64 一行）。
@@ -72,34 +69,80 @@ pub fn verify_manifest_signature(
         .map_err(|_| "manifest 签名校验失败，已拒绝安装".to_string())
 }
 
-/// 从 GitHub Releases 拉取 manifest.json 和 manifest.json.sig，验签通过后解析返回。
-pub fn fetch_verified_manifest() -> Result<Manifest, String> {
-    let agent = build_agent(30);
+/// 带重试的文本/字节拉取辅助：失败时最多重试 `max_retries` 次，每次间隔 `retry_delay`。
+fn fetch_bytes_with_retry(
+    agent: &ureq::Agent,
+    url: &str,
+    limit: u64,
+    action: &str,
+    max_retries: usize,
+    retry_delay: Duration,
+    log_fn: &mut impl FnMut(String),
+) -> Result<Vec<u8>, String> {
+    let mut last_err = String::new();
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            log_fn(format!("第 {attempt} 次重试…"));
+            std::thread::sleep(retry_delay);
+        }
+        match agent.get(url).call() {
+            Ok(mut resp) => {
+                match resp.body_mut().with_config().limit(limit).read_to_vec() {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(e) => {
+                        last_err = http_client::format_github_error(action, "github.com", &e);
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = http_client::format_github_error(action, "github.com", &e);
+            }
+        }
+    }
+    Err(last_err)
+}
 
-    let manifest_bytes = agent
-        .get(MANIFEST_URL)
-        .call()
-        .map_err(|e| format!("获取版本信息失败：{e}"))?
-        .body_mut()
-        .with_config()
-        .limit(1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| format!("读取 manifest 失败：{e}"))?;
+/// 从 GitHub Releases 拉取 manifest.json 和 manifest.json.sig，验签通过后解析返回（带日志输出）。
+pub fn fetch_verified_manifest_with_log(mut log_fn: impl FnMut(String)) -> Result<Manifest, String> {
+    let (agent, resolved_proxy) =
+        http_client::build_external_agent(Some(http_client::MANIFEST_GLOBAL_TIMEOUT));
+    log_fn(http_client::describe_proxy_for_log(
+        resolved_proxy.as_ref(),
+        "GitHub",
+    ));
 
-    let sig_text = agent
-        .get(MANIFEST_SIG_URL)
-        .call()
-        .map_err(|e| format!("获取签名文件失败：{e}"))?
-        .body_mut()
-        .with_config()
-        .limit(4096)
-        .read_to_string()
-        .map_err(|e| format!("读取签名文件失败：{e}"))?;
+    let manifest_bytes = fetch_bytes_with_retry(
+        &agent,
+        MANIFEST_URL,
+        1024 * 1024,
+        "获取版本信息失败",
+        MANIFEST_MAX_RETRIES,
+        MANIFEST_RETRY_DELAY,
+        &mut log_fn,
+    )?;
+
+    let sig_bytes = fetch_bytes_with_retry(
+        &agent,
+        MANIFEST_SIG_URL,
+        4096,
+        "获取签名文件失败",
+        MANIFEST_MAX_RETRIES,
+        MANIFEST_RETRY_DELAY,
+        &mut log_fn,
+    )?;
+    let sig_text = String::from_utf8(sig_bytes)
+        .map_err(|e| format!("签名文件不是有效的 UTF-8 文本：{e}"))?;
 
     verify_manifest_signature(&manifest_bytes, &sig_text, PUBLIC_KEY_B64)?;
 
     serde_json::from_slice::<Manifest>(&manifest_bytes)
         .map_err(|e| format!("解析 manifest.json 失败：{e}"))
+}
+
+/// 从 GitHub Releases 拉取 manifest.json 和 manifest.json.sig，验签通过后解析返回。
+#[allow(dead_code)]
+pub fn fetch_verified_manifest() -> Result<Manifest, String> {
+    fetch_verified_manifest_with_log(|_| {})
 }
 
 /// 根据平台键和版本号生成落盘文件名（按版本命名，便于原子替换与清理旧版本）。
@@ -138,11 +181,52 @@ pub fn download_and_install_asset(
     platform_key: &str,
     version: &str,
     asset: &ManifestAsset,
-    mut log_fn: impl FnMut(String),
+    log_fn: impl FnMut(String),
 ) -> Result<String, String> {
     if !asset.url.starts_with("https://") {
         return Err("下载地址不是 https，已拒绝".into());
     }
+    let (agent, _) =
+        http_client::build_external_agent(Some(http_client::DOWNLOAD_GLOBAL_TIMEOUT));
+    download_and_install_asset_with_agent(
+        install_dir,
+        platform_key,
+        version,
+        asset,
+        &agent,
+        DOWNLOAD_RETRY_DELAY,
+        log_fn,
+    )
+}
+
+/// 校验 206 响应的 Content-Range 头（若存在）是否从期望偏移 `expected_start` 开始。
+fn content_range_matches_start(header_val: Option<&str>, expected_start: u64) -> bool {
+    let Some(raw) = header_val else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed
+        .strip_prefix("bytes ")
+        .or_else(|| trimmed.strip_prefix("BYTES "))
+    else {
+        return false;
+    };
+    let Some((start_str, _)) = rest.split_once('-') else {
+        return false;
+    };
+    start_str.trim().parse::<u64>().ok() == Some(expected_start)
+}
+
+/// 可注入 Agent 与重试间隔的核心下载实现（支持 Range 断点续传与 200 回退重下，便于本地 TcpListener 测试）。
+fn download_and_install_asset_with_agent(
+    install_dir: &Path,
+    platform_key: &str,
+    version: &str,
+    asset: &ManifestAsset,
+    agent: &ureq::Agent,
+    retry_delay: Duration,
+    mut log_fn: impl FnMut(String),
+) -> Result<String, String> {
     if asset.size == 0 || asset.size > 256 * 1024 * 1024 {
         return Err(format!("组件体积异常（{} 字节），已拒绝", asset.size));
     }
@@ -157,15 +241,11 @@ pub fn download_and_install_asset(
     // 清理残留临时文件
     let _ = fs::remove_file(&tmp_path);
 
-    log_fn(format!("开始下载 cosyee-tailnet {version}（{:.1} MB）...", asset.size as f64 / (1024.0 * 1024.0)));
+    log_fn(format!(
+        "开始下载 cosyee-tailnet {version}（{:.1} MB）...",
+        asset.size as f64 / (1024.0 * 1024.0)
+    ));
 
-    let agent = build_agent(600);
-    let mut resp = agent
-        .get(&asset.url)
-        .call()
-        .map_err(|e| format!("下载组件失败：{e}"))?;
-
-    let mut reader = resp.body_mut().as_reader();
     let mut file = File::create(&tmp_path)
         .map_err(|e| format!("无法创建临时文件 {}：{e}", tmp_path.display()))?;
 
@@ -175,29 +255,120 @@ pub fn download_and_install_asset(
     let mut last_pct: u64 = 0;
 
     let download_res: Result<(), String> = (|| {
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("下载读取中断：{e}"))?;
-            if n == 0 {
-                break;
-            }
-            total += n as u64;
-            if total > asset.size {
-                return Err("下载文件大小超出 manifest 声明，已中止".into());
-            }
-            file.write_all(&buf[..n])
-                .map_err(|e| format!("写入临时文件失败：{e}"))?;
-            hasher.update(&buf[..n]);
+        let mut last_err = String::new();
 
-            let pct = total * 100 / asset.size;
-            if (pct >= last_pct + 20 || pct == 100) && pct != last_pct {
-                last_pct = pct;
-                log_fn(format!("下载进度：{pct}%"));
+        for attempt in 0..=DOWNLOAD_MAX_RETRIES {
+            if attempt > 0 {
+                if total > 0 {
+                    log_fn(format!("下载中断，第 {attempt} 次重试（断点续传）…"));
+                } else {
+                    log_fn(format!("下载中断，第 {attempt} 次重试…"));
+                }
+                std::thread::sleep(retry_delay);
+            }
+
+            let mut req = agent.get(&asset.url);
+            if total > 0 {
+                req = req.header("Range", &format!("bytes={total}-"));
+            }
+
+            let mut resp = match req.call() {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = http_client::format_github_error("下载组件失败", "github.com", &e);
+                    if attempt < DOWNLOAD_MAX_RETRIES {
+                        continue;
+                    }
+                    return Err(last_err);
+                }
+            };
+
+            let status = resp.status().as_u16();
+            if total > 0 {
+                if status == 200 {
+                    // 服务端不支持 Range，返回了完整内容：清空临时文件并重置校验状态从头重下
+                    log_fn("服务端不支持断点续传，正在从头重新下载…".into());
+                    file.seek(SeekFrom::Start(0))
+                        .map_err(|e| format!("重置临时文件失败：{e}"))?;
+                    file.set_len(0)
+                        .map_err(|e| format!("清空临时文件失败：{e}"))?;
+                    hasher = Sha256::new();
+                    total = 0;
+                    last_pct = 0;
+                } else if status == 206 {
+                    let cr = resp
+                        .headers()
+                        .get("content-range")
+                        .and_then(|v| v.to_str().ok());
+                    if !content_range_matches_start(cr, total) {
+                        last_err = format!(
+                            "断点续传偏移不匹配（期望从 {total} 开始，实际 Content-Range: {}）",
+                            cr.unwrap_or("无")
+                        );
+                        // 偏移不一致时安全起见重置为从头下载
+                        file.seek(SeekFrom::Start(0))
+                            .map_err(|e| format!("重置临时文件失败：{e}"))?;
+                        file.set_len(0)
+                            .map_err(|e| format!("清空临时文件失败：{e}"))?;
+                        hasher = Sha256::new();
+                        total = 0;
+                        last_pct = 0;
+                        if attempt < DOWNLOAD_MAX_RETRIES {
+                            continue;
+                        }
+                        return Err(last_err);
+                    }
+                }
+            }
+
+            let mut reader = resp.body_mut().as_reader();
+            let mut stream_err: Option<String> = None;
+
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n as u64;
+                        if total > asset.size {
+                            return Err("下载文件大小超出 manifest 声明，已中止".into());
+                        }
+                        file.write_all(&buf[..n])
+                            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+                        hasher.update(&buf[..n]);
+
+                        let pct = total * 100 / asset.size;
+                        if (pct >= last_pct + 20 || pct == 100) && pct != last_pct {
+                            last_pct = pct;
+                            log_fn(format!("下载进度：{pct}%"));
+                        }
+                    }
+                    Err(e) => {
+                        stream_err = Some(format!(
+                            "下载读取中断：连不上 GitHub 或连接被中断，请检查网络或代理设置后重试。（{e}）"
+                        ));
+                        break;
+                    }
+                }
+            }
+
+            if stream_err.is_none() && total == asset.size {
+                file.sync_all().map_err(|e| format!("落盘同步失败：{e}"))?;
+                return Ok(());
+            }
+
+            last_err = stream_err.unwrap_or_else(|| {
+                format!(
+                    "下载未完成即中断：期望 {} 字节，已下载 {} 字节",
+                    asset.size, total
+                )
+            });
+
+            if attempt == DOWNLOAD_MAX_RETRIES {
+                return Err(last_err);
             }
         }
-        file.sync_all().map_err(|e| format!("落盘同步失败：{e}"))?;
-        Ok(())
+
+        Err(last_err)
     })();
 
     drop(file);
@@ -385,5 +556,189 @@ mod tests {
         );
         assert!(asset_filename("windows-x64", "../evil").is_err());
         assert!(asset_filename("linux-x64", "1.0.0").is_err());
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut req_bytes = Vec::new();
+        let mut buf = [0u8; 512];
+        while !req_bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req_bytes.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&req_bytes).into_owned()
+    }
+
+    fn make_test_payload(len: usize) -> (Vec<u8>, String) {
+        let data: Vec<u8> = (0..len).map(|i| ((i * 31 + 17) % 251) as u8).collect();
+        let sha = hex_lower(&Sha256::digest(&data));
+        (data, sha)
+    }
+
+    #[test]
+    fn download_resumes_with_range_and_verifies_sha256() {
+        use std::net::TcpListener;
+
+        let (payload, sha) = make_test_payload(128 * 1024);
+        let split = 50 * 1024;
+        let payload_srv = payload.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = std::thread::spawn(move || {
+            // 第 1 次请求：声明完整 Content-Length，但只发前一半就断开连接
+            let (mut s1, _) = listener.accept().unwrap();
+            let req1 = read_http_request(&mut s1);
+            assert!(
+                !req1.to_ascii_lowercase().contains("\r\nrange:"),
+                "首次请求不应带 Range 头：{req1}"
+            );
+            let head1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload_srv.len()
+            );
+            s1.write_all(head1.as_bytes()).unwrap();
+            s1.write_all(&payload_srv[..split]).unwrap();
+            let _ = s1.flush();
+            drop(s1);
+
+            // 第 2 次请求：应携带 Range: bytes=<split>-，服务端返回 206 Partial Content 和剩余字节
+            let (mut s2, _) = listener.accept().unwrap();
+            let req2 = read_http_request(&mut s2);
+            let expected_range = format!("range: bytes={split}-");
+            assert!(
+                req2.to_ascii_lowercase().contains(&expected_range),
+                "续传请求应带 {expected_range}，实际请求：{req2}"
+            );
+            let rest = &payload_srv[split..];
+            let head2 = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                split,
+                payload_srv.len() - 1,
+                payload_srv.len(),
+                rest.len()
+            );
+            s2.write_all(head2.as_bytes()).unwrap();
+            s2.write_all(rest).unwrap();
+            let _ = s2.flush();
+        });
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "cosyee_manifest_resume_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp_dir);
+
+        let asset = ManifestAsset {
+            url: format!("http://{addr}/cosyee-tailnet.bin"),
+            sha256: sha,
+            size: payload.len() as u64,
+        };
+        let agent = http_client::build_direct_agent(
+            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(5)),
+        );
+        let mut logs = Vec::new();
+        let installed = download_and_install_asset_with_agent(
+            &tmp_dir,
+            "windows-x64",
+            "1.0.0",
+            &asset,
+            &agent,
+            Duration::from_millis(10),
+            |line| logs.push(line),
+        )
+        .expect("Range 续传下载应成功并通过 sha256 校验");
+
+        srv.join().unwrap();
+
+        let installed_path = tmp_dir.join(&installed);
+        assert_eq!(fs::read(&installed_path).unwrap(), payload);
+        assert!(!tmp_dir.join(format!(".{installed}.part")).exists());
+        assert!(logs.iter().any(|l| l.contains("断点续传")));
+        assert!(logs.iter().any(|l| l.contains("SHA-256 校验通过")));
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn download_restarts_from_scratch_when_range_unsupported() {
+        use std::net::TcpListener;
+
+        let (payload, sha) = make_test_payload(96 * 1024);
+        let split = 40 * 1024;
+        let payload_srv = payload.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let srv = std::thread::spawn(move || {
+            // 第 1 次请求：发前一半后断开
+            let (mut s1, _) = listener.accept().unwrap();
+            let _req1 = read_http_request(&mut s1);
+            let head1 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload_srv.len()
+            );
+            s1.write_all(head1.as_bytes()).unwrap();
+            s1.write_all(&payload_srv[..split]).unwrap();
+            let _ = s1.flush();
+            drop(s1);
+
+            // 第 2 次请求：客户端带了 Range，但服务端不支持 Range，直接返回 200 OK 和完整内容
+            let (mut s2, _) = listener.accept().unwrap();
+            let req2 = read_http_request(&mut s2);
+            assert!(
+                req2.to_ascii_lowercase().contains("range: bytes="),
+                "重试请求应携带 Range 头：{req2}"
+            );
+            let head2 = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload_srv.len()
+            );
+            s2.write_all(head2.as_bytes()).unwrap();
+            s2.write_all(&payload_srv).unwrap();
+            let _ = s2.flush();
+        });
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "cosyee_manifest_no_range_test_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp_dir);
+
+        let asset = ManifestAsset {
+            url: format!("http://{addr}/cosyee-tailnet.bin"),
+            sha256: sha,
+            size: payload.len() as u64,
+        };
+        let agent = http_client::build_direct_agent(
+            Some(Duration::from_secs(10)),
+            Some(Duration::from_secs(5)),
+        );
+        let mut logs = Vec::new();
+        let installed = download_and_install_asset_with_agent(
+            &tmp_dir,
+            "windows-x64",
+            "1.0.1",
+            &asset,
+            &agent,
+            Duration::from_millis(10),
+            |line| logs.push(line),
+        )
+        .expect("服务端不支持 Range 时应从头重下成功并通过 sha256 校验");
+
+        srv.join().unwrap();
+
+        let installed_path = tmp_dir.join(&installed);
+        assert_eq!(fs::read(&installed_path).unwrap(), payload);
+        assert!(!tmp_dir.join(format!(".{installed}.part")).exists());
+        assert!(logs.iter().any(|l| l.contains("从头重新下载")));
+        assert!(logs.iter().any(|l| l.contains("SHA-256 校验通过")));
+
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

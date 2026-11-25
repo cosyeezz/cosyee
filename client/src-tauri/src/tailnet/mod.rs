@@ -1082,7 +1082,8 @@ pub async fn tailnet_check() -> Result<TailnetCheckResp, String> {
             let platform_key = platform_key
                 .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
 
-            let m = manifest::fetch_verified_manifest()?;
+            let mgr_log = mgr.clone();
+            let m = manifest::fetch_verified_manifest_with_log(move |line| mgr_log.log(line))?;
             if !m.assets.contains_key(platform_key) {
                 return Err(format!("最新版本 {} 未包含当前平台（{platform_key}）资产", m.version));
             }
@@ -1126,7 +1127,8 @@ pub async fn tailnet_install() -> Result<TailnetInstallResp, String> {
                 .ok_or_else(|| reason.unwrap_or_else(|| "当前平台不支持内置 Tailscale".into()))?;
 
             mgr.log("正在获取并校验组件清单（Ed25519）...");
-            let m = manifest::fetch_verified_manifest()?;
+            let mgr_log = mgr.clone();
+            let m = manifest::fetch_verified_manifest_with_log(move |line| mgr_log.log(line))?;
             let asset = m
                 .assets
                 .get(platform_key)
