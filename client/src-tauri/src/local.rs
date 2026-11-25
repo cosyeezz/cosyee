@@ -657,21 +657,49 @@ fn component_id(id: &str) -> Result<&'static str, LocalApiError> {
     })
 }
 
+/// 组件列表。服务端没运行时改用命令行入口读（带 offline: true），kiro.rs 没有 service 字段。
 #[tauri::command]
 pub async fn components_status() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("GET", "/api/components".into(), Duration::from_secs(5)).await
+    let mut v = match local_api_request("GET", "/api/components".into(), Duration::from_secs(5)).await {
+        Err(LocalApiError::Offline { .. }) => {
+            let mut v = offline_blocking(|| run_cli(&["list"], |_| {})).await?;
+            v["offline"] = serde_json::Value::Bool(true);
+            v
+        }
+        r => r?,
+    };
+    merge_offline_jobs(&mut v);
+    Ok(v)
 }
 
 #[tauri::command]
 pub async fn component_check(id: String) -> Result<serde_json::Value, LocalApiError> {
     let id = component_id(&id)?;
-    local_api_request("POST", format!("/api/components/{id}/check"), Duration::from_secs(30)).await
+    match local_api_request("POST", format!("/api/components/{id}/check"), Duration::from_secs(30)).await {
+        Err(LocalApiError::Offline { .. }) => offline_blocking(move || run_cli(&["check", id], |_| {})).await,
+        r => r,
+    }
 }
 
 #[tauri::command]
 pub async fn component_update(id: String) -> Result<serde_json::Value, LocalApiError> {
     let id = component_id(&id)?;
-    local_api_request("POST", format!("/api/components/{id}/update"), Duration::from_secs(15)).await
+    if offline_job_running(id) {
+        return Err(LocalApiError::Other {
+            status: Some(409),
+            error: "正在更新中，请稍候".into(),
+        });
+    }
+    match local_api_request("POST", format!("/api/components/{id}/update"), Duration::from_secs(15)).await {
+        Err(LocalApiError::Offline { .. }) => offline_blocking(move || start_offline_update(id)).await,
+        r => {
+            // 服务端接手了：之前离线更新留下的失败记录不再显示
+            if r.is_ok() {
+                clear_offline_job(id);
+            }
+            r
+        }
+    }
 }
 
 #[tauri::command]
@@ -697,7 +725,223 @@ pub async fn component_service(id: String, action: ServiceAction, force: Option<
 #[tauri::command]
 pub async fn component_log(id: String, from: usize) -> Result<serde_json::Value, LocalApiError> {
     let id = component_id(&id)?;
-    local_api_request("GET", format!("/api/components/{id}/log?from={from}"), Duration::from_secs(5)).await
+    if offline_job_running(id) {
+        return Ok(offline_log(id, from));
+    }
+    match local_api_request("GET", format!("/api/components/{id}/log?from={from}"), Duration::from_secs(5)).await {
+        Err(LocalApiError::Offline { .. }) => Ok(offline_log(id, from)),
+        r => r,
+    }
+}
+
+// ───────────── 服务端没运行时的组件管理 ─────────────
+// 用同一个服务端包里的命令行入口 `node server.mjs components list|check|update <id>`，只管程序本身
+// （检查、安装、更新），不启停 kiro.rs 服务。输出每行一个 JSON：{"log"} / {"result"} / {"error"}。
+// 离线更新在后台线程执行，任务状态和日志留在客户端内存里，页面照常轮询 components_status / component_log。
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OfflineState {
+    Running,
+    Failed(String),
+    Done,
+}
+
+struct OfflineJob {
+    id: &'static str,
+    kind: &'static str,
+    state: OfflineState,
+    log: Vec<String>,
+}
+
+static OFFLINE_JOBS: Mutex<Vec<OfflineJob>> = Mutex::new(Vec::new());
+/// npm 全局目录（每次都跑 `npm root -g` 要几百毫秒；只缓存成功的结果）
+static NPM_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn other_err(error: impl Into<String>) -> LocalApiError {
+    LocalApiError::Other {
+        status: None,
+        error: error.into(),
+    }
+}
+
+async fn offline_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, LocalApiError> + Send + 'static,
+) -> Result<T, LocalApiError> {
+    blocking(f).await.map_err(other_err)?
+}
+
+fn with_offline_job<T>(id: &str, f: impl FnOnce(Option<&mut OfflineJob>) -> T) -> T {
+    let mut jobs = OFFLINE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+    f(jobs.iter_mut().find(|j| j.id == id))
+}
+
+fn offline_job_running(id: &str) -> bool {
+    with_offline_job(id, |j| j.is_some_and(|j| j.state == OfflineState::Running))
+}
+
+fn clear_offline_job(id: &str) {
+    OFFLINE_JOBS.lock().unwrap_or_else(|e| e.into_inner()).retain(|j| j.id != id);
+}
+
+fn offline_log(id: &str, from: usize) -> serde_json::Value {
+    with_offline_job(id, |j| {
+        let lines: &[String] = j.map(|j| j.log.as_slice()).unwrap_or(&[]);
+        let start = from.min(lines.len());
+        serde_json::json!({ "lines": &lines[start..], "next": lines.len() })
+    })
+}
+
+/// 把客户端发起的离线任务写进组件列表的 job：进行中的总是覆盖，失败的只在服务端没有 job 时显示
+fn merge_offline_jobs(v: &mut serde_json::Value) {
+    let Some(list) = v.get_mut("list").and_then(|l| l.as_array_mut()) else { return };
+    let jobs = OFFLINE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+    for item in list {
+        let Some(job) = item.get("id").and_then(|i| i.as_str()).and_then(|id| jobs.iter().find(|j| j.id == id)) else {
+            continue;
+        };
+        let has_job = item.get("job").is_some_and(|j| !j.is_null());
+        match &job.state {
+            OfflineState::Running => item["job"] = serde_json::json!({ "kind": job.kind, "state": "running", "error": null }),
+            OfflineState::Failed(e) if !has_job => {
+                item["job"] = serde_json::json!({ "kind": job.kind, "state": "failed", "error": e })
+            }
+            _ => {}
+        }
+    }
+}
+
+fn cached_npm_root() -> Option<PathBuf> {
+    let mut g = NPM_ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = npm_root();
+    }
+    g.clone()
+}
+
+/// 服务端包是否带组件命令行入口（旧版直接运行 server.mjs 会启动整个服务端）
+fn supports_components_cli(pkg: &serde_json::Value) -> bool {
+    pkg.pointer("/cosyee/componentsCli").and_then(|v| v.as_u64()).is_some_and(|v| v >= 1)
+}
+
+fn cli_entry() -> Result<PathBuf, LocalApiError> {
+    let dir = cached_npm_root().ok_or_else(|| other_err("找不到 npm（先安装 Node.js 24+）"))?.join("cosyee-server");
+    let pkg = std::fs::read_to_string(dir.join("package.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .ok_or_else(|| other_err("还没安装 Cosyee 服务端，装好后才能检查和更新组件"))?;
+    if !supports_components_cli(&pkg) {
+        return Err(LocalApiError::Unsupported {
+            error: "本机的 Cosyee 服务端版本过旧，服务端没运行时不能管理组件，先更新服务端".into(),
+        });
+    }
+    Ok(dir.join("server.mjs"))
+}
+
+#[derive(Debug, PartialEq)]
+enum CliLine {
+    Log(String),
+    Result(serde_json::Value),
+    Error(String),
+    Ignore,
+}
+
+fn parse_cli_line(line: &str) -> CliLine {
+    let Ok(serde_json::Value::Object(mut o)) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+        return CliLine::Ignore;
+    };
+    if let Some(serde_json::Value::String(l)) = o.remove("log") {
+        return CliLine::Log(l);
+    }
+    if let Some(r) = o.remove("result") {
+        return CliLine::Result(r);
+    }
+    match o.remove("error") {
+        Some(serde_json::Value::String(e)) => CliLine::Error(e),
+        _ => CliLine::Ignore,
+    }
+}
+
+/// 运行一次组件命令行入口：日志行交给 on_log，返回最后的 result
+fn run_cli(args: &[&str], mut on_log: impl FnMut(String)) -> Result<serde_json::Value, LocalApiError> {
+    let entry = cli_entry()?.to_string_lossy().into_owned();
+    let mut argv = vec![entry.as_str(), "components"];
+    argv.extend_from_slice(args);
+    let mut c = command("node", &argv);
+    c.current_dir(home()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = c.spawn().map_err(|e| other_err(format!("无法运行 node：{e}")))?;
+    let mut result = None;
+    let mut error = None;
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines() {
+            let Ok(line) = line else { break };
+            match parse_cli_line(&line) {
+                CliLine::Log(l) => on_log(l),
+                CliLine::Result(r) => result = Some(r),
+                CliLine::Error(e) => error = Some(e),
+                CliLine::Ignore => {}
+            }
+        }
+    }
+    let status = child.wait().map_err(|e| other_err(format!("等待 node 退出失败：{e}")))?;
+    match (result, error) {
+        (_, Some(e)) => Err(other_err(e)),
+        (Some(r), None) if status.success() => Ok(r),
+        _ => Err(other_err(format!("组件命令异常退出（{status}）"))),
+    }
+}
+
+/// 离线更新：先读一次当前状态决定是安装还是更新，然后后台执行，立即返回带 running job 的状态
+fn start_offline_update(id: &'static str) -> Result<serde_json::Value, LocalApiError> {
+    let list = run_cli(&["list"], |_| {})?;
+    let mut item = list
+        .get("list")
+        .and_then(|l| l.as_array())
+        .and_then(|l| l.iter().find(|c| c.get("id").and_then(|i| i.as_str()) == Some(id)))
+        .cloned()
+        .ok_or_else(|| other_err("未找到"))?;
+    let kind = if item.get("installed").and_then(|v| v.as_bool()) == Some(true) { "update" } else { "install" };
+    {
+        let mut jobs = OFFLINE_JOBS.lock().unwrap_or_else(|e| e.into_inner());
+        if jobs.iter().any(|j| j.id == id && j.state == OfflineState::Running) {
+            return Err(LocalApiError::Other {
+                status: Some(409),
+                error: "正在更新中，请稍候".into(),
+            });
+        }
+        jobs.retain(|j| j.id != id);
+        jobs.push(OfflineJob {
+            id,
+            kind,
+            state: OfflineState::Running,
+            log: Vec::new(),
+        });
+    }
+    std::thread::spawn(move || {
+        let r = run_cli(&["update", id], |l| {
+            with_offline_job(id, |j| {
+                if let Some(j) = j {
+                    j.log.push(l);
+                }
+            })
+        });
+        let state = match r {
+            Ok(_) => OfflineState::Done,
+            Err(e) => OfflineState::Failed(match e {
+                LocalApiError::Other { error, .. } | LocalApiError::Unsupported { error } => error,
+                other => format!("{other:?}"),
+            }),
+        };
+        with_offline_job(id, |j| {
+            if let Some(j) = j {
+                if let OfflineState::Failed(e) = &state {
+                    j.log.push(e.clone());
+                }
+                j.state = state;
+            }
+        });
+    });
+    item["job"] = serde_json::json!({ "kind": kind, "state": "running", "error": null });
+    Ok(item)
 }
 
 // ───────────── 客户端自动更新 cosyee 服务端 ─────────────
@@ -961,5 +1205,54 @@ mod tests {
         for bad in [r#"{"version":"0.1"}"#, r#"{"version":"0.1.6-beta"}"#, r#"{"version":"0.1.6-main."}"#, r#"{}"#, "nope"] {
             assert!(parse_server_latest(bad.as_bytes()).is_err(), "{bad}");
         }
+    }
+    #[test]
+    fn cli_line_parsing() {
+        assert_eq!(parse_cli_line(r#"{"log":"下载中"}"#), CliLine::Log("下载中".into()));
+        assert_eq!(parse_cli_line(r#"{"result":{"id":"kiro"}}"#), CliLine::Result(serde_json::json!({ "id": "kiro" })));
+        assert_eq!(parse_cli_line(r#"{"error":"未找到"}"#), CliLine::Error("未找到".into()));
+        for junk in ["", "Cosyee: http://127.0.0.1:7878/", "[1]", r#"{"log":1}"#, r#"{"x":1}"#] {
+            assert_eq!(parse_cli_line(junk), CliLine::Ignore, "{junk}");
+        }
+    }
+
+    #[test]
+    fn components_cli_marker() {
+        assert!(supports_components_cli(&serde_json::json!({ "cosyee": { "componentsCli": 1 } })));
+        assert!(supports_components_cli(&serde_json::json!({ "cosyee": { "componentsCli": 2 } })));
+        for old in [serde_json::json!({ "version": "0.1.8" }), serde_json::json!({ "cosyee": { "componentsCli": "1" } }), serde_json::json!({ "cosyee": {} })] {
+            assert!(!supports_components_cli(&old), "{old}");
+        }
+    }
+
+    #[test]
+    fn offline_jobs_merge_and_log() {
+        // 只有这个测试碰 OFFLINE_JOBS
+        {
+            let mut jobs = OFFLINE_JOBS.lock().unwrap();
+            jobs.clear();
+            jobs.push(OfflineJob { id: "kiro", kind: "install", state: OfflineState::Running, log: vec!["a".into(), "b".into()] });
+            jobs.push(OfflineJob { id: "agy", kind: "update", state: OfflineState::Failed("网络不通".into()), log: vec![] });
+            jobs.push(OfflineJob { id: "claude", kind: "update", state: OfflineState::Done, log: vec!["完成".into()] });
+        }
+        let mut v = serde_json::json!({ "list": [
+            { "id": "kiro", "job": null },
+            { "id": "agy", "job": null },
+            { "id": "claude", "job": null },
+            { "id": "browser", "job": { "kind": "update", "state": "running", "error": null } },
+        ] });
+        merge_offline_jobs(&mut v);
+        assert_eq!(v["list"][0]["job"], serde_json::json!({ "kind": "install", "state": "running", "error": null }));
+        assert_eq!(v["list"][1]["job"], serde_json::json!({ "kind": "update", "state": "failed", "error": "网络不通" }));
+        assert!(v["list"][2]["job"].is_null());
+        assert_eq!(v["list"][3]["job"]["state"], "running");
+        assert!(offline_job_running("kiro") && !offline_job_running("agy"));
+        assert_eq!(offline_log("kiro", 0), serde_json::json!({ "lines": ["a", "b"], "next": 2 }));
+        assert_eq!(offline_log("kiro", 1), serde_json::json!({ "lines": ["b"], "next": 2 }));
+        assert_eq!(offline_log("kiro", 9), serde_json::json!({ "lines": [], "next": 2 }));
+        assert_eq!(offline_log("browser", 0), serde_json::json!({ "lines": [], "next": 0 }));
+        clear_offline_job("kiro");
+        assert!(!offline_job_running("kiro"));
+        OFFLINE_JOBS.lock().unwrap().clear();
     }
 }

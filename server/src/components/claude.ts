@@ -152,6 +152,12 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions): ComponentAdapte
       return run;
     },
 
+    restore(v: string, at: number): void {
+      if (latest !== null || !STRICT_SEMVER.test(v)) return;
+      latest = v;
+      checkedAt = at;
+    },
+
     log: (from) => log.read(from),
 
     waitIdle: () => (updating ?? Promise.resolve()).catch(() => undefined),

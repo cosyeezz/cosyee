@@ -13,6 +13,7 @@ import {
   RETRY_INTERVAL_MS,
   componentRoutes,
 } from './components/updater.js';
+import { runComponentsCli } from './components/cli.js';
 import { type RunningServer, startServer } from './server.js';
 
 const H = 60 * 60_000;
@@ -457,5 +458,87 @@ describe('LogBuffer', () => {
     expect(b.read(0)).toEqual({ lines: ['l2', 'l3', 'l4'], next: 5 });
     expect(b.read(4)).toEqual({ lines: ['l4'], next: 5 });
     expect(b.read(9)).toEqual({ lines: [], next: 5 });
+  });
+});
+
+describe('检查结果持久化', () => {
+  it('检查后写 component-checks.json，新进程读回时间并恢复最新版；失败时保留上次的最新版', async () => {
+    let now = 1000;
+    const f = fake('claude', { latest: null });
+    f.useClock(() => now);
+    const u = new ComponentUpdater({ adapters: [f.adapter], home: () => tmp, now: () => now });
+    await u.check('claude');
+    const file = path.join(tmp, 'component-checks.json');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ claude: { at: 1000, error: null, latest: '1.1.0' } });
+
+    f.adapter.check = async () => {
+      throw new Error('网络不通');
+    };
+    now = 2000;
+    await u.check('claude');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ claude: { at: 2000, error: '网络不通', latest: '1.1.0' } });
+
+    const restored: Array<[string, number]> = [];
+    const g = fake('claude', { latest: null });
+    g.adapter.restore = (v, at) => restored.push([v, at]);
+    const u2 = new ComponentUpdater({ adapters: [g.adapter], home: () => tmp });
+    expect(restored).toEqual([['1.1.0', 2000]]);
+    expect(await u2.status('claude')).toMatchObject({ checkedAt: 2000, checkError: '网络不通' });
+  });
+
+  it('claude 组件 restore：只在本进程没检查过时生效，版本号格式不对忽略', async () => {
+    const run: AgyCommandRunner = async () => ({ code: 0, stdout: '2.1.0 (Claude Code)', stderr: '' });
+    const a = createClaudeAdapter({ running: () => 0, resolvePath: () => '/x/claude', runCommand: run, statFile: () => null });
+    a.restore!('bad', 5);
+    expect(await a.info()).toMatchObject({ latest: null, checkedAt: null });
+    a.restore!('2.2.0', 5);
+    expect(await a.info()).toMatchObject({ latest: '2.2.0', checkedAt: 5, updateAvailable: true });
+    a.restore!('2.3.0', 6);
+    expect((await a.info()).latest).toBe('2.2.0');
+  });
+});
+
+describe('组件命令行入口', () => {
+  function cli(args: string[], u: ComponentUpdater) {
+    const lines: unknown[] = [];
+    return runComponentsCli(args, { updater: u, write: (l) => lines.push(JSON.parse(l)), pollMs: 5 }).then((code) => ({ code, lines }));
+  }
+
+  it('list / check 输出一行 result', async () => {
+    const f = fake('claude');
+    const u = new ComponentUpdater({ adapters: [f.adapter], home: () => tmp });
+    const l = await cli(['list'], u);
+    expect(l.code).toBe(0);
+    expect(l.lines).toMatchObject([{ result: { list: [{ id: 'claude' }] } }]);
+    const c = await cli(['check', 'claude'], u);
+    expect(c).toMatchObject({ code: 0, lines: [{ result: { id: 'claude', latest: '1.1.0' } }] });
+  });
+
+  it('update 先输出日志行再输出结果；失败输出 error、退出码 1', async () => {
+    const f = fake('agy');
+    const log = new LogBuffer();
+    f.adapter.log = (from) => log.read(from);
+    const inner = f.adapter.update;
+    f.adapter.update = async () => {
+      log.append('下载中');
+      await new Promise((r) => setTimeout(r, 20));
+      log.append('完成');
+      await inner();
+    };
+    const u = new ComponentUpdater({ adapters: [f.adapter], home: () => tmp });
+    const ok = await cli(['update', 'agy'], u);
+    expect(ok.code).toBe(0);
+    expect(ok.lines).toEqual([{ log: '下载中' }, { log: '完成' }, { result: expect.objectContaining({ id: 'agy', job: null }) }]);
+
+    f.st.failUpdate = true;
+    const bad = await cli(['update', 'agy'], u);
+    expect(bad.code).toBe(1);
+    expect(bad.lines.at(-1)).toEqual({ error: '更新失败（退出码 1）' });
+  });
+
+  it('未知组件和用法错误输出 error', async () => {
+    const u = new ComponentUpdater({ adapters: [fake('claude').adapter], home: () => tmp });
+    expect(await cli(['update', 'server'], u)).toEqual({ code: 1, lines: [{ error: '未找到' }] });
+    expect((await cli(['zzz'], u)).lines[0]).toMatchObject({ error: expect.stringContaining('用法') });
   });
 });

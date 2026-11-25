@@ -30,6 +30,8 @@ export interface ComponentAdapter {
   check(): Promise<void>;
   /** 执行更新，结束（成功或失败）时才返回；失败抛错。调用前调度器已确认 !custom && (installed || installable) */
   update(): Promise<void>;
+  /** 恢复上次检查的结果（服务端重启或命令行入口每次都是新进程，只有自己持久化了的组件不需要）；不联网 */
+  restore?(latest: string, checkedAt: number): void;
   /** 本次更新日志的增量 */
   log(from: number): { lines: string[]; next: number };
   /** 服务端退出时调用 */

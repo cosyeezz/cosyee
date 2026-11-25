@@ -2,6 +2,7 @@
 // 源码运行（npm run dev / npm start）和独立服务端包（server/scripts/bundle.mjs 打出的 server.mjs）共用这个入口。
 import os from 'node:os';
 import { TAILSCALE_MODE, devPort, setTailscaleNames, tailscaleAddrs } from './security.js';
+import { runComponentsCli } from './components/cli.js';
 import { startServer } from './server.js';
 import { ensureTailscaleHttps, magicDnsShortName, tailscaleSelf } from './tailscaleHttps.js';
 
@@ -66,7 +67,14 @@ async function main(): Promise<void> {
   process.on('exit', () => srv.manager.killAllSync());
 }
 
-main().catch((e) => {
-  console.error('启动失败:', e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+if (process.argv[2] === 'components') {
+  // 组件命令行入口（服务端没运行时桌面客户端用）：stdout 只留给 JSON 行，其它日志改到 stderr
+  console.log = console.error;
+  console.info = console.error;
+  void runComponentsCli(process.argv.slice(3)).then((code) => process.exit(code));
+} else {
+  main().catch((e) => {
+    console.error('启动失败:', e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
+}

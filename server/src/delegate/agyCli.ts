@@ -407,6 +407,14 @@ export class AgyCli {
     }
   }
 
+  /** 恢复上次检查到的最新版（组件调度器持久化的）；本进程已检查过就不覆盖 */
+  restoreCheck(latest: string, at: number): void {
+    if (this.checkedAt !== null || !isStrictSemver(latest)) return;
+    this.latest = latest;
+    this.checkedAt = at;
+    this.checkError = null;
+  }
+
   /** 读取当前状态（不访问网络） */
   async status(): Promise<AgyCliStatus> {
     const env = this.envFn();

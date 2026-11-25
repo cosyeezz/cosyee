@@ -417,6 +417,7 @@
   .comp-state.up { color: var(--accent); }
   .comp-state.warn { color: var(--warn); }
   .comp-state.bad { color: var(--danger); }
+  .comp-state.off { color: var(--text-3); }
   .comp-state i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
   .comp-state i.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
   .comp-state i.warn { background: var(--warn); }
@@ -937,8 +938,10 @@
     $('components').hidden = false;
     $('comp-card').hidden = false;
     lrender();
-    if (!lst.running) compsSetError({ kind: 'offline', error: '服务端未运行' });
-    else if (!compLoaded || compErr) compsFetch().catch(function () {});
+    // 服务端没运行时组件改由客户端直接读（每次要起一个 node 进程）：只在切换到离线、出错或有任务在跑时刷新
+    if (!lst.running) {
+      if (!compOffline || !compLoaded || compErr || compRows.some(function (r) { return r.jobRunning(); })) compsFetch().catch(function () {});
+    } else if (!compLoaded || compErr || compOffline) compsFetch().catch(function () {});
   }
   function errText(e) { return typeof e === 'string' ? e : (e && e.message) || String(e); }
   /** verLabel：执行期间版本那一行显示的字（安装 / 更新时用） */
@@ -1257,19 +1260,21 @@
     };
   }
 
-  /** ComponentStatus → 一行要显示的东西 */
-  function compView(st) {
+  /** ComponentStatus → 一行要显示的东西。hasService：这个组件带常驻服务（kiro.rs） */
+  function compView(st, hasService) {
     var job = st.job || null;
     var running = !!(job && job.state === 'running');
     var installing = running && job.kind === 'install';
     var canInstall = !st.installed && !!st.installable;
     var avail = !!st.installed && !st.custom && !!st.updateAvailable;
     var svc = st.installed && st.service ? st.service : null;
+    // 服务端没运行：程序照常检查、更新，服务的状态和启停按钮置灰
+    var svcOff = !svc && !!hasService && compOffline && !!st.installed;
     var tips = [];
     var v = {
       ver: st.installed ? (shortVer(st.version) || '已安装') : '—', verTone: '',
       text: '', tone: '', dot: '', err: '', add: false,
-      running: running, installing: installing, canInstall: canInstall, avail: avail, svc: svc,
+      running: running, installing: installing, canInstall: canInstall, avail: avail, svc: svc, svcOff: svcOff,
       blocked: avail && !running && st.busy > 0,
     };
     if (avail) v.verTone = 'up';
@@ -1277,6 +1282,10 @@
     else if (!st.installed) {
       v.text = '未安装'; v.tone = 'warn';
       if (!canInstall && !st.custom) tips.push(st.id === 'claude' ? '没找到 claude 命令，请先安装并登录 Claude Code。' : '还没有安装。');
+    } else if (svcOff) {
+      v.dot = 'idle'; v.text = '服务端未运行'; v.tone = 'off';
+      tips.push('kiro.rs 服务随 Cosyee 服务端启动，服务端运行后才能启停和打开管理页面。');
+      if (avail) tips.push('有新版' + (st.latest ? ' ' + st.latest : '') + '，可以直接更新。');
     } else if (svc) {
       var s = svc.state;
       var acc = svc.accounts || { total: 0, usable: 0 };
@@ -1352,6 +1361,7 @@
 
     var p = {
       id: id, el: root, st: null, busy: false, busyText: '', msg: null, confirm: null, logOpen: false,
+      jobRunning: function () { return !!(p.st && p.st.job && p.st.job.state === 'running'); },
       setStatus: function (st) {
         p.st = st;
         var running = !!(st && st.job && st.job.state === 'running');
@@ -1385,7 +1395,7 @@
           return;
         }
         btns.hidden = false;
-        var v = compView(st);
+        var v = compView(st, !!def.service);
         var busy = p.busy || v.running;
         root.classList.toggle('busy', busy);
         ver.textContent = v.ver;
@@ -1400,16 +1410,19 @@
         addLink.hidden = !v.add;
         var svc = v.svc, s = svc && svc.state;
         var up = s === 'ready' || s === 'starting';
-        bStart.hidden = !svc || up;
+        bStart.hidden = !(svc || v.svcOff) || up;
         bStop.hidden = !svc || !up;
         bRestart.hidden = !svc || !up;
-        bAdmin.hidden = !svc || s !== 'ready';
+        bAdmin.hidden = !(v.svcOff || (svc && s === 'ready'));
+        bStart.title = v.svcOff ? '服务端未运行' : '启动';
+        bAdmin.title = v.svcOff ? '服务端未运行' : '打开 kiro.rs 管理页面';
         bCheck.hidden = !st.installed || !!st.custom;
         bUpdate.hidden = !(v.running || v.canInstall || v.avail);
         bUpdate.textContent = v.running ? (v.installing ? '安装中…' : '更新中…') : v.canInstall ? '安装' : '更新';
         bUpdate.title = v.blocked ? '有 ' + st.busy + ' 个任务在用' + (st.pending ? '，结束后会自动更新' : '')
           : v.avail && st.latest ? '更新到 ' + st.latest : '';
         [bStart, bStop, bRestart, bAdmin, bCheck, addLink].forEach(function (b) { b.disabled = busy; });
+        if (v.svcOff) bStart.disabled = bAdmin.disabled = true;
         bUpdate.disabled = busy || v.blocked;
         // 展开区
         var m = p.msg || (v.err ? { text: v.err, error: true } : null);
@@ -1445,7 +1458,7 @@
           p.confirm = opts.onConflict(info.running);
         } else {
           p.msg = { text: label + '失败：' + (info.error || errText(e)), error: true };
-          if (info.kind === 'offline') compsSetError(info);
+          if (info.kind === 'offline') compsFetch().catch(function () {}); // 服务端刚停：改成离线显示
         }
       } finally {
         p.busy = false; p.busyText = '';
@@ -1494,13 +1507,15 @@
   }
 
   var compRows = [
-    { id: 'kiro', name: 'kiro.rs', icon: 'i-layers' },
+    { id: 'kiro', name: 'kiro.rs', icon: 'i-layers', service: true },
     { id: 'claude', name: 'Claude CLI', icon: 'i-terminal' },
     { id: 'agy', name: 'Antigravity CLI', icon: 'i-terminal' },
     { id: 'browser', name: '内置浏览器', icon: 'i-globe' },
   ].map(createCompRow);
   compRows.forEach(function (r) { $('comp-list').appendChild(r.el); });
   var compLoaded = false, compErr = null;
+  /** 当前列表来自客户端直接读（服务端没运行） */
+  var compOffline = false;
   /** 没拿到状态的组件行显示的文字 */
   function compIdleText() {
     if (!compErr) return '正在读取…';
@@ -1509,17 +1524,17 @@
   function compRenderCard() {
     var text = '', warn = false;
     if (compErr) {
-      if (compErr.kind === 'offline') text = '服务端未运行，启动后可以检查、更新和启停组件。';
+      if (compErr.kind === 'offline') text = '服务端未运行。';
       else if (compErr.kind === 'unsupported') { text = '服务端版本过旧，不支持组件管理。先更新「本机服务」里的 Cosyee 服务端。'; warn = true; }
       else { text = '读取组件状态失败：' + (compErr.error || '未知错误'); warn = true; }
-    }
+    } else if (compOffline) text = '服务端未运行：组件照常检查、安装和更新；kiro.rs 服务要等服务端启动后才能启停。';
     var off = $('comp-off');
     off.textContent = text;
     off.className = 'comp-off' + (warn ? ' warn' : '');
     off.hidden = !text;
   }
   function compsSetError(info) {
-    compErr = info;
+    compErr = info; compOffline = false;
     compRows.forEach(function (r) { r.reset(); });
     compRenderCard();
   }
@@ -1528,7 +1543,7 @@
   function compsFetch() {
     if (compsInFlight) return compsInFlight;
     var p = invoke('components_status').then(function (res) {
-      compLoaded = true; compErr = null;
+      compLoaded = true; compErr = null; compOffline = !!(res && res.offline);
       compRenderCard();
       var list = res && Array.isArray(res.list) ? res.list : [];
       compRows.forEach(function (r) {
