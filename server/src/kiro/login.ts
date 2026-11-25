@@ -62,6 +62,8 @@ export interface KiroAccountHooks {
   commitRelogin(accountId: string, label?: string): void;
   /** 失败时清理未登记的新目录 */
   discardDir(dir: string): void;
+  /** 已有 Kiro 账号里有没有这个登录邮箱（except 是重新登录的账号自己） */
+  kiroEmailTaken?(email: string, except?: string): boolean;
 }
 
 export interface KiroLoginOptions {
@@ -338,6 +340,7 @@ export class KiroLogin {
           method: params.method,
           cred,
           signal: ac.signal,
+          emailTaken: (email) => !!accounts.kiroEmailTaken?.(email, params.target!),
         });
         // 映射成功后不再检查取消：已经改了服务里的数据，要把账号登记完整
         await admin.refreshModels(params.target, params.existingDir, false);
@@ -351,6 +354,7 @@ export class KiroLogin {
           method: params.method,
           cred,
           signal: ac.signal,
+          emailTaken: (email) => !!accounts.kiroEmailTaken?.(email),
         });
         mapped = true;
         await admin.refreshModels(allocated.id, allocated.dir, false);

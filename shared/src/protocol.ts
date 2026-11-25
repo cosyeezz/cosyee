@@ -222,6 +222,8 @@ export interface AccountList {
   login: AccountLogin | null;
   /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
   duplicates?: number;
+  /** 上面的重复数按账号类型拆开：订阅（同一个 Claude 账号）、API（同一个地址 + Key）、Kiro（同一个登录邮箱） */
+  duplicateKinds?: Partial<Record<'claude' | 'api' | 'kiro', number>>;
 }
 
 export interface AccountDedupeResult {

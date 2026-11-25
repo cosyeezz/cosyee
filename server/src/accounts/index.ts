@@ -106,6 +106,14 @@ function sameClaudeIdentity(a: Pick<LocalInfo, 'uuid' | 'emailHash'>, b: Pick<Lo
   return false;
 }
 
+type DupKind = 'claude' | 'api' | 'kiro';
+
+/** Kiro 账号的身份：登录邮箱（小写）；旧格式或还没读到邮箱时为 null，不参与去重 */
+function kiroIdentity(k: NonNullable<ApiConfig['kiro']>): string | null {
+  const e = isLegacyKiro(k) ? null : k.email?.trim().toLowerCase();
+  return e || null;
+}
+
 /** 原子写回文件（临时文件 + rename） */
 function writeFileAtomic(file: string, data: string | Buffer, mode?: number): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -369,7 +377,7 @@ export class Accounts {
   }
 
   /** 把所有账号按真实身份分为「列表保留项」与「去重隐藏项」；优先级 当前账号 > 默认账号 > 最早添加 */
-  private partition(): { kept: AccountEntry[]; hiddenIds: string[] } {
+  private partition(): { kept: AccountEntry[]; hiddenIds: string[]; byKind: Partial<Record<DupKind, number>> } {
     const active = this.activeId();
     const def = localInfo(null);
     type Row = {
@@ -377,7 +385,9 @@ export class Accounts {
       createdAt: number;
       entry: AccountEntry;
       info: LocalInfo;
-      apiKeyId: string | null;
+      kind: DupKind;
+      /** API 账号：baseUrl + Key；Kiro 账号：登录邮箱（小写）；订阅账号为 null，用 info 比对 */
+      key: string | null;
     };
     const timeFields = (info: LocalInfo): Pick<AccountEntry, 'subscribedAt' | 'loginExpiresAt'> => ({
       ...(info.subscribedAt !== null ? { subscribedAt: info.subscribedAt } : {}),
@@ -389,7 +399,8 @@ export class Accounts {
         createdAt: -1,
         entry: { id: DEFAULT_ID, label: '', name: def.name, plan: def.plan, loggedIn: def.loggedIn, active: active === DEFAULT_ID, isDefault: true, ...timeFields(def) },
         info: def,
-        apiKeyId: null,
+        kind: 'claude',
+        key: null,
       },
     ];
     for (let k = 0; k < this.s.list.length; k++) {
@@ -431,7 +442,8 @@ export class Accounts {
         createdAt: a.createdAt,
         entry: e,
         info: i,
-        apiKeyId: api && !api.kiro ? `${api.baseUrl}\0${api.apiKey}` : null,
+        kind: api?.kiro ? 'kiro' : api ? 'api' : 'claude',
+        key: api?.kiro ? kiroIdentity(api.kiro) : api ? `${api.baseUrl}\0${api.apiKey}` : null,
       });
     }
 
@@ -440,26 +452,40 @@ export class Accounts {
     const ordered = [...rows].sort((a, b) => rank(a) - rank(b) || a.createdAt - b.createdAt || a.idx - b.idx);
     const kept: Row[] = [];
     const hiddenIds: string[] = [];
+    const byKind: Partial<Record<DupKind, number>> = {};
     for (const r of ordered) {
       const dup = kept.some((k) => {
-        if (r.apiKeyId && k.apiKeyId) return r.apiKeyId === k.apiKeyId;
-        if (r.apiKeyId || k.apiKeyId) return false;
-        return sameClaudeIdentity(r.info, k.info);
+        if (r.kind !== k.kind) return false;
+        if (r.kind === 'claude') return sameClaudeIdentity(r.info, k.info);
+        return r.key !== null && r.key === k.key;
       });
-      if (dup) hiddenIds.push(r.entry.id);
-      else kept.push(r);
+      if (dup) {
+        hiddenIds.push(r.entry.id);
+        byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      } else kept.push(r);
     }
     kept.sort((a, b) => a.idx - b.idx);
-    return { kept: kept.map((r) => r.entry), hiddenIds };
+    return { kept: kept.map((r) => r.entry), hiddenIds, byKind };
+  }
+
+  /** 已有的 Kiro 账号里有没有这个登录邮箱（except 是自己，重新登录时排除） */
+  kiroEmailTaken(email: string, except?: string): boolean {
+    const want = email.trim().toLowerCase();
+    if (!want) return false;
+    return this.s.list.some((a) => {
+      if (a.id === except) return false;
+      const k = readApiConfig(a.dir)?.kiro;
+      return !!k && kiroIdentity(k) === want;
+    });
   }
 
   list(): AccountList {
-    const { kept, hiddenIds } = this.partition();
+    const { kept, hiddenIds, byKind } = this.partition();
     return {
       mode: this.s.mode,
       list: kept,
       login: this.login ? { ...this.login.state } : null,
-      ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length } : {}),
+      ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length, duplicateKinds: byKind } : {}),
     };
   }
 

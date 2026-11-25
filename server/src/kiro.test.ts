@@ -134,6 +134,8 @@ class FakeKiroServer {
   addFail: (body: Record<string, unknown>) => string | null = () => null;
   /** 为 true 时创建客户端 Key 失败（500） */
   keyFail = false;
+  /** 新凭据的登录邮箱（模拟 kiro.rs 验证额度后读到的邮箱） */
+  emailOf: (body: Record<string, unknown>) => string | undefined = () => undefined;
   /** 让 /v1/models 返回错误状态 */
   modelsStatus = 200;
   models = ['claude-sonnet-4-5', 'claude-sonnet-4-5-thinking', 'claude-opus-4-5', 'claude-haiku-4-5'];
@@ -196,7 +198,8 @@ class FakeKiroServer {
       if (dup) return this.err(400, '凭据已存在');
       const id = this.nextCred++;
       const { groups, ...rest } = body;
-      this.creds.set(id, { id, body: rest, groups: Array.isArray(groups) ? (groups as string[]) : [] });
+      const email = this.emailOf(rest);
+      this.creds.set(id, { id, body: rest, groups: Array.isArray(groups) ? (groups as string[]) : [], ...(email ? { email } : {}) });
       return this.json(200, { success: true, message: 'ok', credentialId: id });
     }
     if (method === 'DELETE' && (m = /^\/credentials\/(\d+)$/.exec(p))) {
@@ -292,6 +295,7 @@ function makeHarness(opts: {
       commitNew: (id, dir, label) => accounts.commitNewKiro(id, dir, label),
       commitRelogin: (id, label) => accounts.commitReloginKiro(id, label),
       discardDir: (dir) => accounts.discardKiroDir(dir),
+      kiroEmailTaken: (email, except) => accounts.kiroEmailTaken(email, except),
       modelsChanged: (id) => modelsChanged.push(id),
       infoChanged: () => accounts.kiroInfoChanged(),
     },
@@ -926,7 +930,7 @@ describe('账号与内置服务的映射（添加、回滚、重新登录、移�
     await h.kiro.login.waitForLogin();
     const st = h.kiro.getLogin(job.loginId);
     expect(st.status).toBe('failed');
-    expect(st.error).toContain('已在 kiro.rs 服务中存在');
+    expect(st.error).toContain('这个 Kiro 账号已经添加过了');
     expect(h.server.creds.size).toBe(1);
     expect(h.server.keys.size).toBe(1);
     expect([...h.server.groups]).toEqual([a.id]);
@@ -1002,6 +1006,64 @@ describe('账号与内置服务的映射（添加、回滚、重新登录、移�
     expect(h.kiro.getLogin(job.loginId).status).toBe('done');
     expect(fs.readFileSync(path.join(dir, 'cosyee-api.json'), 'utf8')).toBe(before);
     expect(h.server.creds.size).toBe(1);
+    await h.kiro.dispose();
+  });
+
+  it('同一个登录邮箱不能添加两次；重新登录成别的已添加账号时拒绝，原凭据不动', async () => {
+    const h = makeHarness();
+    h.server.emailOf = (b) => (String(b.kiroApiKey).includes('_a_') ? 'Same@Example.com' : 'other@example.com');
+    const a = await loginApiKey(h, 'ksk_acc_a_0001');
+    const b = await loginApiKey(h, 'ksk_acc_b_0001');
+    const credsBefore = [...h.server.creds.keys()];
+
+    // 同邮箱（大小写不同）的另一份凭据：失败，服务里新建的分组 / 凭据 / Key 全部回滚，不留目录
+    const job = h.kiro.startLogin({ method: 'apiKey', apiKey: 'ksk_acc_a_0002' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job.loginId)).toMatchObject({ status: 'failed', error: '这个 Kiro 账号已经添加过了' });
+    expect([...h.server.creds.keys()]).toEqual(credsBefore);
+    expect(h.server.groups.size).toBe(2);
+    expect(h.server.keys.size).toBe(2);
+    expect(h.accounts.listKiroAccounts().map((x) => x.id).sort()).toEqual([a.id, b.id].sort());
+
+    // 账号 b 重新登录成了 a 的邮箱：拒绝，b 的旧凭据和配置不变
+    const cfgB = fs.readFileSync(path.join(b.dir, 'cosyee-api.json'), 'utf8');
+    const job2 = h.kiro.startLogin({ method: 'apiKey', accountId: b.id, apiKey: 'ksk_acc_a_0003' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job2.loginId).status).toBe('failed');
+    expect(h.kiro.getLogin(job2.loginId).error).toContain('已经添加过了');
+    expect([...h.server.creds.keys()]).toEqual(credsBefore);
+    expect(fs.readFileSync(path.join(b.dir, 'cosyee-api.json'), 'utf8')).toBe(cfgB);
+
+    // 自己用同一个邮箱重新登录可以
+    const job3 = h.kiro.startLogin({ method: 'apiKey', accountId: a.id, apiKey: 'ksk_acc_a_0004' });
+    await h.kiro.login.waitForLogin();
+    expect(h.kiro.getLogin(job3.loginId).status).toBe('done');
+    await h.kiro.dispose();
+  });
+
+  it('历史重复的 Kiro 账号（同一邮箱）：列表隐藏后来的，按类型计数，dedupe 删掉它在服务里的数据', async () => {
+    const h = makeHarness();
+    const a = await loginApiKey(h, 'ksk_acc_a_0001');
+    const b = await loginApiKey(h, 'ksk_acc_b_0001');
+    const c = await loginApiKey(h, 'ksk_acc_c_0001');
+    // 绕过添加时的检查，直接造出同邮箱的两个账号（老版本留下的）
+    for (const [x, email] of [[a, 'dup@example.com'], [b, 'DUP@example.com'], [c, 'c@example.com']] as const) {
+      const cfg = readApiConfig(x.dir)!;
+      writeApiConfig(x.dir, { ...cfg, kiro: { ...cfg.kiro!, email } as typeof cfg.kiro });
+    }
+    const l = h.accounts.list();
+    expect(l.list.filter((x) => x.kiro).map((x) => x.id)).toEqual([a.id, c.id]);
+    expect(l.duplicates).toBe(1);
+    expect(l.duplicateKinds).toEqual({ kiro: 1 });
+    expect(h.accounts.kiroEmailTaken('dup@EXAMPLE.com')).toBe(true);
+    expect(h.accounts.kiroEmailTaken('c@example.com', c.id)).toBe(false);
+
+    const bCred = (readApiConfig(b.dir)!.kiro as { credentialId: number }).credentialId;
+    expect(await h.accounts.dedupe()).toEqual({ removed: 1, skipped: 0 });
+    expect(h.server.creds.has(bCred)).toBe(false);
+    expect(h.server.groups.has(b.id)).toBe(false);
+    expect(fs.existsSync(b.dir)).toBe(false);
+    expect(h.accounts.list().duplicates).toBeUndefined();
     await h.kiro.dispose();
   });
 

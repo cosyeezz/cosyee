@@ -19,6 +19,12 @@ import {
 import { useDismiss } from './useDismiss';
 import { useFocusTrap } from './useFocusTrap';
 
+/** 某一类账号的重复条目数；旧服务端没有分类时全部算在订阅账号上 */
+function dupCount(data: AccountList, kind: ClaudeKind): number {
+  if (data.duplicateKinds) return data.duplicateKinds[kind] ?? 0;
+  return kind === 'claude' ? data.duplicates ?? 0 : 0;
+}
+
 export type AddDialogKind = 'login' | 'api' | 'kiro' | 'agy';
 
 export interface AccountManagerProps {
@@ -441,7 +447,7 @@ export function AccountManager(p: AccountManagerProps) {
               {rows.length
                 ? <div className="cz-acct-mgr__cards">{rows.map(claudeCard)}</div>
                 : <div className="cz-acct-mgr__empty">{s.empty}</div>}
-              {s.kind === 'claude' && <DuplicateNote count={data.duplicates ?? 0} onClean={p.onDedupe} />}
+              <DuplicateNote count={dupCount(data, s.kind)} onClean={p.onDedupe} />
               {s.kind === 'kiro' && hasKiro && <KiroEngineNote version={p.version} />}
             </section>
           );

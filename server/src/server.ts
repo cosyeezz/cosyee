@@ -330,6 +330,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       listKiroAccounts: () => accounts!.listKiroAccounts(),
       allocateNewDir: () => accounts!.allocateKiroDir(),
       existingKiroDir: (id) => accounts!.existingKiroDir(id),
+      kiroEmailTaken: (email, except) => accounts!.kiroEmailTaken(email, except),
       running: (id) => manager.runningCount(id),
       stopAccountProcesses: (id) => accounts!.stopAccountProcesses(id),
       commitNew: (id, dir, label) => accounts!.commitNewKiro(id, dir, label),

@@ -33,6 +33,8 @@ export interface AddAccountParams {
   signal?: AbortSignal;
   /** 凭据「已存在」时复用分组里已有的那条（旧版账号重新登录用），而不是报错 */
   reuseExisting?: boolean;
+  /** 登录邮箱已经被别的 Kiro 账号用了：为真时回滚并报「已经添加过了」 */
+  emailTaken?: (email: string) => boolean;
 }
 
 export interface ReloginParams {
@@ -41,7 +43,11 @@ export interface ReloginParams {
   method: KiroLoginMethod;
   cred: KiroCredentialEntry;
   signal?: AbortSignal;
+  /** 同 AddAccountParams.emailTaken（调用方要排除这个账号自己） */
+  emailTaken?: (email: string) => boolean;
 }
+
+const KIRO_DUP_MESSAGE = '这个 Kiro 账号已经添加过了';
 
 /** 本次调用在服务里创建的东西（失败时只回滚这些） */
 interface Created {
@@ -158,7 +164,7 @@ export class KiroAccountAdmin {
       let credentialId: number;
       if ('duplicate' in added) {
         const existing = p.reuseExisting ? await this.findGroupCredential(p.accountId) : null;
-        if (existing === null) throw new Error('该凭据已在 kiro.rs 服务中存在（可能属于另一个账号）');
+        if (existing === null) throw new Error(KIRO_DUP_MESSAGE);
         credentialId = existing;
       } else {
         credentialId = added.id;
@@ -180,6 +186,7 @@ export class KiroAccountAdmin {
       created.key = kj.id;
 
       const email = await this.credentialEmail(credentialId);
+      if (email && p.emailTaken?.(email)) throw new Error(KIRO_DUP_MESSAGE);
       const meta: KiroAccountMeta = { method: p.method, credentialId, keyId: kj.id, ...(email ? { email } : {}) };
       const prev = readApiConfig(p.dir);
       writeApiConfig(p.dir, {
@@ -246,6 +253,11 @@ export class KiroAccountAdmin {
     }
 
     const email = await this.credentialEmail(added.id);
+    if (email && p.emailTaken?.(email)) {
+      // 重新登录成了另一个已添加的账号：删掉新凭据，原账号的旧凭据不动
+      await this.quiet('回滚凭据', () => this.proxy.request('DELETE', `/credentials/${added.id}`));
+      throw new Error(`${KIRO_DUP_MESSAGE}，原登录状态未改变`);
+    }
     const meta: KiroAccountMeta = { method: p.method, credentialId: added.id, keyId: old.keyId, ...(email ? { email } : {}) };
     this.writeMeta(p.dir, meta);
     if (old.credentialId !== added.id) {

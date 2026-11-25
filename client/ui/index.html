@@ -400,7 +400,7 @@
   #comp-card { padding: 2px 0; }
   .comp-off { margin: 0; padding: 11px 16px; font-size: 12.5px; color: var(--text-3); }
   .comp-off.warn { color: var(--warn); }
-  .comp-item:not([hidden]) ~ .comp-item { border-top: 1px solid var(--border); }
+  .comp-item:not([hidden]) ~ .comp-item, .comp-off:not([hidden]) + #comp-list .comp-item:first-child { border-top: 1px solid var(--border); }
   .comp-row { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 14px; }
   .comp-ico { flex: none; display: grid; place-items: center; width: 20px; height: 20px; color: var(--text-3); transition: color .15s; }
   .comp-item.busy .comp-ico { color: var(--accent); }
@@ -1314,7 +1314,6 @@
   function createCompRow(def) {
     var id = def.id;
     var root = h('div', 'comp-item');
-    root.hidden = true;
     var row = h('div', 'comp-row');
     var ico = h('span', 'comp-ico');
     ico.innerHTML = '<svg class="i"><use href="#' + def.icon + '"/></svg>';
@@ -1376,8 +1375,16 @@
       },
       render: function () {
         var st = p.st;
-        root.hidden = !st;
-        if (!st) return;
+        root.hidden = !st && compLoaded && !compErr; // 服务端版本旧、没有这个组件：不显示
+        if (!st) {
+          // 还没拿到状态（服务端没运行、读取中、读取失败）：只显示名称，状态写原因，不给操作
+          root.classList.remove('busy');
+          ver.textContent = '—'; ver.className = 'comp-ver'; ver.title = '';
+          stText.textContent = compIdleText(); state.className = 'comp-state'; state.title = '';
+          dot.hidden = true; addLink.hidden = true; btns.hidden = true; more.hidden = true;
+          return;
+        }
+        btns.hidden = false;
         var v = compView(st);
         var busy = p.busy || v.running;
         root.classList.toggle('busy', busy);
@@ -1475,7 +1482,7 @@
     confOk.onclick = function () { if (p.confirm) service(p.confirm.action, true); };
     confNo.onclick = function () { p.confirm = null; p.render(); };
     state.onclick = async function () {
-      if (p.st && p.st.job && p.st.job.state === 'running') return;
+      if (!p.st || (p.st.job && p.st.job.state === 'running')) return;
       p.logOpen = !p.logOpen;
       p.render();
       if (p.logOpen && !logBox.textContent.trim()) {
@@ -1494,18 +1501,22 @@
   ].map(createCompRow);
   compRows.forEach(function (r) { $('comp-list').appendChild(r.el); });
   var compLoaded = false, compErr = null;
+  /** 没拿到状态的组件行显示的文字 */
+  function compIdleText() {
+    if (!compErr) return '正在读取…';
+    return compErr.kind === 'offline' ? '未连接' : '—';
+  }
   function compRenderCard() {
     var text = '', warn = false;
     if (compErr) {
-      if (compErr.kind === 'offline') text = '服务端未运行，组件不可用';
+      if (compErr.kind === 'offline') text = '服务端未运行，启动后可以检查、更新和启停组件。';
       else if (compErr.kind === 'unsupported') { text = '服务端版本过旧，不支持组件管理。先更新「本机服务」里的 Cosyee 服务端。'; warn = true; }
       else { text = '读取组件状态失败：' + (compErr.error || '未知错误'); warn = true; }
-    } else if (!compLoaded) text = '正在读取…';
+    }
     var off = $('comp-off');
     off.textContent = text;
     off.className = 'comp-off' + (warn ? ' warn' : '');
     off.hidden = !text;
-    $('comp-list').hidden = !!compErr;
   }
   function compsSetError(info) {
     compErr = info;
