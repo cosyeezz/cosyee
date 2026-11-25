@@ -200,6 +200,23 @@ pub fn fetch_control_status(info: &RunningInfo) -> Result<ControlStatus, String>
         .map_err(|e| format!("解析组件状态失败：{e}"))
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct PeersResponse {
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    peers: Vec<SelfNode>,
+}
+
+/// 组件 GET /peers：tailnet 里的其它节点（含离线的）。旧版组件没有这个接口，返回 404 → Err。
+pub fn fetch_peers(info: &RunningInfo) -> Result<Vec<SelfNode>, String> {
+    let (status, body) = control_request(&info.control, &info.token, "GET", "/peers", Duration::from_secs(3))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("查询节点列表失败（HTTP {status}）"));
+    }
+    serde_json::from_str::<PeersResponse>(&body)
+        .map(|r| r.peers)
+        .map_err(|e| format!("解析节点列表失败：{e}"))
+}
+
 pub fn trigger_login(info: &RunningInfo) -> Result<String, String> {
     let (status, body) = control_request(
         &info.control,

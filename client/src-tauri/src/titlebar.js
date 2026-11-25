@@ -116,6 +116,7 @@
     server: '<rect x="3.5" y="4.5" width="17" height="11" rx="2"/><path d="M8.5 19.5h7M12 15.5v4"/>',
     swap: '<path d="M8 9.5 12 5.5l4 4M8 14.5l4 4 4-4"/>',
     check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+    copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
     globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.9 5.2 3.9 8.5s-1.3 6.1-3.9 8.5c-2.6-2.4-3.9-5.2-3.9-8.5S9.4 5.9 12 3.5z"/>'
   };
   function icon(name) {
@@ -195,8 +196,17 @@
     /* 服务器切换下拉：同一套磨砂面板，悬停用纯色底（不走液态胶囊） */
     '.sm{left:0;min-width:240px;max-width:min(380px,90vw);transform-origin:20px 0}',
     '.sm .mi{height:40px;gap:10px;padding:0 10px}',
-    '.sm .mi:hover,.sm .mi:focus-visible{background:var(--_hover);color:var(--_fg)}',
-    '.sm .mi:hover svg,.sm .mi:focus-visible svg{color:var(--_fg)}',
+    '.sm .mi:hover,.sm .mi:focus-visible,.sm .row:hover .mi{background:var(--_hover);color:var(--_fg)}',
+    '.sm .mi:hover svg,.sm .mi:focus-visible svg,.sm .row:hover .mi svg{color:var(--_fg)}',
+    '.sm .row{position:relative}',
+    '.sm .row.ip .mi{padding-right:42px}',
+    /* 复制 IP：行右侧的小按钮，平时淡、悬停行时亮 */
+    '.sm .cp{position:absolute;z-index:2;top:50%;right:6px;width:28px;height:28px;margin-top:-14px;display:grid;place-items:center;',
+    '  border-radius:7px;color:var(--_fg3);opacity:.55;transition:background-color .12s,color .12s,opacity .12s}',
+    '.sm .row:hover .cp,.sm .row:focus-within .cp{opacity:1}',
+    '.sm .cp:hover{background:color-mix(in srgb,var(--_fg) 10%,transparent);color:var(--_fg)}',
+    '.sm .cp.ok{opacity:1;color:var(--_accent)}',
+    '.sm .cp svg{width:15px;height:15px}',
     '.sm .t{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}',
     '.sm .t b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.sm .t small{font-size:11px;color:var(--_fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
@@ -212,8 +222,12 @@
   function serverLabel() {
     var h = location.hostname;
     if (h === '127.0.0.1' || h === 'localhost' || h === '[::1]') return '本机';
-    if (/^[\d.]+$/.test(h)) return h;
+    if (isIp(h)) { var p = peerFor(h); return p ? p.name : h; }
     return h.split('.')[0] || h;
+  }
+  function syncCrumb() {
+    var c = root && root.getElementById('c');
+    if (c) c.querySelector('span').textContent = serverLabel();
   }
 
   function build() {
@@ -258,7 +272,7 @@
     items = Array.prototype.slice.call(root.querySelectorAll('.mi'));
     var crumb = root.getElementById('c');
     if (crumb) {
-      crumb.querySelector('span').textContent = serverLabel();
+      syncCrumb();
       crumb.onclick = function () { toggleServers(); };
       smenu.addEventListener('keydown', onServersKey);
     }
@@ -338,14 +352,83 @@
   function isLocalUrl(u) { return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/i.test(u); }
   function sameOrigin(u) { try { return new URL(u).origin === location.origin; } catch (e) { return false; } }
   function srvOpen() { return smenu.classList.contains('open'); }
+  // tailnet 节点名单（原生层注入 window.__cosyeePeers：[{name, dns, ips, me}]），用来显示机器名、复制 IP
+  function peers() {
+    try {
+      var a = JSON.parse(window.__cosyeePeers || '[]');
+      return Array.isArray(a) ? a.filter(function (p) { return p && typeof p.name === 'string' && Array.isArray(p.ips); }) : [];
+    } catch (e) { return []; }
+  }
+  function isIp(h) { return /^[\d.]+$/.test(h) || h.indexOf(':') >= 0; }
+  function urlHost(u) { try { return new URL(u).hostname.replace(/^\[|\]$/g, '').toLowerCase(); } catch (e) { return ''; } }
+  /** 地址对应的 tailnet 节点：IP 按地址匹配，机器名 / MagicDNS 名按名字匹配，本机地址对应这台设备自己 */
+  function peerFor(host) {
+    host = String(host || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (!host) return null;
+    var local = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+    var ps = peers();
+    for (var i = 0; i < ps.length; i++) {
+      var p = ps[i], dns = String(p.dns || '').toLowerCase();
+      if (local ? p.me : (p.ips.indexOf(host) >= 0 || p.name.toLowerCase() === host || dns === host || dns.indexOf(host + '.') === 0)) return p;
+    }
+    return null;
+  }
+  /** 行上要复制的 IP：地址本身是 IP 就用它，否则用节点的 IPv4（没有再用 IPv6） */
+  function copyIp(host, p) {
+    if (host && isIp(host) && !/^(127\.|::1$)/.test(host)) return host;
+    if (!p) return '';
+    return p.ips.filter(function (ip) { return ip.indexOf(':') < 0; })[0] || p.ips[0] || '';
+  }
+  // 服务端网页多半是 http，不是安全上下文，没有 navigator.clipboard，退回 execCommand('copy')
+  function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return legacyCopy(text); });
+    } catch (e) { /* 退回 */ }
+    return Promise.resolve(legacyCopy(text));
+  }
+  function legacyCopy(text) {
+    var back = root.activeElement, ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+    root.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (back && back.focus) back.focus({ preventScroll: true });
+    return ok;
+  }
+  function doCopy(btn) {
+    var ip = btn.getAttribute('data-ip');
+    copyText(ip).then(function (ok) {
+      btn.classList.toggle('ok', !!ok);
+      btn.innerHTML = icon(ok ? 'check' : 'copy');
+      btn.title = ok ? '已复制 ' + ip : '复制失败';
+      clearTimeout(btn._t);
+      btn._t = setTimeout(function () {
+        btn.classList.remove('ok');
+        btn.innerHTML = icon('copy');
+        btn.title = '复制 IP ' + ip;
+      }, 1400);
+    });
+  }
   function renderServers() {
     var list = servers(), h = '';
     list.forEach(function (s, i) {
-      var cur = sameOrigin(s.url);
-      h += '<button class="mi' + (cur ? ' cur' : '') + '" role="menuitemradio" aria-checked="' + cur + '" data-i="' + i + '">'
+      var cur = sameOrigin(s.url), host = urlHost(s.url), p = peerFor(host), ip = copyIp(host, p);
+      // 名称没改过（默认就是地址）时用机器名当标题；改过名就保留，机器名放到副标题
+      var named = s.name && s.name.toLowerCase() !== host;
+      var title = named ? s.name : (p ? p.name : (s.name || s.url));
+      var sub = (p && title !== p.name ? p.name + ' · ' : '') + s.url;
+      h += '<div class="row' + (ip ? ' ip' : '') + '">'
+        + '<button class="mi' + (cur ? ' cur' : '') + '" role="menuitemradio" aria-checked="' + cur + '" data-i="' + i + '"'
+        + (ip ? ' data-ip="' + esc(ip) + '"' : '') + '>'
         + icon(isLocalUrl(s.url) ? 'server' : 'globe')
-        + '<span class="t"><b>' + esc(s.name || s.url) + '</b><small>' + esc(s.url) + '</small></span>'
-        + (cur ? '<span class="ck">' + icon('check') + '</span>' : '') + '</button>';
+        + '<span class="t"><b>' + esc(title) + '</b><small>' + esc(sub) + '</small></span>'
+        + (cur ? '<span class="ck">' + icon('check') + '</span>' : '') + '</button>'
+        + (ip ? '<button class="cp" tabindex="-1" data-ip="' + esc(ip) + '" title="复制 IP ' + esc(ip) + '" aria-label="复制 IP ' + esc(ip) + '">' + icon('copy') + '</button>' : '')
+        + '</div>';
     });
     if (!list.length) h += '<div class="none">还没有保存的服务器</div>';
     h += '<div class="hr" role="separator"></div>'
@@ -358,6 +441,9 @@
         var s = list[Number(b.getAttribute('data-i'))];
         if (s && !sameOrigin(s.url)) location.href = s.url.replace(/\/+$/, '') + '/';
       };
+    });
+    Array.prototype.forEach.call(smenu.querySelectorAll('.cp'), function (b) {
+      b.onclick = function (e) { e.stopPropagation(); doCopy(b); };
     });
   }
   function toggleServers(force) {
@@ -389,10 +475,23 @@
       root.getElementById('c').focus();
     } else if (e.key === 'Tab') {
       toggleServers(false);
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && i >= 0 && bs[i].hasAttribute('data-ip')) {
+      // 键盘选中某一行时 Ctrl/⌘+C 复制它的 IP
+      e.preventDefault();
+      var cp = bs[i].parentNode.querySelector('.cp');
+      if (cp) doCopy(cp);
     }
   }
-  // 页面加载完才收到列表；下拉已经开着时就地刷新
-  window.addEventListener('cosyee:servers', function () { if (smenu && srvOpen()) renderServers(); });
+  // 页面加载完才收到列表 / 节点名单；下拉已经开着时就地刷新
+  window.addEventListener('cosyee:servers', function () {
+    if (!root) return;
+    syncCrumb();
+    if (!srvOpen()) return;
+    var f = root.activeElement, at = f && f.getAttribute ? f.getAttribute('data-i') || f.getAttribute('data-a') : null;
+    renderServers();
+    var again = at && smenu.querySelector('.mi[data-i="' + at + '"],.mi[data-a="' + at + '"]');
+    if (again) again.focus({ preventScroll: true });
+  });
 
   function onMenuKey(e) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {

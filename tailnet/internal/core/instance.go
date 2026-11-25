@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -254,6 +255,7 @@ func (i *Instance) controlHandler() http.Handler {
 	mux.HandleFunc("/status", i.handleStatus)
 	mux.HandleFunc("/login", i.handleLogin)
 	mux.HandleFunc("/logout", i.handleLogout)
+	mux.HandleFunc("/peers", i.handlePeers)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reject unexpected Host headers (DNS rebinding protection).
@@ -300,6 +302,47 @@ func (i *Instance) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, buildStatusResponse(i.version, st))
+}
+
+// PeersResponse is the JSON payload returned by GET /peers.
+type PeersResponse struct {
+	Peers []SelfInfo `json:"peers"`
+}
+
+func (i *Instance) handlePeers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	st, err := i.backend.Peers(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, buildPeersResponse(st))
+}
+
+// buildPeersResponse lists every peer (online or not) with its Tailscale IPs, sorted by name.
+func buildPeersResponse(st *ipnstate.Status) PeersResponse {
+	resp := PeersResponse{Peers: []SelfInfo{}}
+	for _, p := range st.Peer {
+		if p == nil || len(p.TailscaleIPs) == 0 {
+			continue
+		}
+		ips := make([]string, 0, len(p.TailscaleIPs))
+		for _, ip := range p.TailscaleIPs {
+			ips = append(ips, ip.String())
+		}
+		resp.Peers = append(resp.Peers, SelfInfo{
+			Name:    p.HostName,
+			DNSName: strings.TrimSuffix(p.DNSName, "."),
+			IPs:     ips,
+		})
+	}
+	sort.Slice(resp.Peers, func(a, b int) bool { return resp.Peers[a].DNSName < resp.Peers[b].DNSName })
+	return resp
 }
 
 func buildStatusResponse(ver string, st *ipnstate.Status) StatusResponse {

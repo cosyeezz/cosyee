@@ -354,6 +354,14 @@ pub fn proxy_url() -> Option<tauri::Url> {
     format!("http://{addr}").parse().ok()
 }
 
+/// 内置 Tailscale 在运行时返回（本机节点, 其它节点）；没装、没启用、没运行或组件太旧时返回 None。
+pub fn builtin_peers() -> Option<(Option<SelfNode>, Vec<SelfNode>)> {
+    let info = MANAGER.get()?.runner.running_info()?;
+    let me = component::fetch_control_status(&info).ok()?.self_node;
+    let peers = component::fetch_peers(&info).ok()?;
+    Some((me, peers))
+}
+
 /// 探测 host:port 是否可达：代理开启时按相同分流规则决定走 SOCKS5 还是直连；未开启时纯直连。
 pub async fn probe_tcp(host: &str, port: u16) -> bool {
     if let Some(mgr) = MANAGER.get() {

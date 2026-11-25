@@ -5,6 +5,8 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(desktop)]
 mod local;
+#[cfg(desktop)]
+mod peers;
 mod tailnet;
 
 /// 本地页面的 origin（Windows / Android 是 http://tauri.localhost，macOS / Linux 是 tauri://localhost）。
@@ -53,6 +55,36 @@ fn set_servers(state: tauri::State<'_, Servers>, json: String) {
     }
 }
 
+/// 上次查到的 tailnet 节点名单（JSON 数组字符串），页面加载完先注入这份，再后台刷新。
+#[derive(Default)]
+struct PeerCache(std::sync::Mutex<String>);
+
+/// 把节点名单交给标题栏：先给缓存（下拉立即有别名），再在后台重新查一次，变了就再注入一次。
+#[cfg(desktop)]
+fn inject_peers<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    use tauri::Manager;
+    fn eval<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, json: &str) {
+        let lit = serde_json::to_string(json).unwrap_or_else(|_| "\"[]\"".into());
+        let _ = w.eval(format!("window.__cosyeePeers={lit};window.dispatchEvent(new Event('cosyee:servers'))"));
+    }
+    let cached = w.state::<PeerCache>().0.lock().map(|g| g.clone()).unwrap_or_default();
+    if !cached.is_empty() {
+        eval(w, &cached);
+    }
+    let w = w.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(list) = tauri::async_runtime::spawn_blocking(peers::list).await else { return };
+        let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+        if json == cached {
+            return;
+        }
+        if let Ok(mut g) = w.state::<PeerCache>().0.lock() {
+            *g = json.clone();
+        }
+        eval(&w, &json);
+    });
+}
+
 fn go_list<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, extra: &str) {
     if let Ok(u) = format!("{HOME}index.html?list=1{extra}").parse() {
         let _ = w.navigate(u);
@@ -73,6 +105,8 @@ fn watch_server<R: tauri::Runtime>(w: tauri::WebviewWindow<R>, p: tauri::webview
         let json = w.state::<Servers>().0.lock().map(|g| g.clone()).unwrap_or_default();
         let lit = serde_json::to_string(if json.is_empty() { "[]" } else { &json }).unwrap_or_else(|_| "\"[]\"".into());
         let _ = w.eval(format!("window.__cosyeeServers={lit};window.dispatchEvent(new Event('cosyee:servers'))"));
+        #[cfg(desktop)]
+        inject_peers(&w);
         return;
     }
     if p.event() != PageLoadEvent::Started {
@@ -98,7 +132,8 @@ fn watch_server<R: tauri::Runtime>(w: tauri::WebviewWindow<R>, p: tauri::webview
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(Servers::default());
+        .manage(Servers::default())
+        .manage(PeerCache::default());
     // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏。
     // 内置 Tailscale 命令在桌面与手机两端都注册，且仅对客户端本地页面开放（远程页面调不到自定义命令）。
     #[cfg(desktop)]

@@ -19,6 +19,7 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/types/key"
 )
 
 type mockWatcher struct {
@@ -80,6 +81,10 @@ func (m *mockBackend) Status(ctx context.Context) (*ipnstate.Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.status, m.statusErr
+}
+
+func (m *mockBackend) Peers(ctx context.Context) (*ipnstate.Status, error) {
+	return m.Status(ctx)
 }
 
 func (m *mockBackend) StartLoginInteractive(ctx context.Context) error {
@@ -460,5 +465,26 @@ func TestRotatingWriter(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath + ".1"); err != nil {
 		t.Fatalf("expected rotated backup log.1: %v", err)
+	}
+}
+
+func TestBuildPeersResponse(t *testing.T) {
+	st := &ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+		key.NewNode().Public(): {HostName: "Dane's MacBook", DNSName: "danedemacbook-pro.tail1.ts.net.", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.108.140.0")}},
+		key.NewNode().Public(): {HostName: "box", DNSName: "box.tail1.ts.net.", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.106.9.14"), netip.MustParseAddr("fd7a:115c:a1e0::1")}},
+		key.NewNode().Public(): {HostName: "no-ip"},
+	}}
+	got := buildPeersResponse(st).Peers
+	if len(got) != 2 {
+		t.Fatalf("expected 2 peers, got %d: %+v", len(got), got)
+	}
+	if got[0].DNSName != "box.tail1.ts.net" || len(got[0].IPs) != 2 || got[0].IPs[0] != "100.106.9.14" {
+		t.Fatalf("unexpected first peer: %+v", got[0])
+	}
+	if got[1].Name != "Dane's MacBook" || got[1].DNSName != "danedemacbook-pro.tail1.ts.net" || got[1].IPs[0] != "100.108.140.0" {
+		t.Fatalf("unexpected second peer: %+v", got[1])
+	}
+	if out, _ := json.Marshal(buildPeersResponse(&ipnstate.Status{})); string(out) != `{"peers":[]}` {
+		t.Fatalf("empty peers should marshal to [], got %s", out)
 	}
 }
