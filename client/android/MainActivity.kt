@@ -14,6 +14,8 @@ package app.cosyee.client
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Looper
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -85,7 +87,7 @@ class MainActivity : TauriActivity() {
       .addBypassRule("127.0.0.1")
       .addBypassRule("localhost")
       .build()
-    runOnUiThread {
+    onMainThread("setProxyOverride") {
       ProxyController.getInstance().setProxyOverride(
         config,
         ContextCompat.getMainExecutor(this)
@@ -94,12 +96,30 @@ class MainActivity : TauriActivity() {
     return true
   }
 
+  /**
+   * 已在主线程（Rust 经 wry 的 JNI 回调就在主线程）时直接执行，异常同步抛回 JNI 调用方，
+   * 由 Rust 记录真正原因；不在主线程时投递过去，并兜住异常，避免未捕获异常让应用闪退。
+   */
+  private fun onMainThread(what: String, block: () -> Unit) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      block()
+    } else {
+      runOnUiThread {
+        try {
+          block()
+        } catch (e: Exception) {
+          Log.e("Cosyee", "$what failed", e)
+        }
+      }
+    }
+  }
+
   /** 供 Rust 经 JNI 调用：清除 WebView 代理覆写。 */
   fun clearTailnetProxy() {
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
       return
     }
-    runOnUiThread {
+    onMainThread("clearProxyOverride") {
       ProxyController.getInstance().clearProxyOverride(
         ContextCompat.getMainExecutor(this)
       ) {}

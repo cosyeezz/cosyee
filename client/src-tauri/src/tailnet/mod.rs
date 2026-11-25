@@ -705,13 +705,29 @@ pub async fn probe_tcp(host: &str, port: u16) -> bool {
 }
 
 /// Android 侧：检查并清除 JNIEnv 上未处理的 Java 异常，绝不能带着异常返回 Java 侧。
+/// 有异常时返回它的 toString()（取不到时返回占位说明），便于在日志和界面上看到真正原因。
 #[cfg(target_os = "android")]
-fn clear_jni_exception(env: &mut jni::JNIEnv) -> bool {
-    let had = env.exception_check().unwrap_or(false);
-    if had {
-        let _ = env.exception_clear();
+fn take_jni_exception(env: &mut jni::JNIEnv) -> Option<String> {
+    if !env.exception_check().unwrap_or(false) {
+        return None;
     }
-    had
+    let thrown = env.exception_occurred().ok();
+    let _ = env.exception_clear();
+    let desc = thrown.and_then(|t| {
+        if t.is_null() {
+            return None;
+        }
+        let r = env
+            .call_method(&*t, "toString", "()Ljava/lang/String;", &[])
+            .and_then(|v| v.l());
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+            return None;
+        }
+        let js = jni::objects::JString::from(r.ok()?);
+        env.get_string(&js).ok().map(String::from)
+    });
+    Some(desc.unwrap_or_else(|| "未知 Java 异常".to_string()))
 }
 
 /// Android 侧：通过 JNI 调用 MainActivity.setTailnetProxy 设置 WebView 代理。
@@ -720,7 +736,11 @@ pub fn apply_android_proxy<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     proxy_url: &tauri::Url,
 ) {
-    let url_str = proxy_url.to_string();
+    // ProxyConfig 规则只接受 [scheme://]host[:port]；Url 序列化会带结尾 "/"，WebView 会判为非法规则并抛异常
+    let url_str = match (proxy_url.host_str(), proxy_url.port()) {
+        (Some(h), Some(p)) => format!("{}://{h}:{p}", proxy_url.scheme()),
+        _ => proxy_url.as_str().trim_end_matches('/').to_string(),
+    };
     let mgr = MANAGER.get().cloned();
     let res = window.with_webview(move |wv| {
         wv.jni_handle().exec(move |env, activity, _webview| {
@@ -734,7 +754,7 @@ pub fn apply_android_proxy<R: tauri::Runtime>(
             let jurl = match env.new_string(&url_str) {
                 Ok(s) => s,
                 Err(e) => {
-                    clear_jni_exception(env);
+                    let _ = take_jni_exception(env);
                     if let Some(m) = &mgr {
                         m.proxy_applied.store(false, Ordering::SeqCst);
                         let msg = format!("设置 Android WebView 代理失败（创建字符串）：{e}");
@@ -752,34 +772,22 @@ pub fn apply_android_proxy<R: tauri::Runtime>(
                     &[jni::objects::JValue::Object(&jurl)],
                 )
                 .and_then(|v| v.z());
-            let had_exc = clear_jni_exception(env);
-            match call_res {
-                Ok(true) if !had_exc => {
-                    if let Some(m) = &mgr {
+            let exc = take_jni_exception(env);
+            let outcome: Result<(), String> = match (call_res, exc) {
+                (_, Some(desc)) => Err(format!("设置 Android WebView 代理失败：{desc}")),
+                (Ok(true), None) => Ok(()),
+                (Ok(false), None) => Err(PROXY_UNSUPPORTED_MSG.to_string()),
+                (Err(e), None) => Err(format!("设置 Android WebView 代理失败（JNI）：{e}")),
+            };
+            if let Some(m) = &mgr {
+                match outcome {
+                    Ok(()) => {
                         m.proxy_applied.store(true, Ordering::SeqCst);
                         m.set_extra_error(None);
                         m.log(format!("已应用 Android WebView 代理：{url_str}"));
                     }
-                }
-                Ok(false) => {
-                    if let Some(m) = &mgr {
+                    Err(msg) => {
                         m.proxy_applied.store(false, Ordering::SeqCst);
-                        m.log(PROXY_UNSUPPORTED_MSG);
-                        m.set_extra_error(Some(PROXY_UNSUPPORTED_MSG.to_string()));
-                    }
-                }
-                Ok(true) => {
-                    if let Some(m) = &mgr {
-                        m.proxy_applied.store(false, Ordering::SeqCst);
-                        let msg = "设置 Android WebView 代理时发生 Java 异常".to_string();
-                        m.log(msg.clone());
-                        m.set_extra_error(Some(msg));
-                    }
-                }
-                Err(e) => {
-                    if let Some(m) = &mgr {
-                        m.proxy_applied.store(false, Ordering::SeqCst);
-                        let msg = format!("设置 Android WebView 代理失败（JNI）：{e}");
                         m.log(msg.clone());
                         m.set_extra_error(Some(msg));
                     }
@@ -812,14 +820,14 @@ pub fn clear_android_proxy<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) 
                 return;
             }
             let call_res = env.call_method(activity, "clearTailnetProxy", "()V", &[]);
-            let had_exc = clear_jni_exception(env);
-            if let Err(e) = call_res {
+            let exc = take_jni_exception(env);
+            if let Some(desc) = exc {
+                if let Some(m) = &mgr {
+                    m.log(format!("清除 Android WebView 代理失败：{desc}"));
+                }
+            } else if let Err(e) = call_res {
                 if let Some(m) = &mgr {
                     m.log(format!("清除 Android WebView 代理失败（JNI）：{e}"));
-                }
-            } else if had_exc {
-                if let Some(m) = &mgr {
-                    m.log("清除 Android WebView 代理时发生 Java 异常");
                 }
             } else if let Some(m) = &mgr {
                 m.log("已清除 Android WebView 代理");
@@ -1440,14 +1448,14 @@ pub async fn app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
                         return;
                     }
                     let call_res = env.call_method(activity, "relaunchApp", "()V", &[]);
-                    let had_exc = clear_jni_exception(env);
-                    if let Err(e) = call_res {
+                    let exc = take_jni_exception(env);
+                    if let Some(desc) = exc {
+                        if let Some(m) = &mgr {
+                            m.log(format!("重启应用失败：{desc}"));
+                        }
+                    } else if let Err(e) = call_res {
                         if let Some(m) = &mgr {
                             m.log(format!("重启应用失败（JNI）：{e}"));
-                        }
-                    } else if had_exc {
-                        if let Some(m) = &mgr {
-                            m.log("重启应用时发生 Java 异常");
                         }
                     }
                 });
