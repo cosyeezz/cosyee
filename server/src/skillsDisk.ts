@@ -2,6 +2,7 @@
 // 用途：①「已关闭 / 还没加载」的 skill 也能列在 Skills 面板上；②移除用户级 / 项目级 skill（移到备份目录，不直接删除）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { isSessionUuid } from './paths.js';
 import { SKILL_NAME_RE } from './workspaces.js';
 
 export interface DiskSkill {
@@ -72,6 +73,30 @@ export function listDiskSkills(configDir: string, cwd: string | null): DiskSkill
   if (cwd) for (const s of scanSkillsDir(path.join(cwd, '.claude', 'skills'))) add({ ...s, source: 'projectSettings', removable: true });
   for (const s of scanSkillsDir(path.join(configDir, 'skills'))) add({ ...s, source: 'userSettings', removable: true });
   for (const s of pluginSkills(configDir)) add(s);
+  return out;
+}
+
+/**
+ * 列出当前账号在磁盘上的云端同步 skill（<configDir>/skills/synced/<orgUuid>_<accountUuid>/<名字>/SKILL.md）。
+ * 只用于判断 onDisk 与「打开文件位置」，不并入 listDiskSkills。
+ * 读不到 .claude.json、未登录、uuid 不是合法 UUID 或目录不存在时一律返回空 Map。
+ */
+export function listSyncedSkills(configDir: string, claudeJsonFile: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let oauth: Record<string, unknown> | null = null;
+  try {
+    const j = JSON.parse(fs.readFileSync(claudeJsonFile, 'utf8')) as { oauthAccount?: unknown };
+    if (j?.oauthAccount && typeof j.oauthAccount === 'object' && !Array.isArray(j.oauthAccount)) {
+      oauth = j.oauthAccount as Record<string, unknown>;
+    }
+  } catch {
+    return out;
+  }
+  const org = oauth?.organizationUuid;
+  const acc = oauth?.accountUuid;
+  if (!isSessionUuid(org) || !isSessionUuid(acc)) return out;
+  const bucket = path.join(configDir, 'skills', 'synced', `${org}_${acc}`);
+  for (const s of scanSkillsDir(bucket)) out.set(`anthropic-skills:${s.name}`, s.dir);
   return out;
 }
 

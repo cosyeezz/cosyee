@@ -118,16 +118,21 @@ describe('FilePreview', () => {
     expect(onClose).toHaveBeenCalledWith(true);
   });
 
-  it('服务端拒绝（如工作目录之外 403）：显示错误和重试，不渲染内容', async () => {
+  it('服务端拒绝（如工作目录之外 403）：显示错误和重试，不渲染内容且不显示打开按钮', async () => {
+    files = { cwd: 'F:\\proj', open: vi.fn(), reveal: vi.fn(), terminal: vi.fn(), openLocal: vi.fn() };
     filePreview.mockRejectedValue(new Error('路径不在会话工作目录内'));
     const { el } = await mount();
     expect(el.querySelector('[role="alert"]')!.textContent).toContain('路径不在会话工作目录内');
     expect(el.querySelector('.cz-fp__row')).toBeNull();
+    expect(el.querySelector('.cz-fp__bar [aria-label="用默认应用打开"]')).toBeNull();
+    expect(el.querySelectorAll('[role="alert"] button')).toHaveLength(1);
     filePreview.mockResolvedValue(codeData);
     await act(async () => {
       el.querySelector<HTMLButtonElement>('[role="alert"] button')!.click();
     });
     expect(el.querySelectorAll('.cz-fp__row')).toHaveLength(2);
+    expect(el.querySelector('.cz-fp__bar [aria-label="用默认应用打开"]')).not.toBeNull();
+    expect(el.querySelector('.cz-fp__bar [aria-label="下载到本设备"]')).toBeNull();
   });
 
   it('Markdown：默认阅读模式（复用 Markdown 组件，相对链接按该文件目录解析），可切到源码', async () => {
@@ -148,18 +153,114 @@ describe('FilePreview', () => {
     expect(el.querySelector('.cz-fp__row.is-target')!.getAttribute('data-line')).toBe('2');
   });
 
-  it('不支持预览的文件：显示服务端给的原因', async () => {
+  it('不支持预览的文件：无本地操作时只显示服务端给的原因', async () => {
+    files = { cwd: 'F:\\proj', open: vi.fn() };
     filePreview.mockResolvedValue({ name: 'x.zip', path: 'F:\\proj\\x.zip', size: 1, mtime: 0, kind: 'unsupported', reason: '压缩包不支持预览' });
     const { el } = await mount(vi.fn(), { path: 'x.zip' });
     expect(el.querySelector('.cz-fp__state')!.textContent).toBe('压缩包不支持预览');
   });
 
-  it('远程连接（FilesApi 没有 reveal / terminal）：只剩复制路径', async () => {
+  it('不支持预览的文件：有 openLocal / reveal 时在原因下方显示操作按钮，点击传入完整路径且不关闭浮窗', async () => {
+    const openLocal = vi.fn();
+    const reveal = vi.fn();
+    files = { cwd: 'F:\\proj', open: vi.fn(), reveal, openLocal };
+    filePreview.mockResolvedValue({ name: 'app.apk', path: 'F:\\proj\\app.apk', size: 1024, mtime: 0, kind: 'unsupported', reason: '此格式暂不支持内嵌预览，请用本地应用打开。' });
+    const { el, onClose } = await mount(vi.fn(), { path: 'app.apk' });
+    expect(el.querySelector('.cz-fp__reason')!.textContent).toBe('此格式暂不支持内嵌预览，请用本地应用打开。');
+    const btns = Array.from(el.querySelectorAll<HTMLButtonElement>('.cz-fp__actions button'));
+    expect(btns.map((b) => b.textContent)).toEqual(['用默认应用打开', '在文件管理器中显示']);
+    act(() => btns[0]!.click());
+    expect(openLocal).toHaveBeenCalledWith('F:\\proj\\app.apk');
+    act(() => btns[1]!.click());
+    expect(reveal).toHaveBeenCalledWith('F:\\proj\\app.apk');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('工具条「打开」按钮：有 openLocal 时显示，目录文案切换，无 openLocal 时隐藏', async () => {
+    const openLocal = vi.fn();
+    files = { cwd: 'F:\\proj', open: vi.fn(), openLocal };
+    filePreview.mockResolvedValue(codeData);
+    const { el, onClose } = await mount();
+    const openBtn = el.querySelector<HTMLButtonElement>('.cz-fp__bar [aria-label="用默认应用打开"]');
+    expect(openBtn).not.toBeNull();
+    expect(openBtn!.textContent).toBe('打开');
+    act(() => openBtn!.click());
+    expect(openLocal).toHaveBeenCalledWith('F:\\proj\\src\\a.ts');
+    expect(onClose).not.toHaveBeenCalled();
+
+    // 目录：title / aria-label 为「在文件管理器中打开」
+    filePreview.mockResolvedValue({ name: 'src', path: 'F:\\proj\\src', size: 0, mtime: 0, kind: 'directory', entries: [] });
+    await act(async () => {
+      root!.render(
+        <FilesContext.Provider value={files}>
+          <FilePreview session="s1" cwd="F:\\proj" path="src" nonce={2} onClose={onClose} />
+        </FilesContext.Provider>,
+      );
+    });
+    const dirBtn = el.querySelector<HTMLButtonElement>('.cz-fp__bar [aria-label="在文件管理器中打开"]');
+    expect(dirBtn).not.toBeNull();
+    act(() => dirBtn!.click());
+    expect(openLocal).toHaveBeenLastCalledWith('F:\\proj\\src');
+  });
+
+  it('远程连接（FilesApi 没有 reveal / terminal / openLocal）：只剩复制路径且工具条无打开按钮', async () => {
     files = { cwd: 'F:\\proj', open: vi.fn() };
     filePreview.mockResolvedValue(codeData);
     const { el } = await mount();
     expect(el.querySelector('.cz-fp__head [aria-label="复制路径"]')).not.toBeNull();
     expect(el.querySelector('.cz-fp__head [aria-label="在文件管理器中显示"]')).toBeNull();
     expect(el.querySelector('.cz-fp__head [aria-label="在此处打开终端"]')).toBeNull();
+    expect(el.querySelector('.cz-fp__bar [aria-label="用默认应用打开"]')).toBeNull();
+  });
+
+  it('远程连接有 downloadUrl：工具条与不支持态显示下载链接，目录与错误态不显示', async () => {
+    const downloadUrl = vi.fn((p: string) => `/api/files/download?path=${encodeURIComponent(p)}`);
+    files = { cwd: 'F:\\proj', open: vi.fn(), downloadUrl };
+    filePreview.mockResolvedValue(codeData);
+    const { el, onClose } = await mount();
+    const barLink = el.querySelector<HTMLAnchorElement>('.cz-fp__bar a.cz-fp__btn[aria-label="下载到本设备"]');
+    expect(barLink).not.toBeNull();
+    expect(barLink!.textContent).toBe('下载');
+    expect(barLink!.getAttribute('href')).toBe(`/api/files/download?path=${encodeURIComponent('F:\\proj\\src\\a.ts')}`);
+    expect(barLink!.getAttribute('download')).toBe('a.ts');
+    expect(el.querySelector('.cz-fp__bar [aria-label="用默认应用打开"]')).toBeNull();
+
+    // 不支持预览态：正文里也有「下载到本设备」链接
+    filePreview.mockResolvedValue({ name: 'app.apk', path: 'F:\\proj\\app.apk', size: 1024, mtime: 0, kind: 'unsupported', reason: '请用本地应用打开。' });
+    await act(async () => {
+      root!.render(
+        <FilesContext.Provider value={files}>
+          <FilePreview session="s1" cwd="F:\\proj" path="app.apk" nonce={2} onClose={onClose} />
+        </FilesContext.Provider>,
+      );
+    });
+    const bodyLink = el.querySelector<HTMLAnchorElement>('.cz-fp__actions a.cz-fp__btn');
+    expect(bodyLink).not.toBeNull();
+    expect(bodyLink!.textContent).toBe('下载到本设备');
+    expect(bodyLink!.getAttribute('href')).toBe(`/api/files/download?path=${encodeURIComponent('F:\\proj\\app.apk')}`);
+    expect(bodyLink!.getAttribute('download')).toBe('app.apk');
+
+    // 目录：不显示下载链接
+    filePreview.mockResolvedValue({ name: 'src', path: 'F:\\proj\\src', size: 0, mtime: 0, kind: 'directory', entries: [] });
+    await act(async () => {
+      root!.render(
+        <FilesContext.Provider value={files}>
+          <FilePreview session="s1" cwd="F:\\proj" path="src" nonce={3} onClose={onClose} />
+        </FilesContext.Provider>,
+      );
+    });
+    expect(el.querySelector('.cz-fp__bar [aria-label="下载到本设备"]')).toBeNull();
+
+    // 错误态：不显示下载链接
+    filePreview.mockRejectedValue(new Error('禁止访问'));
+    await act(async () => {
+      root!.render(
+        <FilesContext.Provider value={files}>
+          <FilePreview session="s1" cwd="F:\\proj" path="secret.txt" nonce={4} onClose={onClose} />
+        </FilesContext.Provider>,
+      );
+    });
+    expect(el.querySelector('.cz-fp__bar [aria-label="下载到本设备"]')).toBeNull();
+    expect(el.querySelector('[role="alert"] a')).toBeNull();
   });
 });

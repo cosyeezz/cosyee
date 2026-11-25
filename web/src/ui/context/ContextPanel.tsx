@@ -26,7 +26,7 @@ import {
   type AgentRow, type SkillCalls, type ToolCalls, type ToolRow,
 } from './tools';
 import { formatPercent, formatTokens } from './formatTokens';
-import { presetChanges, skillBaseName, skillInfo } from './skillCatalog';
+import { skillBaseName, skillInfo } from './skillCatalog';
 import './ContextPanel.css';
 
 export interface ContextPanelProps {
@@ -36,10 +36,12 @@ export interface ContextPanelProps {
   onCompact: () => void;
   /** 设置 skill 状态；不传则只读 */
   onSkillMode?: (name: string, mode: SkillMode) => void;
-  /** 批量设置 skill 状态（一键推荐配置 / 撤销）；不传则这两个按钮不可用 */
+  /** 批量设置 skill 状态（勾选批量操作 / 撤销）；不传则批量操作不可用 */
   onSkillModes?: (modes: Record<string, SkillMode>) => void;
   /** 移除用户级 / 项目级 skill（目录移到备份，不直接删除） */
   onSkillRemove?: (name: string) => void;
+  /** 在文件管理器中打开 skill 的位置；远程连接不传，不显示该菜单项 */
+  onSkillReveal?: (name: string) => void;
   /** 开关 MCP 服务器；不传则只读 */
   onMcpToggle?: (server: string, enabled: boolean) => void;
   /** 正在切换的 MCP 服务器名（切换期间所有 MCP 开关禁用） */
@@ -118,7 +120,7 @@ function categoryColor(name: string): string {
 const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
-  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
+  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onSkillReveal, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
   compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, agentModels,
 }: ContextPanelProps) {
   // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
@@ -137,8 +139,35 @@ export function ContextPanel({
   const { cache, turns, tools, agents, compactions, subCosts, cliCost, model } = held.value ?? {};
   const stale = held.stale;
   const [skillsOpen, setSkillsOpen] = useState(false);
-  // 一键推荐配置之前的状态，用于撤销；手动改任何一个 skill 后失效
+  // 批量设置之前的状态，用于撤销；手动改任何一个 skill 或移除后失效
   const [undo, setUndo] = useState<Record<string, SkillMode> | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!onSkillModes) {
+      setSelecting(false);
+      setSelected(new Set());
+    }
+  }, [onSkillModes]);
+  const validSelected = useMemo(() => {
+    if (!selecting || selected.size === 0) return new Set<string>();
+    const names = new Set((usage?.skills ?? []).map((s) => s.name));
+    const out = new Set<string>();
+    for (const n of selected) if (names.has(n)) out.add(n);
+    return out;
+  }, [selecting, selected, usage?.skills]);
+  const exitSelecting = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, []);
+  const toggleSelect = useCallback((name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
@@ -286,16 +315,35 @@ export function ContextPanel({
           extra={skillSummary(skills)}
           cols={{ total: !!toolStats?.skills, tokens: true }}
           open={skillsOpen}
-          onToggle={() => setSkillsOpen((v) => !v)}
+          onToggle={() => {
+            if (skillsOpen) exitSelecting();
+            setSkillsOpen((v) => !v);
+          }}
           toolbar={
             <SkillToolbar
               skills={skills}
+              selecting={selecting}
+              selected={validSelected}
               undo={undo}
               enabled={!!onSkillModes}
-              onApply={(changes) => {
-                // 记下被改动的 skill 的原状态，供撤销
-                setUndo(Object.fromEntries(skills.filter((s) => s.name in changes).map((s) => [s.name, s.mode])));
+              onEnter={() => setSelecting(true)}
+              onExit={exitSelecting}
+              onToggleAll={() => {
+                if (skills.length > 0 && validSelected.size === skills.length) setSelected(new Set());
+                else setSelected(new Set(skills.map((s) => s.name)));
+              }}
+              onApplyMode={(mode) => {
+                const changes: Record<string, SkillMode> = {};
+                const prev: Record<string, SkillMode> = {};
+                for (const s of skills) {
+                  if (!validSelected.has(s.name) || s.mode === mode) continue;
+                  changes[s.name] = mode;
+                  prev[s.name] = s.mode;
+                }
+                if (Object.keys(changes).length === 0) return;
+                setUndo(prev);
                 onSkillModes?.(changes);
+                setSelected(new Set());
               }}
               onUndo={() => {
                 if (undo) onSkillModes?.(undo);
@@ -311,6 +359,9 @@ export function ContextPanel({
               ambiguous={dupSkillBases.has(skillLabel(s.name))}
               calls={skillCallsOf(skillCounts, s.name)}
               total={totalSkillCallsOf(toolStats?.skills, s.name)}
+              selecting={selecting}
+              checked={validSelected.has(s.name)}
+              onToggleSelect={toggleSelect}
               onRemove={
                 onSkillRemove &&
                 ((name) => {
@@ -318,6 +369,7 @@ export function ContextPanel({
                   onSkillRemove(name);
                 })
               }
+              onReveal={onSkillReveal}
               onMode={
                 onSkillMode &&
                 ((name, mode) => {
@@ -578,43 +630,97 @@ function skillSummary(skills: readonly ContextSkill[]): string {
   return `${n('on')} 开 · ${n('user-invocable-only')} 手动 · ${n('off')} 关`;
 }
 
-/** Skills 列表上方：一键推荐配置 + 撤销 */
+/** Skills 列表上方：批量操作 + 撤销；进入勾选模式后显示全选、计数、状态按钮与完成 */
 function SkillToolbar({
-  skills, undo, enabled, onApply, onUndo,
+  skills, selecting, selected, undo, enabled, onEnter, onExit, onToggleAll, onApplyMode, onUndo,
 }: {
   skills: readonly ContextSkill[];
+  selecting: boolean;
+  selected: ReadonlySet<string>;
   undo: Record<string, SkillMode> | null;
   enabled: boolean;
-  onApply: (changes: Record<string, SkillMode>) => void;
+  onEnter: () => void;
+  onExit: () => void;
+  onToggleAll: () => void;
+  onApplyMode: (mode: SkillMode) => void;
   onUndo: () => void;
 }) {
-  const changes = presetChanges(skills);
-  const n = Object.keys(changes).length;
-  return (
-    <div className="cz-ctx__skill-bar">
-      <button
-        type="button"
-        className="cz-ctx__preset"
-        disabled={!enabled || n === 0}
-        onClick={() => onApply(changes)}
-        title="按推荐状态一次设好所有已收录的 skill（高频的开，偶尔用的手动，用不到的关）；可撤销"
-      >
-        <Icon name="wand" size={14} />
-        <span>一键推荐配置</span>
-        <span className="cz-ctx__preset-n">{n === 0 ? '已是推荐' : `${n} 项待调整`}</span>
-      </button>
-      {undo && (
-        <button type="button" className="cz-ctx__undo" onClick={onUndo} disabled={!enabled} title="恢复到一键配置之前的状态">
-          <Icon name="undo" size={13} />
-          <span>撤销</span>
+  const allRef = useRef<HTMLInputElement>(null);
+  const count = selected.size;
+  const allSelected = skills.length > 0 && count === skills.length;
+  const someSelected = count > 0 && count < skills.length;
+  useEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = someSelected;
+  }, [someSelected, selecting]);
+
+  const undoBtn = undo && (
+    <button type="button" className="cz-ctx__undo" onClick={onUndo} disabled={!enabled} title="恢复到批量设置之前的状态">
+      <Icon name="undo" size={13} />
+      <span>撤销</span>
+    </button>
+  );
+
+  if (!selecting) {
+    return (
+      <div className="cz-ctx__skill-bar">
+        <button
+          type="button"
+          className="cz-ctx__batch-btn"
+          disabled={!enabled || skills.length === 0}
+          onClick={onEnter}
+        >
+          批量操作
         </button>
-      )}
+        {undoBtn}
+      </div>
+    );
+  }
+
+  return (
+    <div className="cz-ctx__skill-bar is-selecting">
+      <div className="cz-ctx__batch-head">
+        <label className="cz-ctx__select-all">
+          <input
+            ref={allRef}
+            type="checkbox"
+            className="cz-ctx__check"
+            checked={allSelected}
+            disabled={skills.length === 0}
+            onChange={onToggleAll}
+          />
+          <span>全选</span>
+        </label>
+        <span className="cz-ctx__select-count" aria-live="polite">已选 {count} 项</span>
+        <button type="button" className="cz-ctx__batch-done" onClick={onExit}>完成</button>
+      </div>
+      <div className="cz-ctx__batch-acts">
+        <div className="cz-ctx__batch-modes" role="group" aria-label="把所选 skill 设为">
+          {SKILL_MODES.map((m) => {
+            const none = count === 0;
+            const same = !none && skills.every((s) => !selected.has(s.name) || s.mode === m.mode);
+            return (
+              <button
+                key={m.mode}
+                type="button"
+                className={`cz-ctx__batch-mode is-${m.mode}`}
+                disabled={!enabled || none || same}
+                title={same ? '所选已全部是此状态' : `将所选 skill 设为「${m.label}」`}
+                onClick={() => onApplyMode(m.mode)}
+              >
+                <Icon name={m.icon} size={14} />
+                <span>{m.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        {undoBtn}
+      </div>
     </div>
   );
 }
 
 function SkillRow({
-  skill, ambiguous, calls, total, onMode, onRemove,
+  skill, ambiguous, calls, total, selecting = false, checked = false, onToggleSelect, onMode, onRemove, onReveal,
 }: {
   skill: ContextSkill;
   /** 与列表中其他 skill 去掉前缀后同名：显示完整名消歧 */
@@ -623,8 +729,12 @@ function SkillRow({
   calls: SkillCalls;
   /** 所有会话累计；取不到为 null */
   total: number | null;
+  selecting?: boolean;
+  checked?: boolean;
+  onToggleSelect?: (name: string) => void;
   onMode?: (name: string, mode: SkillMode) => void;
   onRemove?: (name: string) => void;
+  onReveal?: (name: string) => void;
 }) {
   const label = ambiguous ? skill.name : skillLabel(skill.name);
   const info = skillInfo(skill.name);
@@ -655,6 +765,20 @@ function SkillRow({
       },
     })),
     { kind: 'sep', key: 'sep-remove' },
+    ...(onReveal
+      ? [{
+          key: 'reveal',
+          label: (
+            <span className="cz-ctx__mode-label">
+              <Icon name="folder-reveal" size={15} />
+              打开文件位置
+            </span>
+          ),
+          note: skill.onDisk ? '在文件管理器中选中 SKILL.md' : '磁盘上没有找到这个 skill 的文件（可能是内置的）',
+          disabled: !skill.onDisk,
+          onSelect: () => onReveal(skill.name),
+        }]
+      : []),
     {
       key: 'remove',
       label: (
@@ -670,8 +794,24 @@ function SkillRow({
   ];
 
   return (
-    <li ref={tip.ref} className={`cz-ctx__item cz-ctx__skill${skill.mode === 'on' ? '' : ' is-off'}`} {...tip.handlers}>
-      <RowName label={label} open={open} controls={detailId} onToggle={() => { tip.hide(); setOpen((v) => !v); }} className="cz-ctx__skill-name" />
+    <li ref={tip.ref} className={`cz-ctx__item cz-ctx__skill${skill.mode === 'on' ? '' : ' is-off'}${selecting && checked ? ' is-checked' : ''}`} {...tip.handlers}>
+      {selecting ? (
+        <label className="cz-ctx__item-name cz-ctx__row-name cz-ctx__skill-name cz-ctx__skill-check">
+          <input
+            type="checkbox"
+            className="cz-ctx__check"
+            aria-label={`选择 ${label}`}
+            checked={checked}
+            onChange={() => {
+              tip.hide();
+              onToggleSelect?.(skill.name);
+            }}
+          />
+          <span className="cz-ctx__row-label">{label}</span>
+        </label>
+      ) : (
+        <RowName label={label} open={open} controls={detailId} onToggle={() => { tip.hide(); setOpen((v) => !v); }} className="cz-ctx__skill-name" />
+      )}
       <span className={`cz-ctx__tool-calls${here === 0 ? ' is-zero' : ''}`} aria-label={`本会话调用 ${here} 次`}>
         {here > 0 ? `×${here}` : '—'}
       </span>
@@ -699,7 +839,7 @@ function SkillRow({
       </button>
       {menuAt && <Menu anchor={menuAt} items={items} onClose={() => setMenuAt(null)} placement="bottom" align="end" minWidth={230} />}
       {!menuAt && !confirming && tip.node}
-      <Reveal open={open} id={detailId}>
+      <Reveal open={!selecting && open} id={detailId}>
         <PromptDetail
           where="Skill 清单（系统提示词）"
           tokens={skill.mode === 'on' ? skill.tokens : null}

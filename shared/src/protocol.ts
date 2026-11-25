@@ -655,6 +655,8 @@ export interface ContextSkill {
   source: string | null;
   /** 磁盘上是用户级 / 项目级 skill，可以移除（插件、内置的不行）；读不到磁盘信息时不带 */
   removable?: boolean;
+  /** 在磁盘上找得到目录（用户级 / 项目级 / 已安装插件 / 云端同步），可以打开文件位置；读不到磁盘信息时不带 */
+  onDisk?: boolean;
   /**
    * 放进系统提示词 skill 清单里的描述原文（CLI initialize 的 commands，取不到时读 SKILL.md 的 description）；
    * 模型看到的那一行是「- 名字: 描述」。都取不到时不带
@@ -849,9 +851,10 @@ export interface UsageInfo {
 //                                             否则取当前账号的；带 account=<账号 id> 时取指定账号的（各账号各自缓存，账号菜单逐个账号显示额度用），优先于 session；账号不存在 404
 // POST /api/skills {name, mode}             → { ok: true }   设置一个 skill 的状态（全局，存 ~/.cosyee/state.json，不改 ~/.claude 配置）；
 //                                             立即下发给所有运行中的会话，订阅者随后收到新的 context
-// POST /api/skills {modes: {名字: mode}}    → { ok: true }   批量设置（「一键推荐配置」与撤销用），只落盘 / 下发 / 采集一次
+// POST /api/skills {modes: {名字: mode}}    → { ok: true }   批量设置（勾选批量操作与撤销用），只落盘 / 下发 / 采集一次
 // POST /api/skills/remove {name, session?, cwd?} → { ok: true, backup }   移除用户级 / 项目级 skill：目录移到 ~/.cosyee/removed-skills（可手动放回恢复）；
 //                                             插件 / 内置 skill 不能移除（400），请改用「关」
+// POST /api/skills/reveal {name, session?, cwd?} → { ok: true }   在文件管理器中选中它的 SKILL.md；只允许服务端本机（远程 403）；磁盘上找不到 404
 // GET  /api/skills/content?name=&cwd=       → SkillContent   读磁盘上的 SKILL.md（技能面板展开时兜底：实时的 /技能 输入拿不到注入正文）；
 //                                             项目级优先于用户级，插件 skill 按 plugin:name 找；找不到 404
 // POST /api/context/:id/mcp {cwd?, server, enabled} → ContextUsage | null   开关 MCP 服务器（CLI 的 mcp_toggle，

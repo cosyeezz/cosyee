@@ -176,6 +176,7 @@ export default function FlowDev() {
       },
       reveal: (path) => console.info('[dev] reveal', path),
       terminal: (path) => console.info('[dev] terminal', path),
+      openLocal: (path) => console.info('[dev] openLocal', path),
     }),
     [],
   );

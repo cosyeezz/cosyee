@@ -1,4 +1,4 @@
-// 文件预览接口（/api/files/*）的数据结构，前后端共用。
+// 文件预览与本地操作接口（/api/files/preview、raw、download、reveal、terminal、open）的数据结构，前后端共用。
 
 export type FilePreviewKind = 'markdown' | 'code' | 'text' | 'image' | 'pdf' | 'directory' | 'unsupported';
 

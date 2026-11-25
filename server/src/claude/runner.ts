@@ -92,6 +92,8 @@ export interface RunnerInit {
   claudePath?: string;
   /** 每次启动时读取，合并进 --settings（如 skillOverrides） */
   flagSettings?: () => Record<string, unknown>;
+  /** 用户消息写给 CLI 前的改写（附上句中引用的 skill 正文）；界面与排队列表仍用原文 */
+  expandText?: (text: string) => string;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
   /** 测试用：委派后端。不传 = sharedAgyBackend()；null = 禁用 delegate */
@@ -290,6 +292,7 @@ export class Runner {
     this.nativeAgents = init.nativeAgents;
     this.control = new ControlTracker((o) => this.writeLine(o), `cosyee-${this.sessionId.slice(0, 8)}`, this.timings.requestTimeoutMs);
     this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings };
+    this.expandText = init.expandText;
     this.agentDefaults = init.agentDefaults;
     this.delegateJobs = init.delegateJobs;
   }
@@ -312,6 +315,7 @@ export class Runner {
   private readonly backendOverride: DelegateBackend | null | undefined;
   private readonly disabledAgents?: () => readonly string[];
   private readonly nativeAgents?: () => boolean;
+  private readonly expandText?: (text: string) => string;
   private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown> };
 
   get status(): RunStatus {
@@ -487,13 +491,22 @@ export class Runner {
       // 运行中：排队，等 lifecycle started / 回显
       const m: QueueMode = mode === 'later' ? 'later' : 'next';
       this.setQueue([...this.queue, { id: uuid, text, mode: m, at: Date.now() }]);
-      this.queueWrite(text, config, uuid, m);
+      this.queueWrite(this.outgoing(text), config, uuid, m);
       return;
     }
 
     const ev: CosyeeUserEvent = { type: 'cosyee_user', text, at: Date.now(), id: uuid, mode: 'start' };
     this.pushEvent(ev);
-    this.queueWrite(text, config, uuid);
+    this.queueWrite(this.outgoing(text), config, uuid);
+  }
+
+  /** 真正写给 CLI 的文字；改写失败就发原文 */
+  private outgoing(text: string): string {
+    try {
+      return this.expandText?.(text) ?? text;
+    } catch {
+      return text;
+    }
   }
 
   /** priority 缺省表示开轮消息（CLI 视同 next）；排队的消息显式带上 */

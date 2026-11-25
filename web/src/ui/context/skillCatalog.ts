@@ -3,7 +3,6 @@
 //   on  = 日常高频、让模型自己判断何时用；
 //   manual = 偶尔用，需要时输入 /名字（不占上下文）；
 //   off = 与当前工作流基本无关，连 / 菜单都不留。
-// 「一键推荐配置」只处理这里列出的 skill，未收录的保持原状。
 import type { SkillMode } from '@cosyee/shared';
 
 export interface SkillInfo {
@@ -76,13 +75,3 @@ export const SKILL_CATALOG: Record<string, SkillInfo> = {
 export const skillBaseName = (name: string): string => name.slice(name.lastIndexOf(':') + 1);
 
 export const skillInfo = (name: string): SkillInfo | undefined => SKILL_CATALOG[skillBaseName(name)];
-
-/** 一键推荐配置要做的改动：只含「已收录且当前状态与推荐不同」的 skill（键为 CLI 完整名） */
-export function presetChanges(skills: readonly { name: string; mode: SkillMode }[]): Record<string, SkillMode> {
-  const out: Record<string, SkillMode> = {};
-  for (const s of skills) {
-    const rec = skillInfo(s.name)?.mode;
-    if (rec && rec !== s.mode) out[s.name] = rec;
-  }
-  return out;
-}

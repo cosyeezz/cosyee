@@ -27,10 +27,10 @@ export type IconName =
   | 'search' | 'pin' | 'pin-on' | 'trash' | 'restore' | 'folder-reveal' | 'pencil'
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
   | 'thinking'
-  // Skills 面板：三种状态（开 / 手动 / 关）、一键推荐配置、撤销
+  // Skills 面板：三种状态（开 / 手动 / 关）、撤销
   | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo'
-  // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行
-  | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap'
+  // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行、用外部应用打开、下载
+  | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap' | 'open-external' | 'download'
   // 权限模式：自动（闪电）/ 计划（清单）
   | 'mode-auto' | 'mode-plan'
   // 内置浏览器：地球、后退 / 前进、抓取元素（准星）
@@ -84,7 +84,7 @@ const SIMPLE: Record<string, JSX.Element> = {
       <path d="M3.9 12.1l8.2-8.2" />
     </>
   ),
-  // 魔法棒 + 两颗火花：一键推荐配置
+  // 魔法棒 + 两颗火花
   wand: (
     <>
       <path d="M2.8 13.2L9.6 6.4" />
@@ -290,6 +290,20 @@ const SIMPLE: Record<string, JSX.Element> = {
     <>
       <path d="M2.5 4h11M2.5 12h4" />
       <path d="M2.5 8h8.2a2.1 2.1 0 010 4.2H8.6M9.8 10.9l-1.2 1.3 1.2 1.3" />
+    </>
+  ),
+  // 用外部 / 默认应用打开：缺右上角的圆角方框 + 右上箭头
+  'open-external': (
+    <>
+      <path d="M7.5 2.8H4.3a1.8 1.8 0 00-1.8 1.8v7.1a1.8 1.8 0 001.8 1.8h7.1a1.8 1.8 0 001.8-1.8V8.5" />
+      <path d="M9.5 2.5h4v4M13.3 2.7L7.8 8.2" />
+    </>
+  ),
+  // 下载：向下箭头 + 底部托盘
+  download: (
+    <>
+      <path d="M8 2.5v7.8M4.8 7.3L8 10.5l3.2-3.2" />
+      <path d="M2.8 11.2v1.3a1.2 1.2 0 001.2 1.2h8a1.2 1.2 0 001.2-1.2v-1.3" />
     </>
   ),
   // 思考：一大一小两颗四角火花

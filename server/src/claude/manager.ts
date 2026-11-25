@@ -7,10 +7,11 @@ import { toContextUsage } from '../context.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { DelegateJobs } from '../delegate/jobs.js';
 import type { DelegateRecorder } from '../delegate/record.js';
-import { baseClaudeHome, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
+import { baseClaudeHome, claudeJsonPath, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
 import type { Pins } from '../pins.js';
 import type { Sessions } from '../sessions.js';
-import { type DiskSkill, listDiskAgentDescriptions, listDiskSkills, removeDiskSkill, skillDescription } from '../skillsDisk.js';
+import { type DiskSkill, listDiskAgentDescriptions, listDiskSkills, listSyncedSkills, readSkillContent, removeDiskSkill, skillDescription } from '../skillsDisk.js';
+import { type MentionedSkill, appendSkills, stripSkillBlock } from '../skillMention.js';
 import type { DotState } from '../state.js';
 import { MAX_AUTO_RETRIES, RATE_LIMIT_BUFFER_MS, RATE_LIMIT_FALLBACK_MS, type StopStore, transientRetryDelay } from '../stops.js';
 import { HttpError, TOOL_NAME_RE } from '../workspaces.js';
@@ -578,7 +579,7 @@ export class Manager {
       const res = await r.rewind(msg.targetId);
       if (res.rewound === true) {
         this.stops?.clear(id);
-        reply(true, { prefillText: typeof res.prefillText === 'string' ? res.prefillText : '' });
+        reply(true, { prefillText: typeof res.prefillText === 'string' ? stripSkillBlock(res.prefillText) : '' });
         this.changed(r.cwd);
       } else {
         reply(false, { error: String(res.error ?? res.reason ?? '回退失败') });
@@ -753,6 +754,7 @@ export class Manager {
       disabledAgents: () => this.tools?.agents?.() ?? [],
       nativeAgents: () => this.tools?.nativeAgents?.() ?? true,
       ...(this.agentModels ? { agentDefaults: () => this.agentDefaults(account?.dir) } : {}),
+      expandText: (text) => appendSkills(text, (name) => this.manualSkill(id, cwd, name)),
       flagSettings: () => ({ ...this.skillFlagSettings(), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
       hooks: {
         onEvent: (e) => {
@@ -880,12 +882,14 @@ export class Manager {
     ]);
     const eff = (settings as { effective?: { skillOverrides?: unknown } } | null)?.effective?.skillOverrides;
     const disk = this.scanDiskSkills(r.sessionId, r.cwd);
+    const synced = new Set(this.scanSyncedSkills(r.sessionId).keys());
     const desc = this.descriptions(r, init, disk);
     const usage = toContextUsage(raw, Date.now(), {
       initSkills: this.initSkills.get(r.sessionId) ?? this.initSkillsByCwd.get(r.cwd) ?? null,
       overrides: eff && typeof eff === 'object' ? (eff as Record<string, unknown>) : null,
       cosyeeOverrides: this.skills?.get() ?? null,
       diskSkills: disk,
+      syncedSkills: synced,
       hidden: this.hiddenSkills(disk),
       mcpStatus: mcp,
       disabledTools: this.tools?.get() ?? null,
@@ -932,6 +936,23 @@ export class Manager {
     } catch {
       return null;
     }
+  }
+
+  /** 当前会话所属账号的云端同步 skill（只用于判断 onDisk 与打开文件位置）；失败返回空 Map */
+  private scanSyncedSkills(sessionId: string | null): Map<string, string> {
+    try {
+      const accDir = sessionId ? this.accounts?.resolve(sessionId)?.dir ?? null : null;
+      return listSyncedSkills(accDir ?? baseClaudeHome(), claudeJsonPath(accDir));
+    } catch {
+      return new Map();
+    }
+  }
+
+  /** 状态为「手动」、且磁盘上有正文的 skill；其它返回 null（关闭的不给，开着的模型自己会调） */
+  private manualSkill(sessionId: string, cwd: string, name: string): MentionedSkill | null {
+    const mode = this.skills?.get()[name] ?? this.contextCache.get(sessionId)?.skills.find((s) => s.name === name)?.mode;
+    if (mode !== 'user-invocable-only') return null;
+    return readSkillContent(name, this.accounts?.resolve(sessionId)?.dir ?? baseClaudeHome(), cwd);
   }
 
   /** 被移除、且磁盘上确实没有了的 skill 名（磁盘上又出现就不再藏） */
@@ -1081,7 +1102,7 @@ export class Manager {
     return this.setSkillModes({ [name]: mode });
   }
 
-  /** 批量设置（「一键推荐配置」用）：只落盘、下发、采集一次 */
+  /** 批量设置（勾选批量操作 / 撤销用）：只落盘、下发、采集一次 */
   async setSkillModes(modes: Record<string, SkillMode>): Promise<void> {
     if (!this.skills) throw new HttpError(500, '未启用 skill 设置');
     const entries = Object.entries(modes);
@@ -1252,6 +1273,12 @@ export class Manager {
       this.emit(id, { t: 'context', sessionId: id, usage: next });
     }
     return { backup };
+  }
+
+  /** 查找 skill 在磁盘上的目录（用于「打开文件位置」）；找不到返回 null */
+  skillDir(sessionId: string | null, name: string, cwd: string | null): string | null {
+    const dir = sessionId ? this.accounts?.resolve(sessionId)?.dir ?? null : null;
+    return listDiskSkills(dir ?? baseClaudeHome(), cwd).find((s) => s.name === name)?.dir ?? this.scanSyncedSkills(sessionId).get(name) ?? null;
   }
 
   /**

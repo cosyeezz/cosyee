@@ -77,8 +77,8 @@
 .cz-ctx__link.is-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--on-accent); }
 
 /* 按下与键盘焦点：所有按钮一致 */
-:is(.cz-ctx__icon-btn, .cz-ctx__link, .cz-ctx__mode, .cz-ctx__preset, .cz-ctx__undo, .cz-ctx__btn, .cz-ctx__confirm-btn):active:not(:disabled) { transform: scale(.97); }
-:is(.cz-ctx__icon-btn, .cz-ctx__link, .cz-ctx__fold, .cz-ctx__mcp-name, .cz-ctx__btn):focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-radius: var(--r-sm); }
+:is(.cz-ctx__icon-btn, .cz-ctx__link, .cz-ctx__mode, .cz-ctx__batch-btn, .cz-ctx__batch-mode, .cz-ctx__batch-done, .cz-ctx__undo, .cz-ctx__btn, .cz-ctx__confirm-btn):active:not(:disabled) { transform: scale(.97); }
+:is(.cz-ctx__icon-btn, .cz-ctx__link, .cz-ctx__fold, .cz-ctx__mcp-name, .cz-ctx__btn, .cz-ctx__batch-btn, .cz-ctx__batch-mode, .cz-ctx__batch-done, .cz-ctx__undo, .cz-ctx__check):focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-radius: var(--r-sm); }
 
 .cz-ctx__body {
   flex: 1 1 0;
@@ -328,6 +328,7 @@
 
 /* 下拉菜单里的状态项（菜单在 portal 里，类名全局） */
 .cz-ctx__mode-label { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.cz-ctx__mode-label svg { color: var(--text-2); }
 .cz-ctx__mode-label.is-on svg { color: var(--accent); }
 .cz-ctx__mode-label.is-user-invocable-only svg { color: var(--warn); }
 .cz-ctx__mode-label.is-off svg { color: var(--text-3); }
@@ -366,37 +367,66 @@
 .cz-ctx__confirm-btn.is-danger:hover { filter: brightness(1.08); }
 .cz-ctx__confirm-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* 列表上方的操作条：一键推荐配置 + 撤销 */
+/* 列表上方的操作条：批量操作 + 撤销；勾选模式含全选 / 计数 / 状态按钮 / 完成 */
 .cz-ctx__skill-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 2px 0 var(--sp-1); }
-.cz-ctx__preset {
-  flex: 1 1 180px;
-  min-width: 0;
+.cz-ctx__skill-bar.is-selecting { flex-direction: column; align-items: stretch; gap: 6px; padding: 6px var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 3%, transparent); }
+.cz-ctx__batch-btn,
+.cz-ctx__batch-done {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  min-height: 30px;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-height: 28px;
   padding: 0 var(--sp-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
   background: var(--bg-elev);
   color: var(--text);
   font-size: var(--fs-xs);
+  white-space: nowrap;
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-.cz-ctx__preset svg { flex: none; color: var(--accent); }
-.cz-ctx__preset:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
-.cz-ctx__preset:disabled { cursor: default; color: var(--text-3); }
-.cz-ctx__preset:disabled svg { color: var(--text-3); }
-.cz-ctx__preset:focus-visible,
-.cz-ctx__undo:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.cz-ctx__preset-n { margin-left: auto; color: var(--text-3); white-space: nowrap; }
+.cz-ctx__batch-btn:hover:not(:disabled),
+.cz-ctx__batch-done:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
+.cz-ctx__batch-btn:disabled { cursor: default; color: var(--text-3); border-color: var(--border); }
+.cz-ctx__batch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--sp-2); }
+.cz-ctx__select-all { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--fs-xs); cursor: pointer; user-select: none; }
+.cz-ctx__select-count { color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cz-ctx__batch-done { margin-left: auto; min-height: 24px; background: transparent; border-color: var(--border); color: var(--text-2); }
+.cz-ctx__batch-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cz-ctx__batch-modes { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.cz-ctx__batch-mode {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.cz-ctx__batch-mode.is-on svg { color: var(--accent); }
+.cz-ctx__batch-mode.is-user-invocable-only svg { color: var(--warn); }
+.cz-ctx__batch-mode.is-off svg { color: var(--text-3); }
+.cz-ctx__batch-mode:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+.cz-ctx__batch-mode:disabled { cursor: default; opacity: .45; }
+.cz-ctx__check { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.cz-ctx__row-name.cz-ctx__skill-check { gap: 6px; }
+.cz-ctx__skill.is-checked { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .cz-ctx__undo {
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 30px;
+  min-height: 28px;
   padding: 0 var(--sp-2);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -866,8 +896,12 @@
   .cz-ctx__cw-acts .cz-ctx__link { min-height: 36px; }
   /* 16px：iOS 聚焦输入框时不自动放大页面 */
   .cz-ctx__cw-input { height: 36px; font-size: 16px; flex-basis: 76px; }
-  .cz-ctx__preset,
+  .cz-ctx__batch-btn,
+  .cz-ctx__batch-mode,
+  .cz-ctx__batch-done,
+  .cz-ctx__select-all,
   .cz-ctx__undo { min-height: 40px; }
+  .cz-ctx__check { width: 20px; height: 20px; }
   .cz-ctx__btn { min-height: 44px; }
   .cz-ctx__mode:not(.cz-ctx__pick) { min-width: 48px; justify-content: center; }
 }

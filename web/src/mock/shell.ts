@@ -103,10 +103,10 @@ export const mockContextUsage: ContextUsage = {
   },
   skills: [
     { name: 'anthropic-skills:docx', mode: 'on', tokens: 210, source: 'syncedSkills', description: 'Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include any mention of "Word doc", "word document", ".docx", or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads.' },
-    { name: 'impeccable', mode: 'on', tokens: 67, source: 'userSettings', removable: true, description: 'Polish UI details until they feel inevitable.' },
+    { name: 'impeccable', mode: 'on', tokens: 67, source: 'userSettings', removable: true, onDisk: true, description: 'Polish UI details until they feel inevitable.' },
     { name: 'anthropic-skills:pdf', mode: 'on', tokens: 180, source: 'syncedSkills' },
     { name: 'schedule', mode: 'user-invocable-only', tokens: null, source: null, description: 'Create, update, list, or run scheduled remote agents (routines) that execute on a cron schedule.' },
-    { name: 'anthropic-skills:xlsx', mode: 'off', tokens: null, source: 'plugin' },
+    { name: 'anthropic-skills:xlsx', mode: 'off', tokens: null, source: 'plugin', onDisk: true },
   ],
   mcpServers: [
     {

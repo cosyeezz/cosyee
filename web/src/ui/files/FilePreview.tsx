@@ -239,6 +239,7 @@ export function FilePreview({ session, cwd, path, line, nonce, onClose }: FilePr
   const name = data?.name ?? pathBasename(target.path);
   const lineCount = useMemo(() => (isText ? splitPlainLines(text).length : 0), [isText, text]);
   const atRoot = !!files?.cwd && !!data && normKey(data.path) === normKey(files.cwd);
+  const downloadHref = files?.downloadUrl && data && !error && data.kind !== 'directory' ? files.downloadUrl(shownPath) : null;
 
   const source = data && (
     <CodeView text={text} language={data.language ?? (data.kind === 'markdown' ? 'markdown' : undefined)} line={data.line ?? target.line} wrap={wrap} />
@@ -288,7 +289,39 @@ export function FilePreview({ session, cwd, path, line, nonce, onClose }: FilePr
   } else if (data.kind === 'directory') {
     body = <DirView data={data} atRoot={atRoot} onGo={go} />;
   } else {
-    body = <div className="cz-fp__state">{data.reason ?? '不支持预览这种文件'}</div>;
+    const reason = data.reason ?? '不支持预览这种文件';
+    const hasActions = !!(files?.openLocal || files?.reveal || downloadHref);
+    body = (
+      <div className="cz-fp__state">
+        {hasActions ? (
+          <>
+            <p className="cz-fp__reason">{reason}</p>
+            <div className="cz-fp__actions">
+              {files?.openLocal && (
+                <button type="button" className="cz-fp__btn" onClick={() => files.openLocal?.(shownPath)}>
+                  <Icon name="open-external" size={14} />
+                  <span>用默认应用打开</span>
+                </button>
+              )}
+              {files?.reveal && (
+                <button type="button" className="cz-fp__btn" onClick={() => files.reveal?.(shownPath)}>
+                  <Icon name="folder-reveal" size={14} />
+                  <span>在文件管理器中显示</span>
+                </button>
+              )}
+              {downloadHref && (
+                <a className="cz-fp__btn" href={downloadHref} download={data.name}>
+                  <Icon name="download" size={14} />
+                  <span>下载到本设备</span>
+                </a>
+              )}
+            </div>
+          </>
+        ) : (
+          reason
+        )}
+      </div>
+    );
   }
 
   const footer = data
@@ -345,6 +378,24 @@ export function FilePreview({ session, cwd, path, line, nonce, onClose }: FilePr
             <Icon name="wrap" size={14} />
             <span>换行</span>
           </button>
+        )}
+        {files?.openLocal && !error && data && (
+          <button
+            type="button"
+            className="cz-fp__btn"
+            aria-label={data.kind === 'directory' ? '在文件管理器中打开' : '用默认应用打开'}
+            title={data.kind === 'directory' ? '在文件管理器中打开' : '用默认应用打开'}
+            onClick={() => files.openLocal?.(shownPath)}
+          >
+            <Icon name="open-external" size={14} />
+            <span>打开</span>
+          </button>
+        )}
+        {downloadHref && data && (
+          <a className="cz-fp__btn" href={downloadHref} download={data.name} aria-label="下载到本设备" title="下载到本设备">
+            <Icon name="download" size={14} />
+            <span>下载</span>
+          </a>
         )}
         <button type="button" className="cz-fp__icon-btn" aria-label="重新加载" title="重新加载" onClick={() => setReloadN((n) => n + 1)}>
           <Icon name="refresh" size={14} />

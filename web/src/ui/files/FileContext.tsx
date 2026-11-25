@@ -22,6 +22,10 @@ export interface FilesApi {
    */
   reveal?: (path: string) => void;
   terminal?: (path: string) => void;
+  /** 用系统默认应用打开；远程连接时没有 */
+  openLocal?: (path: string) => void;
+  /** 下载地址；只有远程连接才有，本机用 openLocal */
+  downloadUrl?: (path: string) => string;
   /** 服务端平台（决定哪些代码块语言能运行，例如 cmd 只在 Windows 上） */
   platform?: string;
   /** 在会话工作目录里运行代码块（远程连接也有：输出回显在页面上） */
