@@ -183,6 +183,7 @@ func startWithListen(cfg Config, listen func(network, address string) (net.Liste
 			return nil, ReadyMessage{}, fmt.Errorf("create state dir: %w", err)
 		}
 	}
+	prepareTailscaleDirs(cfg.StateDir, currentGOOS)
 
 	backend = cfg.Backend
 	if backend == nil {
