@@ -12,14 +12,19 @@
 // 暴露给页面（包括服务端网页）的 CosyeeNative 只有读避让值和改状态栏图标颜色两个方法。
 package app.cosyee.client
 
+import android.content.Intent
 import android.os.Bundle
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import java.util.Locale
 
 class MainActivity : TauriActivity() {
@@ -67,6 +72,49 @@ class MainActivity : TauriActivity() {
       WindowInsetsCompat.CONSUMED
     }
     ViewCompat.requestApplyInsets(webView)
+  }
+
+  /** 供 Rust 经 JNI 调用：把 WebView 流量指向本地 HTTP 代理（本地页面与 127.0.0.1 跳过代理）。 */
+  fun setTailnetProxy(proxyUrl: String): Boolean {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+      return false
+    }
+    val config = ProxyConfig.Builder()
+      .addProxyRule(proxyUrl)
+      .addBypassRule("tauri.localhost")
+      .addBypassRule("127.0.0.1")
+      .addBypassRule("localhost")
+      .build()
+    runOnUiThread {
+      ProxyController.getInstance().setProxyOverride(
+        config,
+        ContextCompat.getMainExecutor(this)
+      ) {}
+    }
+    return true
+  }
+
+  /** 供 Rust 经 JNI 调用：清除 WebView 代理覆写。 */
+  fun clearTailnetProxy() {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+      return
+    }
+    runOnUiThread {
+      ProxyController.getInstance().clearProxyOverride(
+        ContextCompat.getMainExecutor(this)
+      ) {}
+    }
+  }
+
+  /** 供 Rust 经 JNI 调用：重启当前 Android 应用进程（用于内置 Tailscale 代理或 .so 更新生效）。 */
+  fun relaunchApp() {
+    runOnUiThread {
+      val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return@runOnUiThread
+      val component = launch.component ?: return@runOnUiThread
+      val restart = Intent.makeRestartActivityTask(component)
+      startActivity(restart)
+      Runtime.getRuntime().exit(0)
+    }
   }
 
   inner class Bridge {

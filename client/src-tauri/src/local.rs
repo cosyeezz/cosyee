@@ -631,14 +631,22 @@ pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), Lo
     }
 
     let allowed_origin = expected_origin.clone();
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
+    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
         .title("kiro.rs 管理页面")
         .inner_size(1180.0, 780.0)
         .min_inner_size(640.0, 480.0)
         .decorations(true)
         .incognito(true)
         .initialization_script(&init_script)
-        .on_navigation(move |u| u.origin().ascii_serialization() == allowed_origin)
+        .on_navigation(move |u| u.origin().ascii_serialization() == allowed_origin);
+    // Windows 上 WebView2 要求同进程内所有窗口的 additional_browser_arguments（含 --proxy-server）保持一致，
+    // 否则创建第二个窗口会失败；本地代理对 127.0.0.1 会直接直连。
+    let builder = if let Some(proxy_url) = crate::tailnet::proxy_url() {
+        builder.proxy_url(proxy_url)
+    } else {
+        builder
+    };
+    builder
         .build()
         .map_err(|e| LocalApiError::Other {
             status: None,

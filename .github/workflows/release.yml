@@ -92,7 +92,21 @@ jobs:
         run: node client/scripts/set-version.mjs "$VERSION"
       - name: 构建
         working-directory: client
+        env:
+          # 与 tauri.conf.json 的 minimumSystemVersion 保持一致
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
         run: npx tauri build --target universal-apple-darwin --bundles dmg
+      - name: 校验 macOS 14+ 符号为弱引用（否则 macOS 10.15–13 上起不来）
+        run: |
+          bin=client/src-tauri/target/universal-apple-darwin/release/Cosyee
+          for arch in x86_64 arm64; do
+            syms=$(nm -m -arch "$arch" "$bin" | grep -E '_nw_proxy_config_create_(http_connect|socksv5)' || true)
+            echo "[$arch]"; echo "$syms"
+            [ -n "$syms" ] || { echo "::error::没找到 nw_proxy_config 符号（wry 变了？）"; exit 1; }
+            if echo "$syms" | grep -qv 'weak'; then
+              echo "::error::$arch 上 nw_proxy_config_* 不是弱引用，旧版 macOS 会启动失败（检查 build.rs 的 -weak_framework Network）"; exit 1
+            fi
+          done
       - name: 整理产物
         run: |
           mkdir -p out
@@ -145,6 +159,12 @@ jobs:
           fi
           grep -q 'usesCleartextTraffic' src-tauri/gen/android/app/src/main/AndroidManifest.xml \
             || { echo "::error::AndroidManifest.xml 里没有 usesCleartextTraffic 占位"; exit 1; }
+          # 内置 Tailscale 代理依赖 androidx.webkit 的 ProxyController；Tauri 模板通常已包含，缺失时自动补上
+          if ! grep -q 'androidx.webkit:webkit' "$gradle"; then
+            sed -i 's/dependencies {/dependencies {\n    implementation("androidx.webkit:webkit:1.12.1")/' "$gradle"
+          fi
+          grep -q 'androidx.webkit:webkit' "$gradle" \
+            || { echo "::error::未能确保 androidx.webkit 依赖"; exit 1; }
           # 语音输入要用麦克风（运行时由 WebView 的权限请求触发系统授权弹窗）
           manifest=src-tauri/gen/android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$manifest"

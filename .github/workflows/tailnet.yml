@@ -1,0 +1,200 @@
+# 内置 Tailscale 组件（cosyee-tailnet）构建与发布流水线
+#
+# 触发条件：
+#   - push 到 main 或 feat/** 分支且 tailnet/** 发生变化（feat/** 只构建、不发布）
+#   - 手动触发（workflow_dispatch）
+#
+# 发布规则：
+#   - 读取 tailnet/VERSION，目标 tag 为 tailnet-v<VERSION>
+#   - 若 tag tailnet-v<VERSION> 已存在，仅执行构建与测试，跳过发布
+#   - 若不存在，构建三端产物并发布不可变 release tailnet-v<VERSION>，
+#     随后生成并签名 manifest.json，覆盖上传到 prerelease tailnet-latest
+#
+# 需要的仓库 secret：
+#   TAILNET_SIGNING_KEY  32 字节 Ed25519 seed 的 base64
+name: tailnet
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths: ['tailnet/**', '.github/workflows/tailnet.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tailnet-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      tag: ${{ steps.info.outputs.tag }}
+      should_publish: ${{ steps.info.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: info
+        shell: bash
+        run: |
+          ver="$(tr -d '\r\n' < tailnet/VERSION)"
+          tag="tailnet-v${ver}"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Not on main; will build only and skip publishing."
+          elif git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${tag} already exists; will build only and skip publishing."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${tag} does not exist; will build and publish."
+          fi
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - name: Go vet & test
+        working-directory: tailnet
+        run: |
+          go vet ./...
+          go test -v ./...
+      - name: 构建 windows-x64
+        run: node tailnet/scripts/build.mjs --target windows-x64 --version "$env:VERSION" --out-dir out
+      - name: 校验 --version 输出
+        run: |
+          $actual = (& ".\out\cosyee-tailnet_$($env:VERSION)_windows_x64.exe" --version).Trim()
+          if ($actual -ne $env:VERSION) {
+            throw "Version mismatch: expected $($env:VERSION), got $actual"
+          }
+          Write-Output "Verified --version: $actual"
+      - uses: actions/upload-artifact@v4
+        with: { name: tailnet-windows-x64, path: out/*, if-no-files-found: error }
+
+  macos:
+    needs: check
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - name: 构建 macos-universal
+        run: node tailnet/scripts/build.mjs --target macos-universal --version "$VERSION" --out-dir out
+      - name: 校验通用二进制与 --version
+        run: |
+          bin="out/cosyee-tailnet_${VERSION}_macos_universal"
+          file "$bin"
+          lipo -info "$bin"
+          codesign -v "$bin"
+          actual="$("$bin" --version)"
+          test "$actual" = "$VERSION"
+          echo "Verified --version: $actual"
+      - uses: actions/upload-artifact@v4
+        with: { name: tailnet-macos-universal, path: out/*, if-no-files-found: error }
+
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tailnet/go.mod
+          cache-dependency-path: tailnet/go.sum
+      - name: 检查 NDK
+        run: |
+          test -n "$ANDROID_NDK_LATEST_HOME" && ls "$ANDROID_NDK_LATEST_HOME" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - name: 构建 android-arm64 c-shared
+        run: node tailnet/scripts/build.mjs --target android-arm64 --version "$VERSION" --out-dir out
+      - name: 校验导出符号
+        run: |
+          so="out/libcosyee_tailnet_${VERSION}_android_arm64.so"
+          file "$so"
+          nm -D "$so" | grep -E 'CosyeeTailnet(Start|Stop|Version|Free)'
+      - uses: actions/upload-artifact@v4
+        with: { name: tailnet-android-arm64, path: out/*, if-no-files-found: error }
+
+  publish:
+    if: needs.check.outputs.should_publish == 'true'
+    needs: [check, windows, macos, android]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      TAG: ${{ needs.check.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - name: 检查签名 secret
+        env:
+          KEY: ${{ secrets.TAILNET_SIGNING_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::缺少仓库 secret TAILNET_SIGNING_KEY"
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: 发布不可变版本 release
+        run: |
+          ls -la out
+          gh release create "$TAG" out/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "cosyee-tailnet v${VERSION}" \
+            --notes "cosyee-tailnet component v${VERSION}" \
+            --latest=false
+      - name: 生成并签名 manifest.json
+        env:
+          TAILNET_SIGNING_KEY: ${{ secrets.TAILNET_SIGNING_KEY }}
+        run: |
+          mkdir -p manifest
+          node tailnet/scripts/manifest.mjs \
+            --assets-dir out \
+            --out manifest/manifest.json \
+            --version "$VERSION" \
+            --repo "$GITHUB_REPOSITORY"
+          node tailnet/scripts/sign.mjs manifest/manifest.json manifest/manifest.json.sig
+          node tailnet/scripts/sign.mjs --verify manifest/manifest.json manifest/manifest.json.sig
+          cat manifest/manifest.json
+      - name: 更新 tailnet-latest prerelease
+        run: |
+          if gh release view tailnet-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload tailnet-latest manifest/manifest.json manifest/manifest.json.sig \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create tailnet-latest manifest/manifest.json manifest/manifest.json.sig \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "cosyee-tailnet latest" \
+              --notes "Rolling manifest for cosyee-tailnet component." \
+              --prerelease \
+              --latest=false
+          fi

@@ -1,13 +1,11 @@
 // Cosyee 轻量客户端：一个 WebView 窗口，先显示本地的「服务器列表」页（ui/index.html），
 // 选中后整页跳到服务端地址（http://<tailscale 地址>:7878/），之后就是服务端托管的网页界面。
 // 客户端不处理任何业务逻辑，也没有令牌：访问控制由服务端的 Tailscale 模式负责。
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
-
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(desktop)]
 mod local;
+mod tailnet;
 
 /// 本地页面的 origin（Windows / Android 是 http://tauri.localhost，macOS / Linux 是 tauri://localhost）。
 #[cfg(any(windows, target_os = "android"))]
@@ -35,18 +33,10 @@ fn shell_script() -> String {
 
 /// 连接前探测服务端端口是否可达（纯 TCP 连接，3 秒超时）。
 /// 放在 Rust 里做是因为 macOS 上 tauri:// 页面 fetch http 地址会被当成混合内容拦掉，探测结果不可靠。
+/// 代理开启时按与本地代理完全一致的分流规则走 SOCKS5 或直连。
 #[tauri::command]
 async fn probe(host: String, port: u16) -> bool {
-    tauri::async_runtime::spawn_blocking(move || {
-        let Ok(addrs) = (host.as_str(), port).to_socket_addrs() else {
-            return false;
-        };
-        addrs
-            .into_iter()
-            .any(|a| TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok())
-    })
-    .await
-    .unwrap_or(false)
+    tailnet::probe_tcp(&host, port).await
 }
 
 /// 服务器列表（JSON 数组字符串）。真正的列表存在本地页面的 localStorage 里，服务端网页读不到，
@@ -106,12 +96,25 @@ fn watch_server<R: tauri::Runtime>(w: tauri::WebviewWindow<R>, p: tauri::webview
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().manage(Servers::default());
-    // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(Servers::default());
+    // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏。
+    // 内置 Tailscale 命令在桌面与手机两端都注册，且仅对客户端本地页面开放（远程页面调不到自定义命令）。
     #[cfg(desktop)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         probe,
         set_servers,
+        tailnet::tailnet_status,
+        tailnet::tailnet_check,
+        tailnet::tailnet_install,
+        tailnet::tailnet_uninstall,
+        tailnet::tailnet_set_enabled,
+        tailnet::tailnet_login,
+        tailnet::tailnet_logout,
+        tailnet::tailnet_restart,
+        tailnet::tailnet_log,
+        tailnet::app_relaunch,
         local::local_status,
         local::local_log,
         local::local_install,
@@ -135,13 +138,35 @@ pub fn run() {
         local::component_log
     ]);
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![probe, set_servers]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        probe,
+        set_servers,
+        tailnet::tailnet_status,
+        tailnet::tailnet_check,
+        tailnet::tailnet_install,
+        tailnet::tailnet_uninstall,
+        tailnet::tailnet_set_enabled,
+        tailnet::tailnet_login,
+        tailnet::tailnet_logout,
+        tailnet::tailnet_restart,
+        tailnet::tailnet_log,
+        tailnet::app_relaunch
+    ]);
     builder
         .setup(|app| {
+            // 若内置 Tailscale 已安装且启用，先拉起本地 HTTP 代理（端口立即可用，组件后台异步启动）
+            let proxy_url = tailnet::init_on_startup(app);
+
             let script = shell_script();
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .initialization_script(&script)
                 .on_page_load(watch_server);
+            #[cfg(desktop)]
+            let builder = if let Some(ref url) = proxy_url {
+                builder.proxy_url(url.clone())
+            } else {
+                builder
+            };
             #[cfg(desktop)]
             let builder = builder
                 .title("Cosyee")
@@ -157,7 +182,11 @@ pub fn run() {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .traffic_light_position(tauri::LogicalPosition::new(14.0, 19.0));
-            builder.build()?;
+            let _window = builder.build()?;
+            #[cfg(target_os = "android")]
+            if let Some(ref url) = proxy_url {
+                tailnet::apply_android_proxy(&_window, url);
+            }
             // 客户端开着时负责更新本机 npm 安装的 cosyee 服务端（服务端不能自己替换自己）
             #[cfg(desktop)]
             local::spawn_auto_update();
