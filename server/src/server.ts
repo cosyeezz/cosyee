@@ -308,7 +308,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     running: (id) => manager.runningCount(id),
     processes: (id) => manager.processCount(id),
     stop: (match) => (match ? manager.stopAccounts(match, 5000) : manager.resetAll(5000)),
-    kiroProxyState: (dir) => kiro?.proxy.stateOf(dir) ?? { proxy: 'stopped', error: null },
+    kiroState: (id, dir) => kiro?.accountState(id, dir) ?? { proxy: 'stopped', error: null, credential: 'unknown' },
     removeKiroAccount: (id, dir) => kiro?.removeAccount(id, dir) ?? Promise.resolve(),
     onChanged: (e) => {
       if (e.reset) {
@@ -336,10 +336,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       commitRelogin: (id, label) => accounts!.commitReloginKiro(id, label),
       discardDir: (dir) => accounts!.discardKiroDir(dir),
       modelsChanged: (id) => accounts!.kiroModelsChanged(id),
+      infoChanged: () => accounts!.kiroInfoChanged(),
     },
   });
   kiro.init();
-  setBeforeClaudeEnv(() => kiro?.proxy.ensure());
+  setBeforeClaudeEnv(() => kiro?.proxy.kick());
   const onExitKiro = () => kiro?.disposeSync();
   process.once('exit', onExitKiro);
   agyAccounts = new AgyAccounts({
@@ -389,7 +390,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     account,
     accounts,
     agyAccounts,
-    agyCli,
     components,
     browser,
     kiro,

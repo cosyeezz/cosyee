@@ -30,7 +30,6 @@ import type { StateStore, Workspaces } from './workspaces.js';
 import { type ComponentUpdater, componentRoutes } from './components/updater.js';
 import type { BrowserManager } from './browser/manager.js';
 import { elementTarget, toElement } from './browser/elements.js';
-import { type AgyCli, agyCliRoutes } from './delegate/agyCli.js';
 import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
@@ -49,8 +48,6 @@ export interface HttpDeps {
   accounts?: Accounts;
   /** Antigravity（agy）多账号；不传则 agy 账号相关接口返回 404（旧测试） */
   agyAccounts?: AgyAccounts;
-  /** Antigravity CLI（agy）版本与升级；不传则 /api/agy/cli 返回 404（旧测试） */
-  agyCli?: AgyCli;
   /** 本机组件版本与自动更新；不传则 /api/components 返回 404（旧测试） */
   components?: ComponentUpdater;
   /** 内置浏览器（agent-browser）；不传则 /api/browser 接口返回 404（旧测试） */
@@ -342,39 +339,7 @@ export function createHandler(deps: HttpDeps) {
     if (!kiro) throw new HttpError(404, '未找到');
     let m: RegExpExecArray | null;
     if (method === 'GET' && p === '/api/kiro') return sendJson(res, 200, kiro.status());
-    // engine/* 与 service/* 的 POST 都不读请求体（客户端用 Content-Length: 0 的 HTTP/1.0 请求调用）
-    if (method === 'POST' && p === '/api/kiro/engine/check') return sendJson(res, 200, await kiro.checkEngine());
-    if (method === 'POST' && p === '/api/kiro/engine/build') {
-      if (!fromLocal(req)) throw new HttpError(403, '只能从本机编译 kiro.rs 引擎');
-      return sendJson(res, 200, kiro.buildEngine());
-    }
-    if (method === 'GET' && p === '/api/kiro/engine/log') {
-      const raw = q.get('from');
-      const from = raw !== null && /^\d+$/.test(raw) ? Number(raw) : 0;
-      return sendJson(res, 200, kiro.engineLog(from));
-    }
-    if (method === 'POST' && p === '/api/kiro/service/start') {
-      if (!fromLocal(req)) throw new HttpError(403, '只能从本机启动 kiro.rs 服务');
-      return sendJson(res, 200, kiro.startService());
-    }
-    if (method === 'POST' && p === '/api/kiro/service/stop') {
-      if (!fromLocal(req)) throw new HttpError(403, '只能从本机停止 kiro.rs 服务');
-      try {
-        return sendJson(res, 200, await kiro.stopService(q.get('force') === '1'));
-      } catch (e) {
-        if (e instanceof RunningError) return sendJson(res, 409, { error: e.message, running: e.running });
-        throw e;
-      }
-    }
-    if (method === 'POST' && p === '/api/kiro/service/restart') {
-      if (!fromLocal(req)) throw new HttpError(403, '只能从本机重启 kiro.rs 服务');
-      try {
-        return sendJson(res, 200, await kiro.restartService(q.get('force') === '1'));
-      } catch (e) {
-        if (e instanceof RunningError) return sendJson(res, 409, { error: e.message, running: e.running });
-        throw e;
-      }
-    }
+    // service/admin 不读请求体（客户端用 Content-Length: 0 的 HTTP/1.0 请求调用）；启停走 /api/components/kiro/*
     if (method === 'POST' && p === '/api/kiro/service/admin') {
       if (!fromLocal(req)) throw new HttpError(403, '只能从本机获取 kiro.rs 管理页面信息');
       // 管理密钥只允许本机原生客户端读取：浏览器请求必带 Origin 或 Sec-Fetch-Site / Sec-Fetch-Mode，一律拒绝
@@ -382,9 +347,7 @@ export function createHandler(deps: HttpDeps) {
       if (h.origin || h['sec-fetch-site'] || h['sec-fetch-mode']) {
         throw new HttpError(403, '浏览器网页不能读取 kiro.rs 管理密钥');
       }
-      const id = q.get('account');
-      if (!id) throw new HttpError(400, '缺少 account');
-      return sendJson(res, 200, await kiro.adminAccess(id));
+      return sendJson(res, 200, await kiro.adminAccess());
     }
     if (method === 'POST' && p === '/api/kiro/login') {
       const body = await readJson(req);
@@ -701,11 +664,6 @@ export function createHandler(deps: HttpDeps) {
 
     if (p === '/api/accounts' || p.startsWith('/api/accounts/')) return accountRoutes(req, res, method, p);
     if (p === '/api/agy-accounts' || p.startsWith('/api/agy-accounts/')) return agyAccountRoutes(req, res, method, p);
-    if (deps.agyCli && (p === '/api/agy/cli' || p.startsWith('/api/agy/cli/'))) {
-      const r = await agyCliRoutes(deps.agyCli, { method, pathname: p, query: q, fromLocal: fromLocal(req) });
-      if (!r) throw new HttpError(404, '未找到');
-      return sendJson(res, r.status, r.body);
-    }
     if (deps.components && (p === '/api/components' || p.startsWith('/api/components/'))) {
       const r = await componentRoutes(deps.components, { method, pathname: p, query: q, fromLocal: fromLocal(req) });
       if (!r) throw new HttpError(404, '未找到');

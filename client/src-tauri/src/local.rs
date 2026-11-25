@@ -416,7 +416,7 @@ pub enum LocalApiError {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum KiroServiceAction {
+pub enum ServiceAction {
     Start,
     Stop,
     Restart,
@@ -551,16 +551,6 @@ async fn local_api_request(method: &'static str, path: String, timeout: Duration
     .map_err(|error| LocalApiError::Other { status: None, error })?
 }
 
-fn validate_account_id(account: &str) -> Result<(), String> {
-    if account.is_empty() || account.len() > 64 {
-        return Err("账号标识长度无效".into());
-    }
-    if !account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
-        return Err("账号标识包含非法字符".into());
-    }
-    Ok(())
-}
-
 /// 严格校验 kiro.rs 管理页面地址：必须为 http://127.0.0.1:<port>/admin，无多余路径、查询参数或用户信息。
 fn validate_kiro_admin_url(url_str: &str) -> Result<(tauri::Url, String), String> {
     let parsed = tauri::Url::parse(url_str).map_err(|_| "服务端返回的管理页面地址无效".to_string())?;
@@ -588,49 +578,12 @@ fn build_admin_init_script(origin: &str, key: &str) -> Result<String, String> {
     ))
 }
 
-#[tauri::command]
-pub async fn kiro_status() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("GET", "/api/kiro".into(), Duration::from_secs(5)).await
-}
-
-#[tauri::command]
-pub async fn kiro_check() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("POST", "/api/kiro/engine/check".into(), Duration::from_secs(30)).await
-}
-
-#[tauri::command]
-pub async fn kiro_build() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("POST", "/api/kiro/engine/build".into(), Duration::from_secs(15)).await
-}
-
-#[tauri::command]
-pub async fn kiro_log(from: usize) -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("GET", format!("/api/kiro/engine/log?from={from}"), Duration::from_secs(5)).await
-}
-
-#[tauri::command]
-pub async fn kiro_service(action: KiroServiceAction, force: Option<bool>) -> Result<serde_json::Value, LocalApiError> {
-    let path = match (action, force.unwrap_or(false)) {
-        (KiroServiceAction::Start, _) => "/api/kiro/service/start",
-        (KiroServiceAction::Stop, false) => "/api/kiro/service/stop",
-        (KiroServiceAction::Stop, true) => "/api/kiro/service/stop?force=1",
-        (KiroServiceAction::Restart, false) => "/api/kiro/service/restart",
-        (KiroServiceAction::Restart, true) => "/api/kiro/service/restart?force=1",
-    };
-    local_api_request("POST", path.into(), Duration::from_secs(30)).await
-}
-
 /// 打开 kiro.rs 自带的管理页面独立窗口：密钥仅在 Rust 内部经 initialization_script 注入，绝不返回给主页面、不写日志。
-/// 新窗口 label 为 `kiro-admin-<account>`，不在任何 capabilities/*.json 中，调不到任何 Tauri 命令；导航限制在同 origin。
+/// 全部 Kiro 账号共用一个管理页面：窗口 label 固定为 `kiro-admin`，已开着就切到前面。
+/// 该 label 不在任何 capabilities/*.json 中，调不到任何 Tauri 命令；导航限制在同 origin。
 #[tauri::command]
-pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), LocalApiError> {
-    validate_account_id(&account).map_err(|error| LocalApiError::Other { status: None, error })?;
-    let val = local_api_request(
-        "POST",
-        format!("/api/kiro/service/admin?account={account}"),
-        Duration::from_secs(30),
-    )
-    .await?;
+pub async fn kiro_admin(app: tauri::AppHandle) -> Result<(), LocalApiError> {
+    let val = local_api_request("POST", "/api/kiro/service/admin".into(), Duration::from_secs(30)).await?;
     let url_str = val
         .get("url")
         .and_then(|v| v.as_str())
@@ -652,8 +605,8 @@ pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), Lo
     let init_script =
         build_admin_init_script(&expected_origin, key).map_err(|error| LocalApiError::Other { status: None, error })?;
 
-    let label = format!("kiro-admin-{account}");
-    if let Some(existing) = app.get_webview_window(&label) {
+    let label = "kiro-admin";
+    if let Some(existing) = app.get_webview_window(label) {
         let same_origin = existing
             .url()
             .ok()
@@ -668,7 +621,7 @@ pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), Lo
     }
 
     let allowed_origin = expected_origin.clone();
-    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed_url))
+    let builder = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(parsed_url))
         .title("kiro.rs 管理页面")
         .inner_size(1180.0, 780.0)
         .min_inner_size(640.0, 480.0)
@@ -690,36 +643,6 @@ pub async fn kiro_admin(app: tauri::AppHandle, account: String) -> Result<(), Lo
             error: format!("无法打开管理页面窗口：{e}"),
         })?;
     Ok(())
-}
-
-#[tauri::command]
-pub async fn agy_status() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("GET", "/api/agy/cli".into(), Duration::from_secs(5)).await
-}
-
-#[tauri::command]
-pub async fn agy_check() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("POST", "/api/agy/cli/check".into(), Duration::from_secs(30)).await
-}
-
-#[tauri::command]
-pub async fn agy_update() -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("POST", "/api/agy/cli/update".into(), Duration::from_secs(15)).await
-}
-
-#[tauri::command]
-pub async fn agy_log(from: usize) -> Result<serde_json::Value, LocalApiError> {
-    local_api_request("GET", format!("/api/agy/cli/log?from={from}"), Duration::from_secs(5)).await
-}
-
-#[tauri::command]
-pub async fn agy_restart(force: Option<bool>) -> Result<serde_json::Value, LocalApiError> {
-    let path = if force.unwrap_or(false) {
-        "/api/agy/cli/restart?force=1"
-    } else {
-        "/api/agy/cli/restart"
-    };
-    local_api_request("POST", path.into(), Duration::from_secs(30)).await
 }
 
 // ───────────── 本机组件（Claude CLI / kiro.rs / agy / 内置浏览器 / cosyee 服务端）版本管理 ─────────────
@@ -756,6 +679,19 @@ pub async fn component_auto(id: String, enabled: bool) -> Result<serde_json::Val
     let id = component_id(&id)?;
     let flag = u8::from(enabled);
     local_api_request("POST", format!("/api/components/{id}/auto?enabled={flag}"), Duration::from_secs(5)).await
+}
+
+/// 带服务的组件（目前只有 kiro.rs）启动 / 停止 / 重启；有会话在执行且没带 force 时服务端返回 409。
+#[tauri::command]
+pub async fn component_service(id: String, action: ServiceAction, force: Option<bool>) -> Result<serde_json::Value, LocalApiError> {
+    let id = component_id(&id)?;
+    let op = match action {
+        ServiceAction::Start => "start",
+        ServiceAction::Stop => "stop",
+        ServiceAction::Restart => "restart",
+    };
+    let q = if force.unwrap_or(false) && op != "start" { "?force=1" } else { "" };
+    local_api_request("POST", format!("/api/components/{id}/{op}{q}"), Duration::from_secs(30)).await
 }
 
 #[tauri::command]
@@ -936,16 +872,6 @@ mod tests {
         .unwrap();
         assert_eq!(val["next"], 2);
         assert_eq!(val["lines"][0], "a");
-    }
-
-    #[test]
-    fn validate_account_id_rules() {
-        assert!(validate_account_id("acc_01-AB").is_ok());
-        assert!(validate_account_id("").is_err());
-        assert!(validate_account_id(&"a".repeat(65)).is_err());
-        assert!(validate_account_id("a&b=1").is_err());
-        assert!(validate_account_id("../etc").is_err());
-        assert!(validate_account_id("中文").is_err());
     }
 
     #[test]

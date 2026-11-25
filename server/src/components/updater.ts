@@ -4,6 +4,7 @@ import path from 'node:path';
 import { COMPONENT_IDS, type ComponentId, type ComponentList, type ComponentStatus } from '@cosyee/shared';
 import { writeFileAtomic } from '../kiro/sanitize.js';
 import { cosyeeHome } from '../paths.js';
+import { RunningError } from '../accounts/index.js';
 import { HttpError } from '../workspaces.js';
 import { type AdapterInfo, type ComponentAdapter, errText } from './common.js';
 import { SERVER_UPDATE_BY_CLIENT } from './server.js';
@@ -168,6 +169,7 @@ export class ComponentUpdater {
       updatedBy: a.updatedBy,
       ...(a.installable ? { installable: true } : {}),
       job,
+      ...(a.service && info.installed ? { service: a.service.status() } : {}),
     };
   }
 
@@ -253,6 +255,16 @@ export class ComponentUpdater {
     return this.status(id);
   }
 
+  /** 服务启停：start / stop / restart；组件没有服务时 404 */
+  async serviceOp(id: string, op: 'start' | 'stop' | 'restart', force: boolean): Promise<ComponentStatus> {
+    const svc = this.adapter(id).service;
+    if (!svc) throw new HttpError(404, '未找到');
+    if (op === 'start') await svc.start();
+    else if (op === 'stop') await svc.stop(force);
+    else await svc.restart(force);
+    return this.status(id);
+  }
+
   log(id: string, from: number): { lines: string[]; next: number } {
     return this.adapter(id).log(from);
   }
@@ -309,7 +321,7 @@ export interface ComponentRouteResponse {
   body: unknown;
 }
 
-const ROUTE_RE = /^\/api\/components\/([^/]+)\/(check|update|auto|log)$/;
+const ROUTE_RE = /^\/api\/components\/([^/]+)\/(check|update|auto|log|start|stop|restart)$/;
 
 /** /api/components* 路由；未命中返回 null（调用方按 404 处理） */
 export async function componentRoutes(
@@ -342,6 +354,14 @@ export async function componentRoutes(
     if (!fromLocal) return { status: 403, body: { error: '该操作仅允许本机连接' } };
     if (op === 'check') return { status: 200, body: await updater.check(id) };
     if (op === 'update') return { status: 200, body: await updater.update(id) };
+    if (op === 'start' || op === 'stop' || op === 'restart') {
+      try {
+        return { status: 200, body: await updater.serviceOp(id, op, query.get('force') === '1') };
+      } catch (e) {
+        if (e instanceof RunningError) return { status: 409, body: { error: e.message, running: e.running } };
+        throw e;
+      }
+    }
     const enabled = query.get('enabled');
     if (enabled !== '0' && enabled !== '1') return { status: 400, body: { error: 'enabled 必须为 0 或 1' } };
     return { status: 200, body: await updater.setAuto(id, enabled === '1') };

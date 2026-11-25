@@ -1,6 +1,6 @@
 // API 账号的模型映射：规范化、环境变量注入、模型列表探测与解析。
 import { describe, expect, it, vi } from 'vitest';
-import { applyApiEnv, normalizeModelMap } from './accounts/api-config.js';
+import { apiSettingsEnv, applyApiEnv, normalizeModelMap } from './accounts/api-config.js';
 import { candidateUrls, fetchModelList, parseModels } from './accounts/model-list.js';
 
 describe('normalizeModelMap', () => {
@@ -30,6 +30,24 @@ describe('normalizeModelMap', () => {
 
   it('subagent / fallback 只收合法 id', () => {
     expect(normalizeModelMap({ subagent: 'deepseek-v3.2', fallback: 'bad name' })).toEqual({ subagent: 'deepseek-v3.2' });
+  });
+});
+
+describe('apiSettingsEnv（写进 --settings 的 env）', () => {
+  it('本账号用到的给值，其余 API 变量一律置空，压过共享 settings.json 里的同名变量', () => {
+    const env = apiSettingsEnv({
+      baseUrl: 'http://127.0.0.1:21395',
+      apiKey: 'sk-kiro',
+      authType: 'apiKey',
+      models: { alias: { sonnet: { id: 'claude-sonnet-4-5', label: 'Sonnet 4.5' } } },
+    });
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-kiro');
+    expect(env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:21395');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('claude-sonnet-4-5');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe('Sonnet 4.5');
+    for (const k of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']) {
+      expect(env[k]).toBe('');
+    }
   });
 });
 

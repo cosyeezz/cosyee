@@ -2,7 +2,9 @@
 import type { KiroService } from '../kiro/index.js';
 import { type AdapterInfo, type ComponentAdapter } from './common.js';
 
-export function createKiroAdapter(kiro: Pick<KiroService, 'engine' | 'serviceStatus'>): ComponentAdapter {
+export function createKiroAdapter(
+  kiro: Pick<KiroService, 'engine' | 'serviceStatus' | 'componentService' | 'startService' | 'stopService' | 'restartService'>,
+): ComponentAdapter {
   const engine = kiro.engine;
   return {
     id: 'kiro',
@@ -43,5 +45,12 @@ export function createKiroAdapter(kiro: Pick<KiroService, 'engine' | 'serviceSta
     },
 
     log: (from) => engine.getLog(from),
+
+    service: {
+      status: () => kiro.componentService(),
+      start: () => kiro.startService(),
+      stop: (force) => kiro.stopService(force),
+      restart: (force) => kiro.restartService(force),
+    },
   };
 }

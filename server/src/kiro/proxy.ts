@@ -1,10 +1,10 @@
 // 内置 kiro.rs 服务：全部 Kiro 账号共用一个 kiro-rs 进程，数据在 <引擎目录>/service/。
-// - ensure() 同步启动并返回（幂等；崩溃后带退避重启；启动前同步检测端口冲突并改写配置与各账号的 cosyee-api.json）
-// - ready() 等待端口可用并用管理密钥调 /api/admin/credentials 确认是自己的进程
-// - stop() / stopAll(sync?) / restartIdle()
+// - start() 异步启动并等就绪（幂等、并发去重；端口被占就换端口并改写配置与各账号的 cosyee-api.json；崩溃后带退避重启）
+// - ready() = start()，再用管理密钥调 /api/admin/credentials 确认是自己的进程
+// - stop() / killSync() / restartIdle()
 // - request() 调 Admin API（按需启动并等就绪）
 // - 日志不落盘、不下发，只在内存里留少量尾部用于判断失败原因，对外错误脱敏
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -12,7 +12,6 @@ import path from 'node:path';
 import type { AccountKiroInfo } from '@cosyee/shared';
 import { isLegacyKiro, readApiConfig, writeApiConfig } from '../accounts/api-config.js';
 import { killTree, killTreeSync } from '../claude/bin.js';
-import { pathKey } from '../paths.js';
 import { HttpError } from '../workspaces.js';
 import type { KiroEngine } from './engine.js';
 import { KIRO_ENGINE_MISSING, KIRO_SERVICE_STOPPED, sanitizeKiroError, writeFileAtomic } from './sanitize.js';
@@ -50,8 +49,8 @@ export interface KiroProxyOptions {
   spawnProxy?: (bin: string, args: string[], env: NodeJS.ProcessEnv) => ChildProcess;
   /** 测试替换：HTTP 请求 */
   fetch?: typeof globalThis.fetch;
-  /** 测试替换：同步检测端口是否空闲；若被占用返回一个新的空闲端口 */
-  findFreePortSync?: (preferredPort: number) => number;
+  /** 测试替换：端口在 127.0.0.1 上能否监听 */
+  isPortFree?: (port: number) => Promise<boolean>;
   /** 测试替换：异步分配空闲端口 */
   pickFreePort?: () => Promise<number>;
   /** 测试替换：时间源 */
@@ -135,36 +134,14 @@ export function defaultPickFreePort(): Promise<number> {
   });
 }
 
-/**
- * 同步检测 preferredPort 在 127.0.0.1 上是否可监听；若被占用则分配一个新的空闲端口。
- * 只在服务冷启动前调用一次，保证 claudeEnv() 读取配置前就完成端口更新。
- */
-export function defaultFindFreePortSync(preferredPort: number): number {
-  const script = `
-    const net = require('node:net');
-    const tryPort = (p, fb) => {
-      const s = net.createServer();
-      s.once('error', () => {
-        if (fb) tryPort(0, false);
-        else process.exit(1);
-      });
-      s.listen(p, '127.0.0.1', () => {
-        const port = s.address().port;
-        s.close(() => { process.stdout.write(String(port)); });
-      });
-    };
-    tryPort(${Number.isInteger(preferredPort) && preferredPort > 0 && preferredPort < 65536 ? preferredPort : 0}, true);
-  `;
-  const r = spawnSync(process.execPath, ['-e', script], {
-    windowsHide: true,
-    encoding: 'utf8',
-    timeout: 4000,
-    // 桌面版里 execPath 是 Electron，要让它按 Node 运行
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+/** 端口在 127.0.0.1 上能否监听 */
+export function defaultIsPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
   });
-  const port = Number(r.stdout?.trim());
-  if (r.status === 0 && Number.isInteger(port) && port > 0 && port < 65536) return port;
-  return preferredPort;
 }
 
 /** 构造给 kiro-rs 子进程的环境：必须删掉 KIRO_API_KEY（避免它自动把环境变量当成凭据） */
@@ -214,8 +191,8 @@ export function adminErrorMessage(r: AdminResponse, fallback: string): string {
 
 export class KiroProxyManager {
   private entry: ProxyEntry | null = null;
-  /** 账号自己的错误（如迁移失败），key = pathKey(账号目录) */
-  private accountErrors = new Map<string, string>();
+  /** 进行中的 start()（并发调用共用） */
+  private starting: Promise<void> | null = null;
 
   constructor(private readonly opts: KiroProxyOptions) {}
 
@@ -229,6 +206,10 @@ export class KiroProxyManager {
 
   async pickFreePort(): Promise<number> {
     return this.opts.pickFreePort ? this.opts.pickFreePort() : defaultPickFreePort();
+  }
+
+  private isPortFree(port: number): Promise<boolean> {
+    return (this.opts.isPortFree ?? defaultIsPortFree)(port);
   }
 
   dataDir(): string {
@@ -246,23 +227,22 @@ export class KiroProxyManager {
     return p ? `http://127.0.0.1:${p}` : '';
   }
 
-  /** 读服务配置；没有就新建（同步：端口、两个随机密钥、空的 credentials.json） */
-  private loadConfig(): KiroServiceConfig {
+  /** 读服务配置；没有就新建（空闲端口、两个随机密钥、空的 credentials.json） */
+  private async loadConfig(): Promise<KiroServiceConfig> {
     const dir = this.dataDir();
     let cfg = readKiroServiceConfig(dir);
     // 目录里有凭据和 Key，只给当前用户（服务自己写的文件是 0644，靠目录权限挡住）
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
     if (!cfg) {
-      const findPort = this.opts.findFreePortSync ?? defaultFindFreePortSync;
-      cfg = createServiceConfig(findPort(20000 + crypto.randomInt(0, 20000)));
+      cfg = createServiceConfig(await this.pickFreePort());
       writeKiroServiceConfig(dir, cfg);
     }
     if (!fs.existsSync(kiroCredsPath(dir))) writeFileAtomic(kiroCredsPath(dir), '[]\n', 0o600);
     return cfg;
   }
 
-  /** 把全部（已迁移的）Kiro 账号的 baseUrl 对齐到服务端口 */
+  /** 把全部 Kiro 账号的 baseUrl 对齐到服务端口 */
   private syncBaseUrls(port: number): void {
     const baseUrl = `http://127.0.0.1:${port}`;
     for (const a of this.opts.listKiroAccounts()) {
@@ -274,8 +254,8 @@ export class KiroProxyManager {
     }
   }
 
-  /** 同步换端口：先写 config.json，再改写全部账号的 baseUrl，保证两者一致 */
-  private updatePortSync(cfg: KiroServiceConfig, newPort: number): KiroServiceConfig {
+  /** 换端口：先写 config.json，再改写全部账号的 baseUrl，保证两者一致 */
+  private updatePort(cfg: KiroServiceConfig, newPort: number): KiroServiceConfig {
     const next: KiroServiceConfig = { ...cfg, port: newPort };
     writeKiroServiceConfig(this.dataDir(), next);
     this.syncBaseUrls(newPort);
@@ -286,13 +266,13 @@ export class KiroProxyManager {
     return !!e && !!e.proc && e.proc.exitCode === null && e.proc.signalCode === null && !e.stopping;
   }
 
-  private failedEntry(prev: ProxyEntry | null, bin: string, cfg: KiroServiceConfig | null, error: string): ProxyEntry {
+  private failedEntry(prev: ProxyEntry | null, bin: string, error: string): ProxyEntry {
     return {
       proc: null,
       state: 'failed',
       error,
-      port: cfg?.port ?? prev?.port ?? 0,
-      adminApiKey: cfg?.adminApiKey ?? prev?.adminApiKey ?? '',
+      port: prev?.port ?? 0,
+      adminApiKey: prev?.adminApiKey ?? '',
       startedBin: bin,
       startedAt: this.now(),
       stderrTail: '',
@@ -302,31 +282,71 @@ export class KiroProxyManager {
     };
   }
 
-  /**
-   * 同步确保服务已启动（幂等）。必须同步：它在 claudeEnv 的前置钩子里调用，
-   * 端口变化要在返回前就写进配置与各账号的 cosyee-api.json。
-   * force=true 忽略崩溃退避（用户手动启动 / 管理操作）。
-   */
-  ensure(opts: { force?: boolean } = {}): void {
+  private checkStartable(): string {
     if (!this.opts.engine.isEnabled()) throw new HttpError(409, KIRO_SERVICE_STOPPED);
     const bin = this.opts.engine.binaryPath();
     if (!bin) throw new HttpError(409, KIRO_ENGINE_MISSING);
+    return bin;
+  }
 
+  /**
+   * 给 claudeEnv 的同步钩子用：服务被关了就抛 KIRO_SERVICE_STOPPED；没在跑就后台启动，不等就绪
+   * （服务随 cosyee 启动，通常早已就绪；Claude CLI 遇到连接错误会自己重试）。
+   */
+  kick(): void {
+    this.checkStartable();
+    if (!this.alive(this.entry)) void this.start().catch(() => undefined);
+  }
+
+  /**
+   * 启动服务并等就绪（幂等；并发调用共用同一次启动）。
+   * force=true 忽略崩溃退避（用户手动启动 / 管理操作）。
+   */
+  start(opts: { force?: boolean } = {}): Promise<void> {
+    let bin: string;
+    try {
+      bin = this.checkStartable();
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    const e = this.entry;
+    if (e && e.state === 'ready' && this.alive(e)) return Promise.resolve();
+    if (this.starting) return this.starting;
+    const p = this.doStart(bin, !!opts.force).finally(() => {
+      if (this.starting === p) this.starting = null;
+    });
+    this.starting = p;
+    return p;
+  }
+
+  private async doStart(bin: string, force: boolean): Promise<void> {
     const existing = this.entry;
-    if (this.alive(existing)) return;
-    if (existing && !opts.force && existing.nextAllowedAt > this.now()) return;
-
+    if (this.alive(existing)) return this.waitReady(existing);
+    if (existing && !force && existing.nextAllowedAt > this.now()) {
+      throw new HttpError(502, existing.error ?? 'kiro.rs 服务未运行');
+    }
     let cfg: KiroServiceConfig;
     try {
-      cfg = this.loadConfig();
-      const port = (this.opts.findFreePortSync ?? defaultFindFreePortSync)(cfg.port);
-      if (port !== cfg.port) cfg = this.updatePortSync(cfg, port);
+      cfg = await this.loadConfig();
+      if (!(await this.isPortFree(cfg.port))) cfg = this.updatePort(cfg, await this.pickFreePort());
       else this.syncBaseUrls(cfg.port);
     } catch (e) {
-      this.entry = this.failedEntry(existing, bin, null, `无法准备 kiro.rs 服务配置：${sanitizeKiroError(e)}`);
-      return;
+      this.entry = this.failedEntry(existing, bin, `无法准备 kiro.rs 服务配置：${sanitizeKiroError(e)}`);
+      throw new HttpError(502, this.entry.error!);
     }
+    let entry = this.spawnEntry(bin, cfg, existing);
+    try {
+      await this.waitReady(entry);
+    } catch (err) {
+      // 检查端口和真正监听之间被别人占了：换端口重试一次
+      if (this.entry !== entry || entry.state !== 'failed' || !isAddrInUse(entry.stderrTail)) throw err;
+      cfg = this.updatePort(cfg, await this.pickFreePort());
+      entry = this.spawnEntry(bin, cfg, entry);
+      await this.waitReady(entry);
+    }
+  }
 
+  private spawnEntry(bin: string, cfg: KiroServiceConfig, prev: ProxyEntry | null): ProxyEntry {
     const dir = this.dataDir();
     const entry: ProxyEntry = {
       proc: null,
@@ -338,11 +358,10 @@ export class KiroProxyManager {
       startedAt: this.now(),
       stderrTail: '',
       stopping: false,
-      failures: existing?.failures ?? 0,
-      nextAllowedAt: existing?.nextAllowedAt ?? 0,
+      failures: prev?.failures ?? 0,
+      nextAllowedAt: prev?.nextAllowedAt ?? 0,
     };
     this.entry = entry;
-
     let proc: ChildProcess;
     try {
       proc = (this.opts.spawnProxy ?? defaultSpawnProxy)(
@@ -353,10 +372,9 @@ export class KiroProxyManager {
     } catch (e) {
       entry.state = 'failed';
       entry.error = `无法启动代理进程：${sanitizeKiroError(e)}`;
-      return;
+      return entry;
     }
     entry.proc = proc;
-
     const collect = (buf: Buffer | string): void => {
       entry.stderrTail = (entry.stderrTail + String(buf)).slice(-TAIL_MAX);
     };
@@ -369,7 +387,7 @@ export class KiroProxyManager {
       entry.proc = null;
     });
     proc.on('close', (code, signal) => this.onClose(entry, code, signal));
-    void this.ready().catch(() => undefined);
+    return entry;
   }
 
   private onClose(entry: ProxyEntry, code: number | null, signal: NodeJS.Signals | null): void {
@@ -387,13 +405,11 @@ export class KiroProxyManager {
     entry.failures = lived >= STABLE_RESET_MS ? 1 : entry.failures + 1;
     const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, entry.failures - 1));
     entry.nextAllowedAt = this.now() + delay;
-    // 运行中崩溃：带退避自动拉起，最多 AUTO_RESTART_MAX 次；刚启动就失败（端口占用等）交给 ready() 处理
+    // 运行中崩溃：带退避自动拉起，最多 AUTO_RESTART_MAX 次；刚启动就失败（端口占用等）交给 doStart() 处理
     if (wasReady && entry.failures <= AUTO_RESTART_MAX) {
       const t = setTimeout(() => {
         if (this.entry !== entry || entry.proc || entry.stopping) return;
-        try {
-          this.ensure({ force: true });
-        } catch { /* 状态记在 entry 里 */ }
+        void this.start({ force: true }).catch(() => undefined);
       }, delay);
       t.unref?.();
     }
@@ -411,34 +427,15 @@ export class KiroProxyManager {
     }
   }
 
-  /**
-   * 等服务就绪：用管理密钥调 /api/admin/credentials，确认响应的是自己的进程而不是占用端口的别人。
-   * 没在运行时会先尝试启动；启动时端口被占用则换端口重试一次。
-   */
-  async ready(opts: { force?: boolean } = {}): Promise<void> {
-    if (!this.alive(this.entry)) this.ensure(opts);
+  /** 等这个进程就绪：用管理密钥调 /api/admin/credentials，确认响应的是自己的进程而不是占用端口的别人 */
+  private async waitReady(e: ProxyEntry): Promise<void> {
     const timeout = this.opts.readyTimeoutMs ?? READY_TIMEOUT_MS;
     const poll = this.opts.readyPollMs ?? READY_POLL_MS;
     const deadline = Date.now() + timeout;
-    let portRetried = false;
     for (;;) {
-      const e = this.entry;
-      if (!e) throw new HttpError(502, 'kiro.rs 服务未运行');
+      if (this.entry !== e) throw new HttpError(502, 'kiro.rs 服务已停止');
       if (e.state === 'ready' && this.alive(e)) return;
-      if (e.state === 'failed' || e.state === 'stopped' || !e.proc) {
-        if (e.state === 'failed' && !portRetried && isAddrInUse(e.stderrTail)) {
-          portRetried = true;
-          const cfg = readKiroServiceConfig(this.dataDir());
-          if (cfg) {
-            const newPort = await this.pickFreePort();
-            // 并发的 ready() 只让第一个换端口；别的调用醒来时 entry 已换成新进程，不能再改配置
-            if (this.entry === e) {
-              this.updatePortSync(cfg, newPort);
-              this.ensure({ force: true });
-            }
-            continue;
-          }
-        }
+      if (e.state === 'failed' || e.state === 'stopped' || !this.alive(e)) {
         throw new HttpError(502, e.error ?? 'kiro.rs 服务未运行');
       }
       if (await this.probe(e)) {
@@ -454,8 +451,14 @@ export class KiroProxyManager {
     }
   }
 
+  /** 等服务就绪（没在运行就先启动） */
+  ready(opts: { force?: boolean } = {}): Promise<void> {
+    return this.start(opts);
+  }
+
   /** 停止服务 */
   async stop(): Promise<void> {
+    this.starting = null;
     const entry = this.entry;
     if (!entry) return;
     entry.stopping = true;
@@ -480,11 +483,9 @@ export class KiroProxyManager {
     entry.nextAllowedAt = 0;
   }
 
-  /** 停止服务；sync=true 用于 process.once('exit') 同步强杀 */
-  stopAll(sync: true): void;
-  stopAll(sync?: false): Promise<void>;
-  stopAll(sync = false): void | Promise<void> {
-    if (!sync) return this.stop();
+  /** 同步强杀（process.once('exit') 里用） */
+  killSync(): void {
+    this.starting = null;
     const entry = this.entry;
     if (!entry) return;
     entry.stopping = true;
@@ -504,11 +505,12 @@ export class KiroProxyManager {
     if (!curBin || !this.opts.engine.isEnabled() || !e || !this.alive(e)) return;
     if (e.startedBin === curBin || isBusy()) return;
     await this.stop();
-    if (this.opts.engine.isEnabled()) {
-      try {
-        this.ensure({ force: true });
-      } catch { /* 状态记在 entry 里 */ }
-    }
+    if (this.opts.engine.isEnabled()) await this.start({ force: true }).catch(() => undefined);
+  }
+
+  /** 服务进程是否活着（启动中或已就绪） */
+  isRunning(): boolean {
+    return this.alive(this.entry);
   }
 
   /** 服务是否在用旧版本引擎启动 */
@@ -524,19 +526,6 @@ export class KiroProxyManager {
     const e = this.entry;
     if (!e) return { proxy: 'stopped', error: null };
     return { proxy: e.state, error: e.error };
-  }
-
-  setAccountError(dir: string, message: string | null): void {
-    const k = pathKey(dir);
-    if (message) this.accountErrors.set(k, message);
-    else this.accountErrors.delete(k);
-  }
-
-  /** 某个账号的状态：账号自己有错（迁移失败）时报 failed，否则是服务状态 */
-  stateOf(dir: string): { proxy: AccountKiroInfo['proxy']; error: string | null } {
-    const own = this.accountErrors.get(pathKey(dir));
-    if (own) return { proxy: 'failed', error: own };
-    return this.serviceState();
   }
 
   /** 管理页面地址与管理密钥（只给本机桌面客户端用） */

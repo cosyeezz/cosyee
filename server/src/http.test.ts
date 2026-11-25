@@ -94,14 +94,6 @@ describe('REST', () => {
     expect((await post({ ...next, claude: { model: 'x', effort: 'high' } })).status).toBe(400);
     expect(await get()).toEqual(next);
   });
-  it('agy cli：日志接口已接线；未知子路径 404；写操作带转发头（非本机）403', async () => {
-    const log = await fetch(`${base}/api/agy/cli/log?from=0`, { headers: auth });
-    expect(log.status).toBe(200);
-    expect(await log.json()).toEqual({ lines: [], next: 0 });
-    expect((await fetch(`${base}/api/agy/cli/nope`, { headers: auth })).status).toBe(404);
-    const r = await fetch(`${base}/api/agy/cli/update`, { method: 'POST', headers: { ...auth, 'x-forwarded-for': '100.64.0.9' } });
-    expect(r.status).toBe(403);
-  });
   it('bootstrap', async () => {
     const j = (await (await fetch(`${base}/api/bootstrap`, { headers: auth })).json()) as any;
     expect(j.version).toBe('0.1.0');

@@ -15,7 +15,7 @@ import { nameFromOauth, planLabel, readClaudeJson } from '../account.js';
 import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
-import { type ApiConfig, apiHost, apiInfo, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
+import { type ApiConfig, apiHost, apiInfo, isLegacyKiro, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
 import { ensureLinks, unlinkShared } from './links.js';
 import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
@@ -40,8 +40,8 @@ export interface AccountsDeps {
   onChanged(e: { reset?: string; notify?: 'reload' | 'refresh' }): void;
   /** 测试替换：启动登录进程 */
   spawnLogin?: (env: NodeJS.ProcessEnv) => ChildProcess;
-  /** Kiro 账号代理状态查询（供 list() 下发 AccountKiroInfo） */
-  kiroProxyState?: (dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error'>;
+  /** Kiro 账号的服务与凭据状态（供 list() 下发 AccountKiroInfo） */
+  kiroState?: (id: string, dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error' | 'credential' | 'credentialReason'>;
   /** 移除 Kiro 账号前，把它在内置 kiro.rs 服务里的凭据 / Key / 分组一并删掉（失败只记日志，不阻止移除） */
   removeKiroAccount?: (id: string, dir: string) => Promise<void>;
 }
@@ -408,11 +408,20 @@ export class Accounts {
       };
       // Kiro 账号不下发 api，改下发 kiro；普通 API 账号标题用备注名或主机名
       if (api?.kiro) {
-        const ps = this.deps.kiroProxyState?.(a.dir) ?? { proxy: 'stopped' as const, error: null };
+        const ps = this.deps.kiroState?.(a.id, a.dir) ?? { proxy: 'stopped' as const, error: null, credential: 'unknown' as const };
+        const email = isLegacyKiro(api.kiro) ? null : api.kiro.email ?? null;
         Object.assign(e, {
-          name: a.label || 'Kiro',
+          name: a.label || email || 'Kiro',
           plan: 'Kiro',
-          kiro: { method: api.kiro.method, proxy: ps.proxy, error: ps.error, ...(api.models ? { models: api.models } : {}) },
+          kiro: {
+            method: api.kiro.method,
+            proxy: ps.proxy,
+            error: ps.error,
+            credential: ps.credential,
+            ...(ps.credentialReason ? { credentialReason: ps.credentialReason } : {}),
+            email,
+            ...(api.models ? { models: api.models } : {}),
+          },
         });
       } else if (api) {
         Object.assign(e, { name: a.label || i.name, api: apiInfo(api) });
@@ -592,6 +601,11 @@ export class Accounts {
   /** Kiro 模型映射重新拉取后变了：作废该账号的模型缓存并通知前端刷新 */
   kiroModelsChanged(id: string): void {
     this.deps.onChanged({ reset: id, notify: 'refresh' });
+  }
+
+  /** Kiro 账号的邮箱等显示信息变了：只刷新列表 */
+  kiroInfoChanged(): void {
+    this.deps.onChanged({ notify: 'refresh' });
   }
 
   /** Kiro 登录失败时清理未登记的新目录 */

@@ -121,21 +121,12 @@ pub fn run() {
         local::local_start,
         local::local_stop,
         local::server_latest,
-        local::kiro_status,
-        local::kiro_check,
-        local::kiro_build,
-        local::kiro_log,
-        local::kiro_service,
         local::kiro_admin,
-        local::agy_status,
-        local::agy_check,
-        local::agy_update,
-        local::agy_log,
-        local::agy_restart,
         local::components_status,
         local::component_check,
         local::component_update,
         local::component_auto,
+        local::component_service,
         local::component_log
     ]);
     #[cfg(mobile)]

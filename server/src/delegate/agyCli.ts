@@ -80,18 +80,6 @@ export interface AgyCliOptions {
   onChanged?: () => void;
 }
 
-export interface AgyCliRouteRequest {
-  method: string;
-  pathname: string;
-  query: URLSearchParams;
-  fromLocal: boolean;
-}
-
-export interface AgyCliRouteResponse {
-  status: number;
-  body: unknown;
-}
-
 /** 严格校验版本号形如 x.y.z */
 export function isStrictSemver(v: string): boolean {
   return STRICT_SEMVER_RE.test(v);
@@ -667,62 +655,4 @@ export class AgyCli {
       this.jobTimer = null;
     }
   }
-}
-
-/** 独立路由处理器，供 http.ts 接线；未命中返回 null */
-export async function agyCliRoutes(
-  cli: AgyCli,
-  req: AgyCliRouteRequest,
-): Promise<AgyCliRouteResponse | null> {
-  const { method, pathname, query, fromLocal } = req;
-  if (pathname !== '/api/agy/cli' && !pathname.startsWith('/api/agy/cli/')) return null;
-
-  if (method === 'GET' && pathname === '/api/agy/cli') {
-    return { status: 200, body: await cli.status() };
-  }
-
-  if (method === 'GET' && pathname === '/api/agy/cli/log') {
-    const rawFrom = query.get('from');
-    let from = 0;
-    if (rawFrom !== null && rawFrom !== '') {
-      if (!/^\d+$/.test(rawFrom)) {
-        return { status: 400, body: { error: 'from 参数必须为非负整数' } };
-      }
-      const n = Number(rawFrom);
-      if (!Number.isSafeInteger(n)) {
-        return { status: 400, body: { error: 'from 参数超出范围' } };
-      }
-      from = n;
-    }
-    return { status: 200, body: cli.log(from) };
-  }
-
-  if (method === 'POST' && pathname === '/api/agy/cli/check') {
-    if (!fromLocal) return { status: 403, body: { error: '该操作仅允许本机连接' } };
-    return { status: 200, body: await cli.check() };
-  }
-
-  if (method === 'POST' && pathname === '/api/agy/cli/update') {
-    if (!fromLocal) return { status: 403, body: { error: '该操作仅允许本机连接' } };
-    try {
-      return { status: 200, body: await cli.update() };
-    } catch (e) {
-      if (e instanceof HttpError) return { status: e.status, body: { error: e.message } };
-      throw e;
-    }
-  }
-
-  if (method === 'POST' && pathname === '/api/agy/cli/restart') {
-    if (!fromLocal) return { status: 403, body: { error: '该操作仅允许本机连接' } };
-    const force = query.get('force') === '1' || query.get('force') === 'true';
-    try {
-      return { status: 200, body: await cli.restart({ force }) };
-    } catch (e) {
-      if (e instanceof RunningError) return { status: e.status, body: { error: e.message, running: e.running } };
-      if (e instanceof HttpError) return { status: e.status, body: { error: e.message } };
-      throw e;
-    }
-  }
-
-  return null;
 }

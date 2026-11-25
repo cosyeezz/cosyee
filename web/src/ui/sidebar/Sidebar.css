@@ -1012,6 +1012,7 @@
 .cz-kiro-eng__acts { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .cz-kiro-eng__badge { color: var(--warn); font-weight: 500; }
 .cz-kiro-eng__step { margin-left: auto; color: var(--accent); overflow-wrap: anywhere; }
+.cz-kiro-eng__step.is-warn { color: var(--warn); }
 .cz-kiro-eng__err { color: var(--danger); overflow-wrap: anywhere; }
 /* Kiro 添加 / 重新登录对话框：登录方式列表、共享令牌警告、设备码展示 */
 .cz-kiro-methods { display: flex; flex-direction: column; gap: 6px; }
@@ -1124,6 +1125,12 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* 问题标签：Kiro 额度用完 / 已停用（选中时也保持红色） */
+.cz-acct-chip.is-danger, .cz-acct-pick.is-active .cz-acct-chip.is-danger, .cz-acct-card.is-active .cz-acct-chip.is-danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-shadow: none;
 }
 /* 最近额度一行「5h ━━━ 94%」：名称、进度条、百分比三列，和名字左端对齐 */
 .cz-acctq-brief { grid-column: 1 / -1; min-width: 0; font-size: 10.5px; line-height: 1.25; color: var(--text-3); }

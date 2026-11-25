@@ -15,6 +15,8 @@ export interface KiroAccountMeta {
   method: KiroLoginMethod;
   credentialId: number;
   keyId: number;
+  /** 凭据的登录邮箱（kiro.rs 查额度时拿到的，只用于显示）；读不到就没有 */
+  email?: string;
 }
 
 /** 旧格式：每个账号一个独立的 kiro.rs 进程（端口记在这里）。迁移到内置服务前仍然算 Kiro 账号 */
@@ -39,13 +41,23 @@ export interface ApiConfig {
   kiro?: KiroAccountMeta | KiroLegacyMeta;
 }
 
+/** 邮箱只用于显示：去空白、不含控制字符、限长；不合格返回 null */
+export function cleanKiroEmail(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t && t.length <= 200 && !/[\s\x00-\x1f\x7f]/.test(t) ? t : null;
+}
+
 function parseKiroMeta(v: unknown): KiroAccountMeta | KiroLegacyMeta | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (typeof o.method !== 'string' || !KIRO_METHODS.has(o.method)) return null;
   const method = o.method as KiroLoginMethod;
   const isId = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
-  if (isId(o.credentialId) && isId(o.keyId)) return { method, credentialId: o.credentialId, keyId: o.keyId };
+  if (isId(o.credentialId) && isId(o.keyId)) {
+    const email = cleanKiroEmail(o.email);
+    return { method, credentialId: o.credentialId, keyId: o.keyId, ...(email ? { email } : {}) };
+  }
   if (typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535) {
     return { method, legacyPort: o.port };
   }
@@ -216,6 +228,20 @@ export function applyApiEnv(env: NodeJS.ProcessEnv, cfg: ApiConfig): void {
   }
   if (m.subagent) env.CLAUDE_CODE_SUBAGENT_MODEL = m.subagent;
   if (m.fallback) env.ANTHROPIC_DEFAULT_MODEL = m.fallback;
+}
+
+/**
+ * 同一组 API 变量，写进 claude 的 --settings env 用：本账号用到的给值，其余一律置空。
+ * settings.json（账号目录里是指向 ~/.claude 的共享链接）的 env 会覆盖进程环境，
+ * 里面若配了 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 等，API / Kiro 账号的请求就会发错地方；
+ * 只有命令行 --settings 的优先级比它高。含密钥，只能写进私有文件，不能直接放命令行。
+ */
+export function apiSettingsEnv(cfg: ApiConfig): Record<string, string> {
+  const env: NodeJS.ProcessEnv = {};
+  applyApiEnv(env, cfg);
+  const out: Record<string, string> = {};
+  for (const k of API_ENV_KEYS) out[k] = env[k] ?? '';
+  return out;
 }
 
 /** 校验并规范 Base URL：空 = 官方；只允许 http / https；去掉末尾的斜杠。不合法返回 null */

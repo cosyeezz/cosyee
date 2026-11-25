@@ -4,7 +4,7 @@
 // 状态和接口调用都在 AccountMenu 里，这里只负责展示和回调；kiro.rs 引擎状态自己读。
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, AgyAccountList, KiroStatus } from '@cosyee/shared';
+import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, AgyAccountList, ComponentStatus } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
@@ -14,7 +14,7 @@ import { ConfirmActionButton } from './ActionButtons';
 import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
 import {
   agyRemoveBlock, agyTitle, apiHost, apiMapNote, claudeKind, claudeRemoveBlock, claudeUsable,
-  DuplicateNote, entryTitle, msg, PlanChip, planChip, type ClaudeKind,
+  DuplicateNote, entryTitle, IssueChip, kiroIssue, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { useDismiss } from './useDismiss';
 import { useFocusTrap } from './useFocusTrap';
@@ -110,6 +110,8 @@ function RenameField({ initial, onSave, onCancel }: { initial: string; onSave: (
 interface CardProps {
   title: string;
   plan?: string | null;
+  /** 红色问题标签（Kiro 额度用完 / 已停用） */
+  issue?: string | null;
   sub?: string;
   active: boolean;
   /** 不能直接使用（没登录 / 登录已失效） */
@@ -122,7 +124,7 @@ interface CardProps {
   children: ReactNode;
 }
 
-function Card({ title, plan, sub, active, off, badge, meta, quota, editing, children }: CardProps) {
+function Card({ title, plan, issue, sub, active, off, badge, meta, quota, editing, children }: CardProps) {
   return (
     <div className={`cz-acct-card${active ? ' is-active' : ''}${off ? ' is-off' : ''}`} aria-current={active ? 'true' : undefined}>
       <div className="cz-acct-card__top">
@@ -131,6 +133,7 @@ function Card({ title, plan, sub, active, off, badge, meta, quota, editing, chil
             <div className="cz-acct-card__name">
               <b title={title}>{title}</b>
               <PlanChip plan={plan} />
+              <IssueChip text={issue} />
             </div>
             {sub && <div className="cz-acct-card__sub" title={sub}>{sub}</div>}
           </div>
@@ -146,30 +149,38 @@ function Card({ title, plan, sub, active, off, badge, meta, quota, editing, chil
 
 const shortCommit = (c: string) => (/^[0-9a-f]{40}$/i.test(c) ? c.slice(0, 7) : c);
 
-/** kiro.rs 引擎：版本、已停止、有更新 / 更新 / 检查更新；更新进行中每秒读一次状态 */
+const SERVICE_TEXT: Record<NonNullable<ComponentStatus['service']>['state'], string> = {
+  stopped: '已停止',
+  starting: '启动中',
+  ready: '运行中',
+  failed: '启动失败',
+};
+
+/** kiro.rs 组件的一行状态：版本 · 服务状态 · 可用账号数；没装时给「安装」按钮，安装中每秒读一次状态。更新、启停在桌面客户端的组件页 */
 function KiroEngineNote({ version }: { version: number }) {
-  const [status, setStatus] = useState<KiroStatus | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [building, setBuilding] = useState(false);
+  const [comp, setComp] = useState<ComponentStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
+  const load = () => api.components().then((l) => l.list.find((c) => c.id === 'kiro') ?? null);
+
   useEffect(() => {
     let alive = true;
-    api.kiroStatus().then((s) => alive && setStatus(s), () => {});
+    load().then((c) => alive && setComp(c), () => {});
     return () => { alive = false; };
   }, [version]);
 
-  const running = status?.engine.build.state === 'running';
+  const running = comp?.job?.state === 'running';
   useEffect(() => {
     if (!running) return;
     let alive = true;
     const t = window.setTimeout(() => {
-      api.kiroStatus().then(
-        (next) => {
+      load().then(
+        (c) => {
           if (!alive) return;
-          setStatus(next);
-          if (next.engine.build.state === 'running') setTick((n) => n + 1);
+          setComp(c);
+          if (c?.job?.state === 'running') setTick((n) => n + 1);
         },
         () => alive && setTick((n) => n + 1),
       );
@@ -180,56 +191,52 @@ function KiroEngineNote({ version }: { version: number }) {
     };
   }, [running, tick]);
 
-  const run = async (call: () => Promise<KiroStatus>, setBusy: (b: boolean) => void) => {
-    setBusy(true);
+  const install = async () => {
+    setInstalling(true);
     setErr(null);
     try {
-      setStatus(await call());
+      setComp(await api.updateComponent('kiro'));
     } catch (e) {
       setErr(msg(e));
     } finally {
-      setBusy(false);
+      setInstalling(false);
     }
   };
 
-  const commit = status?.engine.current?.commit;
+  if (!comp) return null;
+  const svc = comp.service;
+  const parts: string[] = [];
+  if (svc) {
+    parts.push(svc.state === 'stopped' && !svc.enabled ? '已手动停止' : SERVICE_TEXT[svc.state]);
+    if (svc.state === 'ready' && svc.accounts.total > 0) parts.push(`${svc.accounts.usable}/${svc.accounts.total} 账号可用`);
+    if (svc.outdated) parts.push('重启后用新版');
+  }
+  const short = svc && svc.state === 'ready' && svc.accounts.usable < svc.accounts.total;
   return (
     <div className="cz-acct-mgr__note cz-kiro-eng">
       <div className="cz-kiro-eng__line">
-        <span className="cz-kiro-eng__ver">kiro.rs 引擎{commit ? ` ${shortCommit(commit)}` : ''}</span>
-        {status && !status.service.enabled && <span className="cz-kiro-eng__badge">已停止</span>}
-        {running ? (
-          <span className="cz-kiro-eng__step" role="status">{status.engine.build.step ?? '正在更新…'}</span>
+        <span className="cz-kiro-eng__ver">kiro.rs{comp.version ? ` ${shortCommit(comp.version)}` : ''}</span>
+        {!comp.installed ? (
+          running ? (
+            <span className="cz-kiro-eng__step" role="status">正在安装…</span>
+          ) : (
+            <span className="cz-kiro-eng__acts">
+              <span className="cz-kiro-eng__badge">未安装</span>
+              <button type="button" className="cz-acct-mgr__btn is-primary" disabled={installing} onClick={() => void install()}>
+                {installing ? '安装中…' : '安装'}
+              </button>
+            </span>
+          )
         ) : (
-          <span className="cz-kiro-eng__acts">
-            {status?.engine.updateAvailable && (
-              <>
-                <span className="cz-kiro-eng__badge" title={status.engine.latest?.title ?? undefined}>有更新</span>
-                <button
-                  type="button"
-                  className="cz-acct-mgr__btn is-primary"
-                  disabled={building || checking}
-                  onClick={() => void run(api.kiroBuild, setBuilding)}
-                >
-                  {building ? '下载中…' : '更新'}
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              className="cz-acct-mgr__btn"
-              disabled={checking || building}
-              onClick={() => void run(api.kiroCheck, setChecking)}
-            >
-              {checking ? '检查中…' : '检查更新'}
-            </button>
-          </span>
+          parts.length > 0 && (
+            <span className={`cz-kiro-eng__step${short ? ' is-warn' : ''}`} role="status" title={svc?.error ?? undefined}>
+              {parts.join(' · ')}
+            </span>
+          )
         )}
       </div>
-      {status && status.service.outdated > 0 && <div className="cz-kiro-eng__note">kiro.rs 服务重启后用新版</div>}
-      {status?.engine.build.state === 'failed' && status.engine.build.error && (
-        <div className="cz-kiro-eng__err" role="alert">{status.engine.build.error}</div>
-      )}
+      {svc?.state === 'failed' && svc.error && <div className="cz-kiro-eng__err" role="alert">{svc.error}</div>}
+      {comp.job?.state === 'failed' && comp.job.error && <div className="cz-kiro-eng__err" role="alert">{comp.job.error}</div>}
       {err && <div className="cz-kiro-eng__err" role="alert">{err}</div>}
     </div>
   );
@@ -256,6 +263,7 @@ export function AccountManager(p: AccountManagerProps) {
     const sub = [
       a.label && a.label !== title ? a.label : null,
       a.api && apiHost(a.api.baseUrl) !== title ? apiHost(a.api.baseUrl) : null,
+      a.kiro?.email && a.kiro.email !== title ? a.kiro.email : null,
     ].filter(Boolean).join(' · ');
     const subEst = kind === 'claude' && a.loggedIn && a.plan ? subscriptionEstimate(a.subscribedAt, now) : null;
     const exp = kind === 'claude' && a.loggedIn ? loginExpiry(a.loginExpiresAt, now) : null;
@@ -282,6 +290,7 @@ export function AccountManager(p: AccountManagerProps) {
         key={a.id}
         title={title}
         plan={kind === 'kiro' && planChip(a.plan)?.toLowerCase() === 'kiro' ? null : a.plan}
+        issue={kiroIssue(a)}
         sub={sub}
         active={a.active}
         off={!usable}

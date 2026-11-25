@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +7,7 @@ import { BUILTIN_AGENTS } from './delegate/agents.js';
 import type { DelegateBackend } from './delegate/backend.js';
 import { CosyeeMcp, DELEGATE_TOOL_NAMES } from './delegate/mcp.js';
 import { DelegateJobs } from './delegate/jobs.js';
+import { removePrivateSettings, writePrivateSettings } from './claude/bin.js';
 import { DELEGATE_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, isDenied, validateConfig } from './claude/runner.js';
 
 type Json = Record<string, any>;
@@ -71,6 +73,24 @@ const result = { type: 'result', subtype: 'success' };
 
 afterEach(() => vi.useRealTimers());
 
+describe('writePrivateSettings', () => {
+  it.skipIf(process.platform === 'win32')('目录 0700、文件 0600，用完删掉', () => {
+    const home = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'cosyee-run-'));
+    vi.stubEnv('COSYEE_HOME', home);
+    try {
+      const f = writePrivateSettings('t', { env: { ANTHROPIC_API_KEY: 'sk-x' } });
+      expect(fs.statSync(path.dirname(f)).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(f).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(f, 'utf8'))).toEqual({ env: { ANTHROPIC_API_KEY: 'sk-x' } });
+      removePrivateSettings(f);
+      expect(fs.existsSync(f)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('buildArgs / validateConfig', () => {
   it('新会话用 --session-id，恢复用 --resume', () => {
     const a = buildArgs('sid', true, { model: 'haiku', effort: 'low' });
@@ -85,6 +105,18 @@ describe('buildArgs / validateConfig', () => {
     expect(a).not.toContain('--settings');
     const c = buildArgs('sid', true, { model: 'haiku', effort: 'low', ultracode: true }, { skillOverrides: { pdf: 'off' } });
     expect(JSON.parse(c[c.indexOf('--settings') + 1]!)).toEqual({ skillOverrides: { pdf: 'off' }, ultracode: true });
+  });
+  it('给了 settingsFile 时 --settings 传文件路径而不是 JSON（含密钥的 env 不上命令行）', () => {
+    let got: Record<string, unknown> | null = null;
+    const a = buildArgs('sid', true, { model: 'haiku', effort: 'low' }, { env: { ANTHROPIC_API_KEY: 'sk-secret' } }, {
+      settingsFile: (st) => {
+        got = st;
+        return '/tmp/private.json';
+      },
+    });
+    expect(a[a.indexOf('--settings') + 1]).toBe('/tmp/private.json');
+    expect(a.join(' ')).not.toContain('sk-secret');
+    expect(got).toEqual({ env: { ANTHROPIC_API_KEY: 'sk-secret' } });
   });
   it('新建与恢复、任意模型都只追加路径引用约定；没有委派就不加分工提示', () => {
     for (const isNew of [true, false]) {

@@ -105,9 +105,6 @@ describe('KiroEngine（预编译包）', () => {
     expect(st.checkedAt).toBe(12345);
     expect(st.source).toBe('none');
     expect(st.updateAvailable).toBe(false);
-    expect(st.missingTools).toEqual([]);
-    expect(st.adminUi).toBe(true);
-    expect(st.adminUiError).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.headers.get('user-agent')).toBe('cosyee');
     expect(calls[0]!.headers.get('accept')).toBe('application/vnd.github+json');
@@ -294,7 +291,6 @@ describe('KiroEngine（预编译包）', () => {
     const st = engine.status();
     expect(st.source).toBe('env');
     expect(st.current).toBeNull();
-    expect(st.adminUi).toBe(true);
     // 环境变量指向不存在的文件时回落到 managed
     env = { COSYEE_KIRO_RS: path.join(home, 'missing') };
     expect(engine.status().source).toBe('managed');

@@ -8,7 +8,6 @@ import {
   INSTALL_PS1_URL,
   INSTALL_SH_URL,
   MANIFEST_BASE_URL,
-  agyCliRoutes,
   compareSemver,
   isStrictSemver,
   manifestPlatform,
@@ -411,7 +410,7 @@ describe('log() 游标、截断、ANSI 与脱敏', () => {
   });
 });
 
-describe('restart() 与路由处理器 agyCliRoutes', () => {
+describe('restart()', () => {
   it('restart 空闲回收、忙碌 409 RunningError、force 强制终止', async () => {
     const fp = fakePool({ processes: 2, running: 2 });
     const { cli } = makeCli({ pool: fp.pool });
@@ -423,50 +422,5 @@ describe('restart() 与路由处理器 agyCliRoutes', () => {
     expect(forced.processes).toBe(0);
     expect(forced.busy).toBe(0);
     expect(fp.stopAll).toHaveBeenCalledWith(true);
-  });
-
-  it('agyCliRoutes 覆盖全部路由、fromLocal 403、from 参数校验、409 与未命中返回 null', async () => {
-    const fp = fakePool({ processes: 1, running: 1 });
-    const { cli } = makeCli({ pool: fp.pool });
-    const q = (s = '') => new URLSearchParams(s);
-
-    // 未命中
-    expect(await agyCliRoutes(cli, { method: 'GET', pathname: '/api/other', query: q(), fromLocal: true })).toBeNull();
-    expect(await agyCliRoutes(cli, { method: 'DELETE', pathname: '/api/agy/cli', query: q(), fromLocal: true })).toBeNull();
-
-    // GET /api/agy/cli
-    const rStatus = await agyCliRoutes(cli, { method: 'GET', pathname: '/api/agy/cli', query: q(), fromLocal: false });
-    expect(rStatus?.status).toBe(200);
-
-    // GET /api/agy/cli/log 参数校验
-    expect((await agyCliRoutes(cli, { method: 'GET', pathname: '/api/agy/cli/log', query: q('from=0'), fromLocal: false }))?.status).toBe(200);
-    expect((await agyCliRoutes(cli, { method: 'GET', pathname: '/api/agy/cli/log', query: q('from=-1'), fromLocal: true }))?.status).toBe(400);
-    expect((await agyCliRoutes(cli, { method: 'GET', pathname: '/api/agy/cli/log', query: q('from=abc'), fromLocal: true }))?.status).toBe(400);
-    expect((await agyCliRoutes(cli, { method: 'GET', pathname: '/api/agy/cli/log', query: q('from=1.5'), fromLocal: true }))?.status).toBe(400);
-
-    // 所有 POST 要求 fromLocal
-    for (const p of ['/api/agy/cli/check', '/api/agy/cli/update', '/api/agy/cli/restart']) {
-      const r = await agyCliRoutes(cli, { method: 'POST', pathname: p, query: q(), fromLocal: false });
-      expect(r?.status).toBe(403);
-    }
-
-    // POST /api/agy/cli/check
-    const rCheck = await agyCliRoutes(cli, { method: 'POST', pathname: '/api/agy/cli/check', query: q(), fromLocal: true });
-    expect(rCheck?.status).toBe(200);
-
-    // POST /api/agy/cli/restart 无 force -> 409 { error, running }
-    const rRestart409 = await agyCliRoutes(cli, { method: 'POST', pathname: '/api/agy/cli/restart', query: q(), fromLocal: true });
-    expect(rRestart409?.status).toBe(409);
-    expect(rRestart409?.body).toMatchObject({ running: 1 });
-
-    // POST /api/agy/cli/restart?force=1 -> 200
-    const rRestartOk = await agyCliRoutes(cli, { method: 'POST', pathname: '/api/agy/cli/restart', query: q('force=1'), fromLocal: true });
-    expect(rRestartOk?.status).toBe(200);
-    expect((rRestartOk?.body as any).processes).toBe(0);
-
-    // POST /api/agy/cli/update
-    const rUpd = await agyCliRoutes(cli, { method: 'POST', pathname: '/api/agy/cli/update', query: q(), fromLocal: true });
-    expect(rUpd?.status).toBe(200);
-    await cli.waitForJob();
   });
 });
