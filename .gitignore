@@ -14,6 +14,11 @@ client/app-icon.png
 # 含真实账号信息（邮箱、账号/组织 uuid），不入库
 spike/sanitize.mjs
 
+# 本地调试产物（探测脚本与日志、截图、e2e 脚本）：可能含账号信息，不入库。spike/ 里已入库的旧文件不受影响
+spike/
+.shots/
+.impeccable/
+
 # 系统 / 编辑器
 .DS_Store
 Thumbs.db
