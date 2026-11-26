@@ -73,6 +73,7 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
           );
         })}
       </div>
+      <div className="cz-sidebar__mode-note">只对主代理生效</div>
       {confirm !== null && (
         <div className="cz-sidebar__acct-confirm" role="alert">
           <div className="cz-sidebar__confirm-text">

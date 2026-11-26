@@ -3,20 +3,23 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import type {
-  AgentModelConfig,
-  AppliedSettings,
-  AskQuestion,
-  CosyeeUserEvent,
-  PendingPrompt,
-  PermissionMode,
-  PromptReply,
-  QueueItem,
-  QueueMode,
-  RunStatus,
-  SessionConfig,
-  StopKind,
+import {
+  DEFAULT_SUBAGENTS,
+  type AppliedSettings,
+  type AskQuestion,
+  type CosyeeUserEvent,
+  type PendingPrompt,
+  type PermissionMode,
+  type PromptReply,
+  type QueueItem,
+  type QueueMode,
+  type RunStatus,
+  type SessionConfig,
+  type StopKind,
+  type SubagentConfig,
+  type SubagentKind,
 } from '@cosyee/shared';
+import { DEFAULT_ID } from '../accounts/index.js';
 import { LineSplitter, parseLine } from '../transcript.js';
 import { classifyStop, type RateLimitHint } from '../stops.js';
 import { agentParamsEvent, CosyeeMcp, DELEGATE_TOOL_NAME, DELEGATE_TOOL_NAMES, MCP_SERVER } from '../delegate/mcp.js';
@@ -96,22 +99,21 @@ export interface RunnerInit {
   expandText?: (text: string) => string;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
-  /** 测试用：委派后端。不传 = sharedAgyBackend()；null = 禁用 delegate */
-  delegateBackend?: DelegateBackend | null;
+  /** 委派后端集合（按类型动态选用）；不传则只挂默认 agy 单例 */
+  delegateBackends?: Partial<Record<'claude' | 'agy', DelegateBackend | null>>;
   /** 已关闭的智能体名，每次调用时读取 */
   disabledAgents?: () => readonly string[];
-  /** 原生子代理开关，每次调用时读取；不传 = 开 */
-  nativeAgents?: () => boolean;
-  /** 子代理的默认模型 / 强度，每次调用时读取（改设置立即生效）；不传 = 不介入 */
+  /** 子代理配置，每次调用时读取（改设置立即生效）；不传 = 默认（native） */
+  subagents?: () => SubagentConfig;
+  /** 原生子代理的默认模型 / 强度，每次调用时读取（改设置立即生效）；不传 = 不介入 */
   agentDefaults?: () => AgentDefaults | null;
-  /** 委派任务（Antigravity）的后台任务表：由 manager 按会话持有，进程回收 / 重启后任务继续跑。不传 = runner 自建一个（测试） */
+  /** 委派任务的后台任务表：由 manager 按会话持有，进程回收 / 重启后任务继续跑。不传 = runner 自建一个（测试） */
   delegateJobs?: DelegateJobs;
 }
 
 export interface AgentDefaults {
-  /** 没给的字段不补 */
-  claude: { model?: string; effort?: string };
-  agy: AgentModelConfig['agy'];
+  /** 原生 Agent 工具：没给的字段不补 */
+  native: { model?: string; effort?: string };
 }
 
 /** 注册给 CLI 的 PreToolUse hook 的回调 id */
@@ -193,9 +195,14 @@ export function buildArgs(
   isNew: boolean,
   config: SessionConfig,
   extraSettings: Record<string, unknown> = {},
-  /** settingsFile：settings 含密钥时把它写进私有文件，返回路径代替命令行里的 JSON */
-  opts: { delegate?: boolean; settingsFile?: (settings: Record<string, unknown>) => string } = {},
+  /**
+   * delegate：是否注册 cosyee MCP；
+   * delegatePrompt：是否在系统提示词追加委派使用约定（缺省跟随 delegate；--append-system-prompt 只能在启动时定，运行中切换子代理类型不会动态改它）；
+   * settingsFile：settings 含密钥时把它写进私有文件，返回路径代替命令行里的 JSON
+   */
+  opts: { delegate?: boolean; delegatePrompt?: boolean; settingsFile?: (settings: Record<string, unknown>) => string } = {},
 ): string[] {
+  const withPrompt = opts.delegatePrompt ?? opts.delegate;
   const args = [
     '-p',
     '--input-format', 'stream-json',
@@ -215,7 +222,7 @@ export function buildArgs(
     '--model', config.model,
     '--effort', config.effort,
     // 每次启动都要带：--resume 不会沿用上次进程的追加提示词
-    '--append-system-prompt', opts.delegate ? `${PATH_PROMPT} ${DELEGATE_PROMPT}` : PATH_PROMPT,
+    '--append-system-prompt', withPrompt ? `${PATH_PROMPT} ${DELEGATE_PROMPT}` : PATH_PROMPT,
   ];
   if (opts.delegate) args.push('--mcp-config', JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: 'sdk', name: MCP_SERVER } } }));
   const settings: Record<string, unknown> = { ...extraSettings };
@@ -294,9 +301,9 @@ export class Runner {
     this.probeMode = !!init.probe;
     this.timings = { ...DEFAULT_TIMINGS, ...init.timings };
     this.claudePath = init.claudePath ?? resolveClaude();
-    this.backendOverride = init.delegateBackend;
+    this.backends = init.delegateBackends ?? { agy: sharedAgyBackend() };
     this.disabledAgents = init.disabledAgents;
-    this.nativeAgents = init.nativeAgents;
+    this.subagents = init.subagents;
     this.control = new ControlTracker((o) => this.writeLine(o), `cosyee-${this.sessionId.slice(0, 8)}`, this.timings.requestTimeoutMs);
     this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings };
     this.expandText = init.expandText;
@@ -314,14 +321,14 @@ export class Runner {
    */
   private injected = new Set<string>();
 
-  /** delegate 的进程内 MCP 服务（start 时按后端是否可用创建） */
+  /** delegate 的进程内 MCP 服务（只要有任意可用委派后端且 delegate 未被停用就在启动时注册，以便运行中切换立即生效） */
   private mcp: CosyeeMcp | null = null;
-  /** 本进程用的委派后端；进程活着期间 hold 住它的热进程，退出时释放 */
+  /** 当前被 hold 住热进程的委派后端（目前仅 agy 实现 hold） */
   private delegateBackendInUse: DelegateBackend | null = null;
   private releaseDelegateHold: (() => void) | null = null;
-  private readonly backendOverride: DelegateBackend | null | undefined;
+  private readonly backends: Partial<Record<'claude' | 'agy', DelegateBackend | null>>;
   private readonly disabledAgents?: () => readonly string[];
-  private readonly nativeAgents?: () => boolean;
+  private readonly subagents?: () => SubagentConfig;
   private readonly expandText?: (text: string) => string;
   private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown> };
   /** API / Kiro 账号这次启动用的私有 settings 文件（含密钥），进程退出后删掉 */
@@ -345,13 +352,54 @@ export class Runner {
     return { status: this._status, events: this.buffer.slice() };
   }
 
+  private backendFor(kind: string): DelegateBackend | null {
+    if (kind === 'claude') return this.backends.claude ?? null;
+    if (kind === 'agy') return this.backends.agy ?? null;
+    return null;
+  }
+
+  private anyAvailableBackend(): DelegateBackend | null {
+    if (this.backends.claude?.available()) return this.backends.claude;
+    if (this.backends.agy?.available()) return this.backends.agy;
+    return null;
+  }
+
+  /** 按当前子代理配置与后端可用性算实际生效的类型；delegate 被手动停用或选中后端不可用时退回 native */
+  effectiveSubagent(baseDeny?: readonly string[]): SubagentKind {
+    const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
+    if (cfg.kind === 'native') return 'native';
+    if (baseDeny?.includes(DELEGATE_TOOL_NAME)) return 'native';
+    return this.backendFor(cfg.kind)?.available() ? cfg.kind : 'native';
+  }
+
   /**
-   * 给 permissions.deny 名单补上原生子代理开关：关掉、且本进程有委派可用（delegate 没被停用）时加上整个 Agent。
-   * 没有可用委派时开关不生效，免得两头都没有。
+   * 按当前子代理类型补齐 permissions.deny（三种类型互斥）：
+   * - 本进程没注册 cosyee MCP（无可用委派后端或启动时 delegate 已停用）：不动 base；
+   * - effective === 'native'：放行原生 Agent，把 delegate 系列工具（mcp__cosyee__*）全部加进 deny；
+   * - effective === 'claude' / 'agy'：放行 delegate 系列工具，把整个 Agent 加进 deny（CLI 会自动恢复 WebFetch）。
    */
-  withNativeDeny(base: readonly string[]): string[] {
-    const off = !!this.mcp && this.nativeAgents?.() === false && !base.includes(DELEGATE_TOOL_NAME) && !base.includes(NATIVE_AGENT_TOOL);
-    return off ? [...base, NATIVE_AGENT_TOOL] : [...base];
+  withSubagentDeny(base: readonly string[]): string[] {
+    if (!this.mcp) return [...base];
+    const eff = this.effectiveSubagent(base);
+    if (eff === 'native') {
+      const out = [...base];
+      for (const name of DELEGATE_TOOL_NAMES) {
+        if (!out.includes(name)) out.push(name);
+      }
+      return out;
+    }
+    return base.includes(NATIVE_AGENT_TOOL) ? [...base] : [...base, NATIVE_AGENT_TOOL];
+  }
+
+  /** 按当前生效的委派后端同步热进程保活（切到 agy 时 hold，切走时释放） */
+  syncDelegateHold(baseDeny?: readonly string[]): void {
+    const eff = this.mcp ? this.effectiveSubagent(baseDeny) : 'native';
+    const want = eff === 'native' ? null : this.backendFor(eff);
+    if (want === this.delegateBackendInUse) return;
+    this.releaseDelegateHold?.();
+    this.releaseDelegateHold = null;
+    this.delegateBackendInUse = want;
+    if (want?.hold) this.releaseDelegateHold = want.hold(this.cwd);
   }
 
   // ───────────── 启动 ─────────────
@@ -368,14 +416,11 @@ export class Runner {
     // 先构造环境变量（Kiro 账号会在这里检查总开关并确保代理启动），若抛错避免泄漏 mcp / delegate hold
     const env = claudeEnv(this.accountDir);
     const flags = this.initArgs.flagSettings?.() ?? {};
-    // 用户在工具面板里停用了 delegate：不注册 cosyee MCP，也不追加它的使用约定
-    const backend = isDenied(flags, DELEGATE_TOOL_NAME)
-      ? null
-      : this.backendOverride === undefined
-        ? sharedAgyBackend()
-        : this.backendOverride;
+    // 只要有任何可用的委派后端、且用户没在工具面板停用 delegate，就注册 cosyee MCP，
+    // 这样运行中在 native / claude / agy 之间切换时，经 permissions.deny 与 ctx() 即可立即生效。
+    const anyBackend = isDenied(flags, DELEGATE_TOOL_NAME) ? null : this.anyAvailableBackend();
     let mcp: CosyeeMcp | null = null;
-    if (backend?.available()) {
+    if (anyBackend) {
       const configDir = this.accountDir ?? baseClaudeHome();
       const scope = () => ({ configDir, cwd: this.cwd, disabled: this.disabledAgents?.() ?? [] });
       const agents = listAgents(scope());
@@ -384,23 +429,37 @@ export class Runner {
       mcp = new CosyeeMcp({
         jobs,
         agents,
-        ctx: () => ({
-          cwd: this.cwd,
-          backend,
-          defaults: this.agentDefaults?.()?.agy ?? null,
-          agents: scope(),
-          readOnly: (this.applied.permissionMode ?? 'auto') === 'plan',
-        }),
+        ctx: () => {
+          const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
+          const eff = this.effectiveSubagent();
+          const backend = (eff !== 'native' ? this.backendFor(eff) : null) ?? this.anyAvailableBackend() ?? anyBackend;
+          const defaults =
+            backend.id === 'claude'
+              ? {
+                  model: cfg.claude.model,
+                  effort: cfg.claude.effort,
+                  parentModel: this.applied.model,
+                  parentEffort: this.applied.effort,
+                }
+              : cfg.agy;
+          return {
+            cwd: this.cwd,
+            backend,
+            backendFor: (id) => this.backendFor(id),
+            defaults,
+            account: { id: this.accountId ?? DEFAULT_ID, dir: this.accountDir ?? null },
+            agents: scope(),
+            readOnly: (this.applied.permissionMode ?? 'auto') === 'plan',
+          };
+        },
       });
     }
     this.mcp = mcp;
-    this.releaseDelegateHold?.();
-    this.releaseDelegateHold = null;
-    this.delegateBackendInUse = mcp ? backend : null;
-    if (mcp && backend?.hold) this.releaseDelegateHold = backend.hold(this.cwd);
     const delegate = !!this.mcp;
     const perms = (flags.permissions ?? {}) as { deny?: string[] };
-    const deny = this.withNativeDeny(perms.deny ?? []);
+    const baseDeny = perms.deny ?? [];
+    this.syncDelegateHold(baseDeny);
+    const deny = this.withSubagentDeny(baseDeny);
     const withDeny = deny.length ? { ...flags, permissions: { ...perms, deny } } : flags;
     // API / Kiro 账号：把 API 变量写进 --settings 的 env，压过共享 settings.json 里的同名变量（含密钥，走私有文件）
     const apiEnv = apiFlagEnv(this.accountDir);
@@ -410,7 +469,10 @@ export class Runner {
     const settingsFile = apiEnv
       ? (s: Record<string, unknown>) => (this.settingsFile = writePrivateSettings(`session-${this.sessionId}`, s))
       : undefined;
-    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate, settingsFile });
+    // 系统提示词里的委派使用约定只能随启动参数下发（无法运行中动态改），因此按启动时的生效类型决定；
+    // 工具可用性（Agent vs delegate）本身可经 permissions.deny 在运行中实时切换。
+    const delegatePrompt = delegate && this.effectiveSubagent(baseDeny) !== 'native';
+    const args = buildArgs(this.sessionId, this.initArgs.isNew, this.applied, settings, { delegate, delegatePrompt, settingsFile });
     // delegate 要跑很久：没有显式设置时把 MCP 工具超时放宽到 1 小时
     if (delegate && !Object.keys(env).some((k) => k.toUpperCase() === 'MCP_TOOL_TIMEOUT')) env.MCP_TOOL_TIMEOUT = '3600000';
     const spec = spawnSpec(this.claudePath, args);
@@ -494,8 +556,9 @@ export class Runner {
       this.applied = { ...config };
       this.start();
     }
-    // 用户发消息时后台预热委派后端（不阻塞；已热则无操作），模型派任务时不用等冷启动
-    this.delegateBackendInUse?.prewarm?.(this.cwd);
+    // 用户发消息时后台预热当前生效的委派后端（不阻塞；已热则无操作），模型派任务时不用等冷启动
+    const eff = this.mcp ? this.effectiveSubagent() : 'native';
+    if (eff !== 'native') this.backendFor(eff)?.prewarm?.(this.cwd);
     const uuid = id || randomUUID();
 
     if (this._status === 'idle' && !fresh) {
@@ -779,7 +842,7 @@ export class Runner {
     let response: Json = {};
     try {
       const ti: Json = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
-      const d = this.agentDefaults?.()?.claude;
+      const d = this.agentDefaults?.()?.native;
       if (d && ti.subagent_type !== 'fork') {
         const model = ti.model || d.model;
         const effort = ti.effort || d.effort;

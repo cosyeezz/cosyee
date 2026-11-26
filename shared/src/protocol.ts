@@ -175,24 +175,53 @@ export interface CliModelList {
 }
 
 /**
- * 子代理的模型配置（全局，上下文栏「子代理模型」里设置）。子代理面板直接显示这里的值，不再显示「继承主会话」。
- * GET /api/agent-models 取；POST /api/agent-models 整体提交，返回 { ok, config }。改动对运行中的会话立即生效。
+ * 子代理类型（全局，同一时间只用一种）：
+ * - native：Claude 自带的 Agent 工具；停用 cosyee 的 delegate 系列工具。
+ * - claude：自定义委派工具（delegate 系列），后端是 Claude CLI（无头 claude -p，用主会话的账号）；停用 Agent 工具。
+ * - agy：自定义委派工具，后端是 Antigravity（agy acp）；停用 Agent 工具。
+ * 选中的委派后端不可用（未安装 / 未登录）时服务端退回原生，免得两头都没有。
  */
-export interface AgentModelConfig {
+export type SubagentKind = 'native' | 'claude' | 'agy';
+export const SUBAGENT_KINDS: readonly SubagentKind[] = ['native', 'claude', 'agy'];
+
+/**
+ * 子代理配置（全局，上下文栏「子代理」里设置）。子代理面板直接显示这里的值，不再显示「继承主会话」。
+ * GET /api/subagents 取 SubagentState；POST /api/subagents 整体提交 SubagentConfig，返回 { ok, state: SubagentState }。
+ * 改动对运行中的会话立即生效（工具开关经 permissions.deny 推送；新启动的会话按启动时的配置注册）。
+ */
+export interface SubagentConfig {
+  kind: SubagentKind;
   /**
-   * Claude 原生子代理（Agent 工具）：服务端用 PreToolUse hook 给没写 model / effort 的调用补上这里的值，
+   * 原生子代理（Agent 工具）：服务端用 PreToolUse hook 给没写 model / effort 的调用补上这里的值，
    * 因此优先于智能体定义里的 model / effort（CLI 里调用参数 > 定义 > 环境变量）；调用时点名的值不动。
    * model 只能是别名：Agent 工具的 model 参数是枚举。
    */
-  claude: { model: ModelAlias; effort: Effort };
-  /** Antigravity（delegate 工具）：model 是基础模型（DelegateModel.value），null = 用 agy 自己的默认 */
+  native: { model: ModelAlias; effort: Effort };
+  /** Claude 委派：model 是别名，null = 跟随主会话当前的模型；effort null = 跟随主会话 */
+  claude: { model: ModelAlias | null; effort: Effort | null };
+  /** Antigravity 委派：model 是基础模型（DelegateModel.value），null = 用 agy 自己的默认 */
   agy: { model: string | null; effort: Effort | null };
 }
 
-export const DEFAULT_AGENT_MODELS: AgentModelConfig = {
-  claude: { model: 'sonnet', effort: 'medium' },
+export const DEFAULT_SUBAGENTS: SubagentConfig = {
+  kind: 'native',
+  native: { model: 'sonnet', effort: 'medium' },
+  claude: { model: null, effort: null },
   agy: { model: null, effort: null },
 };
+
+/** 某种子代理在本机能不能用；reason = 不能用的原因（给界面显示，如「未安装 Antigravity CLI」） */
+export interface SubagentAvailability {
+  ok: boolean;
+  reason?: string;
+}
+
+export interface SubagentState {
+  config: SubagentConfig;
+  available: Record<SubagentKind, SubagentAvailability>;
+  /** 实际生效的类型：选中的委派后端不可用时为 'native' */
+  effective: SubagentKind;
+}
 
 /** Antigravity 的一个基础模型；efforts 为空 = 不分思考强度 */
 export interface DelegateModel {
@@ -224,6 +253,26 @@ export interface AccountList {
   duplicates?: number;
   /** 上面的重复数按账号类型拆开：订阅（同一个 Claude 账号）、API（同一个地址 + Key）、Kiro（同一个登录邮箱） */
   duplicateKinds?: Partial<Record<'claude' | 'api' | 'kiro', number>>;
+  /** 子代理按类型选用的账号；老服务端没有。见 SubagentAccounts */
+  subagent?: SubagentAccounts;
+}
+
+/**
+ * 账号分主代理 / 子代理两部分：
+ * - 主代理：上面的 list，切换模式 / 并行模式只对主代理生效。
+ * - 子代理：按类型各选一个账号，复用账号列表里已有的登录态，不单独登录；与主代理的模式、当前账号无关。
+ *   原生子代理（Agent 工具）在主进程里运行，只能跟随主代理的账号，没有单独的选项。
+ *   Claude 委派：从上面的 list 里选（claude.ai 登录 / API / Kiro 都行）。执行环境与主代理隔离：
+ *   每个账号另有一个子代理配置空间，登录态从主代理空间复制过去（双向同步令牌刷新），会话记录、输入历史等运行状态各自独立，
+ *   skill / 智能体 / 命令 / 插件 / 设置 / 全局 CLAUDE.md 与主代理共享。
+ *   Antigravity 委派：就是 AgyAccountList 里 active 的那个账号（原有接口不变）。
+ * POST /api/accounts/subagent {id} → AccountList   设置 Claude 委派用的账号；只影响新的委派，已有的委派继续用原来的账号。
+ */
+export interface SubagentAccounts {
+  /** Claude 委派使用的账号 id（AccountEntry.id）；该账号被移除时服务端退回 'default' */
+  claude: string;
+  /** 复制 / 同步登录态失败的原因（给界面显示）；正常时省略 */
+  claudeError?: string;
 }
 
 export interface AccountDedupeResult {

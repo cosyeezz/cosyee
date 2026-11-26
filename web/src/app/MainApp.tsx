@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BUILTIN_PRICES, hasModelMapping,
-  type Account, type AccountList, type AgentModelConfig, type Attachment, type Bootstrap, type BrowserPickResult, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
-  type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace, type Turn,
+  type Account, type AccountList, type AgyAccountList, type Attachment, type Bootstrap, type BrowserPickResult, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  type SessionConfig, type SessionSummary, type SkillMode, type SubagentConfig, type SubagentCost, type SubagentRun, type SubagentState, type ToolStats, type Workspace, type Turn,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { upgradeToHttps } from '../core/speech/https';
@@ -18,6 +18,7 @@ import { AppShell } from '../ui/layout/AppShell';
 import { PinnedRail } from '../ui/sidebar/PinnedRail';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
+import { agyTitle, entryTitle } from '../ui/sidebar/accountParts';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
@@ -692,9 +693,21 @@ export function MainApp() {
   }, [selKey, subCostCwd, running]);
   // 计费方式：会话用的账号是 API 账号（官方 / 第三方地址）还是订阅账号
   const [accounts, setAccounts] = useState<AccountList | null>(null);
+  const [agyAccounts, setAgyAccounts] = useState<AgyAccountList | null>(null);
   useEffect(() => {
     api.accounts().then(setAccounts).catch(() => setAccounts(null));
+    api.agyAccounts(false).then(setAgyAccounts).catch(() => setAgyAccounts(null));
   }, [accountVersion]);
+  /** 上下文栏「子代理」卡片里只读展示的账号名（拿不到时不显示） */
+  const subagentAccounts = useMemo(() => {
+    const subClaudeId = accounts?.subagent?.claude;
+    const claudeEntry = subClaudeId ? accounts?.list.find((a) => a.id === subClaudeId) : undefined;
+    const agyEntry = agyAccounts?.installed ? agyAccounts.list.find((a) => a.active) : undefined;
+    return {
+      claude: claudeEntry ? entryTitle(claudeEntry) : null,
+      agy: agyEntry ? agyTitle(agyEntry) : null,
+    };
+  }, [accounts, agyAccounts]);
   /** 会话用的账号：并行模式下是绑定的那个，否则是当前账号 */
   const sessionAccount = useMemo(() => {
     const list = accounts?.list ?? [];
@@ -738,17 +751,19 @@ export function MainApp() {
     if (!modelAccount) return;
     storeModels(modelAccount, await api.cliModels({ account: modelAccount, refresh: true }));
   }, [modelAccount, storeModels]);
-  // 子代理模型（全局）：老服务端没有这个接口时不显示这一节
-  const [agentModels, setAgentModels] = useState<AgentModelConfig | null>(null);
+  // 子代理（全局）：老服务端没有这个接口时不显示这一节
+  const [subagents, setSubagents] = useState<SubagentState | null>(null);
   useEffect(() => {
-    api.agentModels().then(setAgentModels).catch(() => {});
+    api.subagents().then(setSubagents).catch(() => {});
   }, []);
-  const changeAgentModels = useCallback((c: AgentModelConfig) => {
-    setAgentModels(c);
-    api.saveAgentModels(c).catch((e) => {
-      flash(`保存子代理模型失败：${errText(e)}`);
-      api.agentModels().then(setAgentModels).catch(() => {});
-    });
+  const changeSubagents = useCallback((c: SubagentConfig) => {
+    setSubagents((prev) => (prev ? { ...prev, config: c, effective: prev.available[c.kind]?.ok ? c.kind : 'native' } : prev));
+    api.saveSubagents(c)
+      .then((r) => setSubagents(r.state))
+      .catch((e) => {
+        flash(`保存子代理设置失败：${errText(e)}`);
+        api.subagents().then(setSubagents).catch(() => {});
+      });
   }, [flash]);
   // agy 的模型列表要启动 agy 才能拿到，打开菜单时才拉
   const delegateSeq = useRef(0);
@@ -879,26 +894,6 @@ export function MainApp() {
     }
     api.setAgent(name, enabled).catch((e) => {
       flash(`${enabled ? '开启' : '关闭'}智能体失败：${errText(e)}`);
-      refreshContext();
-    });
-  }, [sel, patch, flash, refreshContext]);
-
-  // 原生子代理开关（全局）：乐观更新；失败则回滚、提示并重新采集
-  const toggleNativeAgents = useCallback((enabled: boolean) => {
-    const id = sel?.id;
-    if (id) {
-      patch((v) => {
-        if (v.id !== id || !v.context) return;
-        v.context = { ...v.context, nativeAgents: enabled };
-      });
-    }
-    api.setNativeAgents(enabled).catch((e) => {
-      if (id) {
-        patch((v) => {
-          if (v.id === id && v.context) v.context = { ...v.context, nativeAgents: !enabled };
-        });
-      }
-      flash(`${enabled ? '开启' : '关闭'}原生子代理失败：${errText(e)}`);
       refreshContext();
     });
   }, [sel, patch, flash, refreshContext]);
@@ -1343,17 +1338,16 @@ export function MainApp() {
             pricing={pricing}
             billing={billing}
             onJumpTurn={jumpToTurn}
-            agentModels={agentModels && {
-              config: agentModels,
-              onChange: changeAgentModels,
+            subagents={subagents && {
+              state: subagents,
+              onChange: changeSubagents,
               modelList,
               modelMap,
               delegate: delegate.list,
               delegateError: delegate.error,
               delegateLoading: delegate.loading,
               onLoadDelegate: loadDelegate,
-              nativeAgents: sel && view?.id === sel.id ? view.context?.nativeAgents : undefined,
-              onNativeAgents: toggleNativeAgents,
+              accounts: subagentAccounts,
             }}
           />
         }
@@ -1362,7 +1356,7 @@ export function MainApp() {
       <SubagentOverlay
         run={overlayRun}
         onClose={closeSub}
-        agentModels={agentModels}
+        subagents={subagents?.config ?? null}
         delegates={view?.delegates ?? NO_JOBS}
         onDelegateStop={onDelegateStop}
         onDelegateSend={onDelegateSend}

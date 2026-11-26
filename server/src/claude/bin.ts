@@ -31,15 +31,18 @@ export function setBeforeClaudeEnv(hook: BeforeClaudeEnvHook | null): void {
  * 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。
  * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）；
  * Kiro 账号在读取配置前先触发钩子确保本地代理已启动并完成端口同步。
+ * apiDir：API / Kiro 配置的读取目录，默认同 dir；子代理空间传入主代理账号目录（CLAUDE_CONFIG_DIR 仍指向子代理空间）。
  */
-export function claudeEnv(dir: string | null = activeConfigDir()): NodeJS.ProcessEnv {
+export function claudeEnv(dir: string | null = activeConfigDir(), apiDir: string | null = dir): NodeJS.ProcessEnv {
   const env = cleanEnv();
   if (dir) {
     for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k];
     env.CLAUDE_CONFIG_DIR = dir;
-    const api0 = readApiConfig(dir);
-    if (api0?.kiro) beforeClaudeEnvHook?.(dir);
-    const api = api0?.kiro ? readApiConfig(dir) : api0;
+  }
+  if (apiDir) {
+    const api0 = readApiConfig(apiDir);
+    if (api0?.kiro) beforeClaudeEnvHook?.(apiDir);
+    const api = api0?.kiro ? readApiConfig(apiDir) : api0;
     if (api) applyApiEnv(env, api);
   }
   return env;
@@ -85,8 +88,8 @@ export function isFile(p: string): boolean {
   }
 }
 
-/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 'claude'（让 spawn 报 ENOENT）。 */
-export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
+/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 null。 */
+export function findClaude(env: NodeJS.ProcessEnv = process.env): string | null {
   const override = env.COSYEE_CLAUDE;
   if (override) return override;
   const names = isWin ? ['claude.exe', 'claude.cmd', 'claude.bat'] : ['claude'];
@@ -98,7 +101,12 @@ export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
       if (isFile(p)) return p;
     }
   }
-  return 'claude';
+  return null;
+}
+
+/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 'claude'（让 spawn 报 ENOENT）。 */
+export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
+  return findClaude(env) ?? 'claude';
 }
 
 export interface SpawnSpec {

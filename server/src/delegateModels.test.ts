@@ -1,7 +1,7 @@
-import { DEFAULT_AGENT_MODELS } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS } from '@cosyee/shared';
 import { describe, expect, it } from 'vitest';
 import { groupModels, parseAvailable, resolveModelId, splitModelId, toModelList } from './delegate/models.js';
-import { parseAgentModels, sanitizeAgentModels } from './workspaces.js';
+import { migrateSubagents, parseSubagents, sanitizeSubagents } from './workspaces.js';
 
 const available = parseAvailable({
   availableModels: [
@@ -53,15 +53,84 @@ describe('agy 模型 id', () => {
   });
 });
 
-describe('子代理模型配置', () => {
+describe('子代理配置与迁移', () => {
   it('sanitize 落回默认；parse 有非法字段就拒绝', () => {
-    expect(sanitizeAgentModels(null)).toEqual(DEFAULT_AGENT_MODELS);
-    const ok = { claude: { model: 'opus', effort: 'max' }, agy: { model: 'gemini-4-neon', effort: 'low' } };
-    expect(sanitizeAgentModels(ok)).toEqual(ok);
-    expect(parseAgentModels(ok)).toEqual(ok);
-    expect(parseAgentModels({ ...ok, agy: { model: null, effort: null } })).toEqual({ ...ok, agy: { model: null, effort: null } });
-    for (const bad of [null, {}, { ...ok, agy: undefined }, { ...ok, claude: { model: 'gpt', effort: 'low' } }, { ...ok, claude: { model: 'opus', effort: 'x' } }, { ...ok, agy: { model: 'a b', effort: null } }]) {
-      expect(parseAgentModels(bad)).toBeNull();
+    expect(sanitizeSubagents(null)).toEqual(DEFAULT_SUBAGENTS);
+    const ok = {
+      kind: 'claude' as const,
+      native: { model: 'opus' as const, effort: 'max' as const },
+      claude: { model: 'sonnet' as const, effort: 'high' as const },
+      agy: { model: 'gemini-4-neon', effort: 'low' as const },
+    };
+    expect(sanitizeSubagents(ok)).toEqual(ok);
+    expect(parseSubagents(ok)).toEqual(ok);
+    const withNulls = { ...ok, kind: 'agy' as const, claude: { model: null, effort: null }, agy: { model: null, effort: null } };
+    expect(parseSubagents(withNulls)).toEqual(withNulls);
+    for (const bad of [
+      null,
+      {},
+      { ...ok, kind: 'other' },
+      { ...ok, native: undefined },
+      { ...ok, claude: undefined },
+      { ...ok, agy: undefined },
+      { ...ok, native: { model: 'gpt', effort: 'low' } },
+      { ...ok, native: { model: 'opus', effort: 'x' } },
+      { ...ok, claude: { model: 'gpt', effort: null } },
+      { ...ok, claude: { model: null, effort: 'x' } },
+      { ...ok, agy: { model: 'a b', effort: null } },
+      { ...ok, agy: { model: null, effort: 'bad' } },
+    ]) {
+      expect(parseSubagents(bad)).toBeNull();
     }
+  });
+
+  it('migrateSubagents：老数据从 agentModels + nativeAgents 迁移，已有 subagents 优先', () => {
+    // 空对象 -> 默认配置
+    expect(migrateSubagents({})).toEqual(DEFAULT_SUBAGENTS);
+    // nativeAgents: false -> kind: 'agy'，老 agentModels.claude -> native，agentModels.agy -> agy
+    expect(
+      migrateSubagents({
+        nativeAgents: false,
+        agentModels: {
+          claude: { model: 'opus', effort: 'high' },
+          agy: { model: 'gemini-4-neon', effort: 'low' },
+        },
+      }),
+    ).toEqual({
+      kind: 'agy',
+      native: { model: 'opus', effort: 'high' },
+      claude: { model: null, effort: null },
+      agy: { model: 'gemini-4-neon', effort: 'low' },
+    });
+    // nativeAgents: true -> kind: 'native'
+    expect(
+      migrateSubagents({
+        nativeAgents: true,
+        agentModels: { claude: { model: 'haiku', effort: 'low' }, agy: { model: null, effort: null } },
+      }),
+    ).toEqual({
+      kind: 'native',
+      native: { model: 'haiku', effort: 'low' },
+      claude: { model: null, effort: null },
+      agy: { model: null, effort: null },
+    });
+    // 已有 subagents 时忽略旧字段
+    expect(
+      migrateSubagents({
+        nativeAgents: false,
+        agentModels: { claude: { model: 'opus', effort: 'max' }, agy: { model: 'old', effort: 'low' } },
+        subagents: {
+          kind: 'claude',
+          native: { model: 'sonnet', effort: 'medium' },
+          claude: { model: 'haiku', effort: 'low' },
+          agy: { model: null, effort: null },
+        },
+      }),
+    ).toEqual({
+      kind: 'claude',
+      native: { model: 'sonnet', effort: 'medium' },
+      claude: { model: 'haiku', effort: 'low' },
+      agy: { model: null, effort: null },
+    });
   });
 });

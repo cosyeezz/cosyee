@@ -25,6 +25,19 @@ export const SHARED_DIRS = [
 /** 共享文件：设置、全局 CLAUDE.md、输入历史、快捷键 */
 export const SHARED_FILES = ['settings.json', 'CLAUDE.md', 'history.jsonl', 'keybindings.json'] as const;
 
+/** 子代理配置空间共享的目录（隔离 projects / file-history / todos / plans / tasks / session-env / paste-cache） */
+export const SUBAGENT_SHARED_DIRS = [
+  'skills',
+  'agents',
+  'commands',
+  'plugins',
+  'output-styles',
+  'hooks',
+] as const;
+
+/** 子代理配置空间共享的文件（隔离 history.jsonl） */
+export const SUBAGENT_SHARED_FILES = ['settings.json', 'CLAUDE.md', 'keybindings.json'] as const;
+
 /** 基础目录里没有时要先建出来的文件（其余的没有就不链接） */
 const CREATE_IF_MISSING: Record<string, string> = {
   'settings.json': '{}\n',
@@ -178,19 +191,25 @@ function ensureFileLink(base: string, dir: string, name: string): void {
  * 保证账号目录 dir 里的共享项都正确链接到基础目录 base。可重复调用（已正确的项不动）。
  * 单项失败不影响其它项；返回失败的项名。
  */
-export function ensureLinks(base: string, dir: string): string[] {
+export function ensureLinks(
+  base: string,
+  dir: string,
+  opts?: { dirs?: readonly string[]; files?: readonly string[] },
+): string[] {
   if (samePath(base, dir)) return [];
   fs.mkdirSync(base, { recursive: true });
   fs.mkdirSync(dir, { recursive: true });
+  const dirs = opts?.dirs ?? SHARED_DIRS;
+  const files = opts?.files ?? SHARED_FILES;
   const failed: string[] = [];
-  for (const name of SHARED_DIRS) {
+  for (const name of dirs) {
     try {
       ensureDirLink(base, dir, name);
     } catch {
       failed.push(name);
     }
   }
-  for (const name of SHARED_FILES) {
+  for (const name of files) {
     try {
       ensureFileLink(base, dir, name);
     } catch {

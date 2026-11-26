@@ -123,6 +123,8 @@ interface CardProps {
   /** 不能直接使用（没登录 / 登录已失效） */
   off: boolean;
   badge?: { text: string; danger?: boolean } | null;
+  /** 附加标签（例如「子代理」） */
+  extraBadge?: string | null;
   meta?: ReactNode;
   quota?: ReactNode;
   /** 改备注名时替换名字那一块 */
@@ -130,7 +132,7 @@ interface CardProps {
   children: ReactNode;
 }
 
-function Card({ title, plan, issue, sub, active, off, badge, meta, quota, editing, children }: CardProps) {
+function Card({ title, plan, issue, sub, active, off, badge, extraBadge, meta, quota, editing, children }: CardProps) {
   return (
     <div className={`cz-acct-card${active ? ' is-active' : ''}${off ? ' is-off' : ''}`} aria-current={active ? 'true' : undefined}>
       <div className="cz-acct-card__top">
@@ -144,7 +146,12 @@ function Card({ title, plan, issue, sub, active, off, badge, meta, quota, editin
             {sub && <div className="cz-acct-card__sub" title={sub}>{sub}</div>}
           </div>
         )}
-        {badge && !editing && <span className={`cz-acct-card__badge${badge.danger ? ' is-danger' : ''}`}>{badge.text}</span>}
+        {(badge || extraBadge) && !editing && (
+          <span className="cz-acct-card__badges">
+            {extraBadge && <span className="cz-acct-card__badge is-sub">{extraBadge}</span>}
+            {badge && <span className={`cz-acct-card__badge${badge.danger ? ' is-danger' : ''}`}>{badge.text}</span>}
+          </span>
+        )}
       </div>
       {meta && <div className="cz-acct-card__meta">{meta}</div>}
       {quota}
@@ -301,6 +308,7 @@ export function AccountManager(p: AccountManagerProps) {
         active={a.active}
         off={!usable}
         badge={badge}
+        extraBadge={usable && data?.subagent?.claude === a.id ? '子代理' : null}
         meta={hasMeta ? meta : null}
         quota={quota}
         editing={editing === key ? (

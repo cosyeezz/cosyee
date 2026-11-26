@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_AGENT_MODELS, type SubagentRun, type Turn } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS, type SubagentConfig, type SubagentRun, type Turn } from '@cosyee/shared';
 import {
   describeToolInput,
   effortText,
@@ -39,13 +39,23 @@ const baseTurn: Turn = {
 
 describe('子代理的模型 / 思考等级', () => {
   const run = (o: Partial<SubagentRun> = {}): SubagentRun => ({ toolUseId: 't', title: '', status: 'running', turn: baseTurn, ...o });
-  it('实际值优先，缺的用设置补；fork 不补；不再出现「继承主会话」', () => {
-    const cfg = { ...DEFAULT_AGENT_MODELS, agy: { model: 'neon', effort: 'low' as const } };
-    expect(runParams(run(), cfg)).toEqual({ model: 'sonnet', effort: 'medium' });
-    expect(runParams(run({ model: 'opus', effort: 'max' }), cfg)).toEqual({ model: 'opus', effort: 'max' });
-    expect(runParams(run({ subagentType: 'fork' }), cfg)).toEqual({});
-    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), cfg)).toEqual({ model: 'neon', effort: 'low' });
-    expect(runParams(run({ delegate: true, subagentType: 'Explore', model: 'orch' }), cfg)).toEqual({ model: 'orch' });
+  it('实际值优先，缺的按类型用设置补；fork 不补；不再出现「继承主会话」', () => {
+    const agyCfg: SubagentConfig = { ...DEFAULT_SUBAGENTS, kind: 'agy', agy: { model: 'neon', effort: 'low' } };
+    const claudeCfg: SubagentConfig = { ...DEFAULT_SUBAGENTS, kind: 'claude', claude: { model: 'opus', effort: 'high' } };
+    const claudeFollowCfg: SubagentConfig = { ...DEFAULT_SUBAGENTS, kind: 'claude', claude: { model: null, effort: null } };
+    // 原生 Agent 工具调用：用 native 设置
+    expect(runParams(run(), agyCfg)).toEqual({ model: 'sonnet', effort: 'medium' });
+    expect(runParams(run({ model: 'opus', effort: 'max' }), agyCfg)).toEqual({ model: 'opus', effort: 'max' });
+    expect(runParams(run({ subagentType: 'fork' }), agyCfg)).toEqual({});
+    // 委派任务（当前为 agy）：用 agy 设置；已知实际模型不补强度
+    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), agyCfg)).toEqual({ model: 'neon', effort: 'low' });
+    expect(runParams(run({ delegate: true, subagentType: 'Explore', model: 'orch' }), agyCfg)).toEqual({ model: 'orch' });
+    // 委派任务（当前为 claude）：用 claude 设置；跟随主会话（null）时不补
+    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), claudeCfg)).toEqual({ model: 'opus', effort: 'high' });
+    expect(runParams(run({ delegate: true, subagentType: 'Explore', model: 'claude-sonnet-5-5' }), claudeCfg)).toEqual({ model: 'claude-sonnet-5-5', effort: 'high' });
+    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), claudeFollowCfg)).toEqual({});
+    // 当前切回 native 时，历史委派任务不乱补
+    expect(runParams(run({ delegate: true, subagentType: 'Explore' }), DEFAULT_SUBAGENTS)).toEqual({});
     expect(effortText('medium')).toBe('思考 中等');
     expect(effortText(undefined)).toBe('');
   });

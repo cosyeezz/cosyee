@@ -1,6 +1,6 @@
 // 子代理浮层：右侧滑出的面板外壳，主体直接复用 ConversationView 与 SessionDock 展示单轮子代理会话。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentModelConfig, DelegateJobInfo, DelegateSendMode, SubagentRun } from '@cosyee/shared';
+import type { DelegateJobInfo, DelegateSendMode, SubagentConfig, SubagentRun } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { useMorph } from '../motion/morph';
 import { ConversationView } from './ConversationView';
@@ -16,8 +16,8 @@ const STATUS_LABEL: Record<SubagentRun['status'], string> = { running: '执行�
 export interface SubagentOverlayProps {
   run: SubagentRun | null;
   onClose: () => void;
-  /** 「子代理模型」设置：还不知道实际模型 / 思考等级时显示设置里的值 */
-  agentModels?: AgentModelConfig | null;
+  /** 「子代理」设置：还不知道实际模型 / 思考等级时显示设置里的值 */
+  subagents?: SubagentConfig | null;
   /** 本会话的委派任务快照：运行中的委派子代理按 toolUseId 在其中找到对应任务，才显示停止 / 追加消息 */
   delegates?: readonly DelegateJobInfo[];
   onDelegateStop?: (toolUseId: string) => void;
@@ -60,8 +60,8 @@ function AppendBar({ onSend }: { onSend: (text: string, mode: DelegateSendMode) 
 }
 
 /** 面板主体：只在 run 存在时挂载，切换子代理时由外层 key 重置 */
-function OverlayPanel({ run, onClose, agentModels, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps & { run: SubagentRun }) {
-  const params = runParams(run, agentModels);
+function OverlayPanel({ run, onClose, subagents, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps & { run: SubagentRun }) {
+  const params = runParams(run, subagents);
   // 运行中的委派任务（有对应的任务快照）才能停止 / 追加消息
   const job = run.delegate === true && run.status === 'running' ? delegates?.find((j) => j.toolUseId === run.toolUseId) : undefined;
   const canStop = !!job && !!onDelegateStop;
@@ -139,8 +139,8 @@ function OverlayPanel({ run, onClose, agentModels, delegates, onDelegateStop, on
   );
 }
 
-export function SubagentOverlay({ run, onClose, agentModels, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps) {
+export function SubagentOverlay({ run, onClose, subagents, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps) {
   if (!run) return null;
   // 以 toolUseId 作 key：切换子代理时重置面板内部状态
-  return <OverlayPanel key={run.toolUseId} run={run} onClose={onClose} agentModels={agentModels} delegates={delegates} onDelegateStop={onDelegateStop} onDelegateSend={onDelegateSend} />;
+  return <OverlayPanel key={run.toolUseId} run={run} onClose={onClose} subagents={subagents} delegates={delegates} onDelegateStop={onDelegateStop} onDelegateSend={onDelegateSend} />;
 }

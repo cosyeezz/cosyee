@@ -14,6 +14,7 @@ import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
+import { ClaudeBackend } from './delegate/claudeBackend.js';
 import { BrowserInstall } from './browser/install.js';
 import { BrowserManager } from './browser/manager.js';
 import { createAgyAdapter } from './components/agy.js';
@@ -149,6 +150,12 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       accountFor: (id) => agyAccounts?.accountFor(id) ?? (id === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null),
     },
   });
+  const claudeBackend = new ClaudeBackend({
+    claudePath: opts.claudePath,
+    subagentAccountId: () => accounts?.subagentClaudeId() ?? DEFAULT_ID,
+    prepareAccount: (id) => accounts?.prepareSubagent(id) ?? null,
+    finishAccount: (id) => accounts?.syncSubagentBack(id),
+  });
   sessions.setFlags({
     isDeleted: (id) => trash.isDeleted(id),
     pinKind: (id) => pins.kind(id),
@@ -168,7 +175,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     pins,
     stops,
     delegateRecord,
-    delegateBackend: agyBackend,
+    delegateBackends: { claude: claudeBackend, agy: agyBackend },
     timings: opts.timings,
     claudePath: opts.claudePath,
     configs: {
@@ -199,11 +206,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.disabledAgents = [...names];
         store.save();
       },
-      nativeAgents: () => store.state.nativeAgents,
-      setNativeAgents: (enabled) => {
-        store.state.nativeAgents = enabled;
-        store.save();
-      },
       known: () => store.state.knownTools,
       setKnown: (names) => {
         const cur = store.state.knownTools;
@@ -212,8 +214,12 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.save();
       },
     },
-    agentModels: {
-      get: () => store.state.agentModels,
+    subagents: {
+      get: () => store.state.subagents,
+      set: (c) => {
+        store.state.subagents = structuredClone(c);
+        store.save();
+      },
     },
     compactWindow: {
       get: () => store.state.compactWindow,
@@ -240,6 +246,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     accounts: {
       resolve: (id) => accounts?.resolve(id) ?? { id: DEFAULT_ID, dir: null },
       prepare: (id) => accounts?.prepare(id),
+      syncFromSubagent: (id) => accounts?.syncSubagentBack(id, { silent: true }),
       bind: (sid, id) => accounts?.bind(sid, id),
     },
     forks: {

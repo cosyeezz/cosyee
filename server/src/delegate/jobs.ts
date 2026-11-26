@@ -4,7 +4,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
-  type AgentModelConfig,
   DELEGATE_BG_MARKER,
   type DelegateJobInfo,
   type DelegateJobState,
@@ -22,7 +21,7 @@ import {
   listAgents,
   resolveAgent,
 } from './agents.js';
-import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
+import { type BackendDefaults, BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
 import { type GitRunner, taskContext } from './context.js';
 import { agentParamsEvent, type RunFn } from './mcp.js';
 import { AcpProgress } from './progress.js';
@@ -31,7 +30,11 @@ import type { DelegateIdRecord, PersistedJob, PersistedJobs } from './record.js'
 export interface DelegateCtx {
   cwd: string;
   backend: DelegateBackend;
-  defaults?: AgentModelConfig['agy'] | null;
+  /** 续接历史会话时按原后端 id 取回对应后端（切换子代理类型后继续已有对话） */
+  backendFor?: (id: string) => DelegateBackend | null;
+  defaults?: BackendDefaults | null;
+  /** 主会话当前的 Claude 账号（Claude 委派新会话沿用） */
+  account?: { id: string; dir: string | null };
   agents: AgentScope;
   /** 计划模式（只读）：只允许运行内置 Explore / Plan */
   readOnly?: boolean;
@@ -904,12 +907,15 @@ export class DelegateJobs {
         if (evs.length) this.o.onEvents?.(evs);
       };
       const defaults = ctx.defaults;
+      const hasDefaults = !!defaults && (!!defaults.model || !!defaults.effort || !!defaults.parentModel || !!defaults.parentEffort);
       const opts: BackendRunOptions = {
         cwd: ctx.cwd,
         prompt: backendPrompt,
         ...(rec?.sessionId ? { sessionId: rec.sessionId, accountId: rec.accountId ?? 'default' } : {}),
+        ...(ctx.account ? { account: ctx.account } : {}),
+        ...(ctx.readOnly ? { readOnly: true } : {}),
         ...(isNewSession ? { systemPrompt: agentSystemPrompt(job.agent) } : {}),
-        ...(isNewSession && defaults && (defaults.model || defaults.effort) ? { defaults } : {}),
+        ...(isNewSession && hasDefaults ? { defaults } : {}),
         ...(isNewSession && job.agent.effort ? { effort: job.agent.effort } : {}),
         signal: ctl.signal,
         onSession: (backendSessionId, accountId) => {
@@ -960,7 +966,15 @@ export class DelegateJobs {
           : {}),
       };
       try {
-        const r: BackendResult = await (this.o.run ? this.o.run(opts) : ctx.backend.run(opts));
+        let runner = ctx.backend;
+        if (!this.o.run && rec?.sessionId && rec.backend && rec.backend !== ctx.backend.id) {
+          const orig = ctx.backendFor?.(rec.backend);
+          if (!orig?.available()) {
+            throw new BackendError(`创建该委派会话的后端（${rec.backend}）当前不可用，请新建委派`, rec.sessionId, rec.accountId);
+          }
+          runner = orig;
+        }
+        const r: BackendResult = await (this.o.run ? this.o.run(opts) : runner.run(opts));
         if (!this.live(job, gen)) return;
         this.recordBackendSession(job, r.sessionId, r.accountId);
         job.toolCalls += r.toolCalls;

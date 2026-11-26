@@ -36,7 +36,9 @@ export type IconName =
   // 内置浏览器：地球、后退 / 前进、抓取元素（准星）
   | 'globe' | 'arrow-left' | 'arrow-right' | 'pick'
   // 账号弹层：管理账号
-  | 'users';
+  | 'users'
+  // 子代理类型：原生 / Claude 委派 / Antigravity 委派
+  | 'subagent-native' | 'subagent-claude' | 'subagent-agy';
 
 export interface IconProps {
   name: IconName;
@@ -311,6 +313,28 @@ const SIMPLE: Record<string, JSX.Element> = {
     <>
       <path d="M7 3.2C7.4 6.2 8.8 7.6 11.8 8 8.8 8.4 7.4 9.8 7 12.8 6.6 9.8 5.2 8.4 2.2 8 5.2 7.6 6.6 6.2 7 3.2z" />
       <path d="M12.6 1.8v3M11.1 3.3h3" />
+    </>
+  ),
+  // 原生子代理：主节点分出两个子节点（Agent 工具）
+  'subagent-native': (
+    <>
+      <circle cx="8" cy="3.6" r="1.8" />
+      <circle cx="4" cy="12.2" r="1.7" />
+      <circle cx="12" cy="12.2" r="1.7" />
+      <path d="M8 5.4v2.3M8 7.7H4.8a.8.8 0 00-.8.8v2M8 7.7h3.2a.8.8 0 01.8.8v2" />
+    </>
+  ),
+  // Claude 委派：星芒（Claude CLI）
+  'subagent-claude': (
+    <>
+      <path d="M8 2.2v11.6M2.2 8h11.6M3.9 3.9l8.2 8.2M12.1 3.9l-8.2 8.2" />
+    </>
+  ),
+  // Antigravity 委派：倾斜星轨 + 核心点
+  'subagent-agy': (
+    <>
+      <circle cx="8" cy="8" r="2.1" />
+      <ellipse cx="8" cy="8" rx="6.2" ry="2.7" transform="rotate(-32 8 8)" />
     </>
   ),
 };

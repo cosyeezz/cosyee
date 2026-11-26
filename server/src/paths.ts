@@ -48,6 +48,16 @@ export function accountsRoot(): string {
   return process.env.COSYEE_ACCOUNTS_DIR || path.join(os.homedir(), '.claude-accounts');
 }
 
+/** 子代理配置空间根目录（与 accountsRoot 并列，不会被主会话扫描）。可用 COSYEE_SUBAGENT_ACCOUNTS_DIR 覆盖（测试用）。 */
+export function subagentAccountsRoot(): string {
+  return process.env.COSYEE_SUBAGENT_ACCOUNTS_DIR || path.join(os.homedir(), '.claude-subagents');
+}
+
+/** 某个账号（含默认账号 'default'）的子代理配置目录 */
+export function subagentAccountDir(accountId: string): string {
+  return path.join(subagentAccountsRoot(), accountId);
+}
+
 /** Cosyee 自己的数据目录（state.json）。可用 COSYEE_HOME 覆盖（测试用）。 */
 export function cosyeeHome(): string {
   return process.env.COSYEE_HOME || path.join(os.homedir(), '.cosyee');

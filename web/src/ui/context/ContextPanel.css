@@ -299,31 +299,219 @@
 .cz-ctx__mode svg:last-child { opacity: .7; transition: transform var(--dur) var(--ease-out); }
 .cz-ctx__mode.is-open svg:last-child { transform: rotate(180deg); }
 
-/* 子代理模型：窄面板名称在上、两个下拉在下各占满；放得下时排成一行。思考强度列固定宽，两行对齐 */
-.cz-ctx__agent {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
-  align-items: center;
-  gap: var(--sp-1) var(--sp-2);
-  padding: var(--sp-1) 0;
+/* 子代理：三段液态玻璃类型选择 + 说明卡片 + 模型 / 思考强度下拉 */
+.cz-sub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 2px 0;
 }
-.cz-ctx__agent-name { grid-column: 1 / -1; color: var(--text-2); font-size: var(--fs-xs); }
-.cz-ctx__pick { width: 100%; min-width: 0; grid-column: 1 / -1; justify-content: space-between; gap: var(--sp-1); padding: 0 var(--sp-2); color: var(--text); font-size: var(--fs-xs); }
-.cz-ctx__pick:not(:last-child) { grid-column: 1; }
-.cz-ctx__pick.is-effort { grid-column: 2; }
+.cz-sub__seg {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.cz-sub__seg > .cz-capsule {
+  border-radius: calc(var(--r-md) - 2px);
+}
+.cz-sub__seg.is-fallback > .cz-capsule {
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+}
+.cz-sub__opt {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 3px;
+  border: 0;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.15;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.cz-sub__opt:hover:not(:disabled) { color: var(--text); }
+.cz-sub__opt.is-active { color: var(--text); font-weight: 600; }
+.cz-sub__opt.is-active svg { color: var(--accent); }
+.cz-sub__seg.is-fallback .cz-sub__opt.is-active svg { color: var(--warn); }
+.cz-sub__opt:disabled { color: var(--text-3); opacity: .44; cursor: not-allowed; }
+.cz-sub__opt.is-active:disabled { opacity: .78; }
+.cz-sub__opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cz-sub__opt-label {
+  max-width: 100%;
+  /* overflow 会按行盒裁剪：留出下伸部（g、y）的空间 */
+  padding-block: 1px 2px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 退回原生提示条：克制的琥珀色描边卡片 */
+.cz-sub__banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.cz-sub__banner svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn);
+}
+.cz-sub__banner-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cz-sub__banner-text strong {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* 不可用项原因：低调列出，触屏和鼠标都能一眼看见 */
+.cz-sub__unavail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cz-sub__unavail-item { overflow-wrap: anywhere; }
+
+/* 切换内容区：外层平滑过渡高度，内层交叉淡化 + 轻微方向位移 */
+.cz-sub__panel {
+  transition: height var(--dur) var(--ease-out);
+}
+.cz-sub__stage {
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+@starting-style {
+  .cz-sub__stage {
+    opacity: 0;
+    transform: translate3d(calc(var(--sub-dir, 0) * 8px), 0, 0);
+  }
+}
+
+.cz-sub__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 10px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.cz-sub__card.is-dim { opacity: .72; }
+.cz-sub__desc {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.cz-sub__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cz-sub__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-3);
+}
+.cz-sub__pill.is-on {
+  background: color-mix(in srgb, var(--dot-running) 13%, transparent);
+  color: var(--text);
+}
+.cz-sub__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  opacity: .55;
+}
+.cz-sub__pill.is-on .cz-sub__dot {
+  background: var(--dot-running);
+  opacity: 1;
+}
+.cz-sub__acct {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+.cz-sub__acct-k { flex: none; color: var(--text-3); }
+.cz-sub__acct-v {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cz-sub__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(88px, .82fr);
+  gap: var(--sp-2);
+  padding-top: 2px;
+}
+.cz-sub__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.cz-sub__field.is-full { grid-column: 1 / -1; }
+.cz-sub__field-label {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.cz-ctx__pick {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-xs);
+}
 .cz-ctx__pick-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-ctx__pick svg { flex: none; }
-.cz-ctx__agent--switch > .cz-ctx__agent-name { grid-column: 1 / -2; }
-.cz-ctx__agent--switch > .cz-ctx__switch { grid-column: -2 / -1; justify-self: end; }
-.cz-ctx__agent-note { grid-column: 1 / -1; margin: 0; }
-.cz-ctx__agent.is-dim > .cz-ctx__pick { opacity: .55; }
-@container cz-ctx (min-width: 320px) {
-  .cz-ctx__agent { grid-template-columns: 78px minmax(0, 1fr) 72px; }
-  .cz-ctx__agent-name { grid-column: 1; font-size: var(--fs-sm); }
-  .cz-ctx__agent--switch > .cz-ctx__agent-name { grid-column: 1 / -2; }
-  .cz-ctx__pick { grid-column: 2 / -1; }
-  .cz-ctx__pick:not(:last-child) { grid-column: 2; }
-  .cz-ctx__pick.is-effort { grid-column: 3; }
+.cz-sub__foot-note { margin: 0; }
+
+/* 极窄面板（240px 左右）：下拉上下两行，避免「跟随主会话」与长模型名互挤 */
+@container cz-ctx (max-width: 259.9px) {
+  .cz-sub__fields { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 下拉菜单里的状态项（菜单在 portal 里，类名全局） */
@@ -904,12 +1092,13 @@
   .cz-ctx__check { width: 20px; height: 20px; }
   .cz-ctx__btn { min-height: 44px; }
   .cz-ctx__mode:not(.cz-ctx__pick) { min-width: 48px; justify-content: center; }
+  .cz-sub__opt { min-height: 50px; }
 }
 
 /* ───── 减少动效 ───── */
-:root[data-motion="reduce"] :is(.cz-ctx__reveal, .cz-ctx__chev, .cz-ctx__knob, .cz-ctx__knob::before, .cz-ctx__switch::before, .cz-ctx__row-name > .cz-ctx__chev, .cz-ctx__tip, .cz-ctx__seg, .cz-ctx__mode svg) { transition: none; }
+:root[data-motion="reduce"] :is(.cz-ctx__reveal, .cz-ctx__chev, .cz-ctx__knob, .cz-ctx__knob::before, .cz-ctx__switch::before, .cz-ctx__row-name > .cz-ctx__chev, .cz-ctx__tip, .cz-ctx__seg, .cz-ctx__mode svg, .cz-sub__panel, .cz-sub__stage) { transition: none; }
 :root[data-motion="reduce"] .cz-ctx__icon-btn.is-busy svg { animation: none; opacity: .5; }
 @media (prefers-reduced-motion: reduce) {
-  :is(.cz-ctx__reveal, .cz-ctx__chev, .cz-ctx__knob, .cz-ctx__knob::before, .cz-ctx__switch::before, .cz-ctx__row-name > .cz-ctx__chev, .cz-ctx__tip, .cz-ctx__seg, .cz-ctx__mode svg) { transition: none; }
+  :is(.cz-ctx__reveal, .cz-ctx__chev, .cz-ctx__knob, .cz-ctx__knob::before, .cz-ctx__switch::before, .cz-ctx__row-name > .cz-ctx__chev, .cz-ctx__tip, .cz-ctx__seg, .cz-ctx__mode svg, .cz-sub__panel, .cz-sub__stage) { transition: none; }
   .cz-ctx__icon-btn.is-busy svg { animation: none; opacity: .5; }
 }

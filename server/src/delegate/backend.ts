@@ -4,6 +4,14 @@
 import type { DelegateModelList, Effort } from '@cosyee/shared';
 import type { Json } from '../transcript.js';
 
+export interface BackendDefaults {
+  model: string | null;
+  effort: Effort | null;
+  /** 主会话当前的模型 / 强度：后端配置为 null 时作为回退（Claude 委派用） */
+  parentModel?: string | null;
+  parentEffort?: Effort | null;
+}
+
 export interface BackendRunOptions {
   cwd: string;
   prompt: string;
@@ -11,10 +19,14 @@ export interface BackendRunOptions {
   sessionId?: string;
   /** 续接时绑定的后端账号 id；不传 = 使用当前账号（新会话） */
   accountId?: string;
+  /** 主会话当前的 Claude 账号（dir 为 null = 默认账号）；Claude 委派新会话沿用 */
+  account?: { id: string; dir: string | null };
+  /** 主会话处于计划模式（只读） */
+  readOnly?: boolean;
   /** 只用于新会话：追加到后端系统提示词（智能体正文、项目规则）；续接的会话后端自己保留。权限不做控制 */
   systemPrompt?: string;
   /** 用户设置里的默认模型 / 强度，只用于新会话 */
-  defaults?: { model: string | null; effort: Effort | null };
+  defaults?: BackendDefaults;
   /** 智能体定义里的强度：用户设置没填强度时才用，只用于新会话 */
   effort?: Effort;
   signal: AbortSignal;

@@ -26,9 +26,10 @@ beforeEach(() => {
   base = path.join(tmp, 'claude');
   root = path.join(tmp, 'accounts');
   fs.mkdirSync(base, { recursive: true });
-  for (const k of ['CLAUDE_CONFIG_DIR', 'COSYEE_ACCOUNTS_DIR']) saved[k] = process.env[k];
+  for (const k of ['CLAUDE_CONFIG_DIR', 'COSYEE_ACCOUNTS_DIR', 'COSYEE_SUBAGENT_ACCOUNTS_DIR']) saved[k] = process.env[k];
   process.env.CLAUDE_CONFIG_DIR = base;
   process.env.COSYEE_ACCOUNTS_DIR = root;
+  process.env.COSYEE_SUBAGENT_ACCOUNTS_DIR = path.join(tmp, 'subagents');
   setActiveConfigDir(null);
 });
 

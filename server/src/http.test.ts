@@ -84,16 +84,34 @@ describe('Origin', () => {
 });
 
 describe('REST', () => {
-  it('agent-models：默认值；整体提交；不合法 400', async () => {
-    const url = `${base}/api/agent-models`;
+  it('subagents：默认值与状态；整体提交；不合法 400；旧接口 404', async () => {
+    const url = `${base}/api/subagents`;
     const post = (b: unknown) => fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(b) });
-    const get = async () => (await fetch(url, { headers: auth })).json();
-    expect(await get()).toEqual({ claude: { model: 'sonnet', effort: 'medium' }, agy: { model: null, effort: null } });
-    const next = { claude: { model: 'opus', effort: 'high' }, agy: { model: 'gemini-4-neon', effort: 'low' } };
-    expect(await (await post(next)).json()).toEqual({ ok: true, config: next });
-    expect(await get()).toEqual(next);
-    expect((await post({ ...next, claude: { model: 'x', effort: 'high' } })).status).toBe(400);
-    expect(await get()).toEqual(next);
+    const get = async () => (await fetch(url, { headers: auth })).json() as Promise<any>;
+    const init = await get();
+    expect(init.config).toEqual({
+      kind: 'native',
+      native: { model: 'sonnet', effort: 'medium' },
+      claude: { model: null, effort: null },
+      agy: { model: null, effort: null },
+    });
+    expect(init.available.native).toEqual({ ok: true });
+    expect(init.effective).toBe('native');
+    const next = {
+      kind: 'claude',
+      native: { model: 'opus', effort: 'high' },
+      claude: { model: 'haiku', effort: 'low' },
+      agy: { model: 'gemini-4-neon', effort: 'low' },
+    };
+    const r = await (await post(next)).json() as any;
+    expect(r.ok).toBe(true);
+    expect(r.state.config).toEqual(next);
+    expect((await get()).config).toEqual(next);
+    expect((await post({ ...next, native: { model: 'x', effort: 'high' } })).status).toBe(400);
+    expect((await post({ ...next, kind: 'bad' })).status).toBe(400);
+    expect((await get()).config).toEqual(next);
+    expect((await fetch(`${base}/api/agent-models`, { headers: auth })).status).toBe(404);
+    expect((await fetch(`${base}/api/native-agents`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{"enabled":false}' })).status).toBe(404);
   });
   it('bootstrap', async () => {
     const j = (await (await fetch(`${base}/api/bootstrap`, { headers: auth })).json()) as any;

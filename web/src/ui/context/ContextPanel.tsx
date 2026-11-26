@@ -13,7 +13,7 @@ import { Menu, type MenuEntry } from '../menus/Menu';
 import { CountUp } from '../motion/CountUp';
 import { useWake } from '../motion/useWake';
 import { useHeld } from '../motion/useHeld';
-import { AgentModels, type AgentModelsProps } from './AgentModels';
+import { Subagents, type SubagentsProps } from './Subagents';
 import { CacheChart } from './CacheChart';
 import { ContextChart } from './ContextChart';
 import { CostSection, type Billing } from './CostSection';
@@ -78,8 +78,8 @@ export interface ContextPanelProps {
   model?: string;
   /** 计费方式，决定花费一节的标题与说明 */
   billing?: Billing;
-  /** 「子代理模型」（智能体下方）；不传则不显示 */
-  agentModels?: AgentModelsProps | null;
+  /** 「子代理」（智能体下方）；不传则不显示 */
+  subagents?: SubagentsProps | null;
   /** 点花费图的柱子跳到会话流里的这一轮 */
   onJumpTurn?: (turn: number) => void;
 }
@@ -121,7 +121,7 @@ const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
   usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onSkillReveal, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
-  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, agentModels,
+  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, subagents,
 }: ContextPanelProps) {
   // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
   const live = useMemo(
@@ -444,7 +444,7 @@ export function ContextPanel({
           ))}
         </Collapsible>
 
-        {agentModels && <AgentModels {...agentModels} />}
+        {subagents && <Subagents {...subagents} />}
       </div>
 
       {/* 底部：自动压缩 */}

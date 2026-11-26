@@ -49,6 +49,16 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
 
 优化要点：胶囊是独立绝对定位层，用 transform 移动而非改 left/width；拉长量与移动距离挂钩并设上限；回弹用弹簧或 overshoot 缓动。
 - 新的列表要用胶囊时直接复用 `web/src/ui/motion/LiquidCapsule.tsx`：放在**滚动容器**的第一个子元素（它按父元素 + scrollTop 量位置），行要 `position: relative; z-index: 1` 盖住胶囊，并用 `:has(> .cz-capsule.is-on)` 去掉选中行自己的底色。点击后先挪高亮再 `startTransition` 换主区，用 `web/src/ui/sidebar/usePendingSelect.ts`（侧栏和收起后的置顶浮层 `PinnedRail` 共用）。
+- 用于「横向分段单选 + 下方内容区切换」时（Cosyee 上下文栏「子代理」实战，`web/src/ui/context/Subagents.tsx`）：
+  - `LiquidCapsule` 传 `axis="x"`：横向移动距离短，时长收紧到 `320–440ms`、拉伸上限降到 `1.45×`（竖向列表是 `1.6×`），避免跨两格时拉得过细。
+  - 窄上下文栏（240px，三等分每格仅约 67px）里图标和长英文名（如 Antigravity）并排必溢出，改为「图标在上、名称在下」堆叠，配合下方下拉区在 `@container cz-ctx (max-width: 259.9px)` 切单列。
+  - 选中项本身被禁用时（如后端不可用退回原生）：`.is-active:disabled` 保持较高不透明度（约 `.78`，别和普通禁用项一起压到 `.44`），不可用原因直接显式展示在控件下方而不只塞进 `title`；键盘 roving tabindex 落到实际生效项或首个可用项，保证 Tab 可达、方向键跳过禁用项。
+  - 下方说明卡片的高度平滑过渡用外层 `height` transition + `overflow: hidden`，在 effect 清理时读取 `getBoundingClientRect().height` 存为下次起点，快速连点打断时与胶囊同步从当前视觉状态无缝接续。
+  - 「选中值」和「实际生效值」可能不同（退回原生）：选中态胶囊跟选中值走，但工具开关小标签、折叠标题的摘要要按**实际生效值**显示，否则会和退回提示条自相矛盾；截图要专门看退回态。
+  - 带 `overflow: hidden` + `ellipsis` 的短标签会按行盒裁掉下伸部（g、y）：给 `padding-block: 1px 2px` 和明确的 `line-height`。
+- 用于「弹层顶部两段 `role=tablist` 切换 + 异步内容区」（Cosyee 账号菜单「主代理 / 子代理」实战，`web/src/ui/sidebar/AccountMenu.tsx`）：
+  - 高度基准 `lastHeight` 在异步数据到达后要同步更新，但只在 `pane.style.height === ''`（非过渡期间）写入，避免覆盖正在进行的高度过渡；切换分段时主动关闭悬浮详情卡（`card.closeNow()`），防止旧分段的 portal 卡片残留。
+  - 列表项变体（如子代理行在 `.cz-acct-pick` 上加头像列改为三列网格）若和基础类同优先级且写在前面，会被基础类的 `grid-template-columns` 静默覆盖导致错行，且不会触发宽度溢出检测；变体类要写复合选择器（`.cz-acct-sub-pick.cz-acct-pick`）或放在基础规则之后，并坚持逐张看截图。
 
 ### 2. 聚光
 > 卡片为磨砂玻璃材质；悬停时在卡片内部跟随光标显示一团柔和径向光斑，靠近光标的边框局部提亮；卡片随光标位置轻微3D倾斜，不超过4度；移出后平滑复原。

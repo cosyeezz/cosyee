@@ -19,6 +19,12 @@ import { type ApiConfig, apiHost, apiInfo, isLegacyKiro, normalizeApiKey, normal
 import { ensureLinks, unlinkShared } from './links.js';
 import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
+import {
+  prepareSubagentSpace,
+  removeSubagentSpace,
+  syncSubagentToMain,
+  type SubagentSpaceOptions,
+} from './subagent-space.js';
 
 export const DEFAULT_ID = 'default';
 const LABEL_MAX = 40;
@@ -44,6 +50,8 @@ export interface AccountsDeps {
   kiroState?: (id: string, dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error' | 'credential' | 'credentialReason'>;
   /** 移除 Kiro 账号前，把它在内置 kiro.rs 服务里的凭据 / Key / 分组一并删掉（失败只记日志，不阻止移除） */
   removeKiroAccount?: (id: string, dir: string) => Promise<void>;
+  /** 测试替换：子代理配置空间的平台与钥匙串适配器 */
+  subagentSpace?: SubagentSpaceOptions;
 }
 
 interface LocalInfo {
@@ -258,6 +266,8 @@ export class Accounts {
   private login: LoginJob | null = null;
   /** 切换串行化 */
   private switching: Promise<void> = Promise.resolve();
+  /** 最近一次子代理（claude）复制 / 同步登录态失败的原因；正常时为 null */
+  private subagentClaudeError: string | null = null;
 
   constructor(private readonly deps: AccountsDeps) {}
 
@@ -289,6 +299,17 @@ export class Accounts {
 
   mode(): AccountMode {
     return this.s.mode;
+  }
+
+  /** Claude 委派子代理当前选用的账号 id（账号不在时退回 'default'） */
+  subagentClaudeId(): string {
+    const id = this.s.subagent.claude;
+    return this.has(id) ? id : DEFAULT_ID;
+  }
+
+  /** 指定账号的主代理空间是否正在进行重新登录（登录期间不得往主空间回写凭据） */
+  isLoggingIn(accountId: string): boolean {
+    return !!(this.login && this.busy() && this.login.target === accountId);
   }
 
   /** 账号是否存在（默认账号或列表里的） */
@@ -345,27 +366,101 @@ export class Accounts {
 
   /** 服务启动时调用：恢复上次的当前账号（目录没了就回到默认账号），补链接并同步 MCP */
   init(): void {
+    let dirty = false;
     let dir = this.activeDir();
     if (dir && !fs.existsSync(dir)) {
       this.s.active = null;
-      this.deps.store.save();
+      dirty = true;
       dir = null;
     }
+    const subId = this.s.subagent.claude;
+    if (subId !== DEFAULT_ID) {
+      const subMainDir = this.dirFor(subId);
+      if (!subMainDir || !fs.existsSync(subMainDir)) {
+        this.s.subagent.claude = DEFAULT_ID;
+        dirty = true;
+      }
+    }
+    if (dirty) this.deps.store.save();
     setActiveConfigDir(dir);
     this.prepare(this.activeId());
   }
 
   /**
-   * 账号没有 claude 进程时调用（启动它的第一个会话进程前）：补链接（有的程序会把链接换成真实文件）并同步 MCP 配置。
-   * 默认账号就是主配置，不用做。任何错误都吞掉，不影响启动会话。
+   * 账号没有 claude 进程时调用（启动它的第一个会话进程前）：先尝试把子代理空间刷新后的凭据回写到主空间，
+   * 再补链接（有的程序会把链接换成真实文件）并同步 MCP 配置。任何错误都吞掉，不影响启动会话。
    */
   prepare(accountId: string): void {
+    this.syncSubagentBack(accountId, { silent: true });
     const dir = this.dirFor(accountId);
     if (!dir) return;
     try {
       ensureLinks(baseClaudeHome(), dir);
     } catch { /* 下次再补 */ }
     this.sync(dir);
+  }
+
+  /**
+   * 启动 Claude 委派子代理进程前准备其独立配置空间：建共享链接、同步 .claude.json 必要字段与主→子凭据。
+   * 账号不存在返回 null；同步失败时记录 claudeError 并抛错。
+   */
+  prepareSubagent(accountId: string): { id: string; dir: string; mainDir: string | null } | null {
+    const mainDir = this.dirFor(accountId);
+    if (mainDir === undefined) return null;
+    try {
+      const dir = prepareSubagentSpace(accountId, mainDir, this.deps.subagentSpace);
+      if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
+        this.subagentClaudeError = null;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      return { id: accountId, dir, mainDir };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== msg) {
+        this.subagentClaudeError = msg;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * 子代理空间 → 主代理空间回写凭据（较新者胜）。
+   * 主代理空间正在登录时跳过；silent=true（主代理启动前）失败静默不阻断，silent=false（子代理退出后）记录 claudeError。
+   */
+  syncSubagentBack(accountId: string, opts?: { silent?: boolean }): boolean {
+    const mainDir = this.dirFor(accountId);
+    if (mainDir === undefined) return false;
+    if (this.isLoggingIn(accountId)) return false;
+    try {
+      const wrote = syncSubagentToMain(accountId, mainDir, this.deps.subagentSpace);
+      if (!opts?.silent && accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
+        this.subagentClaudeError = null;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      return wrote;
+    } catch (e) {
+      if (!opts?.silent) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== msg) {
+          this.subagentClaudeError = msg;
+          this.deps.onChanged({ notify: 'refresh' });
+        }
+      }
+      return false;
+    }
+  }
+
+  /** 设置 Claude 委派子代理使用的账号（只影响新的委派，与主代理模式和当前账号无关） */
+  setSubagentClaude(id: string): AccountList {
+    const dir = this.dirOf(id);
+    if (dir && !fs.existsSync(dir)) throw new HttpError(410, '账号的配置目录不存在了，请移除后重新添加');
+    if (!localInfo(dir).loggedIn) throw new HttpError(400, '该账号还没有登录');
+    this.s.subagent.claude = id;
+    this.subagentClaudeError = null;
+    this.deps.store.save();
+    this.deps.onChanged({ notify: 'refresh' });
+    return this.list();
   }
 
   /** 同步会写主文件：默认账号有进程在跑时（并行模式）跳过，避免与它的 CLI 写入冲突，下次再同步 */
@@ -486,6 +581,10 @@ export class Accounts {
       list: kept,
       login: this.login ? { ...this.login.state } : null,
       ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length, duplicateKinds: byKind } : {}),
+      subagent: {
+        claude: this.subagentClaudeId(),
+        ...(this.subagentClaudeError ? { claudeError: this.subagentClaudeError } : {}),
+      },
     };
   }
 
@@ -742,8 +841,13 @@ export class Accounts {
     if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
     if (readApiConfig(a.dir)?.kiro) await this.deps.removeKiroAccount?.(id, a.dir);
     this.removeDir(a.dir);
+    removeSubagentSpace(id, this.deps.subagentSpace);
     this.s.list = this.s.list.filter((x) => x.id !== id);
     for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];
+    if (this.s.subagent.claude === id) {
+      this.s.subagent.claude = DEFAULT_ID;
+      this.subagentClaudeError = null;
+    }
   }
 
   /**
@@ -942,8 +1046,11 @@ export class Accounts {
     this.names = null;
     // 账号目录此时可能有进程在跑（并行模式下重新登录），只在没有进程时同步
     if (!isDefault && !(job.target && (this.deps.processes?.(job.target) ?? 0) > 0)) this.sync(job.dir);
-    // 重新登录：凭据变了，该账号的信息与额度要重取
-    if (job.target) this.deps.onChanged({ reset: job.target });
+    // 重新登录：凭据变了，该账号的信息与额度要重取；下次启动子代理时会同步新凭据
+    if (job.target) {
+      if (job.target === this.s.subagent.claude) this.subagentClaudeError = null;
+      this.deps.onChanged({ reset: job.target });
+    }
   }
 
   /** 丢弃没登录成功的新账号目录（只删 accountsRoot 下、未登记的目录） */

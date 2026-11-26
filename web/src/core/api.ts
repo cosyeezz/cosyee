@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgentModelConfig, AgyAccountList, BrowserHover, BrowserPickResult, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgyAccountList, BrowserHover, BrowserPickResult, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -123,9 +123,9 @@ export const api = {
     const qs = q(p);
     return req<CliModelList | null>('GET', `/api/models${qs ? `?${qs}` : ''}`);
   },
-  /** 子代理的模型 / 强度（全局，Claude 子代理与委派） */
-  agentModels: () => req<AgentModelConfig>('GET', '/api/agent-models'),
-  saveAgentModels: (c: AgentModelConfig) => req<{ ok: true; config: AgentModelConfig }>('POST', '/api/agent-models', c),
+  /** 子代理配置与本机可用状态（全局） */
+  subagents: () => req<SubagentState>('GET', '/api/subagents'),
+  saveSubagents: (c: SubagentConfig) => req<{ ok: true; state: SubagentState }>('POST', '/api/subagents', c),
   /** 委派后端的可用模型；后端未安装 / 未登录时抛错 */
   delegateModels: (refresh = false) => req<DelegateModelList>('GET', `/api/delegate/models${refresh ? '?refresh=1' : ''}`),
   /** 记住模型与思考强度（全局） */
@@ -145,6 +145,8 @@ export const api = {
   dedupeAccounts: () => req<AccountDedupeResult>('POST', '/api/accounts/dedupe', {}),
   /** 切换模式 / 并行模式；回到切换模式时其它账号有执行中的会话抛 ApiError 409（data.running），force 强制停止 */
   setAccountMode: (mode: AccountMode, force = false) => reqDetailed<{ ok: true }>('POST', '/api/accounts/mode', { mode, force }),
+  /** 设置 Claude 委派子代理使用的账号；返回最新的 AccountList */
+  setSubagentAccount: (id: string) => req<AccountList>('POST', '/api/accounts/subagent', { id }),
   setAccountLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/accounts/label', { id, label }),
   /** 添加（不带 id）或修改 API 账号；baseUrl 空 = 官方地址，修改时 apiKey 留空 = 不变，models 不传 = 不改映射 */
   saveApiAccount: (o: { id?: string; label?: string; baseUrl: string; apiKey?: string; authType: ApiAuthType; models?: ApiModelMap | null }) =>
@@ -242,7 +244,6 @@ export const api = {
   /** 自动压缩窗口（全局，token 数；null = 不覆盖）；运行中的会话立即生效，服务端随后推送新的上下文 */
   setCompactWindow: (window: number | null) => req<{ ok: true; window: number | null }>('POST', '/api/compact-window', { window }),
   setAgent: (name: string, enabled: boolean) => req<{ ok: true; disabledAgents: string[] }>('POST', '/api/agents', { name, enabled }),
-  setNativeAgents: (enabled: boolean) => req<{ ok: true; enabled: boolean }>('POST', '/api/native-agents', { enabled }),
   /** 所有会话的工具累计调用次数（服务端增量扫描会话记录）；老服务端没有这个接口时抛错 */
   getToolStats: () => req<ToolStats>('GET', '/api/tools/stats'),
   /** 模型价格表（服务端定期抓官方页面，失败时是内置表） */
