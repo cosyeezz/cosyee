@@ -18,6 +18,8 @@ pub enum ProxySource {
 #[derive(Debug, Clone)]
 pub struct ResolvedProxy {
     pub proxy: ureq::Proxy,
+    /// 带 scheme 的完整代理 URL（供 reqwest / tauri-plugin-updater 等外部客户端复用）。
+    pub url: String,
     pub source: ProxySource,
 }
 
@@ -178,8 +180,14 @@ fn resolve_env_proxy() -> Option<ResolvedProxy> {
             continue;
         }
         if let Ok(proxy) = ureq::Proxy::new(trimmed) {
+            let url = if trimmed.contains("://") {
+                trimmed.to_string()
+            } else {
+                format!("http://{trimmed}")
+            };
             return Some(ResolvedProxy {
                 proxy,
+                url,
                 source: ProxySource::Env,
             });
         }
@@ -208,6 +216,7 @@ fn resolve_system_proxy() -> Option<ResolvedProxy> {
     let proxy = ureq::Proxy::new(&url).ok()?;
     Some(ResolvedProxy {
         proxy,
+        url,
         source: ProxySource::System,
     })
 }
@@ -220,6 +229,12 @@ fn resolve_system_proxy() -> Option<ResolvedProxy> {
 /// 解析当前应使用的外网代理：环境变量优先，其次 Windows 系统代理。
 pub fn resolve_proxy() -> Option<ResolvedProxy> {
     resolve_env_proxy().or_else(resolve_system_proxy)
+}
+
+/// 返回可用于 `tauri::Url::parse` 的代理 URL（供 tauri-plugin-updater 等使用）。
+#[allow(dead_code)]
+pub fn resolve_proxy_url() -> Option<String> {
+    resolve_proxy().map(|r| r.url)
 }
 
 /// 构造外网请求用的 ureq::Agent，统一设置代理、连接超时（15s）、单次读取超时（60s）与全局超时。
@@ -388,9 +403,11 @@ mod tests {
 
     #[test]
     fn proxy_log_never_leaks_credentials() {
-        let p = ureq::Proxy::new("http://alice:supersecret@127.0.0.1:7890").unwrap();
+        let raw = "http://alice:supersecret@127.0.0.1:7890";
+        let p = ureq::Proxy::new(raw).unwrap();
         let resolved = ResolvedProxy {
             proxy: p,
+            url: raw.to_string(),
             source: ProxySource::System,
         };
         let msg = describe_proxy_for_log(Some(&resolved), "GitHub");

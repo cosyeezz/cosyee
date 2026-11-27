@@ -5,10 +5,14 @@
 #   - 独立服务端包：给需要本地后端的电脑用
 # 全部上传到同名 GitHub Release。手动触发（workflow_dispatch）只构建、产物留在 Actions 里，不发 Release。
 #
-# 需要的仓库 secrets（Android 签名，换密钥会导致已安装的旧版本无法覆盖升级）：
-#   ANDROID_KEYSTORE_B64       PKCS12 密钥库的 base64
-#   ANDROID_KEYSTORE_PASSWORD  密钥库密码
-#   ANDROID_KEY_ALIAS          密钥别名
+# 需要的仓库 secrets：
+#   Android 签名（换密钥会导致已安装的旧版本无法覆盖升级）：
+#     ANDROID_KEYSTORE_B64       PKCS12 密钥库的 base64
+#     ANDROID_KEYSTORE_PASSWORD  密钥库密码
+#     ANDROID_KEY_ALIAS          密钥别名
+#   桌面端自动更新签名（tauri-plugin-updater 的 minisign 私钥，对应 tauri.conf.json 中的 pubkey）：
+#     TAURI_SIGNING_PRIVATE_KEY           私钥内容
+#     TAURI_SIGNING_PRIVATE_KEY_PASSWORD  私钥密码（无密码时可留空）
 name: release
 
 on:
@@ -52,6 +56,15 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: 检查更新签名 secrets
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::缺少桌面端更新签名 secrets（TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD）"
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
       - uses: dtolnay/rust-toolchain@stable
@@ -63,12 +76,16 @@ jobs:
         run: node client/scripts/set-version.mjs "$VERSION"
       - name: 构建
         working-directory: client
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --bundles nsis
       - name: 整理产物
         shell: bash
         run: |
           mkdir -p out
           cp client/src-tauri/target/release/bundle/nsis/*-setup.exe "out/Cosyee_${VERSION}_windows_x64_setup.exe"
+          cp client/src-tauri/target/release/bundle/nsis/*-setup.exe.sig "out/Cosyee_${VERSION}_windows_x64_setup.exe.sig"
           cp client/src-tauri/target/release/Cosyee.exe "out/Cosyee_${VERSION}_windows_x64_portable.exe"
           ls -la out
       - uses: actions/upload-artifact@v4
@@ -81,6 +98,14 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: 检查更新签名 secrets
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::缺少桌面端更新签名 secrets（TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD）"
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with: { node-version: '${{ env.NODE_VERSION }}', cache: npm }
       - uses: dtolnay/rust-toolchain@stable
@@ -95,7 +120,9 @@ jobs:
         env:
           # 与 tauri.conf.json 的 minimumSystemVersion 保持一致
           MACOSX_DEPLOYMENT_TARGET: '10.15'
-        run: npx tauri build --target universal-apple-darwin --bundles dmg
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
       - name: 校验 macOS 14+ 符号为弱引用（否则 macOS 10.15–13 上起不来）
         run: |
           bin=client/src-tauri/target/universal-apple-darwin/release/Cosyee
@@ -111,6 +138,8 @@ jobs:
         run: |
           mkdir -p out
           cp client/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/Cosyee_${VERSION}_macos_universal.dmg"
+          cp client/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz "out/Cosyee_${VERSION}_macos_universal.app.tar.gz"
+          cp client/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig "out/Cosyee_${VERSION}_macos_universal.app.tar.gz.sig"
           ls -la out
       - uses: actions/upload-artifact@v4
         with: { name: macos, path: out/*, if-no-files-found: error }
@@ -259,6 +288,45 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: out, merge-multiple: true }
+      - name: 生成自动更新清单 latest.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const ver = process.env.VERSION;
+            const tag = process.env.TAG;
+            const repo = process.env.GITHUB_REPOSITORY;
+            const base = `https://github.com/${repo}/releases/download/${tag}`;
+            const winSig = fs.readFileSync(`out/Cosyee_${ver}_windows_x64_setup.exe.sig`, "utf8").trim();
+            const macSig = fs.readFileSync(`out/Cosyee_${ver}_macos_universal.app.tar.gz.sig`, "utf8").trim();
+            const macEntry = {
+              signature: macSig,
+              url: `${base}/Cosyee_${ver}_macos_universal.app.tar.gz`,
+            };
+            const manifest = {
+              version: ver,
+              notes: `Cosyee ${tag}`,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "windows-x86_64": {
+                  signature: winSig,
+                  url: `${base}/Cosyee_${ver}_windows_x64_setup.exe`,
+                },
+                "darwin-x86_64": macEntry,
+                "darwin-aarch64": macEntry,
+                // Android 不走 updater 插件，只用 url；signature 留空串是因为插件反序列化时每个平台都必须有该字段，缺了整个清单解析失败
+                "android-aarch64": {
+                  signature: "",
+                  url: `${base}/Cosyee_${ver}_android_arm64.apk`,
+                },
+              },
+            };
+            fs.writeFileSync("out/latest.json", JSON.stringify(manifest, null, 2) + "\n");
+          '
+          rm -f out/*.sig
+          cat out/latest.json
       - name: 发布
         env:
           GH_TOKEN: ${{ github.token }}
