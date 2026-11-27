@@ -260,6 +260,22 @@ describe('fork', () => {
     expect(fs.readdirSync(dir).length).toBe(before);
   });
 
+  it('插话（queued_command 附件，source_uuid 是消息 id）：从附件之前截断', async () => {
+    const SRC2 = 'dddddddd-0000-4000-8000-000000000005';
+    const S1 = '11111111-0000-4000-8000-0000000000b1';
+    const rows = [
+      { type: 'user', uuid: U1, parentUuid: null, sessionId: SRC2, cwd: CWD, message: { role: 'user', content: '第一问' } },
+      { type: 'assistant', uuid: 'asst-1', parentUuid: U1, sessionId: SRC2, message: { role: 'assistant', content: [] } },
+      { type: 'user', uuid: 'tr-1', parentUuid: 'asst-1', sessionId: SRC2, message: { role: 'user', content: [{ type: 'tool_result' }] } },
+      { type: 'attachment', uuid: 'snap-1', parentUuid: 'tr-1', sessionId: SRC2, attachment: { type: 'prompt_snapshot' } },
+      { type: 'attachment', uuid: 'q-1', parentUuid: 'snap-1', sessionId: SRC2, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: '插话', source_uuid: S1 } },
+      { type: 'assistant', uuid: 'asst-2', parentUuid: 'q-1', sessionId: SRC2, message: { role: 'assistant', content: [] } },
+    ];
+    fs.writeFileSync(path.join(dir, `${SRC2}.jsonl`), rows.map((l) => JSON.stringify(l)).join(NL) + NL);
+    const { sessionId } = await sessions.fork(SRC2, CWD, S1);
+    expect(read(sessionId).filter((e) => e.type !== 'custom-title' && e.type !== 'agent-name').map((e) => e.uuid)).toEqual([U1, 'asst-1', 'tr-1']);
+  });
+
   it('消息 id 不存在 404、格式不合法 400、会话不存在 404', async () => {
     await expect(sessions.fork(SRC, CWD, '11111111-0000-4000-8000-0000000000ff')).rejects.toMatchObject({ status: 404 });
     await expect(sessions.fork(SRC, CWD, 'not-a-uuid')).rejects.toMatchObject({ status: 400 });

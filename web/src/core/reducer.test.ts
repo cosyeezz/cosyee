@@ -477,6 +477,40 @@ describe('实时：消息 id / steering / 中断', () => {
   });
 });
 
+describe('实时：result 已到、只剩后台任务', () => {
+  const text = (t: string, id = 'm1') => ({ type: 'assistant', message: { id, role: 'assistant', content: [{ type: 'text', text: t }] } });
+  const bg = (n: number) => ({ type: 'system', subtype: 'background_tasks_changed', tasks: Array.from({ length: n }, (_, i) => ({ id: `b${i}` })) });
+  const res = { type: 'result', subtype: 'success', is_error: false };
+  it('后台任务还在：轮不结束但标记 awaitingBackground；任务结束后收尾为 done', () => {
+    let s = applyEvent(initState(), user('开浏览器'), 1);
+    s = applyEvent(s, bg(1), 2);
+    s = applyEvent(s, text('已经打开，请登录'), 3);
+    s = applyEvent(s, res, 4);
+    expect(s.turns[0].status).toBe('running');
+    expect(s.turns[0].awaitingBackground).toBe(true);
+    s = applyEvent(s, bg(0), 5);
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[0].awaitingBackground).toBeUndefined();
+  });
+  it('CLI 自动续轮有新的主代理内容：清掉标记', () => {
+    let s = applyEvent(initState(), user('x'), 1);
+    s = applyEvent(s, bg(1), 2);
+    s = applyEvent(s, text('第一次交付'), 3);
+    s = applyEvent(s, res, 4);
+    s = applyEvent(s, { type: 'system', subtype: 'init' }, 5);
+    s = applyEvent(s, text('续轮', 'm2'), 6);
+    expect(s.turns[0].status).toBe('running');
+    expect(s.turns[0].awaitingBackground).toBeUndefined();
+  });
+  it('没有后台任务：直接 done，不设标记', () => {
+    let s = applyEvent(initState(), user('x'), 1);
+    s = applyEvent(s, text('好了'), 2);
+    s = applyEvent(s, res, 3);
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[0].awaitingBackground).toBeUndefined();
+  });
+});
+
 describe('applyReplay：带 id 的去重', () => {
   const ev = [
     { type: 'cosyee_user', text: '第一条', id: 'u1', mode: 'start', at: 1 },

@@ -161,6 +161,10 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
   switch (turn.status) {
     case 'understanding':
     case 'running': {
+      // 答复已交付，只剩后台任务（run_in_background 的命令 / 子代理）在跑：不再显示成执行中
+      if (turn.awaitingBackground) {
+        return { kind: 'done', text: '已交付', meta: `后台任务运行中 · 已运行 ${formatDuration(now - turn.startedAt)}` };
+      }
       const parts = [formatDuration(now - turn.startedAt)];
       const sub = subagentProgress(turn.subagents);
       if (sub.total > 0 && !sub.allDone) parts.push(`子代理 ${sub.finished}/${sub.total}`);
@@ -195,10 +199,11 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
  * 状态行下方的交付文字。这里只放「交付」，不放执行过程：
  * 执行中一律为空——一段文字是过程叙述还是最终交付，只有回合结束才能回头确认（最后一段才是交付），
  * 边写边显示的话，后面一旦跟了工具调用就得撤掉，那段话会一闪而逝。过程由状态行（单行）与展开区承载。
- * 回合结束后：折叠 = answer，没有则 steps 里最后一段文字；展开时展开区已列出所有步骤，只给 answer，避免重复。
+ * 回合结束（或 result 已到、只在等后台任务，见 Turn.awaitingBackground）后：折叠 = answer，没有则 steps 里最后一段文字；展开时展开区已列出所有步骤，只给 answer，避免重复。
  */
-export function getLiveText(turn: Pick<Turn, 'answer' | 'steps' | 'status'>, expanded: boolean): string {
-  if (isTurnActive(turn)) return '';
+export function getLiveText(turn: Pick<Turn, 'answer' | 'steps' | 'status' | 'awaitingBackground'>, expanded: boolean): string {
+  // result 已到、只在等后台任务：答复已经确定，照常交付
+  if (isTurnActive(turn) && !turn.awaitingBackground) return '';
   if (turn.answer) return turn.answer;
   if (expanded) return '';
   for (let i = turn.steps.length - 1; i >= 0; i--) {
@@ -359,7 +364,9 @@ export function runParams(run: SubagentRun, cfg?: SubagentConfig | null): { mode
     }
     return { model, effort };
   }
-  return { model: model ?? cfg.native.model, effort: effort ?? cfg.native.effort };
+  // 与服务端 PreToolUse 钩子一致：类型单独配置优先于原生默认值（subagent_type 缺省视为 general-purpose）
+  const ov = cfg.native.agents?.[run.subagentType || 'general-purpose'];
+  return { model: model ?? (ov?.model || cfg.native.model), effort: effort ?? (ov?.effort || cfg.native.effort) };
 }
 
 // ───────────── AskUserQuestion / ExitPlanMode 的展示 ─────────────

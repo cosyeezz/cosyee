@@ -97,6 +97,15 @@ describe('toContextUsage', () => {
     expect(back.skills).toEqual([{ name: 'anthropic-skills:xlsx', mode: 'on', tokens: 9, source: 'syncedSkills' }]);
   });
 
+  it('skills：内置的 cosyee:browser 标为锁定，始终是「开」', () => {
+    const r = toContextUsage({ skills: { skillFrontmatter: [{ name: 'browser', source: 'plugin', tokens: 120 }] } }, 1, {
+      initSkills: ['cosyee:browser'],
+      overrides: { 'cosyee:browser': 'off', browser: 'off' },
+      cosyeeOverrides: { 'cosyee:browser': 'user-invocable-only' },
+    });
+    expect(r.skills).toEqual([{ name: 'cosyee:browser', mode: 'on', tokens: 120, source: 'plugin', locked: true }]);
+  });
+
   it('skills：磁盘上的 skill 一并列出（含已关闭 / 还没加载的），标出能否移除；刚移除的藏起来', () => {
     const disk = [
       { name: 'mine', source: 'userSettings' as const, dir: '/u/mine', removable: true },

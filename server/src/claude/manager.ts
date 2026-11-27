@@ -11,6 +11,8 @@ import {
   type SubagentState,
   formatDelegateNotification,
   hasModelMapping,
+  BUILTIN_SKILLS,
+  isBuiltinSkill,
 } from '@cosyee/shared';
 import type { AppliedSettings, ClientMsg, ContextUsage, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
 import { readApiConfig } from '../accounts/api-config.js';
@@ -908,6 +910,8 @@ export class Manager {
   private skillModes(sessionId: string, cwd: string | null): Record<string, SkillMode> {
     const stored = this.skills?.get() ?? {};
     const out: Record<string, SkillMode> = { ...stored };
+    // 内置 skill 始终开启：盖过以前存下的「手动 / 关」和用户 settings.json 里的设置
+    for (const n of BUILTIN_SKILLS) out[n] = 'on';
     if (!this.skills || OFFICIAL_BROWSER_SKILL in stored) return out;
     for (const d of this.scanDiskSkills(sessionId, cwd) ?? []) {
       if (skillBase(d.name) === OFFICIAL_BROWSER_SKILL && !(d.name in stored)) out[d.name] = 'off';
@@ -1173,9 +1177,10 @@ export class Manager {
   /** 批量设置（勾选批量操作 / 撤销用）：只落盘、下发、采集一次 */
   async setSkillModes(modes: Record<string, SkillMode>): Promise<void> {
     if (!this.skills) throw new HttpError(500, '未启用 skill 设置');
-    const entries = Object.entries(modes);
+    // 内置 skill 不能改状态：忽略
+    const entries = Object.entries(modes).filter(([n]) => !isBuiltinSkill(n));
     if (entries.length === 0) return;
-    this.skills.setMany(modes);
+    this.skills.setMany(Object.fromEntries(entries));
     const alive = [...this.runners.values()].filter((r) => r.alive);
     await Promise.all(
       alive.map(async (r) => {

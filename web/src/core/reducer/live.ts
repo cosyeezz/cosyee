@@ -280,6 +280,8 @@ function applyResult(s0: ConvState, e: Record<string, unknown>, now: number): Co
       // 成功：还有后台子代理/任务在跑时先不结束，等它们完成（CLI 会自动续轮）
       d.book.pending = true;
       maybeFinishPending(d);
+      // 没能收尾：答复已经交付，只是在等后台任务，UI 要能看到答复
+      if (isActive(d.turn)) d.turn.awaitingBackground = true;
     }
   }
   return commit(s, d);

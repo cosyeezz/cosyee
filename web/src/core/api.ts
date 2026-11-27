@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgyAccountList, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -197,6 +197,10 @@ export const api = {
   browserDeleteProfile: (id: string) => req<{ ok: true }>('POST', `/api/browser/profiles/${encodeURIComponent(id)}/delete`),
   browserStopProfile: (id: string) => req<{ ok: true }>('POST', `/api/browser/profiles/${encodeURIComponent(id)}/stop`),
   browserOpen: (profile: string, url: string) => req<{ url: string | null; title: string | null }>('POST', '/api/browser/open', { profile, url }),
+  /** 登录窗口：open 在本机桌面用同一个身份打开有界面 Chrome（Google 等拦截内置浏览器的登录），close 关掉它回到内置 */
+  browserHistory: (profile: string, q: string) =>
+    req<{ items: BrowserHistoryItem[] }>('GET', `/api/browser/history?profile=${encodeURIComponent(profile)}&q=${encodeURIComponent(q)}`),
+  browserWindow: (profile: string, action: 'open' | 'close') => req<{ ok: true }>('POST', '/api/browser/window', { profile, action }),
   browserNav: (profile: string, action: 'back' | 'forward' | 'reload') => req<{ ok: true }>('POST', '/api/browser/nav', { profile, action }),
   browserViewport: (profile: string, width: number, height: number, scale: number) =>
     req<{ ok: true }>('POST', '/api/browser/viewport', { profile, width, height, scale }),
@@ -219,12 +223,37 @@ export const api = {
   revealFile: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/reveal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   openTerminalAt: (t: FileTarget) => req<{ ok: true }>('POST', '/api/files/terminal', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
   openFile: (t: FileTarget) => req<{ ok: true; revealed: boolean }>('POST', '/api/files/open', { session: t.session, cwd: t.cwd, path: localPathHref(t.path) }),
-  /** 在会话工作目录里运行代码块；signal 中止请求后服务端会杀掉进程 */
-  execSnippet: async (t: { session: string; cwd?: string; lang: string; code: string }, signal?: AbortSignal): Promise<ExecResult> => {
-    const res = await fetch('/api/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(t), signal });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
-    return data as ExecResult;
+  /**
+   * 在会话工作目录里运行代码块：流式模式，不限时，输出逐块交给 onOutput；
+   * 结果里的 stdout / stderr 为空（输出已经随 onOutput 给过）。signal 中止请求后服务端会杀掉进程。
+   */
+  execSnippet: async (
+    t: { session: string; cwd?: string; lang: string; code: string },
+    onOutput: (stream: 'stdout' | 'stderr', data: string) => void,
+    signal?: AbortSignal,
+  ): Promise<ExecResult> => {
+    const res = await fetch('/api/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...t, stream: true }), signal });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
+    }
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (value) buf += value;
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const m = JSON.parse(line) as ExecStreamMsg;
+        if (m.t === 'out') onOutput(m.stream, m.data);
+        else if (m.t === 'end') return m.result;
+        else throw new Error(m.message);
+      }
+      if (done) throw new Error('连接中断');
+    }
   },
   context: (id: string) => req<ContextUsage | null>('GET', `/api/context/${id}`),
   /**

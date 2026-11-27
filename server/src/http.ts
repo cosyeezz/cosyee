@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXEC_CODE_LIMIT, SKILL_MODES, type Account, type Bootstrap, type BrowserPickResult, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
+import { EXEC_CODE_LIMIT, SKILL_MODES, snippetShell, type Account, type ExecStreamMsg, type Bootstrap, type BrowserPickResult, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
 import type { AgyAccounts } from './accounts/agy.js';
 import { type Accounts, RunningError } from './accounts/index.js';
 import type { KiroService } from './kiro/index.js';
@@ -450,6 +450,10 @@ export function createHandler(deps: HttpDeps) {
       return { x, y };
     };
     if (method === 'GET' && p === '/api/browser') return sendJson(res, 200, browser.status());
+    if (method === 'GET' && p === '/api/browser/history') {
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      return sendJson(res, 200, { items: browser.history(q.get('q') ?? '', q.get('profile') || undefined) });
+    }
     // 身份管理：新建 / 改名 / 删除（连登录状态一起删）/ 停止（关掉它的浏览器，登录状态保留）
     if (method === 'POST' && p === '/api/browser/profiles') return sendJson(res, 200, browser.createProfile((await readJson(req)).name));
     let pm: RegExpExecArray | null;
@@ -467,6 +471,16 @@ export function createHandler(deps: HttpDeps) {
       const b = await readJson(req);
       if (typeof b.url !== 'string') throw new HttpError(400, '缺少 url');
       return sendJson(res, 200, await session(b).open(b.url));
+    }
+    // 登录窗口：在本机桌面打开有界面的 Chrome（同一个身份）登录，点「登录完成」后回到内置；远程连接看不到桌面，不允许
+    if (method === 'POST' && p === '/api/browser/window') {
+      const b = await readJson(req);
+      if (b.action !== 'open' && b.action !== 'close') throw new HttpError(400, 'action 不合法');
+      if (b.action === 'open') {
+        onlyLocal(req);
+        await session(b).openWindow();
+      } else await session(b).closeWindow();
+      return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST' && p === '/api/browser/nav') {
       const b = await readJson(req);
@@ -1014,6 +1028,23 @@ export function createHandler(deps: HttpDeps) {
       const ac = new AbortController();
       const onClose = () => { if (!res.writableEnded) ac.abort(); }; // 客户端点「停止」或断开：杀掉进程
       res.on('close', onClose);
+      if (body.stream === true) {
+        // 流式：不限时，输出逐块推送（application/x-ndjson），直到进程退出或客户端停止 / 断开
+        if (!snippetShell(lang, process.platform)) throw new HttpError(400, `不支持运行 ${lang || '该'} 语言的代码`);
+        res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' });
+        res.setTimeout(0);
+        const send = (m: ExecStreamMsg) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(m) + '\n'); };
+        try {
+          const r = await runSnippet({ lang, code, cwd, signal: ac.signal, timeoutMs: 0, onOutput: (stream, data) => send({ t: 'out', stream, data }) });
+          send({ t: 'end', result: { ...r, stdout: '', stderr: '' } });
+        } catch (e) {
+          send({ t: 'error', message: e instanceof Error ? e.message : String(e) });
+        } finally {
+          res.off('close', onClose);
+          res.end();
+        }
+        return;
+      }
       try {
         return sendJson(res, 200, await runSnippet({ lang, code, cwd, signal: ac.signal }));
       } finally {

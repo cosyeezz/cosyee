@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { isRunnableLang, snippetShell } from '@cosyee/shared';
+import { guessSnippetLang, isRunnableLang, snippetShell } from '@cosyee/shared';
 import { findGitBash, runSnippet } from './exec.js';
 
 const isWin = process.platform === 'win32';
@@ -19,6 +19,17 @@ describe('可运行语言', () => {
     expect(snippetShell('cmd', 'linux')).toBeNull();
     expect(isRunnableLang('python', 'win32')).toBe(false);
     expect(isRunnableLang(undefined, 'win32')).toBe(false);
+  });
+  it('没标语言的命令：内容像命令才当 shell（Windows 上 PowerShell）', () => {
+    expect(guessSnippetLang(undefined, 'python3 -m http.server 8000', 'darwin')).toBe('bash');
+    expect(guessSnippetLang('text', 'cd dist\nnpx serve', 'linux')).toBe('bash');
+    expect(guessSnippetLang(undefined, './run.sh --watch', 'darwin')).toBe('bash');
+    expect(guessSnippetLang(undefined, 'python3 -m http.server 8000', 'win32')).toBe('powershell');
+    expect(guessSnippetLang(undefined, 'Hello world', 'darwin')).toBeUndefined();
+    expect(guessSnippetLang(undefined, 'git-lfs install', 'darwin')).toBeUndefined();
+    expect(guessSnippetLang(undefined, 'npm i\nnpm run build\nnpm test\nnpm start', 'darwin')).toBeUndefined();
+    expect(guessSnippetLang('python', 'print(1)', 'darwin')).toBeUndefined();
+    expect(guessSnippetLang(undefined, '   ', 'darwin')).toBeUndefined();
   });
   it('不支持的语言 400', async () => {
     await expect(runSnippet({ lang: 'python', code: 'print(1)', cwd })).rejects.toMatchObject({ status: 400 });
@@ -86,5 +97,18 @@ describe.runIf(!isWin)('类 Unix 上运行', () => {
   it('超时杀掉进程', async () => {
     const r = await runSnippet({ lang: 'sh', code: 'sleep 30', cwd, timeoutMs: 300 });
     expect(r.timedOut).toBe(true);
+  }, 15_000);
+  it('流式：不限时，输出边跑边回调，中止后结束', async () => {
+    const ac = new AbortController();
+    const got: string[] = [];
+    const p = runSnippet({
+      lang: 'bash', code: 'echo 第一行; echo oops >&2; sleep 30', cwd, timeoutMs: 0, signal: ac.signal,
+      onOutput: (stream, data) => { got.push(`${stream}:${data}`); if (got.join('').includes('oops')) ac.abort(); },
+    });
+    const r = await p;
+    expect(got.join('')).toContain('stdout:第一行');
+    expect(got.join('')).toContain('stderr:oops');
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).not.toBe(0);
   }, 15_000);
 });

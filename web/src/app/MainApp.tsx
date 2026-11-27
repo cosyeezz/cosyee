@@ -665,6 +665,15 @@ export function MainApp() {
     const dir = selCwd;
     const turn = shownTurns.find((t) => t.userId === targetId);
     const prefill = turn ? expandLabels(turn.userText, turn.attachments) : '';
+    // 第一条消息之前没有内容：分支就是同一工作目录下的空白新会话（沿用当前模型 / 思考强度），原文填回输入框
+    if (turns[0]?.userId === targetId) {
+      if (stay) return;
+      autoPick.current = false;
+      setSel(draftSel(dir));
+      setOpenSub(null);
+      composerRef.current?.restoreText(prefill, 'replace');
+      return;
+    }
     api.forkSession(sel.id, dir, targetId)
       .then(({ sessionId }) => {
         configs.current.set(sessionId, config); // 分支沿用当前会话此刻的模型 / 思考强度
@@ -676,7 +685,7 @@ export function MainApp() {
         composerRef.current?.restoreText(prefill, 'replace');
       })
       .catch((e) => flash(`分支失败：${errText(e)}`));
-  }, [sel, selCwd, shownTurns, config, selectSession, flash]);
+  }, [sel, selCwd, turns, shownTurns, config, selectSession, flash]);
 
   // ───────────── 上下文面板 ─────────────
 
@@ -1129,7 +1138,7 @@ export function MainApp() {
       session: selId,
       open: openPreview,
       platform: boot?.platform,
-      exec: (lang: string, code: string, signal: AbortSignal) => api.execSnippet({ session: selId, cwd: selDir, lang, code }, signal),
+      exec: (lang, code, onOutput, signal) => api.execSnippet({ session: selId, cwd: selDir, lang, code }, onOutput, signal),
       ...(remote
         ? {
             downloadUrl: (path: string) => api.fileDownloadUrl({ session: selId, cwd: selDir, path }),

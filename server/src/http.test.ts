@@ -272,6 +272,23 @@ describe('REST', () => {
     expect(j.stdout).toContain('exec-ok');
     expect(j.exitCode).toBe(0);
   }, 30_000);
+  it('POST /api/exec stream：按行返回输出和结束结果', async () => {
+    const id = '11111111-2222-4333-8444-777777777777';
+    const ws = path.join(tmp, 'ws1');
+    const lang = process.platform === 'win32' ? 'cmd' : 'sh';
+    const post = (body: unknown) =>
+      fetch(`${base}/api/exec`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect((await post({ session: id, cwd: ws, lang: 'python', code: 'print(1)', stream: true })).status).toBe(400);
+    const r = await post({ session: id, cwd: ws, lang, code: 'echo stream-ok', stream: true });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toContain('application/x-ndjson');
+    const msgs = (await r.text()).trim().split('\n').map((l) => JSON.parse(l));
+    expect(msgs.filter((m) => m.t === 'out').map((m) => m.data).join('')).toContain('stream-ok');
+    const end = msgs[msgs.length - 1];
+    expect(end.t).toBe('end');
+    expect(end.result.exitCode).toBe(0);
+    expect(end.result.stdout).toBe('');
+  }, 30_000);
   it('请求体超过 1MB 返回 413', async () => {
     const r = await fetch(`${base}/api/workspaces/current`, {
       method: 'POST',

@@ -544,7 +544,7 @@ export class Sessions {
   // ───────────── 分支（fork） ─────────────
 
   /**
-   * 从某条用户消息「之前」分支出一个新会话：把源记录里这条消息之前的行写成一份新的 <新id>.jsonl，
+   * 从某条用户消息（含插话）「之前」分支出一个新会话：把源记录里这条消息之前的行写成一份新的 <新id>.jsonl，
    * 每行的 sessionId 改成新 id（不改就会被 CLI 当作 stale_target）。源会话不受任何改动。
    *
    * 截断点取「最后一条对话消息（user / assistant / system）之后」：目标消息前面可能还跟着
@@ -579,7 +579,12 @@ export class Sessions {
         if (!line) continue;
         if (line.includes(targetId)) {
           const e = parseLine(line);
+          // 普通消息是 uuid 相同的 user 条目；插话（steering）在记录里没有 user 条目，只有 source_uuid 相同的 queued_command 附件
           if (e && e.type === 'user' && e.uuid === targetId) {
+            found = true;
+            break;
+          }
+          if (e && e.type === 'attachment' && e.attachment?.type === 'queued_command' && e.attachment.source_uuid === targetId) {
             found = true;
             break;
           }

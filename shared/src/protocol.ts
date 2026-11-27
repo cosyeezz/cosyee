@@ -470,6 +470,8 @@ export interface BrowserProfile {
 export interface BrowserProfileStatus extends BrowserProfile {
   /** 这个身份的后台浏览器是否在运行（各身份可以同时运行） */
   running: boolean;
+  /** 正在独立的有界面 Chrome 窗口里登录（Google 等网站拦截无界面浏览器的登录）；关掉窗口后回到内置 */
+  window: boolean;
   url: string | null;
   title: string | null;
   /** 正在看画面的窗口数 */
@@ -512,6 +514,12 @@ export interface BrowserPickResult {
   /** 插进输入框的一行定位文字 */
   text: string;
   element: BrowserElement;
+}
+
+/** GET /api/browser/history：地址栏的历史联想（读身份自己的 Chrome 历史） */
+export interface BrowserHistoryItem {
+  url: string;
+  title: string;
 }
 
 export interface ComponentList {
@@ -790,6 +798,9 @@ export interface ContextUsage {
  */
 export type SkillMode = 'on' | 'user-invocable-only' | 'off';
 export const SKILL_MODES: readonly SkillMode[] = ['on', 'user-invocable-only', 'off'];
+/** Cosyee 内置的 skill：始终开启，不能改状态（设置里存的值被忽略，界面上锁住） */
+export const BUILTIN_SKILLS: readonly string[] = ['cosyee:browser'];
+export const isBuiltinSkill = (name: string): boolean => BUILTIN_SKILLS.includes(name);
 
 export interface ContextSkill {
   /** CLI 里的名字（插件 skill 带前缀，如 anthropic-skills:pdf），也是设置状态时用的键 */
@@ -801,6 +812,8 @@ export interface ContextSkill {
   source: string | null;
   /** 磁盘上是用户级 / 项目级 skill，可以移除（插件、内置的不行）；读不到磁盘信息时不带 */
   removable?: boolean;
+  /** Cosyee 内置（BUILTIN_SKILLS）：始终开启，不能改状态 */
+  locked?: boolean;
   /** 在磁盘上找得到目录（用户级 / 项目级 / 已安装插件 / 云端同步），可以打开文件位置；读不到磁盘信息时不带 */
   onDisk?: boolean;
   /**

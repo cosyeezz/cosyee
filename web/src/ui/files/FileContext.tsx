@@ -28,8 +28,8 @@ export interface FilesApi {
   downloadUrl?: (path: string) => string;
   /** 服务端平台（决定哪些代码块语言能运行，例如 cmd 只在 Windows 上） */
   platform?: string;
-  /** 在会话工作目录里运行代码块（远程连接也有：输出回显在页面上） */
-  exec?: (lang: string, code: string, signal: AbortSignal) => Promise<ExecResult>;
+  /** 在会话工作目录里运行代码块（远程连接也有：输出回显在页面上）；不限时，输出逐块交给 onOutput，signal 中止即停止 */
+  exec?: (lang: string, code: string, onOutput: (stream: 'stdout' | 'stderr', data: string) => void, signal: AbortSignal) => Promise<ExecResult>;
 }
 
 export const FilesContext = createContext<FilesApi | null>(null);

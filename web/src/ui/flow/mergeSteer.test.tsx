@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SubagentRun, Turn } from '@cosyee/shared';
@@ -88,6 +88,26 @@ describe('ConversationView：插话合并', () => {
     act(() => root?.unmount());
     host?.remove();
     root = host = null;
+  });
+
+  it('每条气泡（含第一条和插话）都有分支；第一条只有「切过去」，插话分支带的是它自己的消息 id', () => {
+    const onFork = vi.fn();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<ConversationView turns={[a, b, c]} onFork={onFork} />));
+    const forks = [...host.querySelectorAll<HTMLButtonElement>('button[aria-label="从这条消息之前分支"]')];
+    expect(forks).toHaveLength(3);
+    const click = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    const rows = () => [...document.querySelectorAll('.cz-menu__row')];
+    click(forks[0]!);
+    expect(rows()).toHaveLength(1);
+    click(rows()[0]!);
+    expect(onFork).toHaveBeenLastCalledWith('u0', false);
+    click(forks[1]!);
+    expect(rows()).toHaveLength(2);
+    click(rows()[1]!);
+    expect(onFork).toHaveBeenLastCalledWith('u1', true);
   });
 
   it('三条气泡 + 一个状态行，没有「已完成」和过程文字；原来的轮 id 都能定位到', () => {

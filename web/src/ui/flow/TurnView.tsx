@@ -142,7 +142,7 @@ export const TurnView = memo(function TurnView({ turn }: TurnViewProps) {
     rowRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
   }, [open]);
 
-  // 交付文字：执行中为空，回合结束才出现（见 getLiveText）
+  // 交付文字：执行中为空，回合结束（或只剩后台任务）才出现（见 getLiveText）
   const delivered = getLiveText(turn, open);
 
   return (
@@ -158,7 +158,7 @@ export const TurnView = memo(function TurnView({ turn }: TurnViewProps) {
       )}
 
       {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
-      {delivered && !active && <AnswerActions turnId={turn.id} text={delivered} />}
+      {delivered && (!active || turn.awaitingBackground) && <AnswerActions turnId={turn.id} text={delivered} />}
     </div>
   );
 });

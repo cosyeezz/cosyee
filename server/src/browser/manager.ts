@@ -2,17 +2,20 @@
 // 支持多个「身份」：每个身份一个独立的 profile 目录和 agent-browser 会话（各自一个 Chrome，可同时运行），
 // 同一个网站可以在不同身份里登录不同账号。
 // 画面靠 agent-browser 自带的 stream（WebSocket 推 JPEG 帧、收鼠标键盘输入），本进程转发给前端；
-// 导航 / 视口 / 悬停 / 抓取元素走 CLI（命令很快，约 10ms；首次启动浏览器约 4s）。
+// 视口 / 悬停 / 抓取元素走 CLI（每条约 100ms，主要是起进程；首次启动浏览器约 4s），打开地址直接走 CDP（见 open）。
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { WebSocket } from 'ws';
-import type { BrowserHover, BrowserProfile, BrowserProfileStatus, BrowserStatus } from '@cosyee/shared';
+import type { BrowserHistoryItem, BrowserHover, BrowserProfile, BrowserProfileStatus, BrowserStatus } from '@cosyee/shared';
 import { cosyeeHome } from '../paths.js';
 import { HttpError } from '../workspaces.js';
 import type { BrowserInstall } from './install.js';
 import { parseRawPick, pickScript, type RawPick } from './elements.js';
+import { searchHistory } from './history.js';
+import { CHROME_ARGS } from './skill.js';
+import { findChrome, LoginWindow, WINDOW_MARKER } from './window.js';
 
 const NAMESPACE = 'cosyee';
 const SESSION = 'cosyee';
@@ -27,6 +30,8 @@ const KEEPALIVE_MS = 5 * 60_000;
 /** 前端可以发给浏览器的消息类型（其余丢弃） */
 const INPUT_TYPES = new Set(['input_mouse', 'input_keyboard', 'input_touch', 'ack']);
 const CLIENT_MSG_MAX = 64 * 1024;
+/** 窗口模式期间面板和 Claude 的浏览器命令都要等窗口关掉 */
+const WINDOW_BUSY = '这个身份正在独立的 Chrome 窗口里登录，在面板上点「登录完成」后会回到内置浏览器';
 
 export interface BrowserManagerOptions {
   install: BrowserInstall;
@@ -65,6 +70,64 @@ export function normalizeUrl(input: string): string {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, Math.round(v)));
 
+/** 只连本机的 CDP（地址来自 agent-browser） */
+const LOCAL_CDP = /^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+\//;
+/** 连 CDP、接上页面的时限：超时就退回 CLI */
+const CDP_CONNECT_MS = 5_000;
+/** 导航发出后最多等服务器响应这么久；超时不算失败，页面照常继续加载 */
+const CDP_NAV_WAIT_MS = 15_000;
+
+/**
+ * 用 CDP 让页面 targetId 跳到 url：Page.navigate 在服务器开始响应（或出错）时返回，不等整页 load。
+ * 导航没发出去（连不上、接不上页面、命令被拒）返回 null，调用方改用别的方式；发出去了返回 Chrome 报的错误（没有就是 null）。
+ */
+export function cdpNavigate(
+  cdpUrl: string,
+  targetId: string,
+  url: string,
+  timeouts: { connectMs?: number; navMs?: number } = {},
+): Promise<{ errorText: string | null } | null> {
+  return new Promise((resolve) => {
+    let sent = false;
+    let done = false;
+    const ws = new WebSocket(cdpUrl, { perMessageDeflate: false, maxPayload: 16 * 1024 * 1024 });
+    const finish = (r: { errorText: string | null } | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      ws.removeAllListeners('message');
+      ws.on('error', () => { /* 关闭中的错误不管 */ });
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+      else ws.terminate();
+      resolve(r);
+    };
+    let timer = setTimeout(() => finish(null), timeouts.connectMs ?? CDP_CONNECT_MS);
+    ws.on('error', () => finish(sent ? { errorText: null } : null));
+    ws.on('close', () => finish(sent ? { errorText: null } : null));
+    ws.on('open', () => ws.send(JSON.stringify({ id: 1, method: 'Target.attachToTarget', params: { targetId, flatten: true } })));
+    ws.on('message', (data) => {
+      let m: { id?: unknown; result?: Record<string, unknown>; error?: unknown };
+      try {
+        m = JSON.parse(String(data)) as typeof m;
+      } catch {
+        return;
+      }
+      if (m.id === 1) {
+        const sessionId = m.result?.sessionId;
+        if (m.error || typeof sessionId !== 'string') return finish(null);
+        ws.send(JSON.stringify({ id: 2, sessionId, method: 'Page.navigate', params: { url } }));
+        sent = true;
+        clearTimeout(timer);
+        timer = setTimeout(() => finish({ errorText: null }), timeouts.navMs ?? CDP_NAV_WAIT_MS);
+      } else if (m.id === 2) {
+        if (m.error) return finish(null);
+        const e = m.result?.errorText;
+        finish({ errorText: typeof e === 'string' && e ? e : null });
+      }
+    });
+  });
+}
+
 interface SessionOptions {
   install: BrowserInstall;
   namespace: string;
@@ -86,8 +149,16 @@ class BrowserSession {
   private clients = new Set<WebSocket>();
   private keepalive: NodeJS.Timeout | null = null;
   private last: { url: string | null; title: string | null } = { url: null, title: null };
+  /** 登录窗口（窗口模式）；为 null 时用无界面浏览器 */
+  private win: LoginWindow | null = null;
+  /** 窗口关掉后是否切回无界面并打开最后的地址（停止 / 删除身份时不切） */
+  private restoreAfterWindow = true;
 
   constructor(private readonly opts: SessionOptions) {}
+
+  inWindow(): boolean {
+    return this.win !== null;
+  }
 
   /** 程序路径（写进元素描述，让 Claude 能接着操作同一个浏览器） */
   binPath(): string | null {
@@ -101,7 +172,7 @@ class BrowserSession {
 
   /** 启动参数：每条命令都要一致，否则 agent-browser 会重启浏览器 */
   private launchArgs(withUa: boolean): string[] {
-    const args = ['--namespace', this.opts.namespace, '--session', this.opts.session, '--profile', this.opts.profileDir, '--idle-timeout', '1h'];
+    const args = ['--namespace', this.opts.namespace, '--session', this.opts.session, '--profile', this.opts.profileDir, '--idle-timeout', '1h', '--args', CHROME_ARGS];
     if (withUa && this.ua) args.push('--user-agent', this.ua);
     return args;
   }
@@ -168,6 +239,7 @@ class BrowserSession {
   }
 
   private async run(args: string[], timeoutMs = CMD_TIMEOUT_MS): Promise<Record<string, unknown>> {
+    if (this.win) throw new HttpError(409, WINDOW_BUSY);
     await this.ensureUa();
     return this.exec(args, timeoutMs);
   }
@@ -182,8 +254,57 @@ class BrowserSession {
     if (typeof d.title === 'string') this.last.title = d.title;
   }
 
-  status(): { running: boolean; url: string | null; title: string | null; viewers: number } {
-    return { running: this.started, url: this.last.url, title: this.last.title, viewers: this.clients.size };
+  status(): { running: boolean; window: boolean; url: string | null; title: string | null; viewers: number } {
+    return { running: this.started, window: this.win !== null, url: this.last.url, title: this.last.title, viewers: this.clients.size };
+  }
+
+  /**
+   * 切到窗口模式：关掉无界面 Chrome，用同一个 profile 打开有界面的 Chrome（见 window.ts），带上当前地址。
+   * 用户点「登录完成」（或自己退出 Chrome）后切回无界面，打开窗口里最后停留的地址。
+   */
+  openWindow(): Promise<void> {
+    return this.serial(async () => {
+      if (this.win) return;
+      const chrome = findChrome();
+      if (!chrome) throw new HttpError(409, '没有找到 Google Chrome：登录窗口需要本机装有 Chrome');
+      if (this.started) {
+        try {
+          this.remember(await this.run(['get', 'url']));
+        } catch { /* 用记下的地址 */ }
+      }
+      const url = this.last.url;
+      const w = new LoginWindow(chrome, this.opts.profileDir);
+      this.win = w;
+      this.restoreAfterWindow = true;
+      for (const c of this.clients) {
+        if (c.readyState === WebSocket.OPEN) c.send(JSON.stringify({ type: 'cosyee_window' }));
+        c.close(1000, 'window');
+      }
+      // 不看 started：服务重启后 agent-browser 的后台进程和无界面 Chrome 还在，started 却是 false。没在运行时 close 也是成功
+      await this.exec(['close'], CMD_TIMEOUT_MS).catch(() => ({}));
+      this.started = false;
+      this.lastViewport = '';
+      try {
+        await w.start(url);
+      } catch (e) {
+        this.win = null;
+        throw new HttpError(502, `打开登录窗口失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+      void w.done.then(async (last) => {
+        if (this.win !== w) return;
+        this.win = null;
+        if (last) this.last = { url: last, title: null };
+        if (this.restoreAfterWindow && last) await this.open(last).catch(() => { /* 面板重连时会再启动 */ });
+      });
+    });
+  }
+
+  /** 「登录完成」：正常关掉登录窗口（Cookie 写盘），等切回无界面 */
+  async closeWindow(): Promise<void> {
+    const w = this.win;
+    if (!w) return;
+    await w.close();
+    await w.done;
   }
 
   /** 启动（或复用）浏览器，确保画面推流已开，返回推流端口 */
@@ -198,13 +319,37 @@ class BrowserSession {
     });
   }
 
-  open(input: string): Promise<{ url: string | null; title: string | null }> {
+  /**
+   * 打开地址。agent-browser 的 open 要等整页 load 才返回（慢的网站好几秒），期间排队的视口、后退等命令都被堵住，
+   * 所以优先直接用 CDP 的 Page.navigate 跳转：服务器开始响应就返回，加载过程照常推画面。连不上 CDP 时退回 CLI 的 open。
+   */
+  async open(input: string): Promise<{ url: string | null; title: string | null }> {
     const url = normalizeUrl(input);
-    return this.serial(async () => {
-      const d = await this.run(['open', '--', url], OPEN_TIMEOUT_MS);
-      this.remember(d);
-      return { ...this.last };
-    });
+    const viaCli = () =>
+      this.serial(async () => {
+        this.remember(await this.run(['open', '--', url], OPEN_TIMEOUT_MS));
+        return { ...this.last };
+      });
+    // 只有查活动页和 CDP 地址在队列里（各约 10ms），跳转本身不占队列
+    const target = await this.serial(() => this.cdpTarget()).catch(() => null);
+    if (!target) return viaCli();
+    const r = await cdpNavigate(target.cdpUrl, target.targetId, url);
+    if (!r) return viaCli();
+    this.last = { url, title: null };
+    // ERR_ABORTED：被紧接着的另一次跳转顶掉了，不算失败
+    if (r.errorText && !/ERR_ABORTED/.test(r.errorText)) throw new HttpError(502, `打开失败：${r.errorText.slice(0, 200)}`);
+    return { ...this.last };
+  }
+
+  /** 活动页的 targetId 和浏览器的 CDP 地址（tab list 会在浏览器没启动时先启动它） */
+  private async cdpTarget(): Promise<{ cdpUrl: string; targetId: string } | null> {
+    const tabs = (await this.run(['tab', 'list'], OPEN_TIMEOUT_MS)).tabs;
+    const active = Array.isArray(tabs) ? (tabs as Record<string, unknown>[]).find((t) => t && t.active === true && t.type === 'page') : undefined;
+    const targetId = active?.targetId;
+    if (typeof targetId !== 'string' || !targetId) return null;
+    const cdpUrl = (await this.run(['get', 'cdp-url'])).cdpUrl;
+    if (typeof cdpUrl !== 'string' || !LOCAL_CDP.test(cdpUrl)) return null;
+    return { cdpUrl, targetId };
   }
 
   nav(action: 'back' | 'forward' | 'reload'): Promise<void> {
@@ -273,6 +418,10 @@ class BrowserSession {
   /** 关闭浏览器（更新程序前、停止或删除身份时调用） */
   async close(): Promise<void> {
     for (const c of this.clients) c.close(1001, 'closing');
+    if (this.win) {
+      this.restoreAfterWindow = false;
+      await this.closeWindow();
+    }
     if (!this.started || !this.binPath()) return;
     await this.serial(() => this.exec(['close'], CMD_TIMEOUT_MS).catch(() => ({})));
     this.started = false;
@@ -281,6 +430,13 @@ class BrowserSession {
 
   /** 前端画面连接：接到 agent-browser 的推流上，双向转发（前端只能发输入类消息） */
   async attach(client: WebSocket): Promise<void> {
+    if (this.win) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 'cosyee_window' }));
+        client.close(1000, 'window');
+      }
+      return;
+    }
     this.clients.add(client);
     this.syncKeepalive();
     let upstream: WebSocket | null = null;
@@ -341,6 +497,7 @@ class BrowserSession {
   }
 
   dispose(): void {
+    this.win?.kill();
     if (this.keepalive) clearInterval(this.keepalive);
     this.keepalive = null;
     for (const c of this.clients) c.terminate();
@@ -365,7 +522,16 @@ export class BrowserManager {
   private sessions = new Map<string, BrowserSession>();
   private profiles: BrowserProfile[] | null = null;
 
-  constructor(private readonly opts: BrowserManagerOptions) {}
+  constructor(private readonly opts: BrowserManagerOptions) {
+    this.clearWindowMarkers();
+  }
+
+  /** 上次服务退出时没收尾的窗口标记：不清掉的话包装脚本会一直以为在窗口模式 */
+  private clearWindowMarkers(): void {
+    try {
+      for (const p of this.list()) fs.rmSync(path.join(this.profileDir(p.id), WINDOW_MARKER), { force: true });
+    } catch { /* 数据目录还没有 */ }
+  }
 
   private dataDir(): string {
     return this.opts.dataDir ? this.opts.dataDir() : path.join(cosyeeHome(), 'browser');
@@ -417,6 +583,12 @@ export class BrowserManager {
     return { id: p.id, name: p.name };
   }
 
+  /** 地址栏的历史联想：这个身份的 Chrome 访问过、和输入匹配的网址 */
+  history(query: string, id: string = DEFAULT_PROFILE): BrowserHistoryItem[] {
+    this.find(id);
+    return searchHistory(this.profileDir(id), query);
+  }
+
   /** 身份对应的浏览器；没传身份用默认身份 */
   session(id: string = DEFAULT_PROFILE): BrowserSession {
     this.find(id);
@@ -436,7 +608,7 @@ export class BrowserManager {
 
   private profileStatus(p: BrowserProfile): BrowserProfileStatus {
     const s = this.sessions.get(p.id)?.status();
-    return { id: p.id, name: p.name, running: s?.running ?? false, url: s?.url ?? null, title: s?.title ?? null, viewers: s?.viewers ?? 0 };
+    return { id: p.id, name: p.name, running: s?.running ?? false, window: s?.window ?? false, url: s?.url ?? null, title: s?.title ?? null, viewers: s?.viewers ?? 0 };
   }
 
   status(): BrowserStatus {

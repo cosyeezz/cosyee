@@ -47,6 +47,15 @@ describe('子代理的模型 / 思考等级', () => {
     expect(runParams(run(), agyCfg)).toEqual({ model: 'sonnet', effort: 'medium' });
     expect(runParams(run({ model: 'opus', effort: 'max' }), agyCfg)).toEqual({ model: 'opus', effort: 'max' });
     expect(runParams(run({ subagentType: 'fork' }), agyCfg)).toEqual({});
+    // 原生：类型单独配置优先于默认值，没配的字段回落到默认
+    const nativeOvCfg: SubagentConfig = {
+      ...DEFAULT_SUBAGENTS,
+      native: { model: 'sonnet', effort: 'high', agents: { Explore: { model: null, effort: 'medium' }, 'general-purpose': { model: 'opus', effort: null } } },
+    };
+    expect(runParams(run({ subagentType: 'Explore' }), nativeOvCfg)).toEqual({ model: 'sonnet', effort: 'medium' });
+    expect(runParams(run(), nativeOvCfg)).toEqual({ model: 'opus', effort: 'high' });
+    expect(runParams(run({ subagentType: 'Plan' }), nativeOvCfg)).toEqual({ model: 'sonnet', effort: 'high' });
+    expect(runParams(run({ subagentType: 'Explore', effort: 'low' }), nativeOvCfg)).toEqual({ model: 'sonnet', effort: 'low' });
     // 委派任务（当前为 agy）：用 agy 设置；已知实际模型不补强度
     expect(runParams(run({ delegate: true, subagentType: 'Explore' }), agyCfg)).toEqual({ model: 'neon', effort: 'low' });
     expect(runParams(run({ delegate: true, subagentType: 'Explore', model: 'orch' }), agyCfg)).toEqual({ model: 'orch' });
@@ -135,6 +144,10 @@ describe('getStatusLine', () => {
       text: '正在理解问题',
       meta: '12 秒',
     });
+  });
+  it('result 已到、只在等后台任务：显示已交付，不再显示执行中', () => {
+    const t = { ...baseTurn, status: 'running' as const, awaitingBackground: true, steps: [text('好了')] };
+    expect(getStatusLine(t, 65_000)).toEqual({ kind: 'done', text: '已交付', meta: '后台任务运行中 · 已运行 1 分 5 秒' });
   });
   it('思考和工具调用不改变状态：没有文本时仍是理解中', () => {
     const t = { ...baseTurn, steps: [thinking, tool] };
@@ -253,6 +266,10 @@ describe('getLiveText', () => {
   it('结束后展开：只给 answer，避免与展开区重复', () => {
     expect(getLiveText({ answer: '', steps, ...done }, true)).toBe('');
     expect(getLiveText({ answer: '最终答复', steps, ...done }, true)).toBe('最终答复');
+  });
+  it('result 已到、只在等后台任务：照常交付', () => {
+    expect(getLiveText({ answer: '', steps, status: 'running', awaitingBackground: true }, false)).toBe('第二段');
+    expect(getLiveText({ answer: '最终答复', steps, status: 'running', awaitingBackground: true }, true)).toBe('最终答复');
   });
   it('中断 / 出错：已写出的部分仍然显示', () => {
     expect(getLiveText({ answer: '写到一半', steps, status: 'interrupted' }, false)).toBe('写到一半');

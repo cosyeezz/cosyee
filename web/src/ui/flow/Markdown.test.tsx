@@ -245,16 +245,33 @@ describe('代码块运行按钮', () => {
     expect(runBtn(mount('```cmd\ndir\n```', { ...files, platform: 'linux' }))).toBeUndefined();
   });
 
+  it('没标语言但内容像命令时也显示「运行」，用平台默认 shell；普通文本不显示', async () => {
+    const exec = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1 }));
+    const files = { ...makeFiles(), platform: 'darwin', exec };
+    const el = mount('```\npython3 -m http.server 8000\n```', files);
+    expect(el.querySelector('.cz-flow__code-lang')?.textContent).toBe('text');
+    expect(runBtn(el)!.title).toContain('Bash');
+    await act(async () => runBtn(el)!.click());
+    expect(exec).toHaveBeenCalledWith('bash', 'python3 -m http.server 8000', expect.any(Function), expect.any(AbortSignal));
+    act(() => root?.unmount());
+    expect(runBtn(mount('```\nHello world\n```', files))).toBeUndefined();
+  });
+
   it('点「运行」调用 exec，结果显示在代码块下方，可收起', async () => {
-    const exec = vi.fn(async () => ({ exitCode: 0, stdout: 'hello\n', stderr: 'warn!', timedOut: false, truncated: false, durationMs: 42 }));
+    const exec = vi.fn(async (_l: string, _c: string, onOutput: (s: 'stdout' | 'stderr', d: string) => void) => {
+      onOutput('stdout', 'hel');
+      onOutput('stdout', 'lo\n');
+      onOutput('stderr', 'warn!');
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 42 };
+    });
     const el = mount('```powershell\nstart ms-settings:easeofaccess-visualeffects\n```', { ...makeFiles(), platform: 'win32', exec });
     const btn = runBtn(el)!;
     expect(btn.title).toContain('F:\\proj');
     expect(btn.title).toContain('PowerShell');
     await act(async () => btn.click());
-    expect(exec).toHaveBeenCalledWith('powershell', 'start ms-settings:easeofaccess-visualeffects', expect.any(AbortSignal));
-    expect(el.querySelector('.cz-flow__run-out')?.textContent).toBe('hello');
-    expect(el.querySelector('.cz-flow__run-err')?.textContent).toBe('warn!');
+    expect(exec).toHaveBeenCalledWith('powershell', 'start ms-settings:easeofaccess-visualeffects', expect.any(Function), expect.any(AbortSignal));
+    expect(el.querySelector('.cz-flow__run-out')?.textContent).toBe('hello\nwarn!');
+    expect(el.querySelector('.cz-flow__run-errtext')?.textContent).toBe('warn!');
     expect(el.querySelector('.cz-flow__run-status')?.textContent).toBe('退出码 0');
     act(() => el.querySelector<HTMLButtonElement>('[aria-label="收起运行结果"]')!.click());
     expect(el.querySelector('.cz-flow__run')).toBeNull();
@@ -262,16 +279,34 @@ describe('代码块运行按钮', () => {
 
   it('运行中按钮变「停止」，点了中止请求并显示「已停止」', async () => {
     let signal: AbortSignal | undefined;
-    const exec = vi.fn((_l: string, _c: string, s: AbortSignal) => {
+    let emit: ((s: 'stdout' | 'stderr', d: string) => void) | undefined;
+    const exec = vi.fn((_l: string, _c: string, onOutput: (s: 'stdout' | 'stderr', d: string) => void, s: AbortSignal) => {
       signal = s;
+      emit = onOutput;
       return new Promise<never>((_, reject) => s.addEventListener('abort', () => reject(new Error('aborted'))));
     });
     const el = mount('```bash\nsleep 100\n```', { ...makeFiles(), platform: 'linux', exec });
     await act(async () => runBtn(el)!.click());
     expect(runBtn(el)!.textContent).toBe('停止');
+    expect(el.querySelector('.cz-flow__run-status')?.textContent).toBe('运行中…');
+    act(() => emit!('stdout', 'Serving HTTP on :: port 8000\n'));
+    expect(el.querySelector('.cz-flow__run-out')?.textContent).toContain('Serving HTTP');
     await act(async () => runBtn(el)!.click());
     expect(signal?.aborted).toBe(true);
     expect(runBtn(el)!.textContent).toBe('运行');
     expect(el.querySelector('.cz-flow__run-status')?.textContent).toBe('已停止');
+    expect(el.querySelector('.cz-flow__run-out')?.textContent).toContain('Serving HTTP');
+  });
+
+  it('代码块卸载时中止运行', async () => {
+    let signal: AbortSignal | undefined;
+    const exec = vi.fn((_l: string, _c: string, _o: unknown, s: AbortSignal) => {
+      signal = s;
+      return new Promise<never>((_, reject) => s.addEventListener('abort', () => reject(new Error('aborted'))));
+    });
+    const el = mount('```bash\nsleep 100\n```', { ...makeFiles(), platform: 'linux', exec });
+    await act(async () => runBtn(el)!.click());
+    act(() => root?.unmount());
+    expect(signal?.aborted).toBe(true);
   });
 });

@@ -3,7 +3,7 @@
 import { DELEGATE_AUX_TOOL_NAMES, DELEGATE_TOOL_NAME, DELEGATE_TOOLS, MCP_SERVER } from './delegate/mcp.js';
 import type { DiskSkill } from './skillsDisk.js';
 import { allocateLargestRemainder, classifyTools, type TranscriptToolState, weightOfTool } from './toolLoad.js';
-import type { ContextMcpServer, ContextSkill, ContextUsage, SkillMode, ToolLoadEntry, ToolLoadSource, ToolTokenEntry } from '@cosyee/shared';
+import { isBuiltinSkill, type ContextMcpServer, type ContextSkill, type ContextUsage, type SkillMode, type ToolLoadEntry, type ToolLoadSource, type ToolTokenEntry } from '@cosyee/shared';
 
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -66,7 +66,7 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
     ...(extra.overrides && typeof extra.overrides === 'object' ? extra.overrides : {}),
     ...(extra.cosyeeOverrides ?? {}),
   };
-  const modeOf = (name: string): SkillMode => toMode(overrides[name]) ?? toMode(overrides[skillBase(name)]) ?? 'on';
+  const modeOf = (name: string): SkillMode => isBuiltinSkill(name) ? 'on' : toMode(overrides[name]) ?? toMode(overrides[skillBase(name)]) ?? 'on';
 
   const descOf = (name: string): { description?: string } => {
     const d = extra.skillDescriptions?.get(name) ?? extra.skillDescriptions?.get(skillBase(name));
@@ -87,6 +87,7 @@ function buildSkills(raw: Raw, extra: ContextExtra): ContextSkill[] {
       mode,
       tokens: f && mode === 'on' ? num(f.tokens) : null,
       source: typeof f?.source === 'string' ? f.source : (disk.get(name)?.source ?? (name.includes(':') ? 'plugin' : null)),
+      ...(isBuiltinSkill(name) ? { locked: true } : {}),
       ...(extra.diskSkills ? { removable: disk.get(name)?.removable === true, onDisk: disk.has(name) || !!synced?.has(name) } : {}),
       ...descOf(name),
     });

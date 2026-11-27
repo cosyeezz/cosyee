@@ -21,6 +21,14 @@ export interface BrowserPluginOptions {
   platform?: NodeJS.Platform;
 }
 
+/**
+ * 传给 Chrome 的启动参数（agent-browser --args）。面板和包装脚本必须一致，否则 agent-browser 会重启浏览器。
+ * Chrome 154 起默认「始终使用安全连接」：http 地址先升级成 https，升级失败就弹警告页，无界面浏览器里直接报
+ * net::ERR_BLOCKED_BY_CLIENT，只开 http 的内网站点打不开。HttpsUpgrades 关自动升级，HttpsFirstBalancedModeAutoEnable 关警告页。
+ * 这条 --disable-features 排在 agent-browser 自带的 --disable-features=Translate 后面、会覆盖它，所以要把 Translate 带上。
+ */
+export const CHROME_ARGS = '--disable-features=Translate,HttpsUpgrades,HttpsFirstBalancedModeAutoEnable';
+
 /** sh 单引号转义 */
 export const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -45,6 +53,7 @@ export function wrapperScript(p: WrapperPaths): string {
 BIN=${p.bin ? shq(p.bin) : "''"}
 DATA=${shq(p.dataDir)}
 SKILLS=${shq(p.skillsDir)}
+ARGS=${shq(CHROME_ARGS)}
 
 if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   echo "Cosyee 内置浏览器还没有安装：请用户在 Cosyee 的浏览器面板（Mac ⇧⌘P / Windows Ctrl+Shift+P）里点「安装」。" >&2
@@ -75,7 +84,7 @@ esac
 # 启动参数由本脚本固定：命令里再带这些会让浏览器重启、面板断开，或者开到别的浏览器上
 for a in "$@"; do
   case "$a" in
-    --session|--session=*|--namespace|--namespace=*|--profile|--profile=*|--user-agent|--user-agent=*|--idle-timeout|--idle-timeout=*|--cdp|--cdp=*|--auto-connect|--headed|--executable-path|--executable-path=*|--restore|--restore=*)
+    --session|--session=*|--namespace|--namespace=*|--profile|--profile=*|--user-agent|--user-agent=*|--idle-timeout|--idle-timeout=*|--cdp|--cdp=*|--auto-connect|--headed|--executable-path|--executable-path=*|--restore|--restore=*|--args|--args=*)
       echo "不要带 \${a}：会话、身份和启动参数由 cosyee-browser 固定（换身份用开头的 --profile <id>）。" >&2; exit 2 ;;
   esac
 done
@@ -89,10 +98,15 @@ else
 fi
 (umask 077; mkdir -p "$DIR")
 
+# 用户正在独立的 Chrome 窗口里登录这个身份（同一个 profile 同时只能开一个 Chrome）：等用户点「登录完成」
+if [ -f "$DIR/CosyeeWindow" ]; then
+  echo "用户正在独立的 Chrome 窗口里登录这个身份，内置浏览器暂时不可用。请等用户登录完、在面板上点「登录完成」后再继续。" >&2; exit 4
+fi
+
 # 和面板一样把 HeadlessChrome 换成 Chrome 作为固定 UA（不少网站拦无界面浏览器）；面板首次运行时也会写这个文件
 UA=$(head -n 1 "$DATA/ua.txt" 2>/dev/null)
 if [ -z "$UA" ]; then
-  REAL=$("$BIN" --json --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h eval 'navigator.userAgent' 2>/dev/null \\
+  REAL=$("$BIN" --json --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h --args "$ARGS" eval 'navigator.userAgent' 2>/dev/null \\
     | sed -n 's/.*"result":"\\([^"\\\\]*\\)".*/\\1/p' | tail -n 1)
   if [ -n "$REAL" ]; then
     UA=$(printf '%s' "$REAL" | sed 's#HeadlessChrome/#Chrome/#g')
@@ -101,9 +115,9 @@ if [ -z "$UA" ]; then
 fi
 
 if [ -n "$UA" ]; then
-  exec "$BIN" --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h --user-agent "$UA" "$@"
+  exec "$BIN" --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h --args "$ARGS" --user-agent "$UA" "$@"
 fi
-exec "$BIN" --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h "$@"
+exec "$BIN" --namespace cosyee --session "$SESSION" --profile "$DIR" --idle-timeout 1h --args "$ARGS" "$@"
 `;
 }
 
@@ -184,6 +198,7 @@ ${W} skills get electron                   # 读某一个
 每个身份是一份独立的浏览器数据：同一个网站可以在不同身份里登录不同账号，多个身份可以同时运行。\`${W} profiles\` 列出身份（id 和名称），默认身份的 id 是 \`default\`。用户说「用小号」之类时，按名称找到 id 再用 \`--profile\`。
 
 - 需要登录的网站：先打开看看是否已经登录（登录状态是保存着的）。没登录时，让用户在 Cosyee 浏览器面板里自己登录（输入密码、扫码、短信验证码、二次验证都由用户完成），登录好告诉你后再继续。不要向用户索要密码，也不要把密码写进命令。
+- Google 账号等会拦截内置浏览器的登录（提示「此浏览器或应用可能不安全」）：让用户点面板工具栏的「窗口登录」，在弹出的 Chrome 窗口里登录，登录好后点面板上的「登录完成」就回到内置浏览器，登录状态是同一份。窗口开着时包装脚本会报错退出（退出码 4），等用户说登录好了再继续。
 - 登录后可以照常读取和操作网站内容（订单、后台、控制台、数据报表等），只做用户要求的事；提交、付款、发消息、删除这类有外部影响的操作，先向用户确认。
 - 新建、改名、删除身份只能由用户在面板里操作；你不要删除或改动身份目录里的文件。
 

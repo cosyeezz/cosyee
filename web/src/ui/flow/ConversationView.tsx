@@ -64,14 +64,17 @@ function revealVisible(scroll: HTMLElement, column: HTMLElement) {
 /** 一组（通常就是一轮）：按 group 对象引用比较，流式时只重渲染正在变化的那一组 */
 const TurnItem = memo(function TurnItem({
   group,
-  onFork,
+  forkOf,
+  firstId,
   stop,
   onRetryNow,
   onRetryCancel,
 }: {
   group: TurnGroup;
-  /** 只给组里的第一条：后面的都是插话，不能分支 */
-  onFork?: (stay: boolean) => void;
+  /** 组里每条用户消息（含插话）各自的分支回调；不传或返回 undefined 则不显示分支按钮 */
+  forkOf?: (turn: Turn) => ((stay: boolean) => void) | undefined;
+  /** 会话第一轮的 id：它之前没有内容，分支出的是空白新会话 */
+  firstId?: string;
   stop?: StopInfo | null;
   onRetryNow?: () => void;
   onRetryCancel?: () => void;
@@ -87,8 +90,8 @@ const TurnItem = memo(function TurnItem({
   return (
     // 合并的组带上全部轮 id：花费图按原来的轮跳转，用 ~= 匹配
     <section className="cz-flow__item" data-turn-id={parts.map((p) => p.id).join(' ')}>
-      {parts.map((p, i) => (
-        <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={i === 0 ? onFork : undefined} />
+      {parts.map((p) => (
+        <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={forkOf?.(p)} forkEmpty={p.id === firstId} />
       ))}
       <TurnView turn={displayTurn} />
       {showStop && <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />}
@@ -152,22 +155,23 @@ export function ConversationView({
   replyRef.current = onReply;
   const stableReply = useCallback((quote: string, reply: string) => replyRef.current?.(quote, reply), []);
 
-  // 每轮一个固定引用的分支回调（TurnItem 按引用比较，内联箭头函数会让所有轮重渲染）。
-  // 可分支的轮：有 userId、不是插话（插话不是独立的一问）、也不是第一轮（它之前没有内容，服务端会拒）
+  // 每条用户消息一个固定引用的分支回调（UserMessage / TurnItem 按引用比较，每次新建会让所有轮重渲染）。
+  // 有 userId（消息 uuid）的都能分支：插话按它的 queued_command 附件截断，第一轮由上层开空白新会话
   const forkRef = useRef(onFork);
   forkRef.current = onFork;
   const firstId = allTurns[0]?.id;
   const canFork = !!onFork;
-  const forkCbs = useMemo(() => {
-    const m = new Map<string, (stay: boolean) => void>();
-    if (!canFork) return m;
-    for (const t of turns) {
-      if (!t.userId || t.steer || t.id === firstId) continue;
-      const target = t.userId;
-      m.set(t.id, (stay: boolean) => forkRef.current?.(target, stay));
+  const forkCache = useRef(new Map<string, (stay: boolean) => void>());
+  const forkOf = useCallback((t: Turn) => {
+    const target = t.userId;
+    if (!target) return undefined;
+    let cb = forkCache.current.get(target);
+    if (!cb) {
+      cb = (stay: boolean) => forkRef.current?.(target, stay);
+      forkCache.current.set(target, cb);
     }
-    return m;
-  }, [turns, firstId, canFork]);
+    return cb;
+  }, []);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const { zoom, hint } = useFlowZoomControls(wrapRef, scrollRef, contentRef);
@@ -196,7 +200,8 @@ export function ConversationView({
                 {before && before.length > 0 && before.map((d) => <FlowDivider key={d.key} item={d} />)}
                 <TurnItem
                   group={g}
-                  onFork={forkCbs.get(g.turn.id)}
+                  forkOf={canFork ? forkOf : undefined}
+                  firstId={firstId}
                   stop={isLast ? stop : null}
                   onRetryNow={isLast ? onRetryNow : undefined}
                   onRetryCancel={isLast ? onRetryCancel : undefined}

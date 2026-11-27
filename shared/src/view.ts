@@ -140,6 +140,11 @@ export interface Turn {
   endedAt?: number;
   /** interrupted / error 时的一句原因 */
   reason?: string;
+  /**
+   * 本回合的 result 已到（模型已经交付答复），只是还有后台任务 / 子代理在跑、CLI 之后可能自动续轮，所以轮仍未结束。
+   * UI 照常显示答复，状态行显示「等待后台任务完成」；续轮有新的主代理内容时清掉。只出现在实时事件里
+   */
+  awaitingBackground?: boolean;
 }
 
 /** 一次 API 请求的缓存命中情况（主线程；一条 assistant 消息 = 一次请求） */

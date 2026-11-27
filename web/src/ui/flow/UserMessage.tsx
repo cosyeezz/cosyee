@@ -1,5 +1,5 @@
 // 用户消息气泡：正文按 Markdown 渲染；占位名（file1 / img1 / folder1）渲染成内联标签。
-// 气泡左侧悬停浮出两个按钮：复制原文、从这条消息之前分支出新会话。
+// 气泡左侧悬停浮出两个按钮：复制原文、从这条消息之前分支出新会话（每条有消息 id 的气泡都有，含插话和第一条）。
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
@@ -175,8 +175,11 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-/** 分支：菜单里两种去向 —— 切到新会话，或留在当前会话（新会话只出现在侧栏） */
-function ForkButton({ onFork }: { onFork: (stay: boolean) => void }) {
+/**
+ * 分支：菜单里两种去向 —— 切到新会话，或留在当前会话（新会话只出现在侧栏）。
+ * empty：会话的第一条消息，它之前没有内容，分支就是开一个空白新会话，只有「切过去」一种去向
+ */
+function ForkButton({ onFork, empty }: { onFork: (stay: boolean) => void; empty: boolean }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const close = useCallback(() => setAnchor(null), []);
   return (
@@ -200,10 +203,14 @@ function ForkButton({ onFork }: { onFork: (stay: boolean) => void }) {
           align="start"
           minWidth={240}
           onClose={close}
-          items={[
-            { key: 'go', label: '分支并切过去', note: '这条消息的原文填回输入框', onSelect: () => onFork(false) },
-            { key: 'stay', label: '分支，留在当前会话', note: '新会话只出现在侧栏', onSelect: () => onFork(true) },
-          ]}
+          items={
+            empty
+              ? [{ key: 'go', label: '分支并切过去', note: '第一条消息：开一个空白新会话，原文填回输入框', onSelect: () => onFork(false) }]
+              : [
+                  { key: 'go', label: '分支并切过去', note: '这条消息的原文填回输入框', onSelect: () => onFork(false) },
+                  { key: 'stay', label: '分支，留在当前会话', note: '新会话只出现在侧栏', onSelect: () => onFork(true) },
+                ]
+          }
         />
       )}
     </>
@@ -214,11 +221,14 @@ export const UserMessage = memo(function UserMessage({
   text,
   attachments,
   onFork,
+  forkEmpty = false,
 }: {
   text: string;
   attachments: Attachment[];
   /** 可分支时才传：stay=true 表示分支完留在当前会话 */
   onFork?: (stay: boolean) => void;
+  /** 会话的第一条消息：分支出的是空白新会话，不提供「留在当前会话」 */
+  forkEmpty?: boolean;
 }) {
   // 选中回复的消息（`> ` 引用开头，可有多段）：按段渲染「引用 + 紧跟其后的回复」；回复 / 正文照常还原路径标签
   const parts = useMemo(() => parseQuotes(text), [text]);
@@ -270,7 +280,7 @@ export const UserMessage = memo(function UserMessage({
   return (
     <div className="cz-flow__user">
       <div className="cz-flow__acts">
-        {onFork && <ForkButton onFork={onFork} />}
+        {onFork && <ForkButton onFork={onFork} empty={forkEmpty} />}
         <CopyButton text={raw} />
       </div>
       <div className={`cz-flow__bubble cz-spot${collapsed ? ' is-collapsed' : ''}`} ref={bubbleRef}>

@@ -175,6 +175,7 @@ export function makeTurn(index: number, text: string, at: number, extra?: { user
 export function finishTurn(t: Turn, status: Exclude<TurnStatus, 'understanding' | 'running'>, now: number, reason?: string): void {
   t.status = status;
   t.endedAt = now;
+  delete t.awaitingBackground;
   if (reason !== undefined) t.reason = reason;
   else delete t.reason;
   for (const s of t.steps) {
@@ -204,7 +205,11 @@ export function touch(d: Draft, scope: string): void {
   // 后台委派的进度可能在主轮结束之后才到：只更新它自己，不重开主轮
   if (scope !== '' && isDelegateRun(findRun(d, scope))) return;
   reopen(d);
-  if (scope === '') d.book.inRound = true;
+  if (scope === '') {
+    d.book.inRound = true;
+    // 自动续轮开始了：之前交付的答复又变回过程
+    delete d.turn.awaitingBackground;
+  }
 }
 
 /** 委派工具发起的子代理运行（含后台委派） */

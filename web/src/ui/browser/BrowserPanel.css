@@ -83,6 +83,36 @@ body.cz-br-resizing .cz-br__stage { pointer-events: none; }
   font-size: var(--fs-sm);
 }
 .cz-br__url input:disabled { opacity: .5; }
+.cz-br__suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  margin: 0;
+  padding: var(--sp-1);
+  list-style: none;
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+}
+.cz-br__suggest li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.cz-br__suggest li.is-on { background: var(--bg-hover); }
+.cz-br__suggest-title,
+.cz-br__suggest-url { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cz-br__suggest-title { color: var(--text); }
+.cz-br__suggest-url { color: var(--text-3); font-size: var(--fs-xs); }
 .cz-br__spin {
   position: absolute;
   right: var(--sp-2);

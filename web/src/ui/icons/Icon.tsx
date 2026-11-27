@@ -28,7 +28,7 @@ export type IconName =
   // 会话流里的「思考」行（线条火花，替代设计稿的 'thought' 云朵；'thought' 保留不删）
   | 'thinking'
   // Skills 面板：三种状态（开 / 手动 / 关）、撤销
-  | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo'
+  | 'skill-on' | 'skill-manual' | 'skill-off' | 'wand' | 'undo' | 'lock'
   // 本地文件预览浮窗：终端、最大化 / 还原、刷新、自动换行、用外部应用打开、下载
   | 'terminal' | 'maximize' | 'window-restore' | 'refresh' | 'wrap' | 'open-external' | 'download'
   // 权限模式：自动（闪电）/ 计划（清单）
@@ -224,6 +224,8 @@ const SIMPLE: Record<string, JSX.Element> = {
   // 压缩会话：上下两个箭头向中线收拢
   compact: <path d="M3 8h10M5.5 2.5L8 5l2.5-2.5M5.5 13.5L8 11l2.5 2.5" />,
   'chevron-down': <path d="M4 6l4 4 4-4" />,
+  // 小锁（内置、不能更改）
+  lock: <path d="M4.5 7.5h7v5.5h-7zM6 7.5V5.6a2 2 0 014 0v1.9" />,
   'chevron-up': <path d="M4 10l4-4 4 4" />,
   'arrow-up': <path d="M8 13V3M3.8 7.2L8 3l4.2 4.2" />,
   'arrow-down': <path d="M8 3v10M3.8 8.8L8 13l4.2-4.2" />,

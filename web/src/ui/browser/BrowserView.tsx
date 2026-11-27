@@ -44,11 +44,17 @@ export function BrowserView({ profile, canvasRef, stream, capture, onCancelCaptu
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // 连上后的第一次立即发（面板刚打开就点了链接时，页面尽早按面板尺寸排版），之后拖动改大小才防抖
+  const viewportSent = useRef(false);
+  useEffect(() => {
+    if (state !== 'open') viewportSent.current = false;
+  }, [state]);
   useEffect(() => {
     if (!stage || state !== 'open' || stage.width < 10 || stage.height < 10) return;
     const t = window.setTimeout(() => {
+      viewportSent.current = true;
       api.browserViewport(profile, stage.width, stage.height, window.devicePixelRatio || 1).catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
-    }, 200);
+    }, viewportSent.current ? 200 : 0);
     return () => window.clearTimeout(t);
   }, [profile, stage, state, onError]);
 

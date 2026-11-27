@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserInstall } from './install.js';
-import { ensureBrowserPlugin, skillMarkdown, wrapperScript } from './skill.js';
+import { CHROME_ARGS, ensureBrowserPlugin, skillMarkdown, wrapperScript } from './skill.js';
 
 let dir: string;
 beforeEach(() => {
@@ -91,12 +91,12 @@ describe('cosyee:browser 插件', () => {
     expect(run('get', 'url').status).toBe(0);
     expect(fs.readFileSync(path.join(dataDir, 'ua.txt'), 'utf8')).toBe('Mozilla/5.0 Chrome/158.0.0.0 Safari/537.36\n');
     const [boot, first] = calls();
-    expect(boot).toEqual(['AGENT_BROWSER_SKILLS_DIR=', '--json', '--namespace', 'cosyee', '--session', 'cosyee', '--profile', path.join(dataDir, 'profile'), '--idle-timeout', '1h', 'eval', 'navigator.userAgent']);
-    expect(first).toEqual(['AGENT_BROWSER_SKILLS_DIR=', '--namespace', 'cosyee', '--session', 'cosyee', '--profile', path.join(dataDir, 'profile'), '--idle-timeout', '1h', '--user-agent', 'Mozilla/5.0 Chrome/158.0.0.0 Safari/537.36', 'get', 'url']);
+    expect(boot).toEqual(['AGENT_BROWSER_SKILLS_DIR=', '--json', '--namespace', 'cosyee', '--session', 'cosyee', '--profile', path.join(dataDir, 'profile'), '--idle-timeout', '1h', '--args', CHROME_ARGS, 'eval', 'navigator.userAgent']);
+    expect(first).toEqual(['AGENT_BROWSER_SKILLS_DIR=', '--namespace', 'cosyee', '--session', 'cosyee', '--profile', path.join(dataDir, 'profile'), '--idle-timeout', '1h', '--args', CHROME_ARGS, '--user-agent', 'Mozilla/5.0 Chrome/158.0.0.0 Safari/537.36', 'get', 'url']);
     expect(run('--profile', 'deadbeef', 'click', '#a b').status).toBe(0);
     expect(run('--profile=deadbeef', 'get', 'url').status).toBe(0);
     const c = calls();
-    expect(c[2]!.slice(1, 9)).toEqual(['--namespace', 'cosyee', '--session', 'cosyee-deadbeef', '--profile', path.join(dataDir, 'profiles', 'deadbeef'), '--idle-timeout', '1h']);
+    expect(c[2]!.slice(1, 11)).toEqual(['--namespace', 'cosyee', '--session', 'cosyee-deadbeef', '--profile', path.join(dataDir, 'profiles', 'deadbeef'), '--idle-timeout', '1h', '--args', CHROME_ARGS]);
     expect(c[2]!.slice(-2)).toEqual(['click', '#a b']);
     expect(c[3]!.slice(-2)).toEqual(['get', 'url']);
     expect(fs.statSync(path.join(dataDir, 'profiles', 'deadbeef')).mode & 0o777).toBe(0o700);
@@ -121,6 +121,7 @@ describe('cosyee:browser 插件', () => {
       [['open', 'x', '--session', 's'], '不要带 --session：'],
       [['open', 'x', '--cdp=9222'], '不要带 --cdp=9222：'],
       [['open', 'x', '--headed'], '不要带 --headed：'],
+      [['open', 'x', '--args', '--no-sandbox'], '不要带 --args：'],
     ] as const) {
       const r = run(...args);
       expect(r.status, args.join(' ')).toBe(2);
@@ -131,6 +132,17 @@ describe('cosyee:browser 插件', () => {
     expect(u.stdout).toContain('cosyee-browser profiles');
     expect(u.stdout).not.toContain('BIN=');
     expect(JSON.parse(run('profiles').stdout).profiles).toHaveLength(2);
+  });
+
+  it('身份在登录窗口里时不启动浏览器（退出码 4），其他身份照常', () => {
+    const { run, dataDir } = gen(fakeBin());
+    fs.mkdirSync(path.join(dataDir, 'profile'), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'profile', 'CosyeeWindow'), '1\n');
+    const r = run('get', 'url');
+    expect(r.status).toBe(4);
+    expect(r.stderr).toContain('独立的 Chrome 窗口');
+    expect(fs.existsSync(path.join(dir, 'args.log'))).toBe(false);
+    expect(run('--profile', 'deadbeef', 'get', 'url').status).toBe(0);
   });
 });
 

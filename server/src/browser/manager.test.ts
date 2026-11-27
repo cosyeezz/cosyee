@@ -19,7 +19,19 @@ describe('内置浏览器身份', () => {
   it('没有身份文件时只有默认身份', () => {
     const s = make().status();
     expect(s.installed).toBe(false);
-    expect(s.profiles).toEqual([{ id: DEFAULT_PROFILE, name: '默认', running: false, url: null, title: null, viewers: 0 }]);
+    expect(s.profiles).toEqual([{ id: DEFAULT_PROFILE, name: '默认', running: false, window: false, url: null, title: null, viewers: 0 }]);
+  });
+
+  it('启动时清掉上次没收尾的登录窗口标记', () => {
+    const m0 = make();
+    const p = m0.createProfile('小号');
+    for (const d of [path.join(dir, 'profile'), path.join(dir, 'profiles', p.id)]) {
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'CosyeeWindow'), '1\n');
+    }
+    make();
+    expect(fs.existsSync(path.join(dir, 'profile', 'CosyeeWindow'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'profiles', p.id, 'CosyeeWindow'))).toBe(false);
   });
 
   it('新建 / 改名会存盘，重新加载后还在', () => {
@@ -63,5 +75,12 @@ describe('内置浏览器身份', () => {
     expect(m.status().profiles.map((x) => x.id)).toEqual([DEFAULT_PROFILE, 'abcdef01']);
     expect(() => m.session('../x')).toThrow('没有这个浏览器身份');
     expect(m.session('abcdef01')).toBe(m.session('abcdef01'));
+  });
+
+  it('历史联想：不认识的身份报 404，还没用过的身份返回空', () => {
+    const m = make();
+    expect(() => m.history('git', '../x')).toThrow('没有这个浏览器身份');
+    expect(m.history('git')).toEqual([]);
+    expect(m.history('git', m.createProfile('小号').id)).toEqual([]);
   });
 });

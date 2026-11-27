@@ -1,10 +1,12 @@
-// 会话里代码块的「运行」：在会话工作目录里用对应的解释器执行一段代码，收集输出后一次返回。
+// 会话里代码块的「运行」：在会话工作目录里用对应的解释器执行一段代码，收集输出后一次返回；
+// 给了 onOutput 时同时把输出逐块推出去（常驻服务一类不会自己退出的命令靠它看到输出）。
 // 代码一律先写进临时文件，再把文件路径作为参数 / 环境变量交给解释器，不拼进任何命令行字符串；
 // spawn 不经过 shell。超时或客户端中止时杀掉整个进程树。
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { type ExecResult, type SnippetShell, snippetShell } from '@cosyee/shared';
 import { HttpError } from './workspaces.js';
 
@@ -16,7 +18,10 @@ export interface RunSnippetOpts {
   code: string;
   cwd: string;
   signal?: AbortSignal;
+  /** 0 表示不限时（只靠 signal 结束） */
   timeoutMs?: number;
+  /** 输出逐块回调（已按 UTF-8 解码，不会切断多字节字符）；不受单路输出上限影响 */
+  onOutput?: (stream: 'stdout' | 'stderr', data: string) => void;
   /** 测试用：覆盖单路输出上限 */
   outputLimit?: number;
 }
@@ -125,6 +130,16 @@ function killTree(proc: ChildProcess): void {
   }
 }
 
+/** 还在运行的进程：服务退出时一并杀掉，免得不限时的命令（如本地 HTTP 服务）变成孤儿进程 */
+const live = new Set<ChildProcess>();
+let exitHookInstalled = false;
+function track(proc: ChildProcess): void {
+  live.add(proc);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once('exit', () => { for (const p of live) killTree(p); });
+}
+
 /** 收集一路输出，超过上限后丢弃（按字节截断，最后统一按 UTF-8 解码） */
 class Sink {
   private chunks: Buffer[] = [];
@@ -160,33 +175,48 @@ function runOnce(l: Launch, o: RunSnippetOpts, start: number): Promise<Outcome> 
     let settled = false;
     const proc = spawn(l.cmd, l.args, {
       cwd: o.cwd,
-      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', ...l.env },
+      // PYTHONUNBUFFERED：stdout 不是终端时 Python 默认整块缓冲，流式显示时会长时间看不到输出
+      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', PYTHONUNBUFFERED: '1', ...l.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true,
       detached: process.platform !== 'win32',
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(proc);
-    }, o.timeoutMs ?? EXEC_TIMEOUT_MS);
+    track(proc);
+    const timeoutMs = o.timeoutMs ?? EXEC_TIMEOUT_MS;
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          killTree(proc);
+        }, timeoutMs)
+      : undefined;
     const onAbort = () => killTree(proc);
     o.signal?.addEventListener('abort', onAbort, { once: true });
     const done = (v: Outcome) => {
       if (settled) return;
       settled = true;
+      live.delete(proc);
       clearTimeout(timer);
       o.signal?.removeEventListener('abort', onAbort);
       resolve(v);
     };
-    proc.stdout!.on('data', (b: Buffer) => out.push(b));
-    proc.stderr!.on('data', (b: Buffer) => err.push(b));
+    const outDec = new StringDecoder('utf8');
+    const errDec = new StringDecoder('utf8');
+    const emit = (stream: 'stdout' | 'stderr', s: string) => { if (s) o.onOutput?.(stream, s); };
+    proc.stdout!.on('data', (b: Buffer) => { out.push(b); if (o.onOutput) emit('stdout', outDec.write(b)); });
+    proc.stderr!.on('data', (b: Buffer) => { err.push(b); if (o.onOutput) emit('stderr', errDec.write(b)); });
     proc.once('error', (e: NodeJS.ErrnoException) => {
       if (e.code === 'ENOENT') return done({ notFound: true });
-      err.push(Buffer.from(`启动失败：${e.message}\n`));
+      const msg = `启动失败：${e.message}\n`;
+      err.push(Buffer.from(msg));
+      emit('stderr', msg);
       done({ notFound: false, result: { exitCode: null, stdout: out.text(), stderr: err.text(), timedOut, truncated: out.truncated || err.truncated, durationMs: Date.now() - start } });
     });
     proc.once('close', (code) => {
+      if (o.onOutput) {
+        emit('stdout', outDec.end());
+        emit('stderr', errDec.end());
+      }
       done({ notFound: false, result: { exitCode: code, stdout: out.text(), stderr: err.text(), timedOut, truncated: out.truncated || err.truncated, durationMs: Date.now() - start } });
     });
     if (o.signal?.aborted) onAbort();

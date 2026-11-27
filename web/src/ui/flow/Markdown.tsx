@@ -1,11 +1,11 @@
 // Markdown 渲染：remark-gfm + rehype-highlight；代码块带语言标签和复制按钮。
 // 本地路径：链接里的本地文件路径渲染成 FilePathLink（点击打开预览浮窗）；行内代码里的路径保持代码样式，悬停显示完整路径，点击同样打开预览浮窗；
 // 远程链接只放行 http / https / mailto，其它（javascript: 等）退化成纯文本；http(s) 链接默认在内置浏览器面板里打开（ui/browser/links.ts）。
-import { createContext, isValidElement, memo, useContext, useState, type ReactNode } from 'react';
+import { createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { type ExecResult, SHELL_LABEL, isLocalPath, localFileLink, localPathHref, pathRelativeToFile, resolveAgainst, snippetShell } from '@cosyee/shared';
+import { type ExecResult, SHELL_LABEL, guessSnippetLang, isLocalPath, localFileLink, localPathHref, pathRelativeToFile, resolveAgainst, snippetShell } from '@cosyee/shared';
 import { copyText } from '../../core/browser';
 import { openInBrowserPanel } from '../browser/links';
 import { useFiles } from '../files/FileContext';
@@ -106,62 +106,108 @@ export function nodeText(node: ReactNode): string {
 
 export { copyText };
 
-/** 一次运行的结果：正常结束 / 请求失败 / 用户点了停止 */
-type RunState = { kind: 'done'; result: ExecResult } | { kind: 'error'; message: string } | { kind: 'stopped' };
+/** 一段输出：同一路相邻的块合并成一段 */
+interface OutSeg { stream: 'stdout' | 'stderr'; text: string }
+/** 前端最多保留的输出（字符）：常驻服务一直有输出，超出后丢掉最早的部分 */
+const RUN_OUTPUT_KEEP = 64 * 1024;
+
+function appendOut(segs: OutSeg[], stream: OutSeg['stream'], text: string): { segs: OutSeg[]; dropped: boolean } {
+  const last = segs[segs.length - 1];
+  let next = last && last.stream === stream ? [...segs.slice(0, -1), { stream, text: last.text + text }] : [...segs, { stream, text }];
+  let total = next.reduce((n, x) => n + x.text.length, 0);
+  let dropped = false;
+  while (total > RUN_OUTPUT_KEEP && next.length) {
+    dropped = true;
+    const over = total - RUN_OUTPUT_KEEP;
+    const head = next[0]!;
+    if (head.text.length <= over) {
+      next = next.slice(1);
+      total -= head.text.length;
+    } else {
+      next = [{ stream: head.stream, text: head.text.slice(over) }, ...next.slice(1)];
+      total -= over;
+    }
+  }
+  return { segs: next, dropped };
+}
+
+/** 一次运行：运行中 / 正常结束 / 请求失败 / 用户点了停止；输出边跑边追加 */
+interface RunState {
+  status: { kind: 'running' } | { kind: 'done'; result: ExecResult } | { kind: 'error'; message: string } | { kind: 'stopped' };
+  out: OutSeg[];
+  dropped: boolean;
+}
 
 function formatMs(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`;
 }
 
 function RunOutput({ state, onClose }: { state: RunState; onClose: () => void }) {
+  const st = state.status;
+  const preRef = useRef<HTMLPreElement>(null);
+  const stick = useRef(true);
+  // 运行中贴底滚动；用户往上翻了就不再跟随，翻回底部再恢复
+  useLayoutEffect(() => {
+    const el = preRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [state.out]);
   let status: ReactNode;
-  let body: ReactNode = null;
-  if (state.kind === 'stopped') {
-    status = <span className="cz-flow__run-status is-bad">已停止</span>;
-  } else if (state.kind === 'error') {
-    status = <span className="cz-flow__run-status is-bad">运行失败</span>;
-    body = <pre className="cz-flow__run-err">{state.message}</pre>;
-  } else {
-    const r = state.result;
+  if (st.kind === 'running') status = <span className="cz-flow__run-status">运行中…</span>;
+  else if (st.kind === 'stopped') status = <span className="cz-flow__run-status is-bad">已停止</span>;
+  else if (st.kind === 'error') status = <span className="cz-flow__run-status is-bad">运行失败</span>;
+  else {
+    const r = st.result;
     status = (
       <>
         {r.timedOut
           ? <span className="cz-flow__run-status is-bad">已超时</span>
           : <span className={`cz-flow__run-status ${r.exitCode === 0 ? 'is-ok' : 'is-bad'}`}>退出码 {r.exitCode ?? '—'}</span>}
         <span className="cz-flow__run-time">{formatMs(r.durationMs)}</span>
-        {r.truncated && <span className="cz-flow__run-time">输出过长已截断</span>}
-      </>
-    );
-    const empty = !r.stdout && !r.stderr;
-    body = (
-      <>
-        {r.stdout && <pre className="cz-flow__run-out">{r.stdout.replace(/\n$/, '')}</pre>}
-        {r.stderr && <pre className="cz-flow__run-err">{r.stderr.replace(/\n$/, '')}</pre>}
-        {empty && <div className="cz-flow__run-empty">（无输出）</div>}
       </>
     );
   }
+  const empty = state.out.length === 0;
   return (
     <div className="cz-flow__run">
       <div className="cz-flow__run-head">
-        <span className="cz-flow__run-meta">运行结果 {status}</span>
-        <button type="button" className="cz-flow__code-copy" onClick={onClose} aria-label="收起运行结果">收起</button>
+        <span className="cz-flow__run-meta">
+          运行结果 {status}
+          {state.dropped && <span className="cz-flow__run-time">只显示最近的输出</span>}
+        </span>
+        {st.kind !== 'running' && <button type="button" className="cz-flow__code-copy" onClick={onClose} aria-label="收起运行结果">收起</button>}
       </div>
-      {body}
+      {!empty && (
+        <pre
+          ref={preRef}
+          className="cz-flow__run-out"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+          }}
+        >
+          {state.out.map((x, i) => (x.stream === 'stderr' ? <span key={i} className="cz-flow__run-errtext">{x.text}</span> : x.text))}
+        </pre>
+      )}
+      {st.kind === 'error' && <pre className="cz-flow__run-err">{st.message}</pre>}
+      {empty && st.kind === 'done' && <div className="cz-flow__run-empty">（无输出）</div>}
     </div>
   );
 }
 
 /**
- * 代码块。runnable 为真且语言是 shell 类、上下文提供了 exec 时，头部多一个「运行」按钮：
- * 在会话工作目录里执行，结果显示在代码块下方；运行中按钮变成「停止」。
+ * 代码块。runnable 为真且语言是 shell 类（或没标语言但内容像命令，见 guessSnippetLang）、上下文提供了 exec 时，
+ * 头部多一个「运行」按钮：在会话工作目录里执行，不限时，输出边跑边显示在代码块下方；运行中按钮变成「停止」。
+ * 代码块卸载（切走会话等）时停止运行，免得进程失去控制入口。
  */
 export function CodeBlock({ lang, text, children, runnable = false }: { lang?: string; text: string; children: ReactNode; runnable?: boolean }) {
   const files = useFiles();
   const [copied, setCopied] = useState(false);
   const [running, setRunning] = useState<AbortController | null>(null);
   const [run, setRun] = useState<RunState | null>(null);
-  const shell = runnable && files?.exec && files.platform ? snippetShell(lang, files.platform) : null;
+  const runLang = runnable && files?.exec && files.platform ? (snippetShell(lang, files.platform) ? lang : guessSnippetLang(lang, text, files.platform)) : undefined;
+  const shell = runLang && files?.platform ? snippetShell(runLang, files.platform) : null;
+  const runningRef = useRef<AbortController | null>(null);
+  useEffect(() => () => runningRef.current?.abort(), []);
   const onCopy = async () => {
     if (await copyText(text)) {
       setCopied(true);
@@ -173,17 +219,26 @@ export function CodeBlock({ lang, text, children, runnable = false }: { lang?: s
       running.abort();
       return;
     }
-    if (!files?.exec || !lang) return;
+    if (!files?.exec || !runLang) return;
     const ac = new AbortController();
+    runningRef.current = ac;
     setRunning(ac);
-    setRun(null);
+    setRun({ status: { kind: 'running' }, out: [], dropped: false });
+    const onOutput = (stream: OutSeg['stream'], data: string) =>
+      setRun((r) => {
+        if (!r) return r;
+        const { segs, dropped } = appendOut(r.out, stream, data);
+        return { ...r, out: segs, dropped: r.dropped || dropped };
+      });
+    let status: RunState['status'];
     try {
-      setRun({ kind: 'done', result: await files.exec(lang, text, ac.signal) });
+      status = { kind: 'done', result: await files.exec(runLang, text, onOutput, ac.signal) };
     } catch (e) {
-      setRun(ac.signal.aborted ? { kind: 'stopped' } : { kind: 'error', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setRunning(null);
+      status = ac.signal.aborted ? { kind: 'stopped' } : { kind: 'error', message: e instanceof Error ? e.message : String(e) };
     }
+    setRun((r) => (r ? { ...r, status } : r));
+    if (runningRef.current === ac) runningRef.current = null;
+    setRunning(null);
   };
   return (
     <div className="cz-flow__code">
@@ -206,8 +261,7 @@ export function CodeBlock({ lang, text, children, runnable = false }: { lang?: s
         </span>
       </div>
       <pre className="cz-flow__code-pre">{children}</pre>
-      {running && <div className="cz-flow__run"><div className="cz-flow__run-head"><span className="cz-flow__run-meta">运行中…</span></div></div>}
-      {!running && run && <RunOutput state={run} onClose={() => setRun(null)} />}
+      {run && <RunOutput state={run} onClose={() => setRun(null)} />}
     </div>
   );
 }

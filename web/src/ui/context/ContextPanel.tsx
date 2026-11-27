@@ -147,7 +147,7 @@ export function ContextPanel({
   }, [onSkillModes]);
   const validSelected = useMemo(() => {
     if (!selecting || selected.size === 0) return new Set<string>();
-    const names = new Set((usage?.skills ?? []).map((s) => s.name));
+    const names = new Set((usage?.skills ?? []).filter((s) => !s.locked).map((s) => s.name));
     const out = new Set<string>();
     for (const n of selected) if (names.has(n)) out.add(n);
     return out;
@@ -336,14 +336,15 @@ export function ContextPanel({
               onEnter={() => setSelecting(true)}
               onExit={exitSelecting}
               onToggleAll={() => {
-                if (skills.length > 0 && validSelected.size === skills.length) setSelected(new Set());
-                else setSelected(new Set(skills.map((s) => s.name)));
+                const pickable = skills.filter((s) => !s.locked);
+                if (pickable.length > 0 && validSelected.size === pickable.length) setSelected(new Set());
+                else setSelected(new Set(pickable.map((s) => s.name)));
               }}
               onApplyMode={(mode) => {
                 const changes: Record<string, SkillMode> = {};
                 const prev: Record<string, SkillMode> = {};
                 for (const s of skills) {
-                  if (!validSelected.has(s.name) || s.mode === mode) continue;
+                  if (!validSelected.has(s.name) || s.locked || s.mode === mode) continue;
                   changes[s.name] = mode;
                   prev[s.name] = s.mode;
                 }
@@ -666,8 +667,9 @@ function SkillToolbar({
 }) {
   const allRef = useRef<HTMLInputElement>(null);
   const count = selected.size;
-  const allSelected = skills.length > 0 && count === skills.length;
-  const someSelected = count > 0 && count < skills.length;
+  const pickable = skills.filter((s) => !s.locked).length;
+  const allSelected = pickable > 0 && count === pickable;
+  const someSelected = count > 0 && count < pickable;
   useEffect(() => {
     if (allRef.current) allRef.current.indeterminate = someSelected;
   }, [someSelected, selecting]);
@@ -704,7 +706,7 @@ function SkillToolbar({
             type="checkbox"
             className="cz-ctx__check"
             checked={allSelected}
-            disabled={skills.length === 0}
+            disabled={pickable === 0}
             onChange={onToggleAll}
           />
           <span>全选</span>
@@ -755,7 +757,8 @@ function SkillRow({
   onRemove?: (name: string) => void;
   onReveal?: (name: string) => void;
 }) {
-  const label = ambiguous ? skill.name : skillLabel(skill.name);
+  // 内置的显示完整名（cosyee:browser），一眼看出是 Cosyee 自带的
+  const label = ambiguous || skill.locked ? skill.name : skillLabel(skill.name);
   const info = skillInfo(skill.name);
   const [menuAt, setMenuAt] = useState<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -821,6 +824,8 @@ function SkillRow({
             className="cz-ctx__check"
             aria-label={`选择 ${label}`}
             checked={checked}
+            disabled={skill.locked}
+            title={skill.locked ? 'Cosyee 内置，始终开启' : undefined}
             onChange={() => {
               tip.hide();
               onToggleSelect?.(skill.name);
@@ -846,15 +851,16 @@ function SkillRow({
         className={`cz-ctx__mode is-${skill.mode}${menuAt ? ' is-open' : ''}`}
         aria-haspopup="menu"
         aria-expanded={!!menuAt}
-        aria-label={`${label}：当前「${cur.label}」，点击更改`}
-        disabled={!onMode}
+        aria-label={skill.locked ? `${label}：Cosyee 内置，始终开启` : `${label}：当前「${cur.label}」，点击更改`}
+        title={skill.locked ? 'Cosyee 内置，始终开启，不能更改' : undefined}
+        disabled={!onMode || skill.locked}
         onClick={() => {
           tip.hide();
           setMenuAt((v) => (v ? null : btnRef.current));
         }}
       >
         <Icon name={cur.icon} size={15} />
-        <Icon name="chevron-down" size={11} />
+        <Icon name={skill.locked ? 'lock' : 'chevron-down'} size={11} />
       </button>
       {menuAt && <Menu anchor={menuAt} items={items} onClose={() => setMenuAt(null)} placement="bottom" align="end" minWidth={230} />}
       {!menuAt && !confirming && tip.node}
@@ -866,7 +872,9 @@ function SkillRow({
           text={skill.description ? `- ${skill.name}: ${skill.description}` : undefined}
           empty="CLI 没有报告这个 skill 的描述，磁盘上也读不到它的 SKILL.md。"
           note={
-            skill.mode === 'on'
+            skill.locked
+              ? 'Cosyee 内置的 skill，始终开启、不能更改：模型用浏览器时都走它。模型看到的只是这一行，调用时才加载 SKILL.md 正文。'
+              : skill.mode === 'on'
               ? '模型看到的只是这一行；真正调用时才把 SKILL.md 正文作为消息加载（计入 Messages）。'
               : skill.mode === 'user-invocable-only'
                 ? '仅手动：这一行不发给模型；你输入 /名字 时才加载 SKILL.md 正文。改成「开」后会加进 Skill 清单。'

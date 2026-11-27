@@ -1,5 +1,6 @@
 // 内置浏览器画面：连 /api/browser/stream（服务端转发 agent-browser 的推流），把 JPEG 帧画到 canvas，每画完一帧回 ack。
-// 推流消息：status（视口）、tabs（标签页：取活动页的地址 / 标题）、frame（base64 JPEG + 页面尺寸），cosyee_error 是服务端自己的错误。
+// 推流消息：status（视口）、tabs（标签页：取活动页的地址 / 标题）、frame（base64 JPEG + 页面尺寸），cosyee_error 是服务端自己的错误，
+// cosyee_window 表示这个身份切到了独立的登录窗口（服务端随后断开推流）。
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { api } from '../../core/api';
 import type { PageSize } from './input';
@@ -13,6 +14,8 @@ export interface BrowserStream {
   page: PageSize | null;
   /** 活动标签页 */
   tab: { url: string; title: string } | null;
+  /** 服务端说这个身份正在登录窗口里 */
+  windowed: boolean;
   send: (msg: object) => void;
   reconnect: () => void;
 }
@@ -29,6 +32,7 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, profil
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<PageSize | null>(null);
   const [tab, setTab] = useState<{ url: string; title: string } | null>(null);
+  const [windowed, setWindowed] = useState(false);
   const [nonce, setNonce] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -37,6 +41,7 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, profil
     let alive = true;
     setState('connecting');
     setError(null);
+    setWindowed(false);
     // 换身份：旧画面和地址不再属于当前身份
     setPage(null);
     setTab(null);
@@ -82,6 +87,12 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, profil
       } else if (m.type === 'tabs' && Array.isArray(m.tabs)) {
         const t = (m.tabs as Record<string, unknown>[]).find((x) => x && x.active === true);
         if (t) setTab({ url: typeof t.url === 'string' ? t.url : '', title: typeof t.title === 'string' ? t.title : '' });
+      } else if (m.type === 'url' && typeof m.url === 'string') {
+        // 主框架跳转（含重定向、pushState）：不经 agent-browser 命令的跳转只有这条消息，没有 tabs
+        const u = m.url;
+        setTab((t) => (t && t.url === u ? t : { url: u, title: t?.title ?? '' }));
+      } else if (m.type === 'cosyee_window') {
+        setWindowed(true);
       } else if (m.type === 'cosyee_error') {
         setError(typeof m.message === 'string' ? m.message : '浏览器出错了');
       }
@@ -99,5 +110,5 @@ export function useBrowserStream(canvasRef: RefObject<HTMLCanvasElement>, profil
   }, []);
   const reconnect = useCallback(() => setNonce((n) => n + 1), []);
 
-  return { state, error, page, tab, send, reconnect };
+  return { state, error, page, tab, windowed, send, reconnect };
 }
