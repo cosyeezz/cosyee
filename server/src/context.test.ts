@@ -355,4 +355,127 @@ describe('toContextUsage', () => {
     expect(toContextUsage({}, 1, { slashCommands: [] }).slashCommands).toBeUndefined();
     expect(toContextUsage({}, 1, { slashCommands: null }).slashCommands).toBeUndefined();
   });
+
+  it('单工具 token 分摊：扣除 Cosyee 精确值后按权重分摊内置工具，常驻与懒加载合计严格精确', () => {
+    const r = toContextUsage(
+      {
+        maxTokens: 100_000,
+        totalTokens: 20_000,
+        categories: [
+          { name: 'System tools', tokens: 8_000, kind: 'used' },
+          { name: 'MCP tools', tokens: 1_500, kind: 'used' },
+          { name: 'MCP tools (deferred)', tokens: 300, kind: 'deferred' },
+          { name: 'System tools (deferred)', tokens: 5_000, kind: 'deferred' },
+        ],
+        mcpTools: [
+          { name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 900, isLoaded: true },
+          { name: 'mcp__cosyee__delegate_agents', serverName: 'cosyee', tokens: 250, isLoaded: false },
+          { name: 'mcp__github__search', serverName: 'github', tokens: 600, isLoaded: true },
+        ],
+      },
+      1,
+      {
+        tools: ['Bash', 'Read', 'Edit', 'WebFetch', 'Monitor', 'UnknownTool', 'mcp__cosyee__delegate', 'mcp__cosyee__delegate_agents'],
+        disabledTools: ['WebSearch'],
+        sessionToolLoad: {
+          seenDelta: true,
+          deferred: new Set(['WebFetch', 'Monitor', 'mcp__cosyee__delegate_agents']),
+          loaded: new Set(['WebFetch']),
+          weights: new Map([['Monitor', 8000]]),
+        },
+        cachedDeferredTools: ['WebSearch'],
+      },
+    );
+
+    expect(r.toolLoadSource).toBe('session');
+    expect(r.toolLoad?.Bash).toEqual({ load: 'resident', source: 'session' });
+    expect(r.toolLoad?.WebFetch).toEqual({ load: 'deferred', loaded: true, source: 'session' });
+    expect(r.toolLoad?.WebSearch).toEqual({ load: 'deferred', source: 'cache' });
+
+    const by = new Map((r.toolTokens ?? []).map((t) => [t.name, t]));
+    // Cosyee 工具保留精确值（无 estimated）
+    expect(by.get('mcp__cosyee__delegate')).toEqual({ name: 'mcp__cosyee__delegate', tokens: 900 });
+    expect(by.get('mcp__cosyee__delegate_agents')).toEqual({ name: 'mcp__cosyee__delegate_agents', tokens: 250, deferred: true });
+    // 内置工具标 estimated: true，WebFetch 带 loaded: true
+    expect(by.get('Bash')?.estimated).toBe(true);
+    expect(by.get('WebFetch')?.estimated).toBe(true);
+    expect(by.get('WebFetch')?.loaded).toBe(true);
+    // 已停用的 WebSearch 不分摊 token
+    expect(by.has('WebSearch')).toBe(false);
+
+    // 常驻内置工具 + Cosyee 常驻 = System tools 合计（8000 + 900 = 8900）
+    const resSum = (r.toolTokens ?? []).filter((t) => !t.deferred).reduce((s, t) => s + t.tokens, 0);
+    expect(resSum).toBe(8_900);
+    // 懒加载内置工具 + Cosyee 懒加载 = System tools (deferred) 合计（5000 + 250 = 5250）
+    const defSum = (r.toolTokens ?? []).filter((t) => t.deferred).reduce((s, t) => s + t.tokens, 0);
+    expect(defSum).toBe(5_250);
+  });
+
+  it('无实时记录时未确定工具不参与分摊，且已知工具走静态兜底', () => {
+    const r = toContextUsage(
+      {
+        maxTokens: 100_000,
+        totalTokens: 10_000,
+        categories: [{ name: 'System tools', tokens: 3_000, kind: 'used' }],
+      },
+      1,
+      { tools: ['Bash', 'Read', 'MysteryTool'] },
+    );
+    expect(r.toolLoadSource).toBe('static');
+    expect(r.toolLoad?.MysteryTool).toEqual({ load: 'unknown' });
+    const by = new Map((r.toolTokens ?? []).map((t) => [t.name, t]));
+    expect(by.has('MysteryTool')).toBe(false);
+    expect((by.get('Bash')?.tokens ?? 0) + (by.get('Read')?.tokens ?? 0)).toBe(3_000);
+  });
+
+  it('delegate 辅助工具：即使未出现在 extra.tools 或 delegate 已停用，toolLoad 仍完整覆盖其加载分类', () => {
+    // 1. 启用态：辅助工具仅在 raw.mcpTools 中出现，toolLoad 与 toolTokens 仍覆盖全部 4 个辅助工具
+    const active = toContextUsage(
+      {
+        maxTokens: 100_000,
+        totalTokens: 10_000,
+        categories: [
+          { name: 'System tools', tokens: 2_000, kind: 'used' },
+          { name: 'MCP tools', tokens: 2_400, kind: 'used' },
+          { name: 'MCP tools (deferred)', tokens: 220, kind: 'deferred' },
+          { name: 'System tools (deferred)', tokens: 1_000, kind: 'deferred' },
+        ],
+        mcpTools: [
+          { name: 'mcp__cosyee__delegate', serverName: 'cosyee', tokens: 920, isLoaded: true },
+          { name: 'mcp__cosyee__delegate_send', serverName: 'cosyee', tokens: 680, isLoaded: true },
+          { name: 'mcp__cosyee__delegate_stop', serverName: 'cosyee', tokens: 260, isLoaded: true },
+          { name: 'mcp__cosyee__delegate_result', serverName: 'cosyee', tokens: 540, isLoaded: true },
+          { name: 'mcp__cosyee__delegate_agents', serverName: 'cosyee', tokens: 220, isLoaded: false },
+        ],
+      },
+      1,
+      {
+        tools: ['Bash', 'WebFetch', 'mcp__cosyee__delegate'],
+        sessionToolLoad: {
+          seenDelta: true,
+          deferred: new Set(['WebFetch', 'mcp__cosyee__delegate_agents']),
+          loaded: new Set(),
+          weights: new Map(),
+        },
+      },
+    );
+    expect(active.toolLoad?.mcp__cosyee__delegate_send).toEqual({ load: 'resident', source: 'session' });
+    expect(active.toolLoad?.mcp__cosyee__delegate_stop).toEqual({ load: 'resident', source: 'session' });
+    expect(active.toolLoad?.mcp__cosyee__delegate_result).toEqual({ load: 'resident', source: 'session' });
+    expect(active.toolLoad?.mcp__cosyee__delegate_agents).toEqual({ load: 'deferred', source: 'session' });
+    const resSum = (active.toolTokens ?? []).filter((t) => !t.deferred).reduce((s, t) => s + t.tokens, 0);
+    const defSum = (active.toolTokens ?? []).filter((t) => t.deferred).reduce((s, t) => s + t.tokens, 0);
+    expect(resSum).toBe(4_400);
+    expect(defSum).toBe(1_220);
+
+    // 2. 停用 delegate 时：4 个辅助工具也进入 toolLoad（静态兜底分类），不分摊 token
+    const off = toContextUsage(
+      { maxTokens: 100_000, totalTokens: 5_000, categories: [{ name: 'System tools', tokens: 2_000, kind: 'used' }] },
+      1,
+      { tools: ['Bash'], disabledTools: ['mcp__cosyee__delegate'] },
+    );
+    expect(off.toolLoad?.mcp__cosyee__delegate_send).toEqual({ load: 'resident', source: 'static' });
+    expect(off.toolLoad?.mcp__cosyee__delegate_agents).toEqual({ load: 'deferred', source: 'static' });
+    expect((off.toolTokens ?? []).some((t) => t.name.startsWith('mcp__cosyee__'))).toBe(false);
+  });
 });

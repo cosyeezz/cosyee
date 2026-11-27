@@ -14,6 +14,7 @@ import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
+import { ClaudeBackend } from './delegate/claudeBackend.js';
 import { BrowserInstall } from './browser/install.js';
 import { BrowserManager } from './browser/manager.js';
 import { ensureBrowserPlugin } from './browser/skill.js';
@@ -148,7 +149,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     accounts: {
       activeAccount: () => agyAccounts?.activeAccount() ?? { id: DEFAULT_ID, dir: null },
       accountFor: (id) => agyAccounts?.accountFor(id) ?? (id === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null),
+      isLoggedIn: () => agyAccounts?.activeLoggedIn() ?? null,
     },
+  });
+  const claudeBackend = new ClaudeBackend({
+    claudePath: opts.claudePath,
+    subagentAccountId: () => accounts?.subagentClaudeId() ?? DEFAULT_ID,
+    isLoggedIn: () => accounts?.subagentClaudeLoggedIn() ?? true,
+    prepareAccount: (id) => accounts?.prepareSubagent(id) ?? null,
+    finishAccount: (id) => accounts?.syncSubagentBack(id),
   });
   sessions.setFlags({
     isDeleted: (id) => trash.isDeleted(id),
@@ -178,7 +187,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     pins,
     stops,
     delegateRecord,
-    delegateBackend: agyBackend,
+    delegateBackends: { claude: claudeBackend, agy: agyBackend },
     timings: opts.timings,
     claudePath: opts.claudePath,
     configs: {
@@ -209,11 +218,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.disabledAgents = [...names];
         store.save();
       },
-      nativeAgents: () => store.state.nativeAgents,
-      setNativeAgents: (enabled) => {
-        store.state.nativeAgents = enabled;
-        store.save();
-      },
       known: () => store.state.knownTools,
       setKnown: (names) => {
         const cur = store.state.knownTools;
@@ -221,9 +225,20 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         store.state.knownTools = [...names];
         store.save();
       },
+      knownDeferred: () => store.state.knownDeferredTools,
+      setKnownDeferred: (names) => {
+        const cur = store.state.knownDeferredTools;
+        if (cur.length === names.length && cur.every((n, i) => n === names[i])) return;
+        store.state.knownDeferredTools = [...names];
+        store.save();
+      },
     },
-    agentModels: {
-      get: () => store.state.agentModels,
+    subagents: {
+      get: () => store.state.subagents,
+      set: (c) => {
+        store.state.subagents = structuredClone(c);
+        store.save();
+      },
     },
     compactWindow: {
       get: () => store.state.compactWindow,
@@ -249,7 +264,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     },
     accounts: {
       resolve: (id) => accounts?.resolve(id) ?? { id: DEFAULT_ID, dir: null },
+      activeDir: () => accounts?.activeDir() ?? null,
       prepare: (id) => accounts?.prepare(id),
+      syncFromSubagent: (id) => accounts?.syncSubagentBack(id, { silent: true }),
       bind: (sid, id) => accounts?.bind(sid, id),
     },
     forks: {
@@ -313,14 +330,16 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       return providerFor(modelLists, (d) => new CliModelsProvider({ id: a.id, fetcher: () => fetcher(d), disk: modelsDisk }), a.id, a.dir).get(refresh);
     },
   };
+  const claudeRunning = (id?: string) => manager.runningCount(id) + claudeBackend.runningCount(id);
   accounts = new Accounts({
     store,
-    running: (id) => manager.runningCount(id),
+    running: claudeRunning,
     processes: (id) => manager.processCount(id),
     stop: (match) => (match ? manager.stopAccounts(match, 5000) : manager.resetAll(5000)),
     kiroState: (id, dir) => kiro?.accountState(id, dir) ?? { proxy: 'stopped', error: null, credential: 'unknown' },
     removeKiroAccount: (id, dir) => kiro?.removeAccount(id, dir) ?? Promise.resolve(),
     onChanged: (e) => {
+      accounts?.invalidateLoginCache(e.reset);
       if (e.reset) {
         accountInfos.get(e.reset)?.reset();
         usages.get(e.reset)?.reset();
@@ -330,8 +349,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         (modelLists.get(e.reset) ?? new CliModelsProvider({ id: e.reset, fetcher: async () => null, disk: modelsDisk })).reset();
         modelLists.delete(e.reset);
       }
-      if (e.notify === 'reload') manager.notifyAccount(true);
-      else if (e.notify === 'refresh') manager.notifyAccount(false);
+      if (e.notify === 'reload') {
+        manager.notifyAccount(true);
+        manager.notifySubagents();
+      } else if (e.notify === 'refresh') {
+        manager.notifyAccount(false);
+        manager.notifySubagents();
+      } else if (e.reset) {
+        manager.notifySubagents();
+      }
     },
   });
   accounts.init();
@@ -341,7 +367,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       allocateNewDir: () => accounts!.allocateKiroDir(),
       existingKiroDir: (id) => accounts!.existingKiroDir(id),
       kiroEmailTaken: (email, except) => accounts!.kiroEmailTaken(email, except),
-      running: (id) => manager.runningCount(id),
+      running: claudeRunning,
       stopAccountProcesses: (id) => accounts!.stopAccountProcesses(id),
       commitNew: (id, dir, label) => accounts!.commitNewKiro(id, dir, label),
       commitRelogin: (id, label) => accounts!.commitReloginKiro(id, label),
@@ -359,7 +385,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     running: (id) => acpPool.runningCount(id),
     stopAccount: (id) => acpPool.stopAccount(id),
     resetAccount: (id) => acpPool.resetAccount(id),
-    onChanged: () => manager.notifyAgy(),
+    onChanged: () => {
+      manager.notifyAgy();
+      manager.notifySubagents();
+    },
   });
   agyAccounts.init();
   const previews = new Previews();
@@ -371,6 +400,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // 本机组件版本与自动更新。服务端自己：源码运行（没有打包注入的版本）或桌面版（带访问令牌）只显示不更新
   const components = new ComponentUpdater({
     home: () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome()),
+    onUpdated: (id) => {
+      if (id === 'claude' || id === 'agy') manager.notifySubagents();
+    },
     adapters: [
       createClaudeAdapter({ claudePath: opts.claudePath, running: () => manager.runningCount() }),
       createKiroAdapter(kiro),

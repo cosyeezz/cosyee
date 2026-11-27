@@ -1,7 +1,7 @@
 // 外壳调试页：http://127.0.0.1:5173/?dev=shell
 import { useMemo, useState } from 'react';
-import { BUILTIN_PRICES, DEFAULT_AGENT_MODELS } from '@cosyee/shared';
-import type { AgentModelConfig, CachePoint, ContextUsage, DelegateModelList, DeletedSession, SessionSummary, SkillMode, Turn, Workspace } from '@cosyee/shared';
+import { BUILTIN_PRICES, DEFAULT_SUBAGENTS } from '@cosyee/shared';
+import type { CachePoint, ContextUsage, DelegateModelList, DeletedSession, SessionSummary, SkillMode, SubagentConfig, SubagentState, SubagentTypeInfo, Turn, Workspace } from '@cosyee/shared';
 import { AppShell } from '../ui/layout/AppShell';
 import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
 import { PinnedRail } from '../ui/sidebar/PinnedRail';
@@ -66,14 +66,75 @@ const devDelegate: DelegateModelList = {
   at: 0,
 };
 
-/** ?dev=shell&stress=1：长名字、大数字，检查上下文栏在最窄时会不会溢出 */
-const stress = new URLSearchParams(location.search).has('stress');
+/** ?dev=shell&stress=1：长名字、大数字，检查上下文栏在最窄时会不会溢出；&sub=claude|agy|unavail|fallback 切换子代理演示状态 */
+const devQuery = new URLSearchParams(location.search);
+const stress = devQuery.has('stress');
+const subMode = devQuery.get('sub');
+const devSubagentTypes: SubagentTypeInfo[] = [
+  { name: 'Explore', description: 'Fast agent specialized for exploring codebases.', source: 'builtin', readOnly: true, model: 'haiku' },
+  { name: 'Plan', description: 'Software architect agent for designing implementation plans.', source: 'builtin', readOnly: true },
+  { name: 'general-purpose', description: 'General-purpose agent for complex multi-step tasks.', source: 'builtin' },
+  { name: 'code-reviewer', description: '按团队规范审查 PR 变更与边界条件，指出潜在回归、类型问题和性能风险。', source: 'projectSettings', model: 'opus', effort: 'high' },
+  { name: 'security-audit', description: '扫描敏感信息、权限绕过与不安全的依赖用法。', source: 'plugin', readOnly: true },
+];
+
+function initialSubagents(): SubagentState {
+  const allOk: SubagentState['available'] = {
+    native: { ok: true },
+    claude: { ok: true },
+    agy: { ok: true },
+  };
+  const baseConfig: SubagentConfig = {
+    ...DEFAULT_SUBAGENTS,
+    native: { ...DEFAULT_SUBAGENTS.native, agents: { Explore: { model: 'haiku', effort: 'low' } } },
+    claude: { ...DEFAULT_SUBAGENTS.claude, agents: { 'code-reviewer': { model: 'opus', effort: 'high' } } },
+    agy: { ...DEFAULT_SUBAGENTS.agy, agents: { Explore: { model: 'gemini-4-neon', effort: 'low' } } },
+  };
+  const common = { agents: devSubagentTypes, disabledAgents: ['security-audit'] };
+  if (subMode === 'claude') {
+    return { config: { ...baseConfig, kind: 'claude' }, available: allOk, effective: 'claude', ...common };
+  }
+  if (subMode === 'agy') {
+    return {
+      config: { ...baseConfig, kind: 'agy', agy: { ...baseConfig.agy, model: 'gemini-4-neon', effort: 'high' } },
+      available: allOk,
+      effective: 'agy',
+      ...common,
+    };
+  }
+  if (subMode === 'unavail') {
+    return {
+      config: baseConfig,
+      available: { native: { ok: true }, claude: { ok: true }, agy: { ok: false, reason: '未安装 Antigravity CLI' } },
+      effective: 'native',
+      ...common,
+    };
+  }
+  if (subMode === 'fallback') {
+    return {
+      config: { ...baseConfig, kind: 'agy', agy: { ...baseConfig.agy, model: 'gemini-4-neon', effort: 'high' } },
+      available: { native: { ok: true }, claude: { ok: true }, agy: { ok: false, reason: '未安装 Antigravity CLI' } },
+      effective: 'native',
+      ...common,
+    };
+  }
+  return { config: baseConfig, available: allOk, effective: 'native', ...common };
+}
 const devUsage: ContextUsage = stress
   ? {
       ...mockContextUsage,
-      nativeAgents: true,
       usedTokens: 1_845_200, totalTokens: 2_000_000, percent: 92.26, untilAutocompact: 1_098_400,
-      toolTokens: [{ name: 'Bash', tokens: 12_300 }, { name: 'Read', tokens: 1_200 }],
+      toolTokens: [
+        { name: 'Bash', tokens: 12_300, estimated: true },
+        { name: 'Read', tokens: 1_200, estimated: true },
+        { name: 'mcp__cosyee__delegate', tokens: 920 },
+        { name: 'mcp__cosyee__delegate_send', tokens: 680 },
+        { name: 'mcp__cosyee__delegate_stop', tokens: 260 },
+        { name: 'mcp__cosyee__delegate_result', tokens: 540 },
+        { name: 'mcp__cosyee__delegate_agents', tokens: 220, deferred: true, loaded: true },
+        { name: 'WebFetch', tokens: 1_850, deferred: true, estimated: true, loaded: true },
+        { name: 'Monitor', tokens: 3_850, deferred: true, estimated: true },
+      ],
       disabledTools: ['WebSearch'],
       skills: [
         ...(mockContextUsage.skills ?? []),
@@ -84,14 +145,18 @@ const devUsage: ContextUsage = stress
         { name: 'a-very-long-mcp-server-name-for-testing', status: 'failed', tokens: 123_000, tools: [{ name: 'do_something_extremely_long_and_verbose', tokens: 12_000 }] },
       ],
     }
-  : { ...mockContextUsage, nativeAgents: true };
-const devTools = ['Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'mcp__cosyee__delegate'];
+  : { ...mockContextUsage, disabledTools: ['WebSearch'] };
+const devTools = [
+  'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Monitor', 'SendMessage',
+  'mcp__cosyee__delegate', 'mcp__cosyee__delegate_send', 'mcp__cosyee__delegate_stop', 'mcp__cosyee__delegate_result', 'mcp__cosyee__delegate_agents',
+  'CustomProbe',
+];
 
 export default function ShellDev() {
   const narrow = useMediaQuery(NARROW_QUERY);
   const [drawer, setDrawer] = useState<'left' | 'right' | null>(null);
   const [ctxCollapsed, setCtxCollapsed] = useState(false);
-  const [agentModels, setAgentModels] = useState<AgentModelConfig>(DEFAULT_AGENT_MODELS);
+  const [subagents, setSubagents] = useState<SubagentState>(initialSubagents);
   const [workspaces, setWorkspaces] = useState<Workspace[]>(mockWorkspaces);
   const [currentWs, setCurrentWs] = useState<string>(mockWorkspaces[0].path);
   // 每个工作空间各自的会话，切换时保留改名结果
@@ -313,18 +378,20 @@ export default function ShellDev() {
           }
           tools={devTools}
           onToolToggle={(name, enabled) => setUsage((u) => (u ? { ...u, disabledTools: flip(u.disabledTools, name, enabled) } : u))}
-          agents={['Explore', 'Plan', 'general-purpose', 'statusline-setup']}
-          onAgentToggle={(name, enabled) => setUsage((u) => (u ? { ...u, disabledAgents: flip(u.disabledAgents, name, enabled) } : u))}
           toolStats={stress ? { counts: { Bash: 123_456, Read: 8_921 }, skills: { impeccable: 1_234 }, sessions: 88, at: 0 } : null}
           cache={devCache}
           turns={devTurns}
-          agentModels={{
-            config: agentModels,
-            onChange: setAgentModels,
+          subagents={{
+            state: subagents,
+            onChange: (c: SubagentConfig) =>
+              setSubagents((prev) => ({ ...prev, config: c, effective: prev.available[c.kind]?.ok ? c.kind : 'native' })),
             delegate: devDelegate,
             onLoadDelegate: () => undefined,
-            nativeAgents: usage?.nativeAgents,
-            onNativeAgents: (enabled) => setUsage((u) => (u ? { ...u, nativeAgents: enabled } : u)),
+            accounts: { claude: 'cosyeey', agy: 'alex.chen@example.com' },
+            sessionAgents: ['Explore', 'Plan', 'general-purpose', 'statusline-setup', 'fork'],
+            onToggleAgent: (name, enabled) =>
+              setSubagents((prev) => ({ ...prev, disabledAgents: flip(prev.disabledAgents, name, enabled) })),
+            defaultOpen: !!subMode,
           }}
         />
       }

@@ -205,6 +205,9 @@
 }
 /* 窄屏下顶栏的展开按钮是唯一入口，按触屏尺寸放大 */
 .cz-shell--narrow .cz-shell__expand { width: 36px; height: 36px; }
+/* 窄屏标题块（标题 30 + 间距 2 + 分支/目录行 22 = 54px）比 36px 的图标高：整块上提一半差值（9px），
+   让它的中线和左右图标的中线对齐。顶栏高度随之少 9px，--top-h 是实测的，会话流会自动跟上 */
+.cz-shell--narrow .cz-shell__header { margin-top: -9px; }
 @media (prefers-reduced-motion: reduce) {
   .cz-shell--narrow .cz-shell__sidebar,
   .cz-shell--narrow .cz-shell__context,

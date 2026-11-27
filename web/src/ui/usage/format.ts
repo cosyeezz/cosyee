@@ -34,6 +34,12 @@ export function limitShortTitle(l: UsageLimit): string {
   return l.model ?? '模型';
 }
 
+/** 账号弹层一行里的重置时间，比 resetShort 再短：「38分钟后」「2小时14分后」「今天 18:00」「周四 09:00」 */
+export function resetBrief(at: number | null, now = Date.now()): string {
+  const s = resetShort(at, now);
+  return s === '即将重置' ? s : s.replace(/后重置$/, '后').replace(/ 重置$/, '');
+}
+
 /** 紧凑的重置说明：「2小时14分后重置」「周四 09:00 重置」；不到 1 小时写分钟，12 小时内写小时分钟，其余写星期与时间 */
 export function resetShort(at: number | null, now = Date.now()): string {
   if (at == null) return '';

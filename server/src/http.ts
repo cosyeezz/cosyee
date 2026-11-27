@@ -30,7 +30,7 @@ import type { StateStore, Workspaces } from './workspaces.js';
 import { type ComponentUpdater, componentRoutes } from './components/updater.js';
 import type { BrowserManager } from './browser/manager.js';
 import { elementTarget, elementText, toElement } from './browser/elements.js';
-import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseAgentModels, sanitizeCompactWindow } from './workspaces.js';
+import { COMPACT_WINDOW_MAX, COMPACT_WINDOW_MIN, HttpError, SKILL_NAME_RE, TOOL_NAME_RE, AGENT_NAME_RE, parseSubagents, sanitizeCompactWindow } from './workspaces.js';
 
 export const BODY_LIMIT = 1024 * 1024;
 
@@ -230,6 +230,16 @@ export function fromLocal(req: IncomingMessage): boolean {
 
 export function createHandler(deps: HttpDeps) {
   const lock = new PickLock();
+  /** 串行化会推送 permissions.deny 的写接口（/api/subagents、/api/tools、/api/agents），避免并发切换导致下发或缓存乱序 */
+  let denyChain: Promise<void> = Promise.resolve();
+  const serializeDeny = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = denyChain.then(fn, fn);
+    denyChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
 
   async function accountRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string): Promise<void> {
     const accounts = deps.accounts;
@@ -279,6 +289,12 @@ export function createHandler(deps: HttpDeps) {
         throw e;
       }
       return sendJson(res, 200, { ok: true });
+    }
+    // 设置 Claude 委派子代理使用的账号（返回最新 AccountList，同时广播 account.changed {reload: false}）
+    if (method === 'POST' && p === '/api/accounts/subagent') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      return sendJson(res, 200, accounts.setSubagentClaude(body.id));
     }
     if (method === 'POST' && p === '/api/accounts/label') {
       const body = await readJson(req);
@@ -747,7 +763,7 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       if (typeof body.name !== 'string' || !TOOL_NAME_RE.test(body.name)) throw new HttpError(400, '工具名不合法');
       if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
-      const disabledTools = await deps.manager.setToolEnabled(body.name, body.enabled);
+      const disabledTools = await serializeDeny(() => deps.manager.setToolEnabled(body.name, body.enabled));
       return sendJson(res, 200, { ok: true, disabledTools });
     }
 
@@ -756,16 +772,8 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       if (typeof body.name !== 'string' || !AGENT_NAME_RE.test(body.name)) throw new HttpError(400, '智能体名不合法');
       if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
-      const disabledAgents = await deps.manager.setAgentEnabled(body.name, body.enabled);
+      const disabledAgents = await serializeDeny(() => deps.manager.setAgentEnabled(body.name, body.enabled));
       return sendJson(res, 200, { ok: true, disabledAgents });
-    }
-
-    // 开启 / 关闭原生子代理（全局保存；关闭时有可用委派的会话停用整个 Agent 工具）
-    if (method === 'POST' && p === '/api/native-agents') {
-      const body = await readJson(req);
-      if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
-      const enabled = await deps.manager.setNativeAgents(body.enabled);
-      return sendJson(res, 200, { ok: true, enabled });
     }
 
     // 自动压缩窗口（全局；null = 不覆盖）。运行中的会话立即生效，新启动的会话经 --settings 带上
@@ -777,15 +785,15 @@ export function createHandler(deps: HttpDeps) {
       return sendJson(res, 200, { ok: true, window });
     }
 
-    // 子代理的模型 / 强度（全局）。Claude 子代理经 PreToolUse hook 生效，对运行中的会话也立即起作用
-    if (p === '/api/agent-models') {
-      if (method === 'GET') return sendJson(res, 200, deps.store.state.agentModels);
+    // 子代理配置与状态（全局：native / claude / agy 三选一及各后端默认模型与强度）；提交后对运行中的会话立即推送 deny
+    if (p === '/api/subagents') {
+      const cwd = q.get('cwd');
+      if (method === 'GET') return sendJson(res, 200, deps.manager.subagentState(cwd));
       if (method === 'POST') {
-        const config = parseAgentModels(await readJson(req));
-        if (!config) throw new HttpError(400, '子代理模型配置不合法');
-        deps.store.state.agentModels = config;
-        deps.store.save();
-        return sendJson(res, 200, { ok: true, config });
+        const config = parseSubagents(await readJson(req));
+        if (!config) throw new HttpError(400, '子代理配置不合法');
+        const state = await serializeDeny(() => deps.manager.setSubagents(config, cwd));
+        return sendJson(res, 200, { ok: true, state });
       }
     }
     if (method === 'GET' && p === '/api/delegate/models' && deps.delegateModels) {

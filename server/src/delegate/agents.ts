@@ -1,8 +1,8 @@
 // 委派智能体定义：内置（Explore / Plan / general-purpose）+ 磁盘自定义（项目 / 用户 / 插件）。
-// 智能体正文只注入后端会话的系统提示词，不进主会话。权限不做控制，只读取 name / description / body / effort / omitClaudeMd。
+// 智能体正文只注入后端会话的系统提示词，不进主会话。读取 name / description / body / model / effort / tools / disallowedTools / omitClaudeMd。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Effort } from '@cosyee/shared';
+import type { Effort, SubagentTypeInfo } from '@cosyee/shared';
 import { frontmatterDescription, splitFrontmatter } from '../skillsDisk.js';
 
 export interface DelegateAgent {
@@ -11,7 +11,12 @@ export interface DelegateAgent {
   /** body: system prompt text for the backend session */
   prompt: string;
   source: 'builtin' | 'projectSettings' | 'userSettings' | 'plugin';
+  model?: string;
   effort?: Effort;
+  /** frontmatter tools:（白名单；不含 '*' 时在 Claude 后端传 --tools） */
+  tools?: string[];
+  /** frontmatter disallowedTools:（黑名单；在 Claude 后端合并进 --disallowedTools） */
+  disallowedTools?: string[];
   omitClaudeMd: boolean;
   omitGitStatus: boolean;
 }
@@ -30,7 +35,7 @@ const EMPTY_BODY_FALLBACK =
   "You are an agent that completes a task assigned by another agent. Given the task message, use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.";
 
 const EXPLORE_PROMPT = [
-  'You are a file search specialist. You excel at thoroughly navigating and exploring codebases.',
+  'You are a codebase investigation specialist. You excel at thoroughly navigating, reading and explaining codebases.',
   '',
   '=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===',
   'This is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:',
@@ -58,11 +63,11 @@ const EXPLORE_PROMPT = [
   '- Adapt your search approach based on the thoroughness level specified by the caller',
   '- Communicate your final report directly as a regular message - do NOT attempt to create files',
   '',
-  'NOTE: You are meant to be a fast agent that returns output as quickly as possible. In order to achieve this you must:',
+  'NOTE: Match your depth to the thoroughness the caller asked for: a quick lookup should return fast, a very thorough investigation should read enough to be sure. Either way:',
   '- Make efficient use of the tools that you have at your disposal: be smart about how you search for files and implementations',
   '- Wherever possible you should try to run multiple tool calls in parallel for searching and reading files',
   '',
-  'Complete the search request efficiently and report your findings clearly.',
+  "Answer the caller's question directly: give your conclusions with file:line evidence, and say clearly what you could not confirm.",
 ].join('\n');
 
 const PLAN_PROMPT = [
@@ -153,7 +158,7 @@ export const BUILTIN_AGENTS: DelegateAgent[] = [
   {
     name: 'Explore',
     description:
-      'Read-only search agent for broad fan-out searches: sweeps many files, directories or naming conventions and reports what it found. It locates code; it does not review or audit it. Specify search breadth: "medium" or "very thorough".',
+      'Read-only investigation agent: finds, reads and explains code — tracing logic, locating the cause of a bug, mapping how a feature works — and reports conclusions with file:line evidence. Use it for any task that only needs reading. Specify thoroughness: "quick", "medium" or "very thorough".',
     prompt: EXPLORE_PROMPT,
     source: 'builtin',
     omitClaudeMd: true,
@@ -171,7 +176,7 @@ export const BUILTIN_AGENTS: DelegateAgent[] = [
   {
     name: 'general-purpose',
     description:
-      'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks, including editing files and running commands.',
+      'Agent for tasks that change things or need running: editing files, implementing features, running tests or scripts to verify, and multi-step work that mixes investigation with changes.',
     prompt: GENERAL_PURPOSE_PROMPT,
     source: 'builtin',
     omitClaudeMd: false,
@@ -181,8 +186,53 @@ export const BUILTIN_AGENTS: DelegateAgent[] = [
 
 const BUILTIN_NAMES = new Set(BUILTIN_AGENTS.map((a) => a.name));
 
+/** 内置的只读智能体（Explore / Plan）；同名磁盘自定义定义视为可写 */
+export function isReadOnlyAgent(a: DelegateAgent): boolean {
+  return a.source === 'builtin' && (a.name === 'Explore' || a.name === 'Plan');
+}
+
+export function toSubagentTypeInfo(a: DelegateAgent): SubagentTypeInfo {
+  return {
+    name: a.name,
+    description: a.description,
+    source: a.source,
+    ...(isReadOnlyAgent(a) ? { readOnly: true } : {}),
+    ...(a.model ? { model: a.model } : {}),
+    ...(a.effort ? { effort: a.effort } : {}),
+  };
+}
+
 function unquote(s: string): string {
   return s.trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+}
+
+/** 解析 frontmatter 里的工具列表：支持逗号分隔、内联数组 [A, B] 和多行 YAML 列表 */
+function parseFrontmatterList(head: string, key: string): string[] | undefined {
+  const lines = head.split(/\r?\n/);
+  const re = new RegExp(`^${key}\\s*:(.*)$`);
+  const idx = lines.findIndex((l) => re.test(l));
+  if (idx < 0) return undefined;
+  const rest = re.exec(lines[idx]!)![1]!.trim();
+  if (rest) {
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+      const inner = rest.slice(1, -1).trim();
+      if (!inner) return [];
+      return inner.split(',').map(unquote).filter(Boolean);
+    }
+    const u = unquote(rest);
+    if (!u) return [];
+    return u.split(',').map(unquote).filter(Boolean);
+  }
+  const items: string[] = [];
+  for (const l of lines.slice(idx + 1)) {
+    if (l.trim() && !/^\s/.test(l)) break;
+    const m = /^\s*-\s+(.+)$/.exec(l);
+    if (m?.[1]) {
+      const v = unquote(m[1]);
+      if (v) items.push(v);
+    }
+  }
+  return items.length ? items : undefined;
 }
 
 function scanAgentsDir(
@@ -216,9 +266,14 @@ function scanAgentsDir(
     if (!raw) continue;
     const name = prefix + raw;
     if (out.has(name)) continue;
+    const modelMatch = /^model\s*:\s*(.+)$/m.exec(head);
+    const rawModel = modelMatch?.[1] ? unquote(modelMatch[1]) : '';
+    const model = rawModel || undefined;
     const effortMatch = /^effort\s*:\s*(.+)$/m.exec(head);
     const rawEffort = effortMatch?.[1] ? unquote(effortMatch[1]) : '';
     const effort = EFFORT_SET.has(rawEffort) ? (rawEffort as Effort) : undefined;
+    const tools = parseFrontmatterList(head, 'tools');
+    const disallowedTools = parseFrontmatterList(head, 'disallowedTools');
     const omitMatch = /^omitClaudeMd\s*:\s*(.+)$/m.exec(head);
     const omitClaudeMd = omitMatch?.[1] ? unquote(omitMatch[1]) === 'true' : false;
     out.set(name, {
@@ -226,7 +281,10 @@ function scanAgentsDir(
       description,
       prompt: body.trim() ? body : EMPTY_BODY_FALLBACK,
       source,
+      ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
+      ...(tools !== undefined ? { tools } : {}),
+      ...(disallowedTools?.length ? { disallowedTools } : {}),
       omitClaudeMd,
       omitGitStatus: false,
     });
@@ -255,19 +313,28 @@ function scanDiskAgents(configDir: string, cwd: string): Map<string, DelegateAge
   return out;
 }
 
-export function listAgents(scope: AgentScope): DelegateAgent[] {
+/** 列出全部代理类型（含已关闭的）：内置（被磁盘同名覆盖则用磁盘的）+ 磁盘自定义 */
+export function listAllAgents(scope: Omit<AgentScope, 'disabled'>): DelegateAgent[] {
   const disk = scanDiskAgents(scope.configDir, scope.cwd);
-  const disabled = new Set(scope.disabled);
   const out: DelegateAgent[] = [];
   for (const b of BUILTIN_AGENTS) {
-    const agent = disk.get(b.name) ?? b;
-    if (!disabled.has(agent.name)) out.push(agent);
+    out.push(disk.get(b.name) ?? b);
   }
   for (const a of disk.values()) {
-    if (BUILTIN_NAMES.has(a.name) || disabled.has(a.name)) continue;
+    if (BUILTIN_NAMES.has(a.name)) continue;
     out.push(a);
   }
   return out;
+}
+
+/** 按名字查找磁盘自定义智能体（项目 > 用户 > 插件）；内置或不存在返回 undefined */
+export function findDiskAgent(configDir: string, cwd: string, name: string): DelegateAgent | undefined {
+  return scanDiskAgents(configDir, cwd).get(name);
+}
+
+export function listAgents(scope: AgentScope): DelegateAgent[] {
+  const disabled = new Set(scope.disabled);
+  return listAllAgents(scope).filter((a) => !disabled.has(a.name));
 }
 
 function collapseDesc(desc: string): string {
