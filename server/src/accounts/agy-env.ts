@@ -11,9 +11,9 @@ function deleteEnvIgnoreCase(env: NodeJS.ProcessEnv, name: string): void {
 }
 
 /**
- * 运行 / 探测 agy 用的环境变量：
- * - dir 为 null（默认账号）：只 cleanEnv，不加任何东西（沿用系统凭据库）
- * - dir 非空（添加的账号）：cleanEnv + AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1（不改 USERPROFILE/HOME）
+ * 运行 agy 用的环境变量：
+ * - dir 为 null（不接账号管理时，agy 自己的默认目录）：只 cleanEnv
+ * - dir 非空（Cosyee 里登录的账号）：cleanEnv + AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1（不改 USERPROFILE/HOME）
  */
 export function agyAccountEnv(dir: string | null, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = cleanEnv(base);
@@ -25,26 +25,14 @@ export function agyAccountEnv(dir: string | null, base: NodeJS.ProcessEnv = proc
 }
 
 /**
- * 运行 / 探测 / 登录 agy 的额外 CLI 参数：
- * - dir 为 null（默认账号）：空数组
+ * 运行 / 登录 agy 的额外 CLI 参数：
+ * - dir 为 null（agy 自己的默认目录）：空数组
  * - dir 非空（<root>/<id>）：['--gemini-dir', <root>, '--app-data-dir', <id>]
  */
 export function agyAccountArgs(dir: string | null): string[] {
   if (dir === null) return [];
   const abs = path.resolve(dir);
   return ['--gemini-dir', path.dirname(abs), '--app-data-dir', path.basename(abs)];
-}
-
-/**
- * 探测 agy 用的额外 CLI 参数：
- * - dir 非空（添加的账号）：同 agyAccountArgs(dir)
- * - dir 为 null 且传入一次性临时目录（Windows 默认账号探测）：['--gemini-dir', <scratchDir>, '--app-data-dir', 'p']
- * - 其余（非 Windows 默认账号）：空数组
- */
-export function agyProbeArgs(dir: string | null, scratchDir?: string): string[] {
-  if (dir !== null) return agyAccountArgs(dir);
-  if (scratchDir) return ['--gemini-dir', path.resolve(scratchDir), '--app-data-dir', 'p'];
-  return [];
 }
 
 /**

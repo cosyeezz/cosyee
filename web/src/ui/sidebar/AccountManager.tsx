@@ -62,7 +62,7 @@ const SECTIONS: { kind: ClaudeKind | 'agy'; title: string; tip: string; add: str
   { kind: 'claude', title: 'Claude 订阅', tip: 'claude.ai 订阅账号', add: '用 claude.ai 登录', dialog: 'login', empty: '还没有 Claude 订阅账号' },
   { kind: 'api', title: 'API', tip: '用 API Key 按量计费，可配置模型映射', add: '添加 API Key', dialog: 'api', empty: '还没有 API 账号' },
   { kind: 'kiro', title: 'Kiro', tip: '经 kiro.rs 代理使用 Kiro 额度', add: '登录 Kiro', dialog: 'kiro', empty: '还没有 Kiro 账号' },
-  { kind: 'agy', title: 'Antigravity', tip: '委派任务用的账号：新的委派使用选中的账号，已有的委派继续用原来的账号', add: '登录 Antigravity', dialog: 'agy', empty: '还没有 Antigravity 账号' },
+  { kind: 'agy', title: 'Antigravity', tip: '委派任务用的账号：新的委派使用选中的账号，已有的委派继续用原来的账号', add: '登录 Antigravity', dialog: 'agy', empty: '' },
 ];
 
 const REMOVE_NOTE: Record<ClaudeKind | 'agy', string> = {
@@ -356,7 +356,6 @@ export function AccountManager(p: AccountManagerProps) {
     const sub = [
       a.running > 0 ? `${a.running} 个委派执行中` : null,
       a.email && a.email !== title ? a.email : null,
-      a.loggedIn === null ? '检测中…' : null,
     ].filter(Boolean).join(' · ');
     const badge = off ? { text: '需要登录', danger: true } : a.active ? { text: '当前' } : null;
     const removeBlock = agyRemoveBlock(a);
@@ -390,7 +389,7 @@ export function AccountManager(p: AccountManagerProps) {
             {agySwitching === a.id ? '切换中…' : '切换'}
           </button>
         )}
-        {!a.isDefault && <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>}
+        <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>
         <ConfirmActionButton
           icon="trash"
           text="移除"
@@ -434,9 +433,8 @@ export function AccountManager(p: AccountManagerProps) {
                     </button>
                   )}
                 </div>
-                {agyData.installed && (rows.length
-                  ? <div className="cz-acct-mgr__cards">{rows.map(agyCard)}</div>
-                  : <div className="cz-acct-mgr__empty">{s.empty}</div>)}
+                {/* 没有账号时下面留空，不提示去登录 */}
+                {agyData.installed && rows.length > 0 && <div className="cz-acct-mgr__cards">{rows.map(agyCard)}</div>}
                 {agyData.installed && <DuplicateNote count={agyData.duplicates ?? 0} onClean={p.onDedupeAgy} />}
               </section>
             );

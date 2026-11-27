@@ -13,6 +13,8 @@ import { BackendError, type BackendResult, type BackendRunOptions, type Delegate
 import { type AvailableModel, parseAvailable, resolveModelId, splitModelId, toModelList } from './models.js';
 
 const DEFAULT_ACCOUNT: AgyAccountRef = { id: DEFAULT_ID, dir: null };
+/** 接了账号管理、但一个 Antigravity 账号都没有时的提示 */
+export const NO_AGY_ACCOUNT = '没有 Antigravity 账号：请在左下角账号菜单「管理账号」里登录';
 
 /** 账号未登录时的报错文案：默认账号沿用原文案，添加的账号提示在左下角账号菜单重新登录 */
 export function notLoggedInMessage(account: AgyAccountRef): string {
@@ -1121,9 +1123,10 @@ export interface AgyBackendOptions {
   resolve?: () => string | null;
   /** 多账号来源；不传则始终使用默认账号 */
   accounts?: {
-    activeAccount(): AgyAccountRef;
+    /** 当前账号；一个账号都没有返回 null（不退回本机 agy 自己的登录） */
+    activeAccount(): AgyAccountRef | null;
     accountFor(id: string): AgyAccountRef | null;
-    /** 当前活跃账号是否已登录（false = 明确未登录；true = 已登录；null = 未知/探测中） */
+    /** 当前账号是否已登录（false = 未登录；true = 已登录；null = 未知） */
     isLoggedIn?(): boolean | null;
   };
 }
@@ -1158,11 +1161,15 @@ export class AgyBackend implements DelegateBackend {
       if (accountId === DEFAULT_ID) return DEFAULT_ACCOUNT;
       throw new Error('创建这个委派会话的账号已移除，请新建委派');
     }
-    return this.accounts?.activeAccount() ?? DEFAULT_ACCOUNT;
+    if (!this.accounts) return DEFAULT_ACCOUNT;
+    const acc = this.accounts.activeAccount();
+    if (!acc) throw new Error(NO_AGY_ACCOUNT);
+    return acc;
   }
 
   availability(): SubagentAvailability {
     if (this.getPath() === null) return { ok: false, reason: '未安装 Antigravity CLI' };
+    if (this.accounts && !this.accounts.activeAccount()) return { ok: false, reason: NO_AGY_ACCOUNT };
     if (this.accounts?.isLoggedIn?.() === false) return { ok: false, reason: 'Antigravity 账号未登录' };
     return { ok: true };
   }

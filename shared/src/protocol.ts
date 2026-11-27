@@ -570,22 +570,23 @@ export interface AgyQuota {
 
 /** Antigravity（agy）账号列表里的一项；委派任务用。不含令牌；邮箱只用来显示。 */
 export interface AgyAccountEntry {
-  /** 'default' = 本机 agy 自己的登录（系统凭据库）；其它 = 在 Cosyee 里添加的账号（各自独立的数据目录） */
+  /** 在 Cosyee 里登录的账号 id（各自独立的数据目录）；没有「本机默认账号」 */
   id: string;
-  /** 用户起的备注名；没填时服务端自动起「账号 2」这样的名字；默认账号为空 */
+  /** 用户起的备注名；没填为空，界面显示邮箱 */
   label: string;
-  /** 套餐名（如 'Google AI Pro'）；还没读到为 null */
+  /** 套餐名（如 'Google AI Pro'）；目前不探测，恒为 null（字段保留兼容） */
   plan: string | null;
-  /** null = 正在检测 */
+  /** 账号目录里有没有令牌文件；服务端不再返回 null（旧版本 null = 正在检测） */
   loggedIn: boolean | null;
   /** 新的委派任务用这个账号 */
   active: boolean;
+  /** 恒为 false（旧版本的本机默认账号已去掉，字段保留兼容） */
   isDefault: boolean;
   /** 正在用该账号执行的委派任务数 */
   running: number;
-  /** 登录的 Google 账号邮箱；还没读到为 null。没起备注名时用它当标题 */
+  /** 登录的 Google 账号邮箱（读自账号自己的令牌文件，不落盘）；读不到为 null。没起备注名时用它当标题 */
   email?: string | null;
-  /** 各组模型的额度；还没读到 / 读取失败为 null */
+  /** 各组模型的额度；目前不探测，恒为 null（字段保留兼容） */
   quota?: AgyQuota | null;
 }
 
@@ -980,15 +981,15 @@ export interface UsageInfo {
 // GET  /api/kiro/login/:loginId             → AccountLogin
 // POST /api/kiro/login/:loginId/cancel      → { ok: true }
 // GET  /api/kiro/balance?account=<id>       → KiroBalance   Kiro 账号额度（会按需启动服务）
-// GET  /api/agy-accounts                    → AgyAccountList   Antigravity（agy）账号列表与进行中的登录；登录状态 / 套餐 / 邮箱 / 额度后台检测，变化时广播 agy.changed
-//      ?refresh=1：额度超过 90 秒没更新的已登录账号重新检测（账号菜单打开时用）
+// GET  /api/agy-accounts                    → AgyAccountList   在 Cosyee 里登录的 Antigravity（agy）账号与进行中的登录；不启动 agy 探测，
+//                                             登录状态看令牌文件，邮箱读自令牌文件；账号变化时广播 agy.changed
 // POST /api/agy-accounts/switch {id}        → { ok: true }   新的委派任务改用该账号；执行中的任务和已有的委派会话继续用原来的账号，不停止任何进程
 // POST /api/agy-accounts/login {label?, accountId?} → AccountLogin   添加账号（或重新登录）：后台运行 agy acp --login，不打开本机浏览器，
 //                                             只给出登录链接，登录后把页面上的授权码（或完整网址）交回来；同一时间只允许一个
 // GET  /api/agy-accounts/login/:loginId     → AccountLogin
 // POST /api/agy-accounts/login/:loginId/code {code} → { ok: true }
 // POST /api/agy-accounts/login/:loginId/cancel → { ok: true }
-// POST /api/agy-accounts/remove {id}        → { ok: true }   移除添加的账号并删除它的数据目录；默认账号、当前账号、有执行中任务的账号不能移除（409）
+// POST /api/agy-accounts/remove {id}        → { ok: true }   移除账号并删除它的数据目录；正在登录 / 有执行中任务的不能移除（409）；移除当前账号后自动换到下一个
 // POST /api/agy-accounts/label {id, label}  → { ok: true }   修改备注名
 // POST /api/pick {mode?: 'mixed'|'files'|'folders'} → { items: PickedItem[]; supportsMixed: boolean }   系统对话框，仅本机连接
 // GET  /api/browse?path=                    → BrowseDir   网页版选择窗口（远程连接）：列出服务端目录

@@ -141,15 +141,15 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   let accounts: Accounts | null = null;
   let agyAccounts: AgyAccounts | null = null;
   let kiro: KiroService | null = null;
-  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? DEFAULT_ID });
+  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? '' });
   const onExitPool = () => acpPool.dispose(true);
   process.once('exit', onExitPool);
   const agyCli = new AgyCli({ pool: acpPool });
   const agyBackend = new AgyBackend({
     pool: acpPool,
     accounts: {
-      activeAccount: () => agyAccounts?.activeAccount() ?? { id: DEFAULT_ID, dir: null },
-      accountFor: (id) => agyAccounts?.accountFor(id) ?? (id === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null),
+      activeAccount: () => agyAccounts?.activeAccount() ?? null,
+      accountFor: (id) => agyAccounts?.accountFor(id) ?? null,
       isLoggedIn: () => agyAccounts?.activeLoggedIn() ?? null,
     },
   });
