@@ -73,6 +73,31 @@
     else fn();
   }
 
+  // ── 原生层的简短提示（例如下载完成），由 Rust / MainActivity 调 window.__cosyeeToast ──
+  // 放在 Shadow DOM 里，不受页面样式影响；几秒后自动消失，新提示替换旧提示。
+  var toastHost = null, toastTimer = 0;
+  window.__cosyeeToast = function (msg) {
+    var rootEl = document.documentElement;
+    if (!rootEl || typeof msg !== 'string') return;
+    if (!toastHost) {
+      toastHost = document.createElement('div');
+      toastHost.setAttribute('data-cosyee-toast', '');
+      var sr = toastHost.attachShadow({ mode: 'open' });
+      sr.innerHTML = '<style>div{position:fixed;left:50%;bottom:calc(24px + var(--cosyee-inset-bottom,0px));'
+        + 'transform:translateX(-50%);z-index:2147483647;max-width:min(560px,calc(100vw - 32px));'
+        + 'padding:9px 14px;border-radius:8px;background:rgba(32,30,28,.94);color:#f4f1ec;'
+        + 'font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;'
+        + 'box-shadow:0 6px 24px rgba(0,0,0,.28);word-break:break-all;pointer-events:none;'
+        + 'transition:opacity .2s}div[hidden]{display:block;opacity:0}</style><div hidden></div>';
+    }
+    var box = toastHost.shadowRoot.querySelector('div');
+    box.textContent = msg;
+    if (!toastHost.isConnected) rootEl.appendChild(toastHost);
+    box.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { box.hidden = true; }, 4000);
+  };
+
   // ───────────── 手机：系统栏避让 + 返回手势 ─────────────
   // 原生层（client/android/MainActivity.kt）提供 CosyeeNative：系统栏 / 输入法占的区域、状态栏图标深浅。
   // 返回手势 / 返回键先问 window.__cosyeeBack：页面可以监听可取消的 'cosyee:back' 事件自己处理

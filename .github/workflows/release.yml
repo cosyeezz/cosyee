@@ -219,6 +219,12 @@ jobs:
           manifest=src-tauri/gen/android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$manifest"
           grep -q 'RECORD_AUDIO' "$manifest" || { echo "::error::没能加上 RECORD_AUDIO 权限"; exit 1; }
+          # 下载完的 APK 从应用里打开要拉起安装器（Android 8+ 来源应用必须声明这项，用户还会被要求允许「安装未知应用」）
+          sed -i 's#<application#<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n    <application#' "$manifest"
+          grep -q 'REQUEST_INSTALL_PACKAGES' "$manifest" || { echo "::error::没能加上 REQUEST_INSTALL_PACKAGES 权限"; exit 1; }
+          # MainActivity 打开下载文件用模板自带的 FileProvider（Android 9 及以下）
+          grep -q 'androidx.core.content.FileProvider' "$manifest" \
+            || { echo "::error::AndroidManifest.xml 里没有 FileProvider（Tauri 模板变了？）"; exit 1; }
           # 应用图标
           cp -r src-tauri/icons/android/* src-tauri/gen/android/app/src/main/res/
           # 自己的 MainActivity：系统栏 / 输入法避让交给页面、返回手势回到服务器列表（见文件头注释）

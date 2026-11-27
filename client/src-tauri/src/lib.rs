@@ -3,6 +3,8 @@
 // 客户端不处理任何业务逻辑，也没有令牌：访问控制由服务端的 Tailscale 模式负责。
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "macos")]
+mod download;
 mod http_client;
 #[cfg(desktop)]
 mod local;
@@ -222,7 +224,9 @@ pub fn run() {
             let builder = builder
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
-                .traffic_light_position(tauri::LogicalPosition::new(14.0, 19.0));
+                .traffic_light_position(tauri::LogicalPosition::new(14.0, 19.0))
+                // 网页里的下载存进「下载」目录（WKWebView 没有下载处理时会直接取消）
+                .on_download(download::handle);
             let _window = builder.build()?;
             #[cfg(target_os = "android")]
             if let Some(ref url) = proxy_url {
