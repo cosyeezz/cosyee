@@ -1,8 +1,9 @@
 // 通用弹出菜单基础件：定位在锚点上方 / 下方，点外面和 Esc 关闭，↑↓ Enter 键盘操作，
-// 支持二级子菜单（悬停 / → 展开，← 返回）、右侧快捷键、勾选、说明小字、开关、数字热键。
+// 支持二级子菜单（悬停 / → 展开，← 返回）、右侧快捷键、勾选、说明小字、开关、行尾复制按钮、数字热键。
 // 渲染到 document.body（portal），不受父级 overflow 裁剪。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { CopyButton } from '../files/PathActions';
 import { Icon } from '../icons/Icon';
 import { viewportBounds } from '../layout/viewport';
 import './Menu.css';
@@ -26,6 +27,8 @@ export interface MenuItem {
   disabled?: boolean;
   /** 选中后不关闭菜单（如开关） */
   keepOpen?: boolean;
+  /** 有值时行尾显示复制按钮，复制这段文字；点按钮不会选中该项，也不关菜单 */
+  copy?: string;
   onSelect?: () => void;
   /** 二级子菜单 */
   submenu?: MenuEntry[];
@@ -254,8 +257,15 @@ function isDrill(minWidth: number): boolean {
 }
 
 function Row({ item, active, onClick }: { item: MenuItem; active: boolean; onClick: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // 键盘 ↑↓ 移到可滚动面板的可视区外时滚进来；鼠标悬停激活的不滚，免得列表在指针下面跳
+  useEffect(() => {
+    const el = ref.current;
+    if (active && el && !el.matches(':hover')) el.scrollIntoView?.({ block: 'nearest' });
+  }, [active]);
   return (
     <div
+      ref={ref}
       className={`cz-menu__row${active ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}${item.checked ? ' is-checked' : ''}`}
       role="menuitem"
       aria-disabled={item.disabled || undefined}
@@ -278,12 +288,18 @@ function Row({ item, active, onClick }: { item: MenuItem; active: boolean; onCli
       {item.checked
         ? <span className="cz-menu__check"><Icon name="check" size={16} /></span>
         : item.shortcut && <span className="cz-menu__shortcut">{item.shortcut}</span>}
+      {item.copy && (
+        // 拦住点击，不让它冒泡到行上（那会选中该项并关菜单）
+        <span className="cz-menu__copy-slot" onClick={(ev) => ev.stopPropagation()}>
+          <CopyButton text={item.copy} label={`复制 ${item.copy}`} className="cz-menu__copy" />
+        </span>
+      )}
       {item.submenu && <Icon name="chevron-right" size={14} className="cz-menu__arrow" />}
     </div>
   );
 }
 
-/** 二级菜单：挂在父行旁边，右侧放不下则翻到左侧，纵向超出则上移 */
+/** 二级菜单：挂在父行旁边，右侧放不下则翻到左侧；纵向超出则上移，比可用高度还高时限高滚动 */
 function SubPanel({ children, minWidth }: { children: ReactNode; minWidth: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
@@ -291,16 +307,25 @@ function SubPanel({ children, minWidth }: { children: ReactNode; minWidth: numbe
     const el = ref.current;
     const parent = el?.parentElement;
     if (!el || !parent) return;
+    const vb = viewportBounds();
+    const m = 8;
     const r = parent.getBoundingClientRect();
     const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const flip = r.right + w + 4 > window.innerWidth - 8 && r.left - w - 4 >= 8;
-    let dy = 0;
-    if (r.top + h > window.innerHeight - 8) dy = Math.max(window.innerHeight - 8 - (r.top + h), 8 - r.top);
-    setStyle({ visibility: 'visible', top: dy - 6, ...(flip ? { right: '100%', marginRight: -2 } : { left: '100%', marginLeft: -2 }) });
+    const full = el.offsetHeight;
+    const room = vb.bottom - vb.top - 2 * m;
+    const h = Math.min(full, room);
+    const flip = r.right + w + 4 > vb.right - m && r.left - w - 4 >= vb.left + m;
+    // 首行与父行对齐（上移 6px 抵消内边距）；下面放不下就上移，但不越过可用区域顶部
+    const top = Math.max(vb.top + m, Math.min(r.top - 6, vb.bottom - m - h));
+    setStyle({
+      visibility: 'visible',
+      top: top - r.top,
+      maxHeight: full > room ? room : undefined,
+      ...(flip ? { right: '100%', marginRight: -2 } : { left: '100%', marginLeft: -2 }),
+    });
   }, []);
   return (
-    <div ref={ref} className="cz-menu cz-menu--sub" role="menu" style={{ ...style, minWidth }}>
+    <div ref={ref} className="cz-menu cz-menu--sub cz-menu--scroll" role="menu" style={{ ...style, minWidth }}>
       {children}
     </div>
   );

@@ -77,7 +77,7 @@
 
 /* ── 展开区：Bash 工具（.is-running 时提示符变色、光标闪、边框跑光） ── */
 .ci-tool-bash :is(.f,.c,.u,.p){fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
-.ci-tool-bash .f{stroke-width:3;stroke-opacity:.7}
+.ci-tool-bash .f{stroke-width:3}
 .ci-tool-bash :is(.c,.u){stroke-width:3.2}
 .ci-tool-bash .p{stroke:var(--tk-b);stroke-width:3;stroke-dasharray:18 82;opacity:0}
 .ci-tool-bash.is-running :is(.c,.u){stroke:var(--tk-b)}
@@ -101,6 +101,8 @@
 .ci-tool-agent.is-running .n2{animation-delay:-.6s}
 .ci-tool-mcp.is-running .pl{animation:ci-plug 1.4s ease-in-out infinite}
 .ci-tool-mcp.is-running .pr{animation:ci-plug 1.4s ease-in-out infinite reverse}
+.ci-tool-skill .spk{transform-box:fill-box;transform-origin:center}
+.ci-tool-skill.is-running .spk{fill:var(--tk-b);animation:ci-twinkle 1.6s ease-in-out infinite}
 .ci-tool-generic .nut{transform-origin:32px 32px}
 .ci-tool-generic.is-running .nut{animation:ci-spin 4s linear infinite}
 .ci-tool-fail .l{stroke:var(--tk-err)}
@@ -114,6 +116,7 @@
 @keyframes ci-look{25%{transform:translate(5px,-2px)}50%{transform:translate(3px,5px)}75%{transform:translate(-3px,3px)}}
 @keyframes ci-globe{50%{transform:scaleX(.12)}}
 @keyframes ci-pulse{50%{opacity:.25}}
+@keyframes ci-twinkle{0%{transform:scale(1) rotate(0deg)}50%{transform:scale(.6) rotate(45deg)}100%{transform:scale(1) rotate(90deg)}}
 @keyframes ci-plug{0%,100%{transform:translateX(-2px)}50%{transform:translateX(2px)}}
 @keyframes ci-spin{to{transform:rotate(360deg)}}
 @keyframes ci-run{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}
@@ -367,6 +370,10 @@ const ICONS = {
     label: '任务清单', where: '展开区 · TodoWrite', runnable: true, line: true,
     render: () => `<path class="l hi w" pathLength="1" d="M9 17L15 23L25 11"/><path class="l" d="M34 17H55"/><rect class="l" x="10" y="38" width="13" height="13" rx="3.5"/><path class="l" d="M34 45H55"/>`,
   },
+  'tool-skill': {
+    label: 'Skill 工具', where: '展开区 · 加载 skill（摊开的书 + 星光，与技能面板的魔法书同一意象）', runnable: true, line: true,
+    render: () => `<path class="l" d="M27.5 29C21.9 24.5 14 24 6 26.5V52.5C14 50 21.9 50.5 27.5 55C33.1 50.5 41 50 49 52.5V26.5C41 24 33.1 24.5 27.5 29Z"/><path class="l" d="M27.5 29V55"/><path class="l dot hi spk" d="M51 2C51.8 7.9 54.6 10.7 60.5 11.5C54.6 12.3 51.8 15.1 51 21C50.2 15.1 47.4 12.3 41.5 11.5C47.4 10.7 50.2 7.9 51 2Z"/>`,
+  },
   'tool-generic': {
     label: '其他工具', where: '展开区 · 兜底图标', runnable: true, line: true,
     render: () => `<g class="nut"><polygon class="l hi" points="55,32 43.5,51.9 20.5,51.9 9,32 20.5,12.1 43.5,12.1"/><circle class="l" cx="32" cy="32" r="8.5"/></g>`,
@@ -492,6 +499,7 @@ const INV = [
   ['展开区', 'tool-agent', 'Agent（启动子代理）', '运行中：两个子节点交替明暗'],
   ['展开区', 'tool-mcp', 'MCP 工具', '运行中：插头两半来回对接'],
   ['展开区', 'tool-todo', '任务清单', '运行中：勾反复描出'],
+  ['展开区', 'tool-skill', 'Skill（加载 skill）', '运行中：星光变色、闪烁旋转'],
   ['展开区', 'tool-generic', '其他工具（兜底）', '运行中：螺母慢转'],
   ['展开区', 'tool-fail', '工具失败（替换工具图标）', '一次：轻微缩放出现'],
   ['子代理面板', 'agent-running', '执行中 ⟳', '循环：带尾巴的弧旋转'],

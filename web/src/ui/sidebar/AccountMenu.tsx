@@ -93,7 +93,8 @@ const MAIN_GROUPS: { kind: ClaudeKind; title: string; tip: string }[] = [
   { kind: 'kiro', title: 'Kiro', tip: '经 kiro.rs 代理使用 Kiro 额度' },
 ];
 
-/** 弹层里的一个账号：名字 + 套餐、选中勾 / 切换中，下面一条最近额度 */
+/** 弹层里的一个账号：名字、套餐，右端是选中勾 / 切换中和问题标签，下面一条最近额度。
+ *  同组的行共用一套列（CSS subgrid）：套餐标签排成一列，问题标签靠右、和下面的百分比右对齐 */
 function PickRow({
   title, plan, issue, active, busy, disabled, quota, card, onPick,
 }: {
@@ -109,6 +110,7 @@ function PickRow({
   card: ReturnType<ReturnType<typeof useAccountCard>['bind']>;
   onPick: () => void;
 }) {
+  const state = busy ? <span className="cz-sidebar__acct-tag">切换中…</span> : active ? <ActiveMark /> : null;
   return (
     <button
       type="button"
@@ -118,12 +120,14 @@ function PickRow({
       {...card}
       onClick={onPick}
     >
-      <span className="cz-acct-pick__name">
-        <b>{title}</b>
-        <PlanChip plan={plan} tip={false} />
-        <IssueChip text={issue} />
-      </span>
-      {busy ? <span className="cz-sidebar__acct-tag">切换中…</span> : active ? <ActiveMark /> : <span />}
+      <span className="cz-acct-pick__name"><b>{title}</b></span>
+      <PlanChip plan={plan} tip={false} />
+      {(state || issue) && (
+        <span className="cz-acct-pick__end">
+          {state}
+          <IssueChip text={issue} />
+        </span>
+      )}
       {quota}
     </button>
   );

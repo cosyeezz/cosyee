@@ -36,6 +36,7 @@ import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/F
 import { FilePreview } from '../ui/files/FilePreview';
 import { BrowserPanel } from '../ui/browser/BrowserPanel';
 import { isBrowserToggle } from '../ui/browser/input';
+import { BROWSER_OPEN_EVENT, type BrowserLink, type BrowserOpenDetail } from '../ui/browser/links';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
@@ -138,9 +139,14 @@ export function MainApp() {
   /** 选中回复带来的引用文字（可累积多段）；由输入框负责拼进消息并在发送后清除 */
   const [quotes, setQuotes] = useState<readonly QuoteReply[]>([]);
   const composerRef = useRef<ComposerHandle>(null);
-  /** 内置浏览器面板：标题栏地球按钮（cosyee:browser 事件）或 ⇧⌘P / Ctrl+Shift+P 开关 */
+  /** 内置浏览器面板：标题栏地球按钮（cosyee:browser 事件）或 ⇧⌘P / Ctrl+Shift+P 开关；应用里点的 http(s) 链接也在面板里打开 */
   const [browserOpen, setBrowserOpen] = useState(false);
+  /** 点链接要在面板里打开的地址；面板关掉就作废，免得下次打开面板又跳一次 */
+  const [browserLink, setBrowserLink] = useState<BrowserLink | null>(null);
   const closeBrowser = useCallback(() => setBrowserOpen(false), []);
+  useEffect(() => {
+    if (!browserOpen) setBrowserLink(null);
+  }, [browserOpen]);
   const onBrowserPick = useCallback(
     (r: BrowserPickResult) => composerRef.current?.insertChips([{ kind: 'el', path: r.text }]) ?? false,
     [],
@@ -153,14 +159,24 @@ export function MainApp() {
       e.preventDefault();
       toggle();
     };
+    // 链接点击（ui/browser/links.ts）：preventDefault 表示收下了，链接就不再用默认方式打开
+    const openLink = (e: Event) => {
+      const url = (e as CustomEvent<Partial<BrowserOpenDetail> | null>).detail?.url;
+      if (typeof url !== 'string') return;
+      e.preventDefault();
+      setBrowserLink((l) => ({ url, seq: (l?.seq ?? 0) + 1 }));
+      setBrowserOpen(true);
+    };
     window.addEventListener('cosyee:browser', toggle);
     window.addEventListener('keydown', onKey);
+    window.addEventListener(BROWSER_OPEN_EVENT, openLink);
     // 告诉桌面客户端的标题栏：可以显示浏览器按钮了
     (window as { __cosyeeBrowserReady?: boolean }).__cosyeeBrowserReady = true;
     window.dispatchEvent(new Event('cosyee:browser-ready'));
     return () => {
       window.removeEventListener('cosyee:browser', toggle);
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener(BROWSER_OPEN_EVENT, openLink);
     };
   }, []);
   useEffect(() => {
@@ -1372,7 +1388,7 @@ export function MainApp() {
       {preview && selId && selDir && (
         <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />
       )}
-      {browserOpen && <BrowserPanel onClose={closeBrowser} onPick={onBrowserPick} />}
+      {browserOpen && <BrowserPanel onClose={closeBrowser} onPick={onBrowserPick} link={browserLink} />}
     </DelegateContext.Provider>
     </FlowMetaContext.Provider>
     </FilesContext.Provider>

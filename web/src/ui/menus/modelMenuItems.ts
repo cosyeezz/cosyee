@@ -1,6 +1,7 @@
 // 模型菜单的数据构造（纯函数，便于单测）。条目来自 shared/models.ts 的 menuModels：
 // - list：CLI 报告的该账号实际可用模型（GET /api/models）；没拉到时退回内置表，行为与原来一致；
-// - map：配了模型映射的 API 账号，常用项换成映射过的别名，「更多模型」换成映射里的自定义条目。
+// - map：配了模型映射的 API 账号，常用项换成映射过的别名，「更多模型」换成「自定义模型」（映射里的全部模型）。
+// 子菜单每行带复制按钮，复制实际模型名（别名复制它映射到的模型）。
 // 思考强度子菜单只列当前模型支持的档位，不支持强度的模型整项隐藏。
 import type { ApiModelMap, CliModel, SessionConfig } from '@cosyee/shared';
 import { EFFORTS, EFFORT_HINT, clampEffort, effortsFor, findModel, menuModelLabel, menuModels } from '@cosyee/shared';
@@ -69,8 +70,12 @@ export function buildModelMenu(
     badge: withKey && m.isDefault ? '默认' : undefined,
     note: m.note,
     checked: current === m.id,
+    copy: withKey ? undefined : m.target ?? m.id,
     onSelect: pick(m.id),
   });
+  // 映射过的别名（有 target）排在前面，和后面的自定义条目之间加一条分隔线
+  const moreItems = more.flatMap((m, i): MenuEntry[] =>
+    i > 0 && more[i - 1]!.target && !m.target ? [{ kind: 'sep', key: 'sep-more' }, item(m, false)] : [item(m, false)]);
   const efforts = levels ? EFFORTS.filter((e) => levels.includes(e.id)) : [];
   const rest: MenuEntry[] = [
     // 不支持强度的模型（如 Haiku 4.5）整项隐藏
@@ -103,9 +108,9 @@ export function buildModelMenu(
           ],
         }] as MenuEntry[])
       : []),
-    // 配了映射时这是「自定义模型」（映射里自由添加的条目）；一条都没有就不显示
+    // 配了映射时这是「自定义模型」（映射过的别名 + 自定义条目）；没有自定义条目就不显示
     ...(more.length
-      ? ([{ key: 'more', label: moreLabel, submenu: more.map((m) => item(m, false)) }] as MenuEntry[])
+      ? ([{ key: 'more', label: moreLabel, submenu: moreItems }] as MenuEntry[])
       : []),
     ...(ctx.onRefresh
       ? ([

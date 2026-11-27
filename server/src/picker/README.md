@@ -10,7 +10,7 @@ const items = await pick({ mode: 'mixed', title: '选择文件或文件夹', sta
 |---|---|
 | `index.ts` | `pick()`, `supportsMixed`, types; dispatches on `process.platform`, `kind` via `fs.stat`, dedupes. Optional extra `signal: AbortSignal` kills the helper and closes the dialog. |
 | `win.ts` + `win.ps1` | Windows: spawns `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File win.ps1`. Parameters go in via env vars `PICK_MODE/PICK_TITLE/PICK_START_DIR`. The script prints one line of **pure-ASCII** JSON (`\uXXXX` escapes), so Chinese paths survive any console code page. |
-| `mac.ts` | macOS: `osascript -l JavaScript` + `NSOpenPanel` (files + directories + multiple). **Not tested** (no Mac available). |
+| `mac.ts` | macOS: `osascript -l JavaScript` + `NSOpenPanel` (files + directories + multiple). Tested on macOS 26.6, see [macOS](#macos). |
 | `try.ts` | Manual test: `npx -y tsx server/src/picker/try.ts mixed` (or `files` / `folders`, optional 2nd arg = start dir). |
 
 `win.ps1` must be shipped next to `win.js` when compiled (or set `COSYEE_PICKER_PS1`). Keep it ASCII-only
@@ -63,8 +63,47 @@ Test dir with `folderB`, `文件夹A`, `plain.txt`, `测试.txt`:
 - Search-result / library / "This PC" virtual items without a filesystem path are skipped (`FOS_FORCEFILESYSTEM`).
 - Low-level hooks are installed for the lifetime of the dialog only (removed in `finally`); some endpoint-security software dislikes `WH_*_LL` hooks. If hooks fail to install, `mixed` degrades to: double-click navigation is mistaken for a pick when the folder is selected (the first click selects it). Use `files`/`folders` as the fallback then; the front end can offer them with Shift+click on "+".
 - Needs Windows PowerShell 5.1 (`powershell.exe`), STA, an interactive desktop session (no service/session-0).
-- macOS: `NSOpenPanel` handles mixed natively; code is untested. If the panel does not come to the front, check activation policy and `activateIgnoringOtherApps` (deprecated on macOS 14 but still works).
+- macOS: see [macOS](#macos) below.
 - Other platforms (Linux): `pick()` throws; `supportsMixed` is `false` (mixed is downgraded to `files` before dispatch).
+
+## macOS
+
+`NSOpenPanel` handles mixed selection natively. The hard part is activation: the panel only takes mouse
+input while osascript is the active app. `mac.ts` does this:
+
+1. Activation policy "regular" and `finishLaunching`. Under macOS 14+ cooperative activation, a background
+   "accessory" process is usually refused focus.
+2. Order the panel front first, then ask for activation (the system refuses to activate a process that shows
+   no window). A 100 ms timer asks again until the first activation succeeds, for at most ~3 s, so it never
+   fights a user who switched away on purpose.
+3. Repair a lost "activated" event (seen on macOS 26.6). While the main thread is still busy loading the panel,
+   WindowServer throws away the queued events of a client whose buffer is full (`Clearing datagram buffer for
+   cid … clientMayIgnoreEvents: 1` in the WindowServer log); moving the mouse fills it within milliseconds. When
+   "app activated" is among the dropped events, the system has osascript frontmost but `NSApp.isActive` stays
+   false. AppKit then treats every click on the panel as an "activate this app" click that changes nothing: no
+   selection, no window drag, until the user happens to switch apps. The same timer compares `NSApp.isActive`
+   with `NSRunningApplication.currentApplication.isActive`; when they disagree on two ticks in a row it sends
+   AppKit the event it missed (`NSEventTypeAppKitDefined` / `NSEventSubtypeApplicationActivated`). This check
+   runs for the whole life of the panel.
+
+`PICK_DEBUG=1` prints the activation timeline (`app=… system=… key=…`, `repair: …`) on stderr.
+Like any Mac app, the first click on the panel after switching to another app only activates it.
+
+### Verified here (macOS 26.6.2, JXA run by osascript, real synthetic mouse clicks)
+
+Start dir `/Applications`, `folders` mode. The test clicks sidebar "Desktop", then "Documents", then "Open",
+so the returned path shows which clicks took effect (`Documents` = all of them).
+
+| Case | Result |
+|---|---|
+| Mouse moves flooded over the panel while it loads (reproduces the lost event) | `Documents`, repaired ~0.2 s after the panel appeared. The script without step 3 returned `/Applications`: every click swallowed. |
+| Panel left alone for 1 s, then clicks | `Documents` |
+| Clicks right after the panel appears | `Documents` |
+| Another app activated first (first click only activates) | `Documents` |
+
+Without the artificial flood the repair also fired in some runs, and other apps grabbing focus
+(anti-detect browsers here) deactivated the panel several times; clicking it brought it back each time.
+Not covered by automation: dragging the panel (synthetic drags don't reach it) and keyboard input.
 
 ## Manual test steps (human)
 
@@ -79,4 +118,4 @@ npx -y tsx server/src/picker/try.ts mixed
 6. `try.ts files` and `try.ts folders` (folders: Ctrl+click multiple folders).
 7. Debug: run with `PICK_DEBUG=1` to see hook / event traces on stderr, or run the script directly:
    `$env:PICK_MODE='mixed'; powershell -NoProfile -STA -ExecutionPolicy Bypass -File server/src/picker/win.ps1`.
-8. macOS: same checklist with `try.ts mixed` (untested).
+8. macOS: same checklist with `try.ts mixed`; add `PICK_DEBUG=1` to see the activation timeline on stderr.

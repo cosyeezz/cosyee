@@ -67,7 +67,8 @@
   flex-direction: column;
 }
 /* 顶栏浮在会话流上面：对话滚上去时从磨砂玻璃后面模糊地透出来。
-   高度由 AppShell 量出来写进 --top-h，主区用它留出位置（会话流自己把这段补回去，见 MainApp.css） */
+   高度由 AppShell 量出来写进 --top-h，主区用它留出位置（会话流自己把这段补回去，见 MainApp.css）。
+   两侧栏收起后浮出的按钮与标题 + 分支两行合起来垂直居中，不只对齐标题那一行 */
 .cz-shell__top {
   position: absolute;
   z-index: 6;
@@ -75,7 +76,7 @@
   left: 0;
   right: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-3) var(--sp-4) var(--sp-2);
   isolation: isolate;

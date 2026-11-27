@@ -7,6 +7,7 @@ import { UserMessage, pasteName } from './UserMessage';
 import { setFlowZoom } from './flowZoom';
 import { api } from '../../core/api';
 import { FilesContext } from '../files/FileContext';
+import { BROWSER_OPEN_EVENT, type BrowserOpenDetail } from '../browser/links';
 import { prepareUserMarkdown } from './userMarkdown';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -118,6 +119,37 @@ describe('UserMessage Markdown', () => {
     const a = h.querySelector('a')!;
     expect(a.getAttribute('href')).toBe('https://example.com');
     expect(a.getAttribute('target')).toBe('_blank');
+  });
+
+  it('普通左键点链接和图片链接：交给内置浏览器面板打开（cosyee:browser-open 被收下）', () => {
+    const urls: string[] = [];
+    const claim = (e: Event) => {
+      urls.push((e as CustomEvent<BrowserOpenDetail>).detail.url);
+      e.preventDefault();
+    };
+    // window 上看默认打开方式有没有被取消，看完取消掉，免得 jsdom 去导航
+    let prevented: boolean[] = [];
+    const spy = (e: Event) => {
+      prevented.push(e.defaultPrevented);
+      e.preventDefault();
+    };
+    window.addEventListener(BROWSER_OPEN_EVENT, claim);
+    window.addEventListener('click', spy);
+    try {
+      const h = render('[站点](https://example.com) ![图](https://example.com/a.png)');
+      for (const a of h.querySelectorAll('a')) {
+        act(() => { a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); });
+      }
+      expect(urls).toEqual(['https://example.com', 'https://example.com/a.png']);
+      expect(prevented).toEqual([true, true]);
+      prevented = [];
+      act(() => { h.querySelector('a')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, shiftKey: true })); });
+      expect(prevented).toEqual([false]);
+      expect(urls).toHaveLength(2);
+    } finally {
+      window.removeEventListener(BROWSER_OPEN_EVENT, claim);
+      window.removeEventListener('click', spy);
+    }
   });
 });
 

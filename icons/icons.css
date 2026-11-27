@@ -94,6 +94,8 @@
 .ci-tool-agent.is-running .n2{animation-delay:-.6s}
 .ci-tool-mcp.is-running .pl{animation:ci-plug 1.4s ease-in-out infinite}
 .ci-tool-mcp.is-running .pr{animation:ci-plug 1.4s ease-in-out infinite reverse}
+.ci-tool-skill .spk{transform-box:fill-box;transform-origin:center}
+.ci-tool-skill.is-running .spk{fill:var(--tk-b);animation:ci-twinkle 1.6s ease-in-out infinite}
 .ci-tool-generic .nut{transform-origin:32px 32px}
 .ci-tool-generic.is-running .nut{animation:ci-spin 4s linear infinite}
 .ci-tool-fail .l{stroke:var(--tk-err)}
@@ -107,6 +109,7 @@
 @keyframes ci-look{25%{transform:translate(5px,-2px)}50%{transform:translate(3px,5px)}75%{transform:translate(-3px,3px)}}
 @keyframes ci-globe{50%{transform:scaleX(.12)}}
 @keyframes ci-pulse{50%{opacity:.25}}
+@keyframes ci-twinkle{0%{transform:scale(1) rotate(0deg)}50%{transform:scale(.6) rotate(45deg)}100%{transform:scale(1) rotate(90deg)}}
 @keyframes ci-plug{0%,100%{transform:translateX(-2px)}50%{transform:translateX(2px)}}
 @keyframes ci-spin{to{transform:rotate(360deg)}}
 @keyframes ci-run{from{stroke-dashoffset:0}to{stroke-dashoffset:-100}}

@@ -369,6 +369,8 @@ describe('AccountMenu Kiro 集成', () => {
       const pick = pickOf('Kiro 主号')!;
       expect(pick.querySelector('.cz-acct-chip')).toBeNull();
       expect(pick.querySelector('[role="progressbar"]')?.getAttribute('aria-valuetext')).toContain('120 / 500');
+      // 额度用完的标签在行的右端（和同组其它行的标签、下面的百分比右对齐），不跟在名字后面
+      expect(pickOf('Kiro 异常')!.querySelector('.cz-acct-pick__end > .cz-acct-chip.is-danger')?.textContent).toBe('额度用完');
       expect(document.querySelector('.cz-kiro-eng')).toBeNull();
 
       click(btnIn(document.querySelector('.cz-acct-menu'), '管理账号')!);
@@ -383,8 +385,8 @@ describe('AccountMenu Kiro 集成', () => {
 
       // Kiro 异常：额度用完的红色标签与额度读取失败
       const bad = cardOf('Kiro 异常')!;
-      expect(bad.querySelector('.cz-acct-chip.is-danger')?.textContent).toBe('额度用完');
-      expect(ok.querySelector('.cz-acct-chip.is-danger')).toBeNull();
+      expect(bad.querySelector('.cz-acct-card__badge.is-danger')?.textContent).toBe('额度用完');
+      expect(ok.querySelector('.cz-acct-card__badge.is-danger')).toBeNull();
       expect(bad.textContent).toContain('额度读取失败');
 
       // kiro.rs 一行：版本、运行中、可用账号数（不足时标黄），没有检查更新 / 更新按钮

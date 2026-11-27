@@ -7,6 +7,7 @@ import { api } from '../../core/api';
 import { Icon } from '../icons/Icon';
 import { NARROW_QUERY, useMediaQuery } from '../layout/useMediaQuery';
 import { BrowserView } from './BrowserView';
+import type { BrowserLink } from './links';
 import { ProfileMenu } from './ProfileMenu';
 import { useBrowserStream } from './useBrowserStream';
 import './BrowserPanel.css';
@@ -36,9 +37,11 @@ export interface BrowserPanelProps {
   onClose: () => void;
   /** 抓到元素：插进输入框；输入框当前不可用时返回 false */
   onPick: (r: BrowserPickResult) => boolean;
+  /** 应用里点的链接：在当前身份的活动页里打开（seq 变了才打开） */
+  link?: BrowserLink | null;
 }
 
-export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
+export function BrowserPanel({ onClose, onPick, link }: BrowserPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const narrow = useMediaQuery(NARROW_QUERY);
   const [status, setStatus] = useState<BrowserStatus | null>(null);
@@ -76,6 +79,7 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
     [setProfile],
   );
   useEffect(loadStatus, [loadStatus]);
+  const installed = status?.installed === true;
   // 记住的身份已被删掉（比如在别的窗口里删的）：退回默认身份
   const profiles = status?.profiles;
   useEffect(() => {
@@ -164,20 +168,34 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
     window.addEventListener('pointerup', up);
   };
 
-  const go = async () => {
+  const open = useCallback(
+    async (u: string) => {
+      setEditing(false);
+      setLoading(true);
+      try {
+        const r = await api.browserOpen(profile, u);
+        if (r.url) setUrl(r.url);
+      } catch (e) {
+        say(msg(e), true);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [profile, say],
+  );
+  const go = () => {
     const u = url.trim();
-    if (!u) return;
-    setEditing(false);
-    setLoading(true);
-    try {
-      const r = await api.browserOpen(profile, u);
-      if (r.url) setUrl(r.url);
-    } catch (e) {
-      say(msg(e), true);
-    } finally {
-      setLoading(false);
-    }
+    if (u) void open(u);
   };
+  // 应用里点的链接：浏览器装好、身份确认存在后再打开；每次点击只打开一次
+  const linkSeq = useRef(0);
+  const profileReady = !!profiles?.some((p) => p.id === profile);
+  useEffect(() => {
+    if (!link || !installed || !profileReady || link.seq === linkSeq.current) return;
+    linkSeq.current = link.seq;
+    setUrl(link.url);
+    void open(link.url);
+  }, [link, installed, profileReady, open]);
   const nav = (action: 'back' | 'forward' | 'reload') => {
     api.browserNav(profile, action).catch((e: unknown) => say(msg(e), true));
   };
@@ -189,7 +207,6 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
   }, [onPick, say]);
   const cancelCapture = useCallback(() => setCapture(false), []);
 
-  const installed = status?.installed === true;
   const cls = `cz-br${docked ? ' is-docked' : ' is-full'}`;
   return (
     <section className={cls} style={docked ? { width } : undefined} aria-label="内置浏览器">
@@ -211,7 +228,7 @@ export function BrowserPanel({ onClose, onPick }: BrowserPanelProps) {
           className="cz-br__url"
           onSubmit={(e) => {
             e.preventDefault();
-            void go();
+            go();
           }}
         >
           <input

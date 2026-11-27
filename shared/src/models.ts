@@ -9,6 +9,8 @@ export interface ModelOption {
   isDefault?: boolean;
   /** 例如「包含至 November 16」 */
   note?: string;
+  /** 映射过的别名实际请求的模型 id（菜单里复制用）；其他条目不填，id 本身就是模型名 */
+  target?: string;
 }
 
 /** 模型菜单的常用 4 项 */
@@ -93,11 +95,30 @@ export function mappedPrimaryModels(map: ApiModelMap): ModelOption[] {
   return out;
 }
 
-/** 配了映射的 API 账号的「自定义模型」子菜单：extra 里的条目，id 直接当 --model 的值 */
+/** 映射里 extra 的条目（「自定义模型」子菜单的后半段），id 直接当 --model 的值 */
 export function mappedExtraModels(map: ApiModelMap): ModelOption[] {
   return (map.extra ?? [])
     .filter((e) => e.id)
     .map((e) => ({ id: e.id, label: e.label?.trim() || e.id, note: e.m1 ? '1M 上下文' : undefined }));
+}
+
+/**
+ * 配了映射的 API 账号的「自定义模型」子菜单：映射里的全部模型。先列配过的别名（--model 仍传别名，
+ * 显示名默认是实际模型 id，target 记实际模型），再列 extra 里的条目（跳过和别名重复的）。
+ * extra 为空时返回空数组：别名都已在常用项里，不再单开一个子菜单重复列一遍。
+ */
+export function mappedMenuModels(map: ApiModelMap): ModelOption[] {
+  const extra = mappedExtraModels(map);
+  if (!extra.length) return [];
+  const out: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const base of PRIMARY_MODELS) {
+    const t = map.alias?.[base.id as (typeof MODEL_ALIASES)[number]];
+    if (!t?.id) continue;
+    out.push({ id: base.id, label: t.label?.trim() || t.id, target: t.id, note: t.m1 ? '1M 上下文' : undefined });
+    seen.add(base.id).add(t.id);
+  }
+  return [...out, ...extra.filter((e) => !seen.has(e.id))];
 }
 
 /** 菜单里某个 id 的显示名：先查映射表，再退回内置表 */
@@ -184,13 +205,14 @@ export interface MenuModels {
  * - list 为 null（没拉到）：退回内置表 / 映射表，与原来完全一致。
  * - 没配映射：常用项 = 列表里的别名，其余条目进「更多模型」。
  * - 配了映射（API 账号）：常用项只留映射过的别名（显示名：映射的 label → CLI displayName），
- *   「自定义模型」= 映射里的自定义条目；CLI 的其余条目不列（第三方网关不认 Claude 全名）。
+ *   「自定义模型」= 映射里的全部模型（别名 + 自定义条目，见 mappedMenuModels）；
+ *   CLI 的其余条目不列（第三方网关不认 Claude 全名）。
  */
 export function menuModels(list: readonly CliModel[] | null | undefined, map: ApiModelMap | null | undefined): MenuModels {
   const mapped = hasModelMapping(map);
   if (!list?.length) {
     return mapped
-      ? { primary: mappedPrimaryModels(map!), more: mappedExtraModels(map!), moreLabel: '自定义模型' }
+      ? { primary: mappedPrimaryModels(map!), more: mappedMenuModels(map!), moreLabel: '自定义模型' }
       : { primary: PRIMARY_MODELS, more: MORE_MODELS, moreLabel: '更多模型' };
   }
   const primary: ModelOption[] = [];
@@ -204,7 +226,7 @@ export function menuModels(list: readonly CliModel[] | null | undefined, map: Ap
       const label = map!.alias?.[a]?.label?.trim() || (m ? cliModelLabel(m) : o.label);
       add({ id: a, label, isDefault: o.isDefault, note: o.note });
     }
-    return { primary, more: mappedExtraModels(map!), moreLabel: '自定义模型' };
+    return { primary, more: mappedMenuModels(map!), moreLabel: '自定义模型' };
   }
   const aliases = new Set<string>(ALIAS_ORDER);
   for (const a of ALIAS_ORDER) {

@@ -55,3 +55,8 @@
 .cz-filelink:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-sm); }
 .cz-filelink__icon { vertical-align: -2px; margin-right: 3px; }
 .cz-filelink.is-static { color: inherit; cursor: default; }
+
+/* 行内代码里的路径：保持代码样式，悬停出现下划线表示可点（点击打开预览浮窗） */
+.cz-codepath { cursor: pointer; }
+.cz-codepath:hover { text-decoration: underline; text-underline-offset: 2px; }
+.cz-codepath:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

@@ -107,6 +107,14 @@ argument-hint: "[编号或名称，如 1 / 液态玻璃 / border-beam] [目标�
     - 多个账号叠放时，每个账号的全部内容（名字、状态、额度）用一个外框框起来，里面的额度小卡片弱化边框，避免框套框；浅色主题下尤其要看相邻账号是否分得清。
     - 行内操作按钮（删除等）每行都显示；不能操作的（默认 / 当前 / 有任务在跑）置灰，用 `disabledTitle` 说明原因，原因文案和服务端的拒绝条件保持一致。不要直接不渲染，用户会以为「这行少了删除能力」。
     - `container-type` 只加在卡片自己身上，别加在菜单或弹层上：它会带上布局约束，`position: fixed` 的子元素会改以它为参照。
+  - 同组对齐（用户要求「同组要对齐」，例如几个 Kiro 账号的「额度用完」）：
+    - 弹层里分组容器定一套列 `minmax(0, max-content) auto minmax(0, 1fr) auto`（名字 | 套餐 | 空白 | 选中勾 / 问题标签），每行 `grid-column: 1 / -1; grid-template-columns: subgrid`，前面先写一遍普通列模板，不支持 subgrid 时兜底。`<button>` 行上的 subgrid 在 Chromium 能用。
+    - 有的行没有套餐或尾部标签，部件要显式写 `grid-area`（名字 1/1、套餐 1/2、尾部 1/4、额度行第 2 行），否则会自动补位串列。列间距用 margin，不用 column-gap：空列也会算一次 gap。
+    - 共用一列的小标签加 `justify-self: start`，否则会被拉成组里最宽那个的宽度（Pro 被拉成 Ultra 宽）。
+    - 问题标签（额度用完 / 已停用）放进尾部那一格，和选中勾同列，右边缘对齐下一行的百分比。管理面板里改成卡片右上角的徽标，徽标容器 `align-self: start; height: 1.5em`（等于名字行高）：有副标题时也和名字同一行，不会落到两行中间。
+    - 数值列按实测 em 宽度定：「100%」约 3.01em，列宽给 3.2em。`text-align: right` 的文字超出列宽时照样向右溢出，会压到后面的重置时间，肉眼不一定看得出，要量。Kiro「已用 / 总量」用 `max-content` 列 + 数值元素 `min-width: 6.8em`（「719.8 / 2000」约 6.56em），同组卡片的条尾才对齐。
+    - 网格分配空间时先填满有固定上限的列（如重置列 `minmax(0, 8.6em)`），最后才给 `fr` 列：卡片变窄时先缩短进度条，重置时间保持完整，挤到极限才省略。
+    - 验证：脚本逐行量各部件相对行左端的位置，同组每行的列边界一致才算 subgrid 生效；再量徽标和名字的竖直中点是否相等。
   - 进度条填充用 `transform: scaleX(var(--p))` + `transform-origin: left`，配合 `@starting-style { scaleX(0) }`：第一次出现时长出来，约 600ms ease-out；数据刷新时从当前值过渡，不重播；减少动效时去掉 transition。
   - 「标签 + 分段控件」挤在一行时：容器用 `flex-wrap: wrap`，控件 `flex: 1 1 160px`，窄了自动换到第二行。左侧缩进放在标签上，别放在容器上，否则换行后控件被缩进挤溢出。
   - 系统开了「减少动画」（Windows 动画效果关闭）时，无头 Edge 也会命中 `prefers-reduced-motion`，动画检查会全部失败：e2e 脚本开头要用 `Emulation.setEmulatedMedia` 强制 `no-preference`。只截静态图的脚本则反过来强制 `reduce`，让画面稳定。

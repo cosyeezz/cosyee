@@ -7,10 +7,10 @@ import { ICONS as DESIGN_ICONS, icon as designIcon } from '@icons/icons.js';
 import '@icons/icons.css';
 
 export type IconName =
-  // 会话流（设计会话已提供，共 21 个）
+  // 会话流（icons.js，共 22 个：设计会话提供 21 个，tool-skill 按同一细线风格补画）
   | 'understanding' | 'streaming' | 'done' | 'error' | 'stopped' | 'chevron' | 'agent-running' | 'open'
   | 'tool-bash' | 'tool-read' | 'tool-edit' | 'tool-search' | 'tool-web' | 'tool-agent' | 'tool-mcp'
-  | 'tool-todo' | 'tool-generic' | 'tool-fail' | 'thought' | 'note' | 'close'
+  | 'tool-todo' | 'tool-skill' | 'tool-generic' | 'tool-fail' | 'thought' | 'note' | 'close'
   // 其余（设计稿未提供，用下方 SIMPLE 线条图标）
   | 'new-chat' | 'sidebar-collapse' | 'sidebar-expand' | 'panel-collapse' | 'panel-expand' | 'folder' | 'folder-open' | 'chevron-down' | 'chevron-up'
   | 'chevron-right' | 'settings' | 'branch' | 'plus' | 'mic' | 'send' | 'stop' | 'check' | 'info'
