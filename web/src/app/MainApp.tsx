@@ -500,8 +500,8 @@ export function MainApp() {
   // ───────────── 发送、中断、配置 ─────────────
 
   /** mode 只在执行中有意义：next=插话（并入当前这一轮），later=排队（这一轮结束后再发）；空闲时后端一律立即开始新一轮 */
-  const sendText = useCallback((text: string, mode?: QueueMode) => {
-    if (!selCwd) return;
+  const sendText = useCallback((text: string, mode?: QueueMode): string | undefined => {
+    if (!selCwd) return undefined;
     // 任何方式发出消息，立刻停止正在进行的朗读（含手动朗读）并清空队列
     call.onUserTextSent();
     let id = sel?.id;
@@ -516,7 +516,9 @@ export function MainApp() {
     sentIds.current.add(id);
     configs.current.set(id, config); // 这个会话此刻显示的配置就是实际执行的配置
     // 消息 id 由前端生成：CLI 以它作为 user 消息的 uuid，也是之后 rewind / 撤回 / 立即发送的目标
-    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: uuid(), ...(mode ? { mode } : {}) });
+    const msgId = uuid();
+    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: msgId, ...(mode ? { mode } : {}) });
+    return msgId;
   }, [selCwd, sel, config]);
 
   const onSend = useCallback((text: string, _attachments: Attachment[], mode?: QueueMode) => sendText(text, mode), [sendText]);
@@ -598,8 +600,9 @@ export function MainApp() {
       send: (text) => {
         const cur = callLive.current;
         if (!cur.canSend) return false;
-        // 与 Composer 一致：执行中走 'next'（插话，并入当前轮），空闲直接发送
-        cur.sendText(text, cur.running ? 'next' : undefined);
+        // 执行中开口 = 打断它：先排进去，再立即发送（中断当前这一轮，马上执行这句话），不等这一轮做完
+        const id = cur.sendText(text, cur.running ? 'next' : undefined);
+        if (cur.running && id) cur.onQueueSendNow(id);
         return true;
       },
       interrupt: () => callLive.current.onInterrupt(),
