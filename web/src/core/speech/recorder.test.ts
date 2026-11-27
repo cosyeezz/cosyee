@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downsampleToInt16 } from './recorder';
+import { downsampleToInt16, effectiveRate } from './recorder';
 
 describe('downsampleToInt16', () => {
   it('48k → 16k 长度约为 1/3，并且是区间平均', () => {
@@ -16,5 +16,13 @@ describe('downsampleToInt16', () => {
   it('空输入得到空结果', () => {
     expect(downsampleToInt16([], 48000, 16000).length).toBe(0);
     expect(downsampleToInt16([new Float32Array(0)], 48000, 16000).length).toBe(0);
+  });
+
+  it('effectiveRate 在输入 ≤16k 时保留原采样率，高于 16k 时返回 16000', () => {
+    expect(effectiveRate(8000)).toBe(8000);
+    expect(effectiveRate(12000)).toBe(12000);
+    expect(effectiveRate(16000)).toBe(16000);
+    expect(effectiveRate(44100)).toBe(16000);
+    expect(effectiveRate(48000)).toBe(16000);
   });
 });

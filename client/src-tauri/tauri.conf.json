@@ -16,6 +16,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis", "app", "dmg"],
     "icon": [
       "icons/32x32.png",
@@ -34,6 +35,17 @@
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "10.15"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4QjFGREVBMEI4MzdDQUIKUldTcmZJTUw2djJ4dUYxOG5TMGYyZ056OWZMTldJNzdoeFhsZ1VrUysweTB0dERDQmo5elRnVFcK",
+      "endpoints": [
+        "https://github.com/cosyeezz/cosyee/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

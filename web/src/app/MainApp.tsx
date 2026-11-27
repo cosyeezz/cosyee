@@ -12,6 +12,8 @@ import { CallBar } from '../ui/call/CallBar';
 import { resolveSessionConfig } from '../core/sessionConfig';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { uuid } from '../core/browser';
+import { readLayout, saveLayout } from '../core/layoutPrefs';
+import { readTerminalPrefs, saveTerminalPrefs } from '../core/terminalPrefs';
 import { expandLabels } from '../core/composer';
 import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
@@ -24,7 +26,7 @@ import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import { ChartRail } from '../ui/context/ChartRail';
 import type { Billing } from '../ui/context/CostSection';
-import { getLiveText, isHiddenTurn, isTurnActive } from '../ui/flow/format';
+import { isHiddenTurn } from '../ui/flow/format';
 import { scrollBehavior } from '../ui/flow/motion';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
@@ -35,8 +37,10 @@ import { DelegateContext, type DelegateActions } from '../ui/flow/delegateContex
 import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/FileContext';
 import { FilePreview } from '../ui/files/FilePreview';
 import { BrowserPanel } from '../ui/browser/BrowserPanel';
+import { TerminalPanel } from '../ui/terminal/TerminalPanel';
 import { isBrowserToggle } from '../ui/browser/input';
 import { BROWSER_OPEN_EVENT, type BrowserLink, type BrowserOpenDetail } from '../ui/browser/links';
+import { Icon } from '../ui/icons/Icon';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
@@ -117,9 +121,11 @@ export function MainApp() {
   /** 账号信息有变化但不整页刷新（并行模式下切换新会话用的账号、改模式、移除账号等）时递增：额度、账号菜单、模式开关重新读取 */
   const [accountVersion, setAccountVersion] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => readLayout().left);
   /** 右侧上下文栏收起；新开会话、切换会话都保持当前布局 */
-  const [ctxCollapsed, setCtxCollapsed] = useState(false);
+  const [ctxCollapsed, setCtxCollapsed] = useState(() => readLayout().right);
+  // 两侧收起状态记下来：刷新 / 重开 / 桌面端切换服务器都沿用（见 core/layoutPrefs）
+  useEffect(() => saveLayout({ left: collapsed, right: ctxCollapsed }), [collapsed, ctxCollapsed]);
   /** 窄屏（手机）：两侧栏是浮层抽屉，同一时间最多开一个；与宽屏的收起状态各管各的 */
   const narrow = useMediaQuery(NARROW_QUERY);
   const [drawer, setDrawer] = useState<'left' | 'right' | null>(null);
@@ -131,6 +137,19 @@ export function MainApp() {
     window.addEventListener('cosyee:back', onBack);
     return () => window.removeEventListener('cosyee:back', onBack);
   }, [narrow, drawer]);
+  /** 内置终端面板开关与停靠高度（持久化到 localStorage 键 cz-terminal） */
+  const [termPrefs, setTermPrefs] = useState(readTerminalPrefs);
+  useEffect(() => saveTerminalPrefs(termPrefs), [termPrefs]);
+  const toggleTerminal = useCallback(() => setTermPrefs((p) => ({ ...p, open: !p.open })), []);
+  const closeTerminal = useCallback(() => setTermPrefs((p) => (p.open ? { ...p, open: false } : p)), []);
+  const setTermHeight = useCallback((height: number) => setTermPrefs((p) => (p.height === height ? p : { ...p, height })), []);
+  // 安卓返回手势：打开终端时先关闭终端
+  useEffect(() => {
+    if (!termPrefs.open) return;
+    const onBack = (e: Event) => { e.preventDefault(); closeTerminal(); };
+    window.addEventListener('cosyee:back', onBack);
+    return () => window.removeEventListener('cosyee:back', onBack);
+  }, [termPrefs.open, closeTerminal]);
   const [config, setConfig] = useState<SessionConfig>(FALLBACK_CONFIG);
   const [openSub, setOpenSub] = useState<{ turnId: string; toolUseId: string } | null>(null);
   const [loadedSub, setLoadedSub] = useState<SubagentRun | null>(null);
@@ -497,8 +516,10 @@ export function MainApp() {
   // ───────────── 发送、中断、配置 ─────────────
 
   /** mode 只在执行中有意义：next=插话（并入当前这一轮），later=排队（这一轮结束后再发）；空闲时后端一律立即开始新一轮 */
-  const sendText = useCallback((text: string, mode?: QueueMode) => {
-    if (!selCwd) return;
+  const sendText = useCallback((text: string, mode?: QueueMode): string | undefined => {
+    if (!selCwd) return undefined;
+    // 任何方式发出消息，立刻停止正在进行的朗读（含手动朗读）并清空队列
+    call.onUserTextSent();
     let id = sel?.id;
     let isNew = false;
     if (!id) {
@@ -511,7 +532,9 @@ export function MainApp() {
     sentIds.current.add(id);
     configs.current.set(id, config); // 这个会话此刻显示的配置就是实际执行的配置
     // 消息 id 由前端生成：CLI 以它作为 user 消息的 uuid，也是之后 rewind / 撤回 / 立即发送的目标
-    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: uuid(), ...(mode ? { mode } : {}) });
+    const msgId = uuid();
+    socket.send({ t: 'send', sessionId: id, cwd: selCwd, isNew, text, config, id: msgId, ...(mode ? { mode } : {}) });
+    return msgId;
   }, [selCwd, sel, config]);
 
   const onSend = useCallback((text: string, _attachments: Attachment[], mode?: QueueMode) => sendText(text, mode), [sendText]);
@@ -581,39 +604,40 @@ export function MainApp() {
   const delegateActions = useMemo<DelegateActions>(() => ({ stop: onDelegateStop }), [onDelegateStop]);
 
   // ───────────── 通话模式 ─────────────
-  // 说完自动发送 → 执行完念交付 → 再听。控制逻辑在 core/speech/call.ts，这里只负责发消息和判断「这一轮结束了」。
+  // 全双工通话：控制逻辑在 core/speech/call.ts，这里负责发消息、中断与同步当前会话状态。
 
   const callState = useSyncExternalStore(call.subscribe, call.getState);
-  /** 发出这句话时的最后一轮：之后出现的、已结束的新一轮就是这句话的结果 */
-  const callBaseline = useRef<string | null>(null);
-  const callLive = useRef({ sendText, running, lastTurnId: null as string | null, canSend: !!selCwd });
-  callLive.current = { sendText, running, lastTurnId: shownTurns[shownTurns.length - 1]?.id ?? null, canSend: !!selCwd };
+  const callLive = useRef({ sendText, onInterrupt, onQueueSendNow, running, canSend: !!selCwd });
+  callLive.current = { sendText, onInterrupt, onQueueSendNow, running, canSend: !!selCwd };
 
   const onCall = useCallback(() => {
     if (call.inCall()) { call.hangup(); return; }
-    const live = callLive.current;
-    // 打开时正在执行：等这一轮结束、念它的结果
-    callBaseline.current = live.running ? null : live.lastTurnId;
     void call.start({
       send: (text) => {
         const cur = callLive.current;
         if (!cur.canSend) return false;
-        callBaseline.current = cur.lastTurnId;
-        cur.sendText(text);
+        // 执行中开口 = 打断它：先排进去，再立即发送（中断当前这一轮，马上执行这句话），不等这一轮做完
+        const id = cur.sendText(text, cur.running ? 'next' : undefined);
+        if (cur.running && id) cur.onQueueSendNow(id);
         return true;
       },
+      interrupt: () => callLive.current.onInterrupt(),
       running: () => callLive.current.running,
     });
   }, []);
 
+  const answerStreaming = !!view?.conv.book?.textStreaming[''];
   useEffect(() => {
-    if (callState.phase !== 'waiting' || running) return;
-    const t = shownTurns[shownTurns.length - 1];
-    if (!t || isTurnActive(t) || t.id === callBaseline.current) return;
-    callBaseline.current = t.id;
-    const text = getLiveText(t, false) || (t.status === 'error' ? '执行出错了，请看屏幕。' : '执行完了。');
-    void call.turnFinished(t.id, text);
-  }, [callState.phase, running, shownTurns]);
+    if (callState.phase !== 'active') return;
+    call.syncSession({
+      sessionId: sel?.id ?? null,
+      loading: !view || view.id !== sel?.id || view.loading,
+      running,
+      turns: shownTurns,
+      answerStreaming,
+      prompts: view?.prompts ?? NO_PROMPTS,
+    });
+  }, [callState.phase, sel?.id, view?.id, view?.loading, running, shownTurns, answerStreaming, view?.prompts]);
 
   // 离开页面（切走工作空间不算）时挂断，释放麦克风
   useEffect(() => () => call.hangup(), []);
@@ -686,6 +710,25 @@ export function MainApp() {
       })
       .catch((e) => flash(`分支失败：${errText(e)}`));
   }, [sel, selCwd, turns, shownTurns, config, selectSession, flash]);
+
+  /**
+   * 从某条助手回复之后分支出新会话：targetId 是下一组用户消息的 id，省略表示复制整份记录。
+   * stay=false 时切到新会话且不预填输入框，直接接着往下聊；stay=true 时留在当前会话。
+   */
+  const onForkAfter = useCallback((targetId: string | undefined, stay: boolean) => {
+    if (!sel || !selCwd) return;
+    const dir = selCwd;
+    api.forkSession(sel.id, dir, targetId)
+      .then(({ sessionId }) => {
+        configs.current.set(sessionId, config); // 分支沿用当前会话此刻的模型 / 思考强度
+        if (stay) {
+          flash('已分支出新会话，见侧栏');
+          return;
+        }
+        selectSession(sessionId, dir);
+      })
+      .catch((e) => flash(`分支失败：${errText(e)}`));
+  }, [sel, selCwd, config, selectSession, flash]);
 
   // ───────────── 上下文面板 ─────────────
 
@@ -1207,6 +1250,7 @@ export function MainApp() {
             meta={meta}
             onReply={onReply}
             onFork={onFork}
+            onForkAfter={onForkAfter}
             sessionKey={sel?.id ?? null}
             reveal={skeleton.reveal}
             stop={view?.stop ?? null}
@@ -1254,6 +1298,7 @@ export function MainApp() {
         <CallBar
           state={callState}
           needsAttention={!!view?.prompts?.length}
+          running={running}
           onHangup={call.hangup}
           onSkip={call.skipSpeaking}
           onInterrupt={onInterrupt}
@@ -1292,15 +1337,29 @@ export function MainApp() {
           onRefreshModels={refreshModels}
           footLeft={showWorkspacePicker ? (
             // 只在新会话（还没发出第一条消息）时显示；会话开始后工作空间就固定了
-            <WorkspaceMenu
-              workspaces={wsState.list}
-              currentWorkspace={selCwd}
-              onSelectWorkspace={selectWorkspace}
-              onOpenFolder={openFolder}
-              onMoveToTop={moveWorkspaceTop}
-              onRemove={removeWorkspace}
-              onReveal={remote ? undefined : revealWorkspace}
-            />
+            <div className="cz-term-wsrow">
+              <WorkspaceMenu
+                workspaces={wsState.list}
+                currentWorkspace={selCwd}
+                onSelectWorkspace={selectWorkspace}
+                onOpenFolder={openFolder}
+                onMoveToTop={moveWorkspaceTop}
+                onRemove={removeWorkspace}
+                onReveal={remote ? undefined : revealWorkspace}
+              />
+              {selCwd && (
+                <button
+                  type="button"
+                  className={`cz-term-wsbtn${termPrefs.open ? ' is-active' : ''}`}
+                  aria-label={termPrefs.open ? '关闭内置终端' : '打开内置终端'}
+                  aria-pressed={termPrefs.open}
+                  title={termPrefs.open ? '关闭内置终端' : '打开内置终端'}
+                  onClick={toggleTerminal}
+                >
+                  <Icon name="terminal" size={14} />
+                </button>
+              )}
+            </div>
           ) : undefined}
         />
       </div>
@@ -1340,8 +1399,28 @@ export function MainApp() {
             onPurgeSessions={purgeSessions}
           />
         }
-        header={selCwd ? <SessionHeader title={current?.title ?? null} cwd={selCwd} branch={branch} session={current} onRename={onRename} /> : null}
+        header={selCwd ? (
+          <SessionHeader
+            title={current?.title ?? null}
+            cwd={selCwd}
+            branch={branch}
+            session={current}
+            onRename={onRename}
+            terminalOpen={termPrefs.open}
+            onToggleTerminal={toggleTerminal}
+          />
+        ) : null}
         main={main}
+        bottom={
+          <TerminalPanel
+            open={termPrefs.open && !!selCwd}
+            root={selCwd}
+            height={termPrefs.height}
+            onHeightChange={setTermHeight}
+            onClose={closeTerminal}
+            onOpenSystemTerminal={filesApi?.terminal}
+          />
+        }
         context={
           <ContextPanel
             usage={sel && view?.id === sel.id ? view.context : null}

@@ -21,11 +21,13 @@ export interface AppShellProps {
   narrow?: boolean;
   /** 窄屏下点遮罩：关掉打开的抽屉 */
   onDismiss?: () => void;
+  /** 中间区底部停靠面板（如内置终端），不遮挡左右侧栏 */
+  bottom?: ReactNode;
 }
 
 export function AppShell({
   sidebar, header, main, context, sidebarCollapsed, onToggleSidebar, onNewSession, contextCollapsed = false, onToggleContext,
-  narrow = false, onDismiss,
+  narrow = false, onDismiss, bottom,
 }: AppShellProps) {
   const centerRef = useRef<HTMLDivElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -83,6 +85,7 @@ export function AppShell({
           )}
         </div>
         <div className="cz-shell__main">{main}</div>
+        {bottom}
       </div>
 
       {narrow && (

@@ -123,6 +123,8 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Android 签名用仓库 secrets：`ANDROID_KEYSTORE_B64`（PKCS12 密钥库 base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`。**密钥丢了以后发的 APK 无法覆盖安装旧版本**，请自行备份。
 
+桌面端自动更新签名用仓库 secrets：`TAURI_SIGNING_PRIVATE_KEY`（minisign 私钥，对应 `client/src-tauri/tauri.conf.json` 中的 `plugins.updater.pubkey`）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（私钥密码，未设密码时可留空）。已安装 `0.1.12` 及之前版本的用户需先手动下载安装一次新版本，之后才能通过客户端内置的自动更新升级。
+
 ## 桌面版（Electron）
 
 桌面版把现有网页界面装进一个 Electron 窗口，前端零改动。主进程用 `utilityProcess` 启动后端（端口随机），再由后端启动各个 `claude` 子进程；窗口加载 `http://127.0.0.1:<端口>/`。

@@ -519,6 +519,44 @@
 
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 12px; line-height: 2; }
   footer p { margin: 0; }
+  .foot-ver {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+  }
+  .foot-ver-left { display: inline-flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+  .foot-ver-right { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .foot-ver-msg { font-size: 12px; color: var(--text-3); }
+  .foot-ver-msg.ok { color: var(--ok); }
+  .foot-ver-msg.up { color: var(--accent); }
+  .foot-ver-msg.error { color: var(--danger); }
+  .foot-check-btn { height: 26px; padding: 0 9px; font-size: 12px; color: var(--text-2); }
+  .foot-check-btn svg { width: 13px; height: 13px; }
+
+  /* ───── 客户端自身更新提示条 ───── */
+  .app-upd {
+    margin: -14px 0 22px; padding: 11px 12px 11px 14px;
+    border-color: color-mix(in srgb, var(--accent) 36%, var(--card-edge));
+    background: color-mix(in srgb, var(--accent) 7%, var(--card));
+  }
+  .app-upd.error {
+    border-color: color-mix(in srgb, var(--danger) 42%, var(--card-edge));
+    background: color-mix(in srgb, var(--danger) 7%, var(--card));
+  }
+  .app-upd-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .app-upd-info { flex: 1 1 200px; min-width: 0; }
+  .app-upd-title { display: block; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.4; }
+  .app-upd-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--text-3); line-height: 1.45; overflow-wrap: anywhere; }
+  .app-upd.error .app-upd-sub { color: var(--danger); }
+  .app-upd-bar {
+    margin-top: 9px; height: 4px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in srgb, var(--accent) 18%, var(--border));
+  }
+  .app-upd-bar > i {
+    display: block; height: 100%; width: 0%; border-radius: inherit;
+    background: var(--accent); transition: width .2s var(--ease-out);
+  }
+  .app-upd-acts { flex: none; display: flex; align-items: center; gap: 6px; }
+  .app-upd-acts .btn { height: 28px; padding: 0 11px; font-size: 12.5px; }
 
   /* ───── 进场：自上而下依次浮现 ───── */
   .enter { animation: rise .5s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 60ms); }
@@ -576,6 +614,20 @@
       <p class="sub">选择要连接的服务端。手机和其它电脑需要先登录同一个 Tailscale 网络。</p>
     </div>
   </header>
+
+  <div id="app-update" class="card app-upd" role="status" aria-live="polite" hidden>
+    <div class="app-upd-row">
+      <div class="app-upd-info">
+        <span class="app-upd-title" id="app-upd-title"></span>
+        <span class="app-upd-sub" id="app-upd-sub" hidden></span>
+      </div>
+      <div class="app-upd-acts">
+        <button type="button" class="btn primary" id="app-upd-act"><svg class="i"><use href="#i-down"/></svg><span>立即更新</span></button>
+        <button type="button" class="btn ghost" id="app-upd-close">稍后</button>
+      </div>
+    </div>
+    <div class="app-upd-bar" id="app-upd-bar" hidden><i id="app-upd-fill"></i></div>
+  </div>
 
   <section class="enter" style="--i:1" aria-labelledby="h-servers">
     <h2 id="h-servers">服务器 <span class="count" id="count"></span></h2>
@@ -708,6 +760,13 @@
 
   <footer class="enter" style="--i:4">
     <p>回到这个页面：<kbd>Ctrl+Shift+L</kbd>（macOS <kbd>⌘⇧L</kbd>），或标题栏左上角菜单「服务器列表」；安卓用返回键。</p>
+    <div class="foot-ver" id="app-ver-bar" hidden>
+      <span class="foot-ver-left" id="app-ver-text"></span>
+      <span class="foot-ver-right">
+        <span class="foot-ver-msg" id="app-ver-msg" role="status" aria-live="polite"></span>
+        <button type="button" class="btn ghost foot-check-btn" id="app-ver-check"><svg class="i"><use href="#i-refresh"/></svg>检查更新</button>
+      </span>
+    </div>
   </footer>
 </main>
 <script>
@@ -2708,6 +2767,156 @@
         compsFetch().catch(function () {});
       }
     }, 3000);
+
+    // ───── 客户端自身更新（仅客户端本地页面） ─────
+    var appVerInfo = null;
+    var appUpdInfo = null;
+    var appUpdChecking = false;
+    var appUpdInstalling = false;
+    var appUpdDismissed = false;
+    var appUpdErr = '';
+    var appUpdProg = null;
+    var appUpdPollTimer = null;
+    var appFootMsg = '', appFootTone = '';
+
+    function renderAppUpdate() {
+      if (appVerInfo) {
+        $('app-ver-bar').hidden = false;
+        $('app-ver-text').textContent = '客户端 ' + fmtVer(appVerInfo.current) + (appVerInfo.isPortable ? '（免安装版）' : '');
+      }
+      var fmsg = $('app-ver-msg');
+      fmsg.textContent = appFootMsg;
+      fmsg.className = 'foot-ver-msg' + (appFootTone ? ' ' + appFootTone : '');
+      $('app-ver-check').disabled = appUpdChecking || appUpdInstalling;
+
+      var box = $('app-update');
+      var showBanner = !!(appUpdInfo && appUpdInfo.available && !appUpdDismissed);
+      box.hidden = !showBanner;
+      if (!showBanner) return;
+
+      box.classList.toggle('error', !!appUpdErr && !appUpdInstalling);
+      var canSelf = !!appUpdInfo.canSelfUpdate;
+      var verStr = fmtVer(appUpdInfo.latest);
+      var title = $('app-upd-title');
+      var sub = $('app-upd-sub');
+      var bar = $('app-upd-bar');
+      var fill = $('app-upd-fill');
+      var actBtn = $('app-upd-act');
+      var closeBtn = $('app-upd-close');
+
+      if (appUpdInstalling) {
+        var phase = appUpdProg && appUpdProg.phase;
+        var pct = appUpdProg && typeof appUpdProg.percent === 'number' ? appUpdProg.percent : null;
+        if (phase === 'installing') {
+          title.textContent = '正在安装 ' + verStr + '，即将重启…';
+          sub.textContent = '';
+          sub.hidden = true;
+          bar.hidden = false;
+          fill.style.width = '100%';
+        } else if (phase === 'downloading') {
+          title.textContent = '正在下载更新 ' + verStr + (pct != null ? '（' + pct + '%）' : '…');
+          sub.textContent = '';
+          sub.hidden = true;
+          bar.hidden = pct == null;
+          if (pct != null) fill.style.width = pct + '%';
+        } else {
+          title.textContent = '正在准备更新 ' + verStr + '…';
+          sub.textContent = '';
+          sub.hidden = true;
+          bar.hidden = true;
+        }
+        actBtn.disabled = true;
+        actBtn.querySelector('span').textContent = phase === 'installing' ? '安装中…' : '下载中…';
+        closeBtn.hidden = true;
+      } else {
+        title.textContent = '发现新版本 ' + verStr;
+        if (appUpdErr) {
+          sub.textContent = appUpdErr;
+          sub.hidden = false;
+        } else if (!canSelf && appVerInfo && appVerInfo.isPortable) {
+          sub.textContent = '当前为免安装版，请前往发布页下载新版。';
+          sub.hidden = false;
+        } else {
+          sub.textContent = '';
+          sub.hidden = true;
+        }
+        bar.hidden = true;
+        fill.style.width = '0%';
+        actBtn.disabled = false;
+        actBtn.querySelector('span').textContent = canSelf ? (appUpdErr ? '重试更新' : '立即更新') : '去下载';
+        closeBtn.hidden = false;
+      }
+    }
+
+    async function checkAppUpdate(quiet) {
+      if (appUpdChecking || appUpdInstalling) return;
+      appUpdChecking = true;
+      if (!quiet) { appFootMsg = '正在检查…'; appFootTone = ''; }
+      renderAppUpdate();
+      try {
+        var res = await invoke('app_update_check');
+        appUpdInfo = res;
+        appUpdErr = '';
+        if (res && res.available) {
+          appUpdDismissed = false;
+          appFootMsg = '发现新版本 ' + fmtVer(res.latest);
+          appFootTone = 'up';
+        } else if (!quiet) {
+          appFootMsg = '已是最新版本。';
+          appFootTone = 'ok';
+        }
+      } catch (e) {
+        if (!quiet) {
+          appFootMsg = errText(e);
+          appFootTone = 'error';
+        }
+      } finally {
+        appUpdChecking = false;
+        renderAppUpdate();
+      }
+    }
+
+    async function runAppUpdateInstall() {
+      if (appUpdInstalling || !appUpdInfo || !appUpdInfo.available) return;
+      if (!appUpdInfo.canSelfUpdate) {
+        var url = appUpdInfo.downloadUrl || (appVerInfo && appVerInfo.releaseUrl) || '';
+        if (!url) return;
+        try { await invoke('app_open_url', { url: url }); }
+        catch (e) { appUpdErr = errText(e); renderAppUpdate(); }
+        return;
+      }
+      appUpdInstalling = true;
+      appUpdErr = '';
+      appUpdProg = { phase: 'checking', percent: null };
+      renderAppUpdate();
+      if (appUpdPollTimer) clearInterval(appUpdPollTimer);
+      appUpdPollTimer = setInterval(function () {
+        if (!appUpdInstalling) return;
+        invoke('app_update_progress').then(function (p) {
+          if (appUpdInstalling && p) { appUpdProg = p; renderAppUpdate(); }
+        }).catch(function () {});
+      }, 250);
+      try {
+        await invoke('app_update_install');
+      } catch (e) {
+        appUpdErr = errText(e);
+      } finally {
+        if (appUpdPollTimer) { clearInterval(appUpdPollTimer); appUpdPollTimer = null; }
+        appUpdInstalling = false;
+        appUpdProg = null;
+        renderAppUpdate();
+      }
+    }
+
+    $('app-ver-check').onclick = function () { checkAppUpdate(false); };
+    $('app-upd-act').onclick = function () { runAppUpdateInstall(); };
+    $('app-upd-close').onclick = function () { appUpdDismissed = true; renderAppUpdate(); };
+
+    invoke('app_version').then(function (info) {
+      appVerInfo = info;
+      renderAppUpdate();
+      checkAppUpdate(true);
+    }).catch(function () {});
   }
 
   // 启动时自动连接（从服务端页面回来时带 ?list=1，不自动连接）

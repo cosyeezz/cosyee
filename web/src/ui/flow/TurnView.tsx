@@ -5,9 +5,11 @@
 //   结束 → 完成 / 中断 / 出错图标 + 「已完成 · 14:32 · 共 N 步 · 用时 18 秒」。
 // 整行可点击展开；展开后状态行吸顶，点击吸顶的行收起并滚回原位。工具行只在展开区出现。
 // 状态行下方只放交付：执行中不显示任何正文（过程全部在状态行与展开区里），回合结束才出现最终答复（见 getLiveText）。
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { Turn } from '@cosyee/shared';
 import { AnswerActions } from './AnswerActions';
+import type { InlineDivider } from './dividers';
+import { FlowDivider } from './FlowDivider';
 import { Markdown } from './Markdown';
 import { NeuralIcon } from './NeuralIcon';
 import { DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
@@ -112,9 +114,15 @@ const StatusRow = memo(function StatusRow({
 
 export interface TurnViewProps {
   turn: Turn;
+  /** 轮中途发生的模型切换 / 上下文压缩：展开时插在对应步骤之间，收起时排在状态行与答复之间 */
+  dividers?: readonly InlineDivider[];
+  /** 从这条回复之后分支：stay=true 表示分支完留在当前会话 */
+  onForkAfter?: (stay: boolean) => void;
 }
 
-export const TurnView = memo(function TurnView({ turn }: TurnViewProps) {
+const NO_DIVIDERS: readonly InlineDivider[] = [];
+
+export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS, onForkAfter }: TurnViewProps) {
   const [expanded, setExpanded] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLElement>(null);
@@ -149,16 +157,22 @@ export const TurnView = memo(function TurnView({ turn }: TurnViewProps) {
     <div ref={rootRef} className={`cz-flow__turn is-${turn.status}`}>
       <StatusRow turn={turn} expandable={expandable} open={open} onToggle={toggle} rowRef={rowRef} />
 
-      {open && (
+      {open ? (
         <div className="cz-flow__steps">
           {turn.steps.map((s, i) => (
-            <StepView key={s.kind === 'tool' ? s.id : i} step={s} turnActive={active} />
+            <Fragment key={s.kind === 'tool' ? s.id : i}>
+              {dividers.map((d) => (d.at === i ? <FlowDivider key={d.item.key} item={d.item} /> : null))}
+              <StepView step={s} turnActive={active} />
+            </Fragment>
           ))}
+          {dividers.map((d) => (d.at >= turn.steps.length ? <FlowDivider key={d.item.key} item={d.item} /> : null))}
         </div>
+      ) : (
+        dividers.map((d) => <FlowDivider key={d.item.key} item={d.item} />)
       )}
 
       {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
-      {delivered && (!active || turn.awaitingBackground) && <AnswerActions turnId={turn.id} text={delivered} />}
+      {delivered && (!active || turn.awaitingBackground) && <AnswerActions turnId={turn.id} text={delivered} onFork={onForkAfter} />}
     </div>
   );
 });

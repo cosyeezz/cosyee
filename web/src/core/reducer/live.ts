@@ -11,6 +11,7 @@ import {
   cloneTurn,
   commit,
   endSub,
+  endText,
   endThinking,
   endTool,
   ensureText,
@@ -201,6 +202,7 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
   if (type === 'content_block_stop') {
     endTool(d, key);
     endThinking(d, key);
+    endText(d, key);
     return commit(s, d);
   }
   if (type === 'content_block_start') {
@@ -209,6 +211,7 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
     if (cb.type === 'text') {
       touch(d, scope);
       const ref = ensureText(d, scope, key);
+      d.book.textStreaming[scope] = key;
       if (ref && str(cb.text)) writeText(d, key, ref, str(cb.text), 'append');
     } else if (cb.type === 'thinking') {
       touch(d, scope);
@@ -227,6 +230,7 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
   if (delta.type === 'text_delta') {
     touch(d, scope);
     const ref = ensureText(d, scope, key);
+    d.book.textStreaming[scope] = key;
     if (ref) writeText(d, key, ref, str(delta.text), 'append');
   } else if (delta.type === 'input_json_delta') {
     const ref = d.book.blocks[key];

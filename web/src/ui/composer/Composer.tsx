@@ -8,6 +8,7 @@ import { buildQuotedMessage, type QuoteReply } from '../../core/quote';
 import { api } from '../../core/api';
 import { ensureSpeech } from '../../core/speech/ensure';
 import { micSupport, startRecording, type Recorder } from '../../core/speech/recorder';
+import { acquireWakeLock } from '../../core/speech/wakeLock';
 import { splitUserText } from '../flow/format';
 import { AttachmentTag } from '../flow/UserMessage';
 import { Icon } from '../icons/Icon';
@@ -567,13 +568,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [micSecs, setMicSecs] = useState(0);
   const recorder = useRef<Recorder | null>(null);
   const micTick = useRef<ReturnType<typeof setInterval> | null>(null);
+  const micWake = useRef<(() => void) | null>(null);
   const micAlive = useRef(true);
   const MAX_REC_SECS = 120;
   const clearTick = () => { if (micTick.current) { clearInterval(micTick.current); micTick.current = null; } };
+  const releaseMicWake = () => { micWake.current?.(); micWake.current = null; };
   useEffect(() => {
     micAlive.current = true;
-    return () => { micAlive.current = false; clearTick(); recorder.current?.cancel(); recorder.current = null; };
+    return () => { micAlive.current = false; clearTick(); releaseMicWake(); recorder.current?.cancel(); recorder.current = null; };
   }, []);
+  // 进入通话模式时立即中止单次录音，避免两路麦克风冲突
+  useEffect(() => {
+    if (!props.callActive) return;
+    if (recorder.current) {
+      clearTick();
+      releaseMicWake();
+      recorder.current.cancel();
+      recorder.current = null;
+      setMic({ phase: 'idle' });
+    }
+  }, [props.callActive]);
 
   const insertRecognized = (text: string) => {
     const ed = editorRef.current;
@@ -595,6 +609,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!rec) return;
     recorder.current = null;
     clearTick();
+    releaseMicWake();
     try {
       const { pcm, rate } = await rec.stop();
       if (!micAlive.current) return;
@@ -616,7 +631,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const onMicClick = async () => {
-    if (disabled) return;
+    if (disabled || props.callActive) return;
     if (mic.phase === 'recording') { void finishRecording(); return; }
     if (mic.phase !== 'idle') return; // 下载 / 识别中
     const sup = micSupport();
@@ -624,8 +639,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     try {
       setMic({ phase: 'recording' }); // 先占位，防止授权弹窗期间重复点击
       const rec = await startRecording();
-      if (!micAlive.current) { rec.cancel(); return; }
+      if (!micAlive.current || latest.current.callActive) { rec.cancel(); return; }
       recorder.current = rec;
+      micWake.current = acquireWakeLock();
       setMicSecs(0);
       const t0 = Date.now();
       micTick.current = setInterval(() => {
@@ -826,7 +842,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             <button
               type="button"
               className={`cz-composer__btn${props.callActive ? ' is-calling' : ''}`}
-              title={props.callActive ? '挂断' : '通话模式：说完自动发送，执行完念给你听'}
+              title={props.callActive ? '挂断' : '通话模式：像打电话一样实时对话，随时开口打断'}
               aria-label={props.callActive ? '挂断' : '通话模式'}
               aria-pressed={!!props.callActive}
               onMouseDown={keepFocus}
@@ -838,10 +854,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <button
             type="button"
             className={`cz-composer__btn${mic.phase === 'recording' ? ' is-recording' : ''}`}
-            title={mic.phase === 'recording' ? '停止录音并识别' : micBusy ? '识别中…' : '语音输入'}
-            aria-label={mic.phase === 'recording' ? '停止录音并识别' : '语音输入'}
-            aria-disabled={!micSup.ok || micBusy || undefined}
-            disabled={disabled}
+            title={props.callActive ? '通话中' : mic.phase === 'recording' ? '停止录音并识别' : micBusy ? '识别中…' : '语音输入'}
+            aria-label={props.callActive ? '通话中' : mic.phase === 'recording' ? '停止录音并识别' : '语音输入'}
+            aria-disabled={!micSup.ok || micBusy || !!props.callActive || undefined}
+            disabled={disabled || !!props.callActive}
             onMouseDown={keepFocus}
             onClick={() => void onMicClick()}
           >

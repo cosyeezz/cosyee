@@ -48,10 +48,12 @@ export interface PathActionsProps {
   copyClassName?: string;
   /** 复制按钮的无障碍名称 */
   copyLabel?: string;
+  /** 隐藏默认的系统终端按钮（例如 SessionHeader 改为挂载应用内终端入口） */
+  hideTerminal?: boolean;
 }
 
 /** 复制 + 在文件管理器中显示 + 在此处打开终端。没有 FilesContext 或远程连接时只有复制。 */
-export function PathActions({ path, copyClassName, copyLabel = '复制路径' }: PathActionsProps) {
+export function PathActions({ path, copyClassName, copyLabel = '复制路径', hideTerminal = false }: PathActionsProps) {
   const files = useFiles();
   return (
     <>
@@ -63,7 +65,7 @@ export function PathActions({ path, copyClassName, copyLabel = '复制路径' }:
               <Icon name="folder-reveal" size={14} />
             </button>
           )}
-          {files.terminal && (
+          {!hideTerminal && files.terminal && (
             <button type="button" className="cz-pathact" aria-label="在此处打开终端" title="在此处打开终端" onClick={() => files.terminal?.(path)}>
               <Icon name="terminal" size={14} />
             </button>

@@ -9,6 +9,7 @@ mod local;
 #[cfg(desktop)]
 mod peers;
 mod tailnet;
+mod updater;
 
 /// 本地页面的 origin（Windows / Android 是 http://tauri.localhost，macOS / Linux 是 tauri://localhost）。
 #[cfg(any(windows, target_os = "android"))]
@@ -135,12 +136,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(Servers::default())
         .manage(PeerCache::default());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏。
     // 内置 Tailscale 命令在桌面与手机两端都注册，且仅对客户端本地页面开放（远程页面调不到自定义命令）。
     #[cfg(desktop)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         probe,
         set_servers,
+        updater::app_version,
+        updater::app_update_check,
+        updater::app_update_install,
+        updater::app_update_progress,
+        updater::app_open_url,
         tailnet::tailnet_status,
         tailnet::tailnet_peers,
         tailnet::tailnet_check,
@@ -170,6 +178,9 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         probe,
         set_servers,
+        updater::app_version,
+        updater::app_update_check,
+        updater::app_open_url,
         tailnet::tailnet_status,
         tailnet::tailnet_peers,
         tailnet::tailnet_check,

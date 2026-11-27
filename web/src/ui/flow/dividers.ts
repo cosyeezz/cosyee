@@ -19,6 +19,17 @@ export interface FlowDividerItem {
   /** 悬停详情 */
   title?: string;
   anchor: DividerAnchor;
+  /**
+   * 轮中途发生时，事件之前（同一轮内）各次请求调用的工具 id，新 → 旧。
+   * 用来在轮内定位：插在最先能在步骤里找到的那个工具之后；都找不到则插在该轮步骤的开头。
+   */
+  tools?: string[];
+}
+
+/** 插在某一组轮内的分隔提示：排在合并后 turn.steps[at - 1] 之后（at 为 0 表示所有步骤之前） */
+export interface InlineDivider {
+  at: number;
+  item: FlowDividerItem;
 }
 
 export interface PlacedDividers {
@@ -26,6 +37,8 @@ export interface PlacedDividers {
   beforeGroup: FlowDividerItem[][];
   /** 每个可见组（按 groups 下标）后面要渲染的分隔提示 */
   afterGroup: FlowDividerItem[][];
+  /** 每个可见组（按 groups 下标）轮内要渲染的分隔提示（轮中途发生的），按 at 递增 */
+  inGroup: InlineDivider[][];
   /** 落在所有可见组之后（footer 之前）的分隔提示 */
   trailing: FlowDividerItem[];
 }
@@ -56,6 +69,17 @@ interface SortableDivider {
   cachePos: number;
   /** 同位置的原始出现顺序 */
   seq: number;
+}
+
+/** cache[0..upto] 里属于第 turn 轮的请求调用的工具 id，新 → 旧 */
+function toolsBefore(cache: readonly CachePoint[], upto: number, turn: number): string[] | undefined {
+  const out: string[] = [];
+  for (let i = upto; i >= 0; i--) {
+    const pt = cache[i]!;
+    if (pt.turn !== turn) break;
+    if (pt.tools) for (let k = pt.tools.length - 1; k >= 0; k--) out.push(pt.tools[k]!);
+  }
+  return out.length ? out : undefined;
 }
 
 /**
@@ -98,6 +122,7 @@ export function buildDividers(_allTurns: readonly Turn[], meta: SessionMeta | un
           text: `已切换到 ${nextLabel}`,
           title: `${prevLabel} → ${nextLabel}（${pt.model}）`,
           anchor: { turn: pt.turn, pos: isFirstInTurn ? 'before' : 'after' },
+          ...(isFirstInTurn ? {} : { tools: toolsBefore(cache, i - 1, pt.turn) }),
         },
         cachePos: i,
         seq: i,
@@ -119,6 +144,7 @@ export function buildDividers(_allTurns: readonly Turn[], meta: SessionMeta | un
         text,
         title,
         anchor: { turn: mark.turn, pos },
+        ...(pos === 'after' && afterHit ? { tools: toolsBefore(cache, afterHit.idx, mark.turn) } : {}),
       },
       cachePos: afterHit ? afterHit.idx + 0.5 : -0.5,
       seq: i,
@@ -140,8 +166,11 @@ export function buildDividers(_allTurns: readonly Turn[], meta: SessionMeta | un
 
 /**
  * 把分隔提示映射到可见组（groups）：
+ * -「第 N 轮之后」且第 N 轮可见（轮中途发生）：插进该组轮内，排在 d.tools 里最先能在步骤中找到的工具之后，
+ *   都找不到则排在第 N 轮自己的步骤开头
+ * -「第 N 轮之前」且第 N 轮是合并组里的插话轮：同样插进组内，排在第 N 轮自己的步骤开头
  * -「第 N 轮之前」：插到第一个包含原始下标 ≥ N 的可见轮的组之前；若后面没有可见轮，落到 trailing（footer 之前）
- * -「第 N 轮之后」：插到包含原始下标 ≤ N 的最后一个可见轮的组之后；若 N < 0 则忽略
+ * -「第 N 轮之后」且第 N 轮不可见（隐藏轮）：插到包含原始下标 ≤ N 的最后一个可见轮的组之后；若 N < 0 则忽略
  */
 export function placeDividers(
   allTurns: readonly Turn[],
@@ -150,9 +179,10 @@ export function placeDividers(
 ): PlacedDividers {
   const beforeGroup: FlowDividerItem[][] = groups.map(() => []);
   const afterGroup: FlowDividerItem[][] = groups.map(() => []);
+  const inGroup: InlineDivider[][] = groups.map(() => []);
   const trailing: FlowDividerItem[] = [];
 
-  if (dividers.length === 0) return { beforeGroup, afterGroup, trailing };
+  if (dividers.length === 0) return { beforeGroup, afterGroup, inGroup, trailing };
 
   const idxByRef = new Map<Turn, number>();
   const idxById = new Map<string, number>();
@@ -162,24 +192,64 @@ export function placeDividers(
     idxById.set(t.id, i);
   }
 
-  // 每组所覆盖的原始下标范围（parts 按时间递增）
-  const ranges = groups.map((g) => {
+  // 每组所覆盖的原始下标范围（parts 按时间递增），以及每个可见轮所在的组、在组内的序号与步骤起点
+  const home = new Map<number, { group: number; part: number; base: number }>();
+  const ranges = groups.map((g, gi) => {
     let min = Infinity;
     let max = -Infinity;
-    for (const p of g.parts) {
+    let base = 0;
+    g.parts.forEach((p, pi) => {
       const idx = idxByRef.get(p) ?? idxById.get(p.id);
-      if (idx === undefined) continue;
-      if (idx < min) min = idx;
-      if (idx > max) max = idx;
-    }
+      if (idx !== undefined) {
+        home.set(idx, { group: gi, part: pi, base });
+        if (idx < min) min = idx;
+        if (idx > max) max = idx;
+      }
+      base += p.steps.length;
+    });
     return { min, max };
   });
+
+  // 每组的工具 id → 合并后步骤下标
+  const toolIdx = new Map<number, Map<string, number>>();
+  const stepsOf = (gi: number): Map<string, number> => {
+    let m = toolIdx.get(gi);
+    if (!m) {
+      m = new Map();
+      groups[gi]!.turn.steps.forEach((s, si) => {
+        if (s.kind === 'tool') m!.set(s.id, si);
+      });
+      toolIdx.set(gi, m);
+    }
+    return m;
+  };
+
+  // dividers 已按发生顺序排列：组内位置不回退（找不到工具时的兜底位置可能偏前）
+  const pushInline = (gi: number, at: number, item: FlowDividerItem) => {
+    const list = inGroup[gi]!;
+    const prev = list.length ? list[list.length - 1]!.at : 0;
+    list.push({ at: Math.max(at, prev), item });
+  };
 
   for (const d of dividers) {
     const n = d.anchor.turn;
     if (!Number.isFinite(n) || n < 0) continue;
+    const h = home.get(n);
 
-    if (d.anchor.pos === 'before') {
+    if (d.anchor.pos === 'after' && h) {
+      const steps = stepsOf(h.group);
+      let at = h.base;
+      for (const id of d.tools ?? []) {
+        const si = steps.get(id);
+        if (si !== undefined) {
+          at = si + 1;
+          break;
+        }
+      }
+      pushInline(h.group, at, d);
+    } else if (d.anchor.pos === 'before' && h && h.part > 0) {
+      pushInline(h.group, h.base, d);
+    } else if (d.anchor.pos === 'before') {
       const target = ranges.findIndex((r) => r.max >= n);
       if (target >= 0) beforeGroup[target]!.push(d);
       else trailing.push(d);
@@ -197,5 +267,5 @@ export function placeDividers(
     }
   }
 
-  return { beforeGroup, afterGroup, trailing };
+  return { beforeGroup, afterGroup, inGroup, trailing };
 }

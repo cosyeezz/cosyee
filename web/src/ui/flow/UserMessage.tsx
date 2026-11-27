@@ -13,7 +13,7 @@ import { elementName, expandLabels } from '../../core/composer';
 import { openInBrowserPanel } from '../browser/links';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
-import { Menu } from '../menus/Menu';
+import { ForkButton } from './ForkButton';
 import { useFlowZoom } from './flowZoom';
 import { CodeBlock, copyText, nodeText } from './Markdown';
 import { attachmentIndex, prepareUserMarkdown } from './userMarkdown';
@@ -175,48 +175,6 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-/**
- * 分支：菜单里两种去向 —— 切到新会话，或留在当前会话（新会话只出现在侧栏）。
- * empty：会话的第一条消息，它之前没有内容，分支就是开一个空白新会话，只有「切过去」一种去向
- */
-function ForkButton({ onFork, empty }: { onFork: (stay: boolean) => void; empty: boolean }) {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const close = useCallback(() => setAnchor(null), []);
-  return (
-    <>
-      <button
-        type="button"
-        className={`cz-flow__icon-btn${anchor ? ' is-open' : ''}`}
-        title="从这条消息之前分支"
-        aria-label="从这条消息之前分支"
-        aria-expanded={anchor != null}
-        onClick={(e) => {
-          const el = e.currentTarget;
-          setAnchor((a) => (a ? null : el));
-        }}
-      >
-        <Icon name="branch" size={14} />
-      </button>
-      {anchor && (
-        <Menu
-          anchor={anchor}
-          align="start"
-          minWidth={240}
-          onClose={close}
-          items={
-            empty
-              ? [{ key: 'go', label: '分支并切过去', note: '第一条消息：开一个空白新会话，原文填回输入框', onSelect: () => onFork(false) }]
-              : [
-                  { key: 'go', label: '分支并切过去', note: '这条消息的原文填回输入框', onSelect: () => onFork(false) },
-                  { key: 'stay', label: '分支，留在当前会话', note: '新会话只出现在侧栏', onSelect: () => onFork(true) },
-                ]
-          }
-        />
-      )}
-    </>
-  );
-}
-
 export const UserMessage = memo(function UserMessage({
   text,
   attachments,
@@ -280,7 +238,16 @@ export const UserMessage = memo(function UserMessage({
   return (
     <div className="cz-flow__user">
       <div className="cz-flow__acts">
-        {onFork && <ForkButton onFork={onFork} empty={forkEmpty} />}
+        {onFork && (
+          <ForkButton
+            onFork={onFork}
+            className="cz-flow__icon-btn"
+            iconSize={14}
+            title="从这条消息之前分支"
+            goNote={forkEmpty ? '第一条消息：开一个空白新会话，原文填回输入框' : '这条消息的原文填回输入框'}
+            goOnly={forkEmpty}
+          />
+        )}
         <CopyButton text={raw} />
       </div>
       <div className={`cz-flow__bubble cz-spot${collapsed ? ' is-collapsed' : ''}`} ref={bubbleRef}>

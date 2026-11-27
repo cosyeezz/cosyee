@@ -295,6 +295,40 @@ describe('fork', () => {
     const entries = await withFork.subagent(sessionId, 'toolu_01Lv5LVynpaCKUoaWAvGFGoP', CWD);
     expect(entries.length).toBeGreaterThan(0);
   });
+
+  it('省略 targetId：复制整份对话记录，替换 sessionId、丢掉末尾附属行、源文件不变并追加分支标题', async () => {
+    const before = fs.readFileSync(path.join(dir, `${SRC}.jsonl`), 'utf8');
+    const { sessionId } = await sessions.fork(SRC, CWD);
+    expect(fs.readFileSync(path.join(dir, `${SRC}.jsonl`), 'utf8')).toBe(before);
+
+    const out = read(sessionId);
+    // 末尾的 custom-title / tools-used 没有后续对话行带出，被丢弃；最后两行是新追加的分支标题
+    expect(out.map((e) => e.type)).toEqual([
+      'session-owner',
+      'user', 'attachment', 'assistant',
+      'last-prompt', 'attachment', 'atis-latch',
+      'user', 'assistant',
+      'user', 'assistant',
+      'custom-title', 'agent-name',
+    ]);
+    expect(out.every((e) => e.sessionId === sessionId)).toBe(true);
+    expect(out.filter((e) => e.type === 'user').map((e) => e.uuid)).toEqual([U1, U2, U3]);
+    expect(out.find((e) => e.type === 'custom-title')!.customTitle).toBe('分支 · 源标题');
+  });
+
+  it('省略 targetId 时空会话（无对话行）报 400 且不留下残文件', async () => {
+    const emptyId = 'dddddddd-0000-4000-8000-000000000099';
+    fs.writeFileSync(
+      path.join(dir, `${emptyId}.jsonl`),
+      JSON.stringify({ type: 'session-owner', sessionId: emptyId }) + NL,
+    );
+    const before = fs.readdirSync(dir).length;
+    await expect(sessions.fork(emptyId, CWD)).rejects.toMatchObject({
+      status: 400,
+      message: '会话里还没有可分支的内容',
+    });
+    expect(fs.readdirSync(dir).length).toBe(before);
+  });
 });
 
 describe('account 辅助', () => {

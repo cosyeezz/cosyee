@@ -577,7 +577,7 @@ describe('HTTP 接口', () => {
     expect(list.find((s: { id: string }) => s.id === sessionId).title).toBe('分支 · 示例标题');
 
     // 参数 / 目标校验
-    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir })).status).toBe(400);
+    expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: 123 })).status).toBe(400); // 不传 targetId 是分叉整个会话
     expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: 'nope' })).status).toBe(400);
     expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: '85e776ee-fc2e-4522-aecd-38504e5fa9f3' })).status).toBe(400);
     expect((await post(`/api/sessions/${A}/fork`, { cwd: wsDir, targetId: '0'.repeat(8) + '-0000-4000-8000-000000000000' })).status).toBe(404);

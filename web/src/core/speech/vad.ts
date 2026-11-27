@@ -1,5 +1,5 @@
 // 通话模式的说话检测（VAD）：按每帧能量判断「开始说话」「说完了」。
-// 不用模型：麦克风已开回声消除和降噪，能量阈值配合自适应底噪在安静 / 一般环境下足够，延迟也最低。
+// 支持滞回（继续说话阈值低于开始阈值）与严格模式（扬声器朗读期间提高开始门槛抗回声）。
 // 纯计算，不碰浏览器接口，方便测试。
 
 export interface VadOptions {
@@ -7,14 +7,25 @@ export interface VadOptions {
   rate: number;
   /** 连续这么久高于阈值才算开始说话（滤掉咳嗽、敲键盘） */
   startMs?: number;
-  /** 说话后连续这么久低于阈值算说完 */
+  /** 严格模式（扬声器朗读期间）下的开始持续时长 */
+  strictStartMs?: number;
+  /** 严格模式下的开始阈值倍率 */
+  strictMultiplier?: number;
+  /** 滞回系数：进入说话态后，维持说话的阈值 = 开始阈值 × hysteresis */
+  hysteresis?: number;
+  /** 说话后连续这么久低于维持阈值算说完 */
   endMs?: number;
   /** 说话总时长不到这么多的丢掉 */
   minSpeechMs?: number;
   /** 开始前保留这么长的音频，免得吞掉第一个字 */
   preRollMs?: number;
-  /** 一句话最长，到了直接结束 */
+  /** 一句话最长，到了直接交出识别（后续继续收音） */
   maxMs?: number;
+}
+
+export interface VadPushOptions {
+  /** 扬声器正在朗读：使用更高的开始阈值与更长的开始时长，且不更新底噪 */
+  strict?: boolean;
 }
 
 /** 一句话说完时交出的音频（原始采样率） */
@@ -28,7 +39,7 @@ const rms = (f: Float32Array): number => {
 
 export class Vad {
   private readonly o: Required<VadOptions>;
-  /** 底噪估计（RMS）：安静时慢慢跟上，说话时不更新 */
+  /** 底噪估计（RMS）：安静时慢慢跟上，说话或严格模式时不更新 */
   private floor = 0.004;
   private speaking = false;
   private loudMs = 0;
@@ -40,7 +51,21 @@ export class Vad {
   private bufMs = 0;
 
   constructor(opts: VadOptions) {
-    this.o = { startMs: 160, endMs: 1100, minSpeechMs: 350, preRollMs: 400, maxMs: 60_000, ...opts };
+    this.o = {
+      startMs: 160,
+      strictStartMs: 250,
+      strictMultiplier: 2,
+      hysteresis: 0.6,
+      endMs: 1300,
+      minSpeechMs: 350,
+      preRollMs: 400,
+      maxMs: 180_000,
+      ...opts,
+    };
+  }
+
+  get rate(): number {
+    return this.o.rate;
   }
 
   /** 正在说话（已越过开始判定） */
@@ -52,22 +77,31 @@ export class Vad {
     return Math.max(0.012, this.floor * 3);
   }
 
-  /** 喂一帧；一句话说完时返回这句话的音频，否则返回 null */
-  push(frame: Float32Array): Utterance | null {
+  /** 喂一帧；一句话说完（或达到 maxMs 上限）时返回这句话的音频，否则返回 null */
+  push(frame: Float32Array, pushOpts?: VadPushOptions): Utterance | null {
     const ms = (frame.length / this.o.rate) * 1000;
     const e = rms(frame);
-    const loud = e > this.threshold();
+    const base = this.threshold();
 
     if (!this.speaking) {
-      if (!loud) this.floor = this.floor * 0.95 + Math.min(e, 0.05) * 0.05;
+      const strict = pushOpts?.strict === true;
+      const startThresh = strict ? base * this.o.strictMultiplier : base;
+      const needStartMs = strict ? this.o.strictStartMs : this.o.startMs;
+      const loud = e > startThresh;
+
+      // 严格模式（扬声器在响）不更新底噪，免得把回声当成环境底噪导致之后变聋
+      if (!loud && !strict) this.floor = this.floor * 0.95 + Math.min(e, 0.05) * 0.05;
+
       this.pre.push(frame);
       this.preMs += ms;
-      // 预留的音频只保留最近 preRollMs（加上开始判定那段）
-      while (this.pre.length > 1 && this.preMs - (this.pre[0]!.length / this.o.rate) * 1000 >= this.o.preRollMs + this.o.startMs) {
+      // 预留的音频保留最近 preRollMs + 开始判定窗口（取普通/严格中较大的，避免模式切换丢开头）
+      const keepPre = this.o.preRollMs + Math.max(this.o.startMs, this.o.strictStartMs);
+      while (this.pre.length > 1 && this.preMs - (this.pre[0]!.length / this.o.rate) * 1000 >= keepPre) {
         this.preMs -= (this.pre.shift()!.length / this.o.rate) * 1000;
       }
+
       this.loudMs = loud ? this.loudMs + ms : 0;
-      if (this.loudMs >= this.o.startMs) {
+      if (this.loudMs >= needStartMs) {
         this.speaking = true;
         this.buf = this.pre;
         this.bufMs = this.preMs;
@@ -79,9 +113,11 @@ export class Vad {
       return null;
     }
 
+    // 说话态用滞回阈值（低于开始阈值），避免轻声字尾被提前切断
+    const keepLoud = e > base * this.o.hysteresis;
     this.buf.push(frame);
     this.bufMs += ms;
-    if (loud) {
+    if (keepLoud) {
       this.speechMs += ms;
       this.quietMs = 0;
     } else {

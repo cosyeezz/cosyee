@@ -5,19 +5,30 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import type { SpeechAssetStatus, SpeechKind, SpeechStatus, TtsPrepared } from '@cosyee/shared';
 import { MODELS, ensureModel, ensureRuntime, modelDir, modelReady, numThreads, pendingBytes, runtimeDir, runtimeReady } from './assets.js';
-import { speechText, splitSentences } from './text.js';
-import { encodeWav, pcm16ToFloat32 } from './wav.js';
+import { PAUSE_MS, type SpeechSegment, speechSegments } from './text.js';
+import { appendSilence, encodeWav, joinTranscripts, normalizeLoudness, pcm16ToFloat32, splitAudioChunks, trimSilence } from './wav.js';
 
 /** 未下载好模型时调用合成 / 识别（HTTP 层转成 409） */
 export class SpeechNotReady extends Error {}
 
 /** 朗读文字上限：再长的交付也只念前面这些 */
 const MAX_TEXT = 20_000;
-/** 语音输入上限：16kHz 下约 2 分钟 */
-export const MAX_STT_SECONDS = 120;
+/** 语音输入上限：3 分钟（超 20s 服务端自动按低能量点切块识别） */
+export const MAX_STT_SECONDS = 180;
 /** 合成结果缓存：最多这么多段（每段几百 KB） */
 const AUDIO_CACHE = 80;
 const PREPARED_CACHE = 50;
+
+/** VITS 韵律稳定性参数：略降 noiseScale / noiseScaleW，固定语速 */
+const TTS_NOISE_SCALE = 0.5;
+const TTS_NOISE_SCALE_W = 0.6;
+const TTS_SID = 0;
+
+/** 朗读语速（可通过 COSYEE_TTS_SPEED 调节，默认 1.0，范围 0.5–2.0） */
+function ttsSpeed(): number {
+  const raw = Number(process.env.COSYEE_TTS_SPEED);
+  return Number.isFinite(raw) && raw >= 0.5 && raw <= 2.0 ? raw : 1.0;
+}
 
 /* sherpa-onnx-node 没有类型声明，只描述用到的部分 */
 interface Generated {
@@ -75,7 +86,7 @@ export class Speech {
   private stt: Promise<Recognizer> | null = null;
   /** 合成串行执行：同一个模型句柄并发调用不安全，而且排队也让前面的段先出来 */
   private ttsQueue: Promise<unknown> = Promise.resolve();
-  private prepared = new Map<string, string[]>();
+  private prepared = new Map<string, SpeechSegment[]>();
   private audio = new Map<string, Promise<Buffer>>();
 
   private ready(kind: SpeechKind): boolean {
@@ -129,9 +140,18 @@ export class Speech {
     this.tts ??= (async () => {
       const d = modelDir('tts');
       const f = (n: string) => path.join(d, n);
+      const speed = ttsSpeed();
       return this.lib().OfflineTts.createAsync({
         model: {
-          vits: { model: f('model.onnx'), lexicon: f('lexicon.txt'), tokens: f('tokens.txt'), dictDir: f('dict') },
+          vits: {
+            model: f('model.onnx'),
+            lexicon: f('lexicon.txt'),
+            tokens: f('tokens.txt'),
+            dictDir: f('dict'),
+            noiseScale: TTS_NOISE_SCALE,
+            noiseScaleW: TTS_NOISE_SCALE_W,
+            lengthScale: 1 / speed,
+          },
           numThreads: numThreads(),
           provider: 'cpu',
           debug: false,
@@ -171,9 +191,18 @@ export class Speech {
   /** 清洗、分句，返回段数；同样的文字得到同样的 id，重复点朗读直接用缓存 */
   ttsPrepare(markdown: string): TtsPrepared {
     if (!this.ready('tts')) throw new SpeechNotReady('朗读模型还没有下载');
-    const segs = splitSentences(speechText(markdown.slice(0, MAX_TEXT)));
+    const segs = speechSegments(markdown.slice(0, MAX_TEXT));
     if (!segs.length) return { id: '', count: 0 };
-    const id = crypto.createHash('sha1').update(MODELS.tts.name).update('\0').update(segs.join('\n')).digest('hex').slice(0, 16);
+    const payload = segs.map((s) => `${s.pause}\t${s.text}`).join('\n');
+    const id = crypto
+      .createHash('sha1')
+      .update(MODELS.tts.name)
+      .update('\0')
+      .update(String(ttsSpeed()))
+      .update('\0')
+      .update(payload)
+      .digest('hex')
+      .slice(0, 16);
     lruSet(this.prepared, id, segs, PREPARED_CACHE);
     void this.loadTts().catch(() => {}); // 提前加载模型（首次约 3 秒）
     return { id, count: segs.length };
@@ -188,14 +217,18 @@ export class Speech {
     return cur;
   }
 
-  private segment(id: string, segs: string[], i: number): Promise<Buffer> {
+  private segment(id: string, segs: SpeechSegment[], i: number): Promise<Buffer> {
     const key = `${id}:${i}`;
     const hit = lruGet(this.audio, key);
     if (hit) return hit;
+    const seg = segs[i]!;
     const job = this.ttsQueue.then(async () => {
       const tts = await this.loadTts();
-      const a = halve(await tts.generateAsync({ text: segs[i]!, sid: 0, speed: 1.0 }));
-      return encodeWav(a.samples, a.sampleRate);
+      const a = halve(await tts.generateAsync({ text: seg.text, sid: TTS_SID, speed: 1.0 }));
+      const trimmed = trimSilence(a.samples, a.sampleRate);
+      const normalized = normalizeLoudness(trimmed);
+      const withPause = appendSilence(normalized, a.sampleRate, PAUSE_MS[seg.pause]);
+      return encodeWav(withPause, a.sampleRate);
     });
     this.ttsQueue = job.catch(() => {});
     job.catch(() => this.audio.delete(key)); // 失败的不缓存
@@ -203,14 +236,21 @@ export class Speech {
     return job;
   }
 
-  /** 识别一段单声道 16 位 PCM */
+  /** 识别一段单声道 16 位 PCM（超 20s 自动按低能量点切块识别再拼接） */
   async transcribe(pcm: Buffer, rate: number): Promise<string> {
     const rec = await this.loadStt();
     const samples = pcm16ToFloat32(pcm);
     if (samples.length < rate * 0.2) return '';
-    const s = rec.createStream();
-    s.acceptWaveform({ samples, sampleRate: rate });
-    const r = await rec.decodeAsync(s);
-    return (r.text ?? '').trim();
+    const chunks = splitAudioChunks(samples, rate);
+    const parts: string[] = [];
+    for (const chunk of chunks) {
+      if (chunk.length < rate * 0.2) continue;
+      const s = rec.createStream();
+      s.acceptWaveform({ samples: chunk, sampleRate: rate });
+      const r = await rec.decodeAsync(s);
+      const text = (r.text ?? '').trim();
+      if (text) parts.push(text);
+    }
+    return joinTranscripts(parts);
   }
 }

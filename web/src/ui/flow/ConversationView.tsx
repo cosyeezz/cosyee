@@ -4,7 +4,8 @@
 import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { SessionMeta, StopInfo, Turn } from '@cosyee/shared';
 import { canAnimate } from '../motion/reduced';
-import { buildDividers, placeDividers, type FlowDividerItem } from './dividers';
+import { buildDividers, placeDividers, type InlineDivider } from './dividers';
+import { FlowDivider } from './FlowDivider';
 import { isHiddenTurn, isTurnActive } from './format';
 import { groupSteered, type TurnGroup } from './mergeSteer';
 import { setFlowZoom, useFlowZoomControls } from './flowZoom';
@@ -28,6 +29,8 @@ export interface ConversationViewProps {
   reveal?: boolean;
   /** 用户气泡的「分支」：targetId 是这条用户消息的 id，stay=true 表示分支完留在当前会话。不传则不显示分支按钮 */
   onFork?: (targetId: string, stay: boolean) => void;
+  /** 助手回复下方的「分支」：targetId 是下一组用户消息的 id，省略表示复制整份记录，stay=true 表示分支完留在当前会话 */
+  onForkAfter?: (targetId: string | undefined, stay: boolean) => void;
   /** 渲染在内容列末尾的附加区域（不传则不渲染） */
   footer?: ReactNode;
   /** 会话因错误 / 服务重启停止与自动重试状态 */
@@ -66,15 +69,21 @@ const TurnItem = memo(function TurnItem({
   group,
   forkOf,
   firstId,
+  onForkAfter,
   stop,
   onRetryNow,
   onRetryCancel,
+  dividers,
 }: {
   group: TurnGroup;
   /** 组里每条用户消息（含插话）各自的分支回调；不传或返回 undefined 则不显示分支按钮 */
   forkOf?: (turn: Turn) => ((stay: boolean) => void) | undefined;
   /** 会话第一轮的 id：它之前没有内容，分支出的是空白新会话 */
   firstId?: string;
+  /** 轮中途发生的分隔提示（见 dividers.ts 的 placeDividers） */
+  dividers?: readonly InlineDivider[];
+  /** 从这条回复之后分支（传给 TurnView -> AnswerActions） */
+  onForkAfter?: (stay: boolean) => void;
   stop?: StopInfo | null;
   onRetryNow?: () => void;
   onRetryCancel?: () => void;
@@ -93,18 +102,9 @@ const TurnItem = memo(function TurnItem({
       {parts.map((p) => (
         <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={forkOf?.(p)} forkEmpty={p.id === firstId} />
       ))}
-      <TurnView turn={displayTurn} />
+      <TurnView turn={displayTurn} dividers={dividers} onForkAfter={onForkAfter} />
       {showStop && <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />}
     </section>
-  );
-});
-
-/** 居中分隔提示（模型切换 / 上下文压缩） */
-const FlowDivider = memo(function FlowDivider({ item }: { item: FlowDividerItem }) {
-  return (
-    <div className="cz-flow__divider" role="separator" data-kind={item.kind} title={item.title}>
-      <span>{item.text}</span>
-    </div>
   );
 });
 
@@ -115,6 +115,7 @@ export function ConversationView({
   sessionKey,
   reveal = false,
   onFork,
+  onForkAfter,
   footer,
   stop = null,
   onRetryNow,
@@ -127,6 +128,19 @@ export function ConversationView({
     () => placeDividers(allTurns, groups, buildDividers(allTurns, meta)),
     [allTurns, groups, meta],
   );
+  // 轮内提示按内容复用同一数组：流式时 allTurns 每次都变，不能让每一组的 TurnItem 都跟着重渲染
+  const inlineCache = useRef(new Map<string, { sig: string; list: readonly InlineDivider[] }>());
+  const inlineFor = (id: string, list: readonly InlineDivider[] | undefined): readonly InlineDivider[] | undefined => {
+    if (!list || list.length === 0) {
+      inlineCache.current.delete(id);
+      return undefined;
+    }
+    const sig = list.map((d) => JSON.stringify([d.at, d.item.key, d.item.text, d.item.title ?? ''])).join(',');
+    const hit = inlineCache.current.get(id);
+    if (hit && hit.sig === sig) return hit.list;
+    inlineCache.current.set(id, { sig, list });
+    return list;
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { pinToBottom, followIfStuck } = useStickToBottom(scrollRef, contentRef);
@@ -173,6 +187,37 @@ export function ConversationView({
     return cb;
   }, []);
 
+  // 每组助手回复下方的固定引用分支回调：
+  // 截断点取「下一组里第一个有 userId 的 part 之前」；最后一组省略 targetId（复制整份）；
+  // 后面有组但都没有 userId 时不提供回调，避免把后续内容带进新会话。
+  const forkAfterRef = useRef(onForkAfter);
+  forkAfterRef.current = onForkAfter;
+  const canForkAfter = !!onForkAfter;
+  const forkAfterCbs = useMemo(() => {
+    const m = new Map<string, (stay: boolean) => void>();
+    if (!canForkAfter) return m;
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i]!;
+      if (i === groups.length - 1) {
+        m.set(g.turn.id, (stay: boolean) => forkAfterRef.current?.(undefined, stay));
+        continue;
+      }
+      let nextTarget: string | undefined;
+      for (let j = i + 1; j < groups.length; j++) {
+        const part = groups[j]!.parts.find((p) => p.userId);
+        if (part?.userId) {
+          nextTarget = part.userId;
+          break;
+        }
+      }
+      if (nextTarget) {
+        const target = nextTarget;
+        m.set(g.turn.id, (stay: boolean) => forkAfterRef.current?.(target, stay));
+      }
+    }
+    return m;
+  }, [groups, canForkAfter]);
+
   const wrapRef = useRef<HTMLDivElement>(null);
   const { zoom, hint } = useFlowZoomControls(wrapRef, scrollRef, contentRef);
 
@@ -202,9 +247,11 @@ export function ConversationView({
                   group={g}
                   forkOf={canFork ? forkOf : undefined}
                   firstId={firstId}
+                  onForkAfter={forkAfterCbs.get(g.turn.id)}
                   stop={isLast ? stop : null}
                   onRetryNow={isLast ? onRetryNow : undefined}
                   onRetryCancel={isLast ? onRetryCancel : undefined}
+                  dividers={inlineFor(g.turn.id, placedDividers.inGroup[i])}
                 />
                 {after && after.length > 0 && after.map((d) => <FlowDivider key={d.key} item={d} />)}
               </Fragment>
