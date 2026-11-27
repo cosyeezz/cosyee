@@ -345,11 +345,11 @@ export function MainApp() {
   const shownTurns = useMemo(() => turns.filter((t) => !isHiddenTurn(t)), [turns]);
   // 加载会话：骨架屏 → 骨架淡出、内容逐块浮现
   const skeleton = useFlowSkeleton(!!view?.loading);
-  // 切换会话：新会话加载期间，旧对话留在原位淡出（不先闪成空白）；新内容到了再整体换上、逐块浮现
-  const lastFlow = useRef<{ key: string; turns: typeof turns } | null>(null);
-  if (view && !view.loading && !view.loadError) lastFlow.current = shownTurns.length > 0 ? { key: view.id, turns } : null;
-  const heldFlow = view?.loading && motionOK() ? lastFlow.current : null;
   const meta = view?.conv.meta;
+  // 切换会话：新会话加载期间，旧对话留在原位淡出（不先闪成空白）；新内容到了再整体换上、逐块浮现
+  const lastFlow = useRef<{ key: string; turns: typeof turns; meta: typeof meta } | null>(null);
+  if (view && !view.loading && !view.loadError) lastFlow.current = shownTurns.length > 0 ? { key: view.id, turns, meta } : null;
+  const heldFlow = view?.loading && motionOK() ? lastFlow.current : null;
   // 未发过消息的新会话草稿与刚打开的历史会话不会收到 system/init，用探测进程采到的 context.skills / slashCommands 兜底
   const ctxSkills = useMemo(
     () => (view?.context?.skills ? view.context.skills.filter((s) => s.mode !== 'off').map((s) => s.name) : []),
@@ -1168,6 +1168,7 @@ export function MainApp() {
           <ConversationView
             key={heldFlow.key}
             turns={heldFlow.turns}
+            meta={heldFlow.meta}
             sessionKey={heldFlow.key}
           />
         ) : view?.loading ? null : view?.loadError ? (
@@ -1178,6 +1179,7 @@ export function MainApp() {
           <ConversationView
             key={view?.id ?? 'none'}
             turns={turns}
+            meta={meta}
             onReply={onReply}
             onFork={onFork}
             sessionKey={sel?.id ?? null}

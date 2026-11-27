@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { StopInfo, Turn } from '@cosyee/shared';
+import type { SessionMeta, StopInfo, Turn } from '@cosyee/shared';
 import { ConversationView, type ConversationViewProps } from './ConversationView';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -121,5 +121,109 @@ describe('ConversationView：StopNotice 与重启中断展示', () => {
     await mount({ turns: [turn], stop: fatalStop, onRetryNow: vi.fn() });
     expect(host!.querySelector('.cz-flow__stop')).toBeNull();
     expect(host!.querySelector('.cz-flow__turn.is-done')).not.toBeNull();
+  });
+});
+
+describe('ConversationView：模型切换与上下文压缩分隔提示', () => {
+  it('未传 meta 时不渲染任何分隔提示', async () => {
+    await mount({ turns: [makeTurn('t0'), makeTurn('t1')] });
+    expect(host!.querySelectorAll('[role="separator"]')).toHaveLength(0);
+  });
+
+  it('在正确位置渲染模型切换、手动 /compact（隐藏轮）与末尾压缩（位于 footer 之前）', async () => {
+    const turns = [
+      makeTurn('t0', { answer: '第一轮答复' }),
+      makeTurn('t1', { local: true, userText: '/compact', answer: '' }), // 隐藏轮
+      makeTurn('t2', { answer: '第二轮答复' }),
+      makeTurn('t3', { local: true, userText: '/compact', answer: '' }), // 末尾隐藏轮
+    ];
+    const meta: SessionMeta = {
+      cache: [
+        { id: 'm0', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-opus-4-6' },
+        { id: 'm1', turn: 2, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6' },
+      ],
+      compactions: [
+        {
+          id: 'c1',
+          turn: 1,
+          trigger: 'manual',
+          pre: 120_400,
+          post: 18_200,
+          durationMs: 9_000,
+          after: 'm0',
+          at: Date.now() - 60_000,
+        },
+        {
+          id: 'c2',
+          turn: 3,
+          trigger: 'manual',
+          pre: 80_000,
+          post: null,
+          durationMs: null,
+          after: 'm1',
+          at: Date.now(),
+        },
+      ],
+    };
+
+    await mount({
+      turns,
+      meta,
+      footer: <div className="test-footer">footer</div>,
+    });
+
+    const col = host!.querySelector('.cz-flow__column')!;
+    const seq = Array.from(col.children).map((el) => {
+      if (el.classList.contains('cz-flow__item')) return `turn:${el.getAttribute('data-turn-id')}`;
+      if (el.getAttribute('role') === 'separator') return `sep:${el.textContent}`;
+      if (el.classList.contains('test-footer')) return 'footer';
+      return el.className;
+    });
+
+    expect(seq).toEqual([
+      'turn:t0',
+      'sep:已压缩上下文 · 120k → 18k · 9 秒',
+      'sep:已切换到 Sonnet 4.6',
+      'turn:t2',
+      'sep:已压缩上下文 · 80k',
+      'footer',
+    ]);
+  });
+
+  it('轮中途自动压缩渲染在该轮之后', async () => {
+    const turns = [makeTurn('t0', { answer: '第一轮' }), makeTurn('t1', { answer: '第二轮' })];
+    const meta: SessionMeta = {
+      cache: [
+        { id: 'm0', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6' },
+        { id: 'm1', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6' },
+      ],
+      compactions: [
+        {
+          id: 'c-auto',
+          turn: 0,
+          trigger: 'auto',
+          pre: 182_000,
+          post: 24_000,
+          durationMs: 12_000,
+          after: 'm0',
+          at: Date.now(),
+        },
+      ],
+    };
+
+    await mount({ turns, meta });
+
+    const col = host!.querySelector('.cz-flow__column')!;
+    const seq = Array.from(col.children).map((el) =>
+      el.classList.contains('cz-flow__item')
+        ? `turn:${el.getAttribute('data-turn-id')}`
+        : `sep:${el.textContent}`,
+    );
+
+    expect(seq).toEqual([
+      'turn:t0',
+      'sep:已自动压缩上下文 · 182k → 24k · 12 秒',
+      'turn:t1',
+    ]);
   });
 });

@@ -1,9 +1,10 @@
 // 会话流：滚动容器 + 每轮（用户气泡 + TurnView），新内容到底时自动贴底。
 // 未交付就被插话接上的几轮合成一组，只显示一个状态行，见 mergeSteer.ts。
 // 本地命令（/compact、/model 等 CLI 自己处理、不产生模型回复的输入）整轮不渲染，见 isHiddenTurn。
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
-import type { StopInfo, Turn } from '@cosyee/shared';
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import type { SessionMeta, StopInfo, Turn } from '@cosyee/shared';
 import { canAnimate } from '../motion/reduced';
+import { buildDividers, placeDividers, type FlowDividerItem } from './dividers';
 import { isHiddenTurn, isTurnActive } from './format';
 import { groupSteered, type TurnGroup } from './mergeSteer';
 import { setFlowZoom, useFlowZoomControls } from './flowZoom';
@@ -17,6 +18,8 @@ import './flow.css';
 
 export interface ConversationViewProps {
   turns: Turn[];
+  /** 会话元信息（含模型记录与上下文压缩标记）；不传则不显示居中分隔提示 */
+  meta?: SessionMeta;
   /** 在答复里选中文字后点「回复」：quote 是选中的文字，reply 是弹层里输入的内容。不传则不出现选中浮条 */
   onReply?: (quote: string, reply: string) => void;
   /** 会话标识，变化时关闭选中浮条 */
@@ -93,8 +96,18 @@ const TurnItem = memo(function TurnItem({
   );
 });
 
+/** 居中分隔提示（模型切换 / 上下文压缩） */
+const FlowDivider = memo(function FlowDivider({ item }: { item: FlowDividerItem }) {
+  return (
+    <div className="cz-flow__divider" role="separator" data-kind={item.kind} title={item.title}>
+      <span>{item.text}</span>
+    </div>
+  );
+});
+
 export function ConversationView({
   turns: allTurns,
+  meta,
   onReply,
   sessionKey,
   reveal = false,
@@ -107,6 +120,10 @@ export function ConversationView({
   // 本地命令轮不渲染；轮的下标仍按原数组计（压缩标记 / 花费图的跳转用的是 turn.id）
   const turns = useMemo(() => allTurns.filter((t) => !isHiddenTurn(t)), [allTurns]);
   const groups = useMemo(() => groupSteered(turns), [turns]);
+  const placedDividers = useMemo(
+    () => placeDividers(allTurns, groups, buildDividers(allTurns, meta)),
+    [allTurns, groups, meta],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { pinToBottom, followIfStuck } = useStickToBottom(scrollRef, contentRef);
@@ -172,17 +189,23 @@ export function ConversationView({
         <div className="cz-flow__column" ref={contentRef}>
           {groups.map((g, i) => {
             const isLast = i === groups.length - 1;
+            const before = placedDividers.beforeGroup[i];
+            const after = placedDividers.afterGroup[i];
             return (
-              <TurnItem
-                key={g.turn.id}
-                group={g}
-                onFork={forkCbs.get(g.turn.id)}
-                stop={isLast ? stop : null}
-                onRetryNow={isLast ? onRetryNow : undefined}
-                onRetryCancel={isLast ? onRetryCancel : undefined}
-              />
+              <Fragment key={g.turn.id}>
+                {before && before.length > 0 && before.map((d) => <FlowDivider key={d.key} item={d} />)}
+                <TurnItem
+                  group={g}
+                  onFork={forkCbs.get(g.turn.id)}
+                  stop={isLast ? stop : null}
+                  onRetryNow={isLast ? onRetryNow : undefined}
+                  onRetryCancel={isLast ? onRetryCancel : undefined}
+                />
+                {after && after.length > 0 && after.map((d) => <FlowDivider key={d.key} item={d} />)}
+              </Fragment>
             );
           })}
+          {placedDividers.trailing.map((d) => <FlowDivider key={d.key} item={d} />)}
           {footer}
         </div>
       </div>

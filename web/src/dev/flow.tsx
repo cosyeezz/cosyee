@@ -1,6 +1,6 @@
 // 会话流调试页：http://127.0.0.1:5173/?dev=flow
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Step, Turn } from '@cosyee/shared';
+import type { SessionMeta, Step, Turn } from '@cosyee/shared';
 import '../styles/tokens.css';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { SessionDock } from '../ui/flow/SessionDock';
@@ -37,6 +37,26 @@ const PANEL_DEMO: Turn = {
 const DEV_FLOW_META: FlowMeta = {
   mcpServers: ['playwright', 'my-docs'],
   loadSkill: async (name) => ({ name, description: '演示描述', body: `# ${name}\n\n（演示：来自磁盘的 SKILL.md）`, dir: '/demo' }),
+};
+// 调试页示例元信息：演示模型切换与自动压缩分隔提示
+const DEV_SESSION_META: SessionMeta = {
+  cache: [
+    { id: 'dev-m0', turn: 0, input: 800, create: 12_000, read: 0, rate: 0, model: 'claude-opus-4-6' },
+    { id: 'dev-m1', turn: 1, input: 600, create: 2_000, read: 180_000, rate: 98, model: 'claude-sonnet-4-6' },
+    { id: 'dev-m2', turn: 2, input: 400, create: 1_200, read: 22_000, rate: 93, model: 'claude-sonnet-4-6' },
+  ],
+  compactions: [
+    {
+      id: 'dev-c1',
+      turn: 2,
+      trigger: 'auto',
+      pre: 182_400,
+      post: 24_100,
+      durationMs: 12_000,
+      after: 'dev-m1',
+      at: Date.now() - 10 * 60_000,
+    },
+  ],
 };
 
 const SIM_ID = 'sim-turn';
@@ -202,7 +222,7 @@ export default function FlowDev() {
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <ConversationView turns={turns} onReply={(quote, reply) => setLastReply({ quote, reply })} />
+        <ConversationView turns={turns} meta={DEV_SESSION_META} onReply={(quote, reply) => setLastReply({ quote, reply })} />
       </div>
       <div style={{ maxWidth: 'var(--content-max)', width: '100%', margin: '0 auto', padding: '0 var(--sp-4) var(--sp-3)', boxSizing: 'border-box' }}>
         <SessionDock turns={turns} sessionKey="dev" onOpenSubagent={onOpen} />

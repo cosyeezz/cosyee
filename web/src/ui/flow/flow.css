@@ -880,3 +880,30 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ---------- 居中分隔提示（模型切换 / 上下文压缩） ---------- */
+.cz-flow__divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding-block: var(--sp-1);
+  color: var(--text-3);
+  font-size: calc(12px * var(--cz-flow-zoom, 1));
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.cz-flow__divider::before,
+.cz-flow__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.cz-flow__divider > span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
