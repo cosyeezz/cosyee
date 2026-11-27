@@ -5,13 +5,13 @@
 import { useState } from 'react';
 import {
   DEFAULT_SUBAGENTS,
-  type AccountEntry, type AccountList, type AccountLogin, type AccountMode, type AgyAccountEntry, type AgyAccountList, type AgyQuota, type ComponentList, type KiroBalance, type KiroStatus, type SubagentKind, type SubagentState, type UsageInfo, type UsageSeverity,
+  type AccountEntry, type AccountList, type AccountLogin, type AccountMode, type AgyAccountEntry, type AgyAccountList, type ComponentList, type KiroBalance, type KiroStatus, type SubagentKind, type SubagentState, type UsageInfo,
 } from '@cosyee/shared';
 import '../styles/tokens.css';
 import '../styles/motion.css';
 import '../ui/layout/AppShell.css';
 import '../ui/sidebar/Sidebar.css';
-import { api, ApiError } from '../core/api';
+import { api } from '../core/api';
 import { AccountMenu } from '../ui/sidebar/AccountMenu';
 import { AddTargetSeg } from '../ui/sidebar/AddTargetSeg';
 import { AgyAccountDialog } from '../ui/sidebar/AgyAccountDialog';
@@ -103,22 +103,12 @@ const usage: Record<string, UsageInfo> = {
   ] },
 };
 
-const agyQuota = (g: number, g7: number, c: number, c7: number): AgyQuota => {
-  const sev = (p: number): UsageSeverity => (p >= 100 ? 'critical' : p >= 80 ? 'warning' : 'normal');
-  const b = (window: string, percent: number, h: number) => ({ window, percent, severity: sev(percent), resetsAt: now + h * H });
-  return { at: now, groups: [
-    { name: 'Gemini', buckets: [b('5h', g, 3.2), b('weekly', g7, 4 * 24)] },
-    { name: 'Claude · GPT', buckets: [b('5h', c, 1.5), b('weekly', c7, 4 * 24)] },
-  ] };
-};
-
 const agyInstalled = agyParam !== 'missing';
 const agyList: AgyAccountEntry[] = agyParam === 'none' || agyParam === 'missing' ? [] : [
-  { id: 'default', label: '', email: 'alex.chen@example.com', quota: agyQuota(12, 4, 63, 41), plan: 'Google AI Pro', loggedIn: true, active: true, isDefault: true, running: 0 },
-  { id: 'agy-work', label: '工作', email: 'alex@studio-example.dev', quota: agyQuota(86, 52, 100, 90), plan: 'Google AI Ultra', loggedIn: true, active: false, isDefault: false, running: 2 },
-  { id: 'agy-mail', label: '', email: 'a.very.long.mailbox.name@example-workspace.com', quota: agyQuota(0, 0, 0, 0), plan: 'Google AI Pro', loggedIn: true, active: false, isDefault: false, running: 0 },
+  { id: 'agy-main', label: '', email: 'alex.chen@example.com', quota: null, plan: null, loggedIn: true, active: true, isDefault: false, running: 0 },
+  { id: 'agy-work', label: '工作', email: 'alex@studio-example.dev', quota: null, plan: null, loggedIn: true, active: false, isDefault: false, running: 2 },
+  { id: 'agy-mail', label: '', email: 'a.very.long.mailbox.name@example-workspace.com', quota: null, plan: null, loggedIn: true, active: false, isDefault: false, running: 0 },
   { id: 'agy-2', label: '备用账号', plan: null, loggedIn: false, active: false, isDefault: false, running: 0 },
-  { id: 'agy-3', label: '个人', plan: null, loggedIn: null, active: false, isDefault: false, running: 0 },
 ];
 let agyLoginState: AccountLogin | null = null;
 let agyLoginSeq = 0;
@@ -210,7 +200,6 @@ a.submitAgyCode = () => {
       let id: string;
       if (target) {
         target.loggedIn = true;
-        target.plan = target.plan ?? 'Google AI Pro';
         id = target.id;
       } else {
         id = `agy-new-${agyLoginSeq}`;
@@ -218,8 +207,8 @@ a.submitAgyCode = () => {
           id,
           label: agyPendingMeta.label,
           email: `new.user${agyLoginSeq}@example.com`,
-          quota: agyQuota(0, 0, 0, 0),
-          plan: 'Google AI Pro',
+          quota: null,
+          plan: null,
           loggedIn: true,
           active: false,
           isDefault: false,
@@ -241,7 +230,6 @@ a.removeAgyAccount = (id: string) => {
   return delay({ ok: true });
 };
 a.setAgyLabel = (id: string, label: string) => {
-  if (id === 'default') return Promise.reject(new ApiError('默认账号不能修改备注名', 404, {}));
   const hit = agyList.find((e) => e.id === id);
   if (hit) hit.label = label;
   return delay({ ok: true });

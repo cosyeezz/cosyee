@@ -374,8 +374,8 @@ describe('3. 账号选择、主目录丢失与 Claude / Antigravity 互不干扰
     expect(agy.activeId()).toBe('agy001');
 
     // 移除 Agy 账号不影响 Claude 主/子账号
-    await agy.switchTo(DEFAULT_ID);
     await agy.remove('agy001');
+    expect(agy.activeId()).toBeNull();
     expect(a.accounts.subagentClaudeId()).toBe(work.id);
   });
 });

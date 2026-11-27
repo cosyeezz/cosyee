@@ -53,8 +53,6 @@ export function claudeRemoveBlock(a: AccountEntry): string | null {
 
 /** Antigravity 账号不能移除的原因（和服务端一致）；能移除返回 null */
 export function agyRemoveBlock(a: AgyAccountEntry): string | null {
-  if (a.isDefault) return '默认账号不能移除';
-  if (a.active) return '不能移除当前账号，请先切换到其它账号';
   if (a.running > 0) return `有 ${a.running} 个委派任务正在执行，结束后才能移除`;
   return null;
 }
@@ -65,18 +63,17 @@ export function planChip(plan: string | null | undefined): string | null {
   return s || null;
 }
 
-/** Antigravity 标题：备注名 → 登录邮箱 → 默认账号「本机登录」 */
+/** Antigravity 标题：备注名 → 登录邮箱 → 「Antigravity 账号」 */
 export function agyTitle(a: AgyAccountEntry): string {
-  return a.label || a.email || (a.isDefault ? '本机登录' : 'Antigravity 账号');
+  return a.label || a.email || 'Antigravity 账号';
 }
 
-/** Antigravity 副标题：N 个执行中 · 邮箱（标题是备注名时）· 检测中 / 需要登录 */
+/** Antigravity 副标题：N 个执行中 · 邮箱（标题是备注名时）· 需要登录 */
 export function agySubtitle(a: AgyAccountEntry): string {
   const parts: string[] = [];
   if (a.running > 0) parts.push(`${a.running} 个执行中`);
   if (a.email && a.email !== agyTitle(a)) parts.push(a.email);
-  if (a.loggedIn === null) parts.push('检测中…');
-  else if (!a.loggedIn) parts.push('需要登录');
+  if (a.loggedIn === false) parts.push('需要登录');
   return parts.join(' · ');
 }
 

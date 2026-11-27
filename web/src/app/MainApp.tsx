@@ -780,7 +780,7 @@ export function MainApp() {
     api.accounts()
       .then((r) => { if (alive) setAccounts(r && Array.isArray(r.list) ? r : null); })
       .catch(() => { if (alive) setAccounts(null); });
-    api.agyAccounts(false)
+    api.agyAccounts()
       .then((r) => { if (alive) setAgyAccounts(r && typeof r.installed === 'boolean' && Array.isArray(r.list) ? r : null); })
       .catch(() => { if (alive) setAgyAccounts(null); });
     return () => { alive = false; };

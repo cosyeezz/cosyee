@@ -64,6 +64,11 @@ beforeAll(async () => {
     process.env.COSYEE_CLAUDE = sh;
   }
   stateFile = path.join(tmp, 'state.json');
+  // agy 委派要有一个在 Cosyee 里登录过的账号才算可用：放一个带令牌文件的假账号
+  const agyDir = path.join(tmp, 'agy-accounts', 'abcd1234');
+  fs.mkdirSync(agyDir, { recursive: true });
+  fs.writeFileSync(path.join(agyDir, 'antigravity-oauth-token'), '{}');
+  fs.writeFileSync(stateFile, JSON.stringify({ agyAccounts: { list: [{ id: 'abcd1234', label: '', dir: agyDir, createdAt: 1 }], active: 'abcd1234' } }));
   srv = await startServer({ port: 0, webDist: null, stateFile });
   srv.workspaces.add(cwd);
 });

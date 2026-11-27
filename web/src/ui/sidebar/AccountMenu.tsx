@@ -332,8 +332,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   }, []);
   const loadAgy = useCallback(() => {
     const seq = ++agySeq.current;
-    // refresh：额度超过 90 秒没更新的账号后台重新检测，结果通过 agy.changed → version 再读一次
-    api.agyAccounts(true).then(
+    api.agyAccounts().then(
       (res) => {
         if (!aliveRef.current || seq !== agySeq.current) return;
         if (res && typeof res.installed === 'boolean' && Array.isArray(res.list)) {
@@ -866,9 +865,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
                       </div>
                     ) : !agyData.installed ? (
                       <div className="cz-acct-sub-note">未安装 Antigravity CLI</div>
-                    ) : usableAgy.length === 0 ? (
-                      <div className="cz-acct-sub-note">没有可用的账号，可在「管理账号」中登录</div>
-                    ) : (
+                    ) : usableAgy.length === 0 ? null : (
                       <div className="cz-acct-sub-rows" role="group" aria-label="Antigravity 账号">
                         {usableAgy.map((a) => {
                           const title = agyTitle(a);

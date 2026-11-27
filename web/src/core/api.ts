@@ -163,7 +163,7 @@ export const api = {
   kiroLoginCancel: (loginId: string) => req<{ ok: true }>('POST', `/api/kiro/login/${encodeURIComponent(loginId)}/cancel`, {}),
   kiroBalance: (account: string) => req<KiroBalance>('GET', `/api/kiro/balance?${q({ account })}`),
   /** Antigravity（agy）多账号：列表、切换、登录、授权码、取消、移除、改备注名 */
-  agyAccounts: (refresh = false) => req<AgyAccountList>('GET', '/api/agy-accounts' + (refresh ? '?refresh=1' : '')),
+  agyAccounts: () => req<AgyAccountList>('GET', '/api/agy-accounts'),
   switchAgyAccount: (id: string) => req<{ ok: true }>('POST', '/api/agy-accounts/switch', { id }),
   startAgyLogin: (o: { label?: string; accountId?: string }) => reqDetailed<AccountLogin>('POST', '/api/agy-accounts/login', o),
   agyLogin: (loginId: string) => reqDetailed<AccountLogin>('GET', `/api/agy-accounts/login/${encodeURIComponent(loginId)}`),
