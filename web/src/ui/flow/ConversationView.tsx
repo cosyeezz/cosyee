@@ -4,7 +4,8 @@
 import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import type { SessionMeta, StopInfo, Turn } from '@cosyee/shared';
 import { canAnimate } from '../motion/reduced';
-import { buildDividers, placeDividers, type FlowDividerItem } from './dividers';
+import { buildDividers, placeDividers, type InlineDivider } from './dividers';
+import { FlowDivider } from './FlowDivider';
 import { isHiddenTurn, isTurnActive } from './format';
 import { groupSteered, type TurnGroup } from './mergeSteer';
 import { setFlowZoom, useFlowZoomControls } from './flowZoom';
@@ -68,8 +69,11 @@ const TurnItem = memo(function TurnItem({
   stop,
   onRetryNow,
   onRetryCancel,
+  dividers,
 }: {
   group: TurnGroup;
+  /** 轮中途发生的分隔提示（见 dividers.ts 的 placeDividers） */
+  dividers?: readonly InlineDivider[];
   /** 只给组里的第一条：后面的都是插话，不能分支 */
   onFork?: (stay: boolean) => void;
   stop?: StopInfo | null;
@@ -90,18 +94,9 @@ const TurnItem = memo(function TurnItem({
       {parts.map((p, i) => (
         <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={i === 0 ? onFork : undefined} />
       ))}
-      <TurnView turn={displayTurn} />
+      <TurnView turn={displayTurn} dividers={dividers} />
       {showStop && <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />}
     </section>
-  );
-});
-
-/** 居中分隔提示（模型切换 / 上下文压缩） */
-const FlowDivider = memo(function FlowDivider({ item }: { item: FlowDividerItem }) {
-  return (
-    <div className="cz-flow__divider" role="separator" data-kind={item.kind} title={item.title}>
-      <span>{item.text}</span>
-    </div>
   );
 });
 
@@ -124,6 +119,19 @@ export function ConversationView({
     () => placeDividers(allTurns, groups, buildDividers(allTurns, meta)),
     [allTurns, groups, meta],
   );
+  // 轮内提示按内容复用同一数组：流式时 allTurns 每次都变，不能让每一组的 TurnItem 都跟着重渲染
+  const inlineCache = useRef(new Map<string, { sig: string; list: readonly InlineDivider[] }>());
+  const inlineFor = (id: string, list: readonly InlineDivider[] | undefined): readonly InlineDivider[] | undefined => {
+    if (!list || list.length === 0) {
+      inlineCache.current.delete(id);
+      return undefined;
+    }
+    const sig = list.map((d) => JSON.stringify([d.at, d.item.key, d.item.text, d.item.title ?? ''])).join(',');
+    const hit = inlineCache.current.get(id);
+    if (hit && hit.sig === sig) return hit.list;
+    inlineCache.current.set(id, { sig, list });
+    return list;
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const { pinToBottom, followIfStuck } = useStickToBottom(scrollRef, contentRef);
@@ -200,6 +208,7 @@ export function ConversationView({
                   stop={isLast ? stop : null}
                   onRetryNow={isLast ? onRetryNow : undefined}
                   onRetryCancel={isLast ? onRetryCancel : undefined}
+                  dividers={inlineFor(g.turn.id, placedDividers.inGroup[i])}
                 />
                 {after && after.length > 0 && after.map((d) => <FlowDivider key={d.key} item={d} />)}
               </Fragment>

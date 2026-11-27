@@ -190,12 +190,16 @@ describe('ConversationView：模型切换与上下文压缩分隔提示', () => 
     ]);
   });
 
-  it('轮中途自动压缩渲染在该轮之后', async () => {
-    const turns = [makeTurn('t0', { answer: '第一轮' }), makeTurn('t1', { answer: '第二轮' })];
+  it('轮中途自动压缩渲染在该轮内：收起时在状态行与答复之间，展开时在对应步骤之后', async () => {
+    const tool = (id: string) => ({ kind: 'tool' as const, id, name: 'Bash', input: {}, summary: `Bash: ${id}` });
+    const turns = [
+      makeTurn('t0', { answer: '第一轮', steps: [tool('a'), tool('b')] }),
+      makeTurn('t1', { answer: '第二轮' }),
+    ];
     const meta: SessionMeta = {
       cache: [
-        { id: 'm0', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6' },
-        { id: 'm1', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6' },
+        { id: 'm0', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6', tools: ['a'] },
+        { id: 'm1', turn: 0, input: 100, create: 0, read: 0, rate: 0, model: 'claude-sonnet-4-6', tools: ['b'] },
       ],
       compactions: [
         {
@@ -214,16 +218,22 @@ describe('ConversationView：模型切换与上下文压缩分隔提示', () => 
     await mount({ turns, meta });
 
     const col = host!.querySelector('.cz-flow__column')!;
-    const seq = Array.from(col.children).map((el) =>
-      el.classList.contains('cz-flow__item')
-        ? `turn:${el.getAttribute('data-turn-id')}`
-        : `sep:${el.textContent}`,
-    );
+    // 轮间不再有分隔提示
+    expect(col.querySelectorAll(':scope > [role="separator"]')).toHaveLength(0);
+    const turnEl = col.querySelector('[data-turn-id="t0"] .cz-flow__turn')!;
+    const kids = Array.from(turnEl.children);
+    const sepIdx = kids.findIndex((el) => el.getAttribute('role') === 'separator');
+    const answerIdx = kids.findIndex((el) => el.classList.contains('cz-flow__answer'));
+    expect(kids[sepIdx]!.textContent).toBe('已自动压缩上下文 · 182k → 24k · 12 秒');
+    expect(sepIdx).toBeGreaterThan(0);
+    expect(sepIdx).toBeLessThan(answerIdx);
 
-    expect(seq).toEqual([
-      'turn:t0',
-      'sep:已自动压缩上下文 · 182k → 24k · 12 秒',
-      'turn:t1',
-    ]);
+    // 展开：分隔提示位于两个工具步骤之间
+    await act(async () => {
+      (turnEl.querySelector('.cz-flow__status') as HTMLButtonElement).click();
+    });
+    const stepsEl = turnEl.querySelector('.cz-flow__steps')!;
+    const seq = Array.from(stepsEl.children).map((el) => (el.getAttribute('role') === 'separator' ? 'sep' : el.textContent?.includes('Bash: a') ? 'a' : el.textContent?.includes('Bash: b') ? 'b' : '?'));
+    expect(seq).toEqual(['a', 'sep', 'b']);
   });
 });

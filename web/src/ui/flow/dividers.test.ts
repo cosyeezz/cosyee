@@ -171,11 +171,12 @@ describe('placeDividers', () => {
     expect(placed.trailing.map((d) => d.key)).toEqual(['compact:c2']);
   });
 
-  it('插话合并组内部的锚点自然落到该组之前或之后', () => {
-    // t0 未交付（answer 为空）+ t1 为插话 → 合并成第 0 组
+  it('插话合并组：插话轮之前的提示与轮中途压缩都插进组内，按工具定位到步骤之间', () => {
+    const tool = (id: string) => ({ kind: 'tool' as const, id, name: 'Bash', input: {}, summary: id });
+    // t0 未交付（answer 为空）+ t1 为插话 → 合并成第 0 组；合并后步骤 [a, b, c, d]
     const allTurns = [
-      makeTurn('t0', { answer: '' }),
-      makeTurn('t1', { steer: true, answer: '合并答复' }),
+      makeTurn('t0', { answer: '', steps: [tool('a'), tool('b')] }),
+      makeTurn('t1', { steer: true, answer: '合并答复', steps: [tool('c'), tool('d')] }),
       makeTurn('t2'),
     ];
     const groups = groupSteered(allTurns);
@@ -183,18 +184,44 @@ describe('placeDividers', () => {
 
     const meta: SessionMeta = {
       cache: [
-        pt('m0', 0, 'claude-opus-4-6'),
-        pt('m1', 1, 'claude-sonnet-4-6'), // 锚点 before 1（落在合并组内部）→ 放该组之前
+        { ...pt('m0', 0, 'claude-opus-4-6'), tools: ['a'] },
+        { ...pt('m1', 0, 'claude-opus-4-6'), tools: ['b'] },
+        { ...pt('m2', 1, 'claude-sonnet-4-6'), tools: ['c'] }, // 插话轮首点切模型 → 第 1 轮步骤开头（at 2）
+        { ...pt('m3', 1, 'claude-sonnet-4-6'), tools: ['d'] },
       ],
       compactions: [
-        cmp('c0', { turn: 0, trigger: 'auto', after: 'm0' }), // 锚点 after 0（落在合并组内部）→ 放该组之后
+        cmp('c0', { turn: 0, trigger: 'auto', after: 'm0' }), // 第 0 轮中途，工具 a 之后（at 1）
+        cmp('c1', { turn: 1, trigger: 'auto', after: 'm2' }), // 第 1 轮中途，工具 c 之后（at 3）
       ],
     };
 
     const placed = placeDividers(allTurns, groups, buildDividers(allTurns, meta));
-    expect(placed.beforeGroup[0]!.map((d) => d.key)).toEqual(['model:m1']);
-    expect(placed.afterGroup[0]!.map((d) => d.key)).toEqual(['compact:c0']);
+    expect(placed.inGroup[0]!.map((d) => `${d.item.key}@${d.at}`)).toEqual(['compact:c0@1', 'model:m2@2', 'compact:c1@3']);
+    expect(placed.beforeGroup[0]).toEqual([]);
+    expect(placed.afterGroup[0]).toEqual([]);
     expect(placed.trailing).toEqual([]);
+  });
+
+  it('轮中途的提示找不到对应工具时放在该轮步骤开头，且组内位置不回退', () => {
+    const tool = (id: string) => ({ kind: 'tool' as const, id, name: 'Bash', input: {}, summary: id });
+    const allTurns = [makeTurn('t0', { steps: [tool('a'), tool('b'), tool('c')] })];
+    const groups = groupSteered(allTurns);
+    const meta: SessionMeta = {
+      cache: [
+        { ...pt('m0', 0, 'claude-opus-4-6'), tools: ['b'] },
+        pt('m1', 0, 'claude-opus-4-6'), // 没有工具
+        { ...pt('m2', 0, 'claude-opus-4-6'), tools: ['gone'] }, // 步骤里不存在
+      ],
+      compactions: [
+        cmp('c0', { turn: 0, trigger: 'auto', after: 'm1' }), // 往前找到 m0 的 b → at 2
+        cmp('c1', { turn: 0, trigger: 'auto', after: 'm2' }), // gone 找不到，b 找到 → at 2
+      ],
+    };
+    const placed = placeDividers(allTurns, groups, buildDividers(allTurns, meta));
+    expect(placed.inGroup[0]!.map((d) => `${d.item.key}@${d.at}`)).toEqual(['compact:c0@2', 'compact:c1@2']);
+
+    const noTools: SessionMeta = { cache: [pt('m0', 0, 'claude-opus-4-6'), pt('m1', 0)], compactions: [cmp('c0', { turn: 0, trigger: 'auto', after: 'm0' })] };
+    expect(placeDividers(allTurns, groups, buildDividers(allTurns, noTools)).inGroup[0]!.map((d) => d.at)).toEqual([0]);
   });
 
   it('锚点下标越界（如回退边界）不抛错，自然落到末尾或忽略', () => {
