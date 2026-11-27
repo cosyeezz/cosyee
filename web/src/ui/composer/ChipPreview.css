@@ -54,6 +54,7 @@
 .cz-preview__fields dt { flex: none; color: var(--text-3); }
 .cz-preview__fields dd { flex: 1; min-width: 0; margin: 0; word-break: break-all; color: var(--text-2); user-select: text; }
 .cz-preview__meta { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
+.cz-preview__gone { color: var(--warn, var(--text-2)); }
 .cz-preview__remove {
   display: flex;
   align-items: center;

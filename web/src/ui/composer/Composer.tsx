@@ -13,14 +13,16 @@ import { splitUserText } from '../flow/format';
 import { AttachmentTag } from '../flow/UserMessage';
 import { Icon } from '../icons/Icon';
 import { TOUCH_QUERY, useMediaQuery } from '../layout/useMediaQuery';
+import { Menu, type MenuEntry } from '../menus/Menu';
 import { ModelMenu } from '../menus/ModelMenu';
 import { ModeMenu } from '../menus/ModeMenu';
 import { UsageMeter } from '../usage/UsageMeter';
 import { ChipPreview } from './ChipPreview';
 import { RewindPicker, type RewindTarget } from './RewindPicker';
 import { SlashMenu } from './SlashMenu';
-import { createChipElement } from './chipElement';
-import { CHIP_CLASS, insertNodesAt, isEditorEmpty, readSegments, relabelChips } from './editorDom';
+import { createChipElement, createPendingChip } from './chipElement';
+import { prepareUpload } from './compressImage';
+import { CHIP_CLASS, insertNodesAt, isEditorEmpty, isPendingChip, readSegments, relabelChips } from './editorDom';
 import { DRAFT_DELAY_MS, readDraft, writeDraft } from './draft';
 import { applyTextEdit, charBeforeNode, getSelectionOffsets, highlightEditor, scanEditor, setEditorContent, setSelectionOffsets } from './mdEditorDom';
 import { CHIP_CHAR, tokenize } from './mdHighlight';
@@ -31,6 +33,27 @@ import './Composer.css';
 
 /** 双击 Esc 的最大间隔 */
 const DOUBLE_ESC_MS = 400;
+/** 从本设备上传的单个文件上限（与服务端 UPLOAD_LIMIT 一致） */
+export const UPLOAD_LIMIT = 100 * 1024 * 1024;
+
+/** 拖放落点 → 编辑区里的光标位置；不在编辑区内返回 null（插到末尾） */
+function rangeFromPoint(ed: HTMLElement, x: number, y: number): Range | null {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  let r: Range | null = null;
+  if (typeof doc.caretRangeFromPoint === 'function') r = doc.caretRangeFromPoint(x, y);
+  else if (typeof doc.caretPositionFromPoint === 'function') {
+    const p = doc.caretPositionFromPoint(x, y);
+    if (p) {
+      r = document.createRange();
+      r.setStart(p.offsetNode, p.offset);
+      r.collapse(true);
+    }
+  }
+  return r && ed.contains(r.startContainer) ? r : null;
+}
 
 export interface ComposerProps {
   /**
@@ -47,6 +70,13 @@ export interface ComposerProps {
   pick: (mode?: 'mixed' | 'files' | 'folders') => Promise<{ items: PickedItem[]; supportsMixed: boolean }>;
   /** 粘贴图片：上传到后端，返回可作为标签的项。不传则忽略剪贴板里的图片 */
   paste?: (blob: Blob) => Promise<PickedItem>;
+  /**
+   * 从本设备上传任意文件（图片会先压缩），返回可作为标签的项。传了才支持拖放上传；
+   * 远程连接（remote）时「+」还会多出「从本设备上传」
+   */
+  upload?: (file: Blob, name: string, onProgress?: (ratio: number) => void) => Promise<PickedItem>;
+  /** 远程连接：浏览器和宿主机不是同一台机器，「+」分成「本设备 / 宿主机」两种来源 */
+  remote?: boolean;
   /** 系统选择窗口是否支持文件 / 文件夹混选（决定「+」的行为） */
   supportsMixed: boolean;
   previewInfo: (token: string) => Promise<PreviewInfo>;
@@ -285,12 +315,33 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     scheduleDraft();
   }, [evalSlash, scheduleDraft]);
 
+  const [hint, setHint] = useState<string | null>(null);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHint = useCallback((msg: string) => {
+    setHint(msg);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => setHint(null), 4000);
+  }, []);
+  useEffect(() => () => { if (hintTimer.current) clearTimeout(hintTimer.current); }, []);
+
+  /** 还在上传的文件数：大于 0 时不能发送（否则消息里会少附件） */
+  const [uploading, setUploading] = useState(0);
+  const uploadingRef = useRef(0);
+  const bumpUploading = useCallback((d: number) => {
+    uploadingRef.current += d;
+    setUploading(uploadingRef.current);
+  }, []);
+
   // ───────────── 发送 ─────────────
 
   /** 读出编辑区内容并清空；空内容返回 null */
   const take = useCallback(() => {
     const ed = editorRef.current;
     if (!ed || disabled) return null;
+    if (uploadingRef.current > 0) {
+      showHint('文件还在上传');
+      return null;
+    }
     const segs = labelChips(trimSegments(readSegments(ed)));
     if (!segs.length && !hasQuote) return null; // 有引用时正文可以为空
     const out = { text: buildQuotedMessage(quoteItems, serialize(segs)), attachments: toAttachments(segs) };
@@ -301,7 +352,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     clearDraft();
     if (hasQuote) latest.current.onClearQuotes?.();
     return out;
-  }, [disabled, hasQuote, quoteItems, clearDraft]);
+  }, [disabled, hasQuote, quoteItems, clearDraft, showHint]);
 
   // 空闲时直接发送；执行中按 mode 发给 CLI（next=插话 / later=排队），排队由后端与 CLI 维护，前端只显示快照
   const send = useCallback((mode: QueueMode = 'next') => {
@@ -553,15 +604,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   };
 
-  const [hint, setHint] = useState<string | null>(null);
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showHint = useCallback((msg: string) => {
-    setHint(msg);
-    if (hintTimer.current) clearTimeout(hintTimer.current);
-    hintTimer.current = setTimeout(() => setHint(null), 4000);
-  }, []);
-  useEffect(() => () => { if (hintTimer.current) clearTimeout(hintTimer.current); }, []);
-
   // ───────────── 语音输入 ─────────────
   // 点一下开始录音，再点一下停止 → 必要时下载识别模型 → 上传识别 → 文字插到光标处（不自动发送）
   const [mic, setMic] = useState<{ phase: 'idle' | 'recording' | 'downloading' | 'recognizing'; pct?: number | null }>({ phase: 'idle' });
@@ -685,17 +727,64 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   }, [afterChange, showHint]);
 
+  /**
+   * 从本设备上传（「+」→ 从本设备上传 / 拖放 / 粘贴非图片文件）：先在 at 处插入「上传中」占位标签，
+   * 每个文件压缩、上传完成后把占位换成正式标签；失败删掉占位并提示。上传途中占位被删掉就丢弃结果。
+   */
+  const uploadFiles = useCallback((files: File[], at: Range | null) => {
+    const ed = editorRef.current;
+    const upload = latest.current.upload;
+    if (!ed || !upload || disabled || !files.length) return;
+    const ok = files.filter((f) => {
+      if (f.size <= UPLOAD_LIMIT) return true;
+      showHint(`「${f.name || '文件'}」超过 100MB`);
+      return false;
+    });
+    if (!ok.length) return;
+    if (isEditorEmpty(ed) && !ed.querySelector(`.${CHIP_CLASS}`)) ed.innerHTML = '';
+    const slots = ok.map((f) => createPendingChip(f.name || 'file', f.type.startsWith('image/')));
+    const nodes: Node[] = [];
+    for (const s of slots) nodes.push(s.el, document.createTextNode(' '));
+    ed.focus();
+    insertNodesAt(ed, at, nodes);
+    afterChange();
+    ok.forEach((f, i) => {
+      const slot = slots[i];
+      bumpUploading(1);
+      void (async () => {
+        try {
+          const { blob, name } = await prepareUpload(f);
+          const item = await upload(blob, name, slot.setProgress);
+          if (!editorRef.current?.contains(slot.el)) return; // 上传途中被删掉了
+          slot.el.replaceWith(createChipElement({ kind: itemKind(item), path: item.path, label: '', token: item.previewToken }));
+        } catch (err) {
+          slot.el.remove();
+          showHint(`上传失败：${err instanceof Error ? err.message : err}`);
+        } finally {
+          bumpUploading(-1);
+          afterChange();
+        }
+      })();
+    });
+  }, [disabled, afterChange, showHint, bumpUploading]);
+
+  /** 当前光标（不在编辑区里就用最后记住的位置） */
+  const caretRange = () => {
+    const sel = window.getSelection();
+    const ed = editorRef.current;
+    return sel && sel.rangeCount && ed?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : savedRange.current;
+  };
+
   const onPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
-    e.preventDefault(); // 只接受纯文本与图片
-    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
-    if (images.length) {
-      // 剪贴板里同时有图片和文字时（如从网页复制）以图片为准
-      if (latest.current.paste) {
-        const sel = window.getSelection();
-        const ed = editorRef.current;
-        const at = sel && sel.rangeCount && ed?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : savedRange.current;
-        void pasteImages(images, at);
-      }
+    e.preventDefault(); // 只接受纯文本与文件
+    const files = Array.from(e.clipboardData.files);
+    if (files.length) {
+      // 剪贴板里同时有文件和文字时（如从网页复制图片）以文件为准。图片照旧走粘贴图片，其它文件走上传
+      const images = files.filter((f) => f.type.startsWith('image/'));
+      const others = files.filter((f) => !f.type.startsWith('image/'));
+      const at = caretRange();
+      if (images.length && latest.current.paste) void pasteImages(images, at);
+      if (others.length) uploadFiles(others, at);
       return;
     }
     const text = cleanPastedText(e.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'));
@@ -710,6 +799,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const onEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const chip = (e.target as Element).closest<HTMLElement>(`.${CHIP_CLASS}`);
     if (chip) {
+      if (isPendingChip(chip)) return; // 上传中的占位没有可预览的内容
       setPreview((p) => (p === chip ? null : chip)); // 再点同一个标签关闭
       return;
     }
@@ -726,6 +816,61 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const keepFocus = (e: React.MouseEvent) => e.preventDefault();
   const queueItems = props.queue ?? [];
+
+  // ───────────── 从本设备上传：「+」菜单 / 文件框 / 拖放 ─────────────
+
+  const canUpload = !!props.upload && !disabled;
+  /** 远程连接时「+」分成「本设备 / 宿主机」两种来源 */
+  const twoSources = canUpload && !!props.remote;
+  const plusRef = useRef<HTMLButtonElement>(null);
+  const [plusMenu, setPlusMenu] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  /** 打开文件框时的光标位置（选文件期间编辑区可能失焦） */
+  const fileAt = useRef<Range | null>(null);
+  const openDeviceFiles = () => {
+    fileAt.current = savedRange.current ? savedRange.current.cloneRange() : null;
+    fileRef.current?.click();
+  };
+  const onFilesChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ''; // 同一个文件可以再选一次
+    uploadFiles(files, fileAt.current);
+    fileAt.current = null;
+  };
+  const plusItems: MenuEntry[] = [
+    { key: 'device', label: '从本设备上传', note: '照片、拍照或文件', onSelect: openDeviceFiles },
+    { key: 'host', label: '选择宿主机上的文件', note: '运行 Cosyee 的电脑', onSelect: () => void doPick(false) },
+  ];
+
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!canUpload || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragging(true);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (!canUpload || !hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDragLeave = () => {
+    if (dragDepth.current === 0) return;
+    dragDepth.current -= 1;
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDropFiles = (e: React.DragEvent) => {
+    dragDepth.current = 0;
+    setDragging(false);
+    if (!canUpload || !hasFiles(e)) return;
+    e.preventDefault();
+    const ed = editorRef.current;
+    const files = Array.from(e.dataTransfer.files);
+    if (!ed || !files.length) return;
+    uploadFiles(files, rangeFromPoint(ed, e.clientX, e.clientY));
+  };
 
   return (
     <div className="cz-composer">
@@ -757,9 +902,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           onPick={pickSlash}
         />
       )}
-      <div className={`cz-composer__box${disabled ? ' is-disabled' : ''}`}>
+      <div
+        className={`cz-composer__box${disabled ? ' is-disabled' : ''}${dragging ? ' is-dragging' : ''}`}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDropFiles}
+      >
         {/* 磨砂玻璃底（单独一层） */}
         <span className="cz-composer__glass" aria-hidden="true" />
+        {dragging && (
+          <div className="cz-composer__drop" aria-hidden="true">
+            <Icon name="upload" size={16} />
+            松开上传
+          </div>
+        )}
         {hasQuote && (
           <div className="cz-composer__quotes">
             {quoteItems.map(({ quote, reply, index }) => (
@@ -778,16 +935,25 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         )}
         <div className="cz-composer__row">
           <button
+            ref={plusRef}
             type="button"
-            className="cz-composer__btn"
+            className={`cz-composer__btn${plusMenu ? ' is-open' : ''}`}
             disabled={disabled}
-            title={supportsMixed ? '添加文件或文件夹' : '添加文件（按住 Shift 点击添加文件夹）'}
+            title={twoSources ? '添加文件' : supportsMixed ? '添加文件或文件夹' : '添加文件（按住 Shift 点击添加文件夹）'}
             aria-label="添加文件"
+            aria-haspopup={twoSources ? 'menu' : undefined}
+            aria-expanded={twoSources ? plusMenu : undefined}
             onMouseDown={keepFocus}
-            onClick={(e) => { void doPick(e.shiftKey); }}
+            onClick={(e) => { if (twoSources) setPlusMenu((v) => !v); else void doPick(e.shiftKey); }}
           >
             <Icon name="plus" size={18} />
           </button>
+          {plusMenu && twoSources && (
+            <Menu anchor={plusRef.current} items={plusItems} onClose={() => setPlusMenu(false)} placement="top" align="start" minWidth={220} />
+          )}
+          {canUpload && (
+            <input ref={fileRef} type="file" multiple className="cz-composer__file" tabIndex={-1} aria-hidden="true" onChange={onFilesChosen} />
+          )}
           <div className="cz-composer__editor-wrap">
             <div
               ref={editorRef}
@@ -824,13 +990,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             >
               <Icon name="stop" size={16} />
             </button>
-          ) : empty && !hasQuote ? null : ( // 没有内容（空白 / 无附件 / 无引用）时不显示发送按钮，输入区自动占满空出的宽度
+          ) : empty && !hasQuote && uploading === 0 ? null : ( // 没有内容（空白 / 无附件 / 无引用）时不显示发送按钮，输入区自动占满空出的宽度；只有上传占位时显示置灰的发送按钮
             <button
               type="button"
               className="cz-composer__btn cz-composer__btn--send"
-              title={running ? '插话（Enter）· 排队（Ctrl+Enter）' : '发送（Enter）'}
+              title={uploading > 0 ? '文件还在上传' : running ? '插话（Enter）· 排队（Ctrl+Enter）' : '发送（Enter）'}
               aria-label="发送"
-              disabled={disabled}
+              disabled={disabled || uploading > 0}
               onMouseDown={keepFocus}
               onClick={() => send('next')}
             >

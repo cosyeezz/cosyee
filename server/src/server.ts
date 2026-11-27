@@ -33,6 +33,7 @@ import { createHandler, hostAllowed } from './http.js';
 import { KiroService } from './kiro/index.js';
 import { Pins } from './pins.js';
 import { PricingService } from './pricing.js';
+import { startUploadSweeper } from './uploads.js';
 import { Previews } from './preview.js';
 import type { Spawner } from './reveal.js';
 import { cosyeeHome, isSafeId } from './paths.js';
@@ -476,6 +477,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const previews = new Previews();
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
+  const stopUploadSweeper = startUploadSweeper();
 
   const browser = new BrowserManager({ install: browserInstall, dataDir: () => path.join(dataHome(), 'browser') });
 
@@ -662,6 +664,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       process.off('exit', onExitCodexPool);
       codexPool.dispose();
       pricing.stop?.();
+      stopUploadSweeper();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       server.closeAllConnections?.();

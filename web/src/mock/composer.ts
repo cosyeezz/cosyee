@@ -44,5 +44,21 @@ export function mockPreviewRawUrl(_token: string): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(SVG)}`;
 }
 
+let uploadSeq = 0;
+
+/** 模拟上传：约 1.5 秒分段报进度；文件名含 fail 时中途失败 */
+export async function mockUpload(file: Blob, name: string, onProgress?: (ratio: number) => void): Promise<PickedItem> {
+  const steps = 10;
+  for (let i = 1; i <= steps; i++) {
+    await delay(150);
+    if (/fail/i.test(name) && i === 6) throw new Error('网络错误');
+    onProgress?.(i / steps);
+  }
+  const n = ++uploadSeq;
+  const dir = `${Date.now()}-${n.toString(16).padStart(12, '0')}`;
+  const isImage = file.type.startsWith('image/');
+  return { path: `C:\\Users\\Some One\\.cosyee\\uploads\\${dir}\\${name}`, kind: 'file', previewToken: isImage ? 'mock-img-1' : 'mock-file-1', isImage };
+}
+
 export const MOCK_SLASH_COMMANDS = ['compact', 'clear', 'context', 'cost', 'help', 'init', 'review', 'resume'];
 export const MOCK_SKILLS = ['code-review', 'frontend-design', 'pdf', 'xlsx', 'skill-creator'];

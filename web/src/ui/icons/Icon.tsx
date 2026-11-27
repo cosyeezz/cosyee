@@ -38,7 +38,7 @@ export type IconName =
   // 账号弹层：管理账号
   | 'users'
   // 通用：更多（横向三点）
-  | 'more'
+  | 'more' | 'upload'
   // 内置终端：历史、重新执行
   | 'history' | 'play';
 
@@ -324,6 +324,12 @@ const SIMPLE: Record<string, JSX.Element> = {
       <circle cx="3.8" cy="8" r="1" fill="currentColor" stroke="none" />
       <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
       <circle cx="12.2" cy="8" r="1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  upload: (
+    <>
+      <path d="M8 10.5V2.7M4.8 5.9L8 2.7l3.2 3.2" />
+      <path d="M2.8 11.2v1.3a1.2 1.2 0 001.2 1.2h8a1.2 1.2 0 001.2-1.2v-1.3" />
     </>
   ),
   history: (

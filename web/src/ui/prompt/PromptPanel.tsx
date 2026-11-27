@@ -18,7 +18,7 @@ export interface PromptPanelProps {
 }
 
 /** 意见框需要的输入框能力 */
-export type PromptEditorDeps = Pick<ComposerProps, 'pick' | 'paste' | 'supportsMixed' | 'previewInfo' | 'previewRawUrl'>;
+export type PromptEditorDeps = Pick<ComposerProps, 'pick' | 'paste' | 'upload' | 'remote' | 'supportsMixed' | 'previewInfo' | 'previewRawUrl'>;
 
 const noop = () => {};
 const NO_EDITOR: PromptEditorDeps = {

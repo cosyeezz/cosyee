@@ -210,6 +210,11 @@
 }
 .cz-flow__tag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cz-flow__tag .icon { color: var(--text-2); }
+/* 从本设备上传、已被清理的文件：弱化 + 后缀 */
+.cz-flow__tag.is-gone { color: var(--text-3); border-style: dashed; background: transparent; transition: color 0.2s ease, background-color 0.2s ease; }
+.cz-flow__tag.is-gone .icon { color: var(--text-3); }
+.cz-flow__tag-gone { font-size: 0.9em; color: var(--text-3); }
+.cz-flow__tag-gone::before { content: '·'; margin-right: 4px; }
 
 /* ---------- 一轮回复 ---------- */
 .cz-flow__turn {

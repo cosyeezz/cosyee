@@ -368,6 +368,94 @@ describe('粘贴图片 /api/pastes', () => {
   });
 });
 
+describe('从本设备上传 /api/uploads', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16, 1)]);
+  const up = (name: string | null, body: Buffer | Uint8Array, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/uploads${name === null ? '' : `?name=${encodeURIComponent(name)}`}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream', ...headers },
+      body: new Uint8Array(body),
+    });
+  const uploads = () => path.join(tmp, 'home', 'uploads');
+  const dirs = () => (fs.existsSync(uploads()) ? fs.readdirSync(uploads()) : []);
+
+  it('任意文件存进 uploads/<子目录>/<原名>，返回带预览令牌的文件项', async () => {
+    const r = await up('报错日志.txt', Buffer.from('boom'));
+    expect(r.status).toBe(200);
+    const { item } = (await r.json()) as any;
+    expect(item).toMatchObject({ kind: 'file', isImage: false });
+    expect(item.previewToken).toBeTruthy();
+    expect(path.basename(item.path)).toBe('报错日志.txt');
+    expect(path.dirname(path.dirname(item.path))).toBe(uploads());
+    expect(path.basename(path.dirname(item.path))).toMatch(/^\d+-[0-9a-f]{12}$/);
+    expect(fs.readFileSync(item.path, 'utf8')).toBe('boom');
+  });
+  it('危险文件名被清洗，不会写出 uploads 目录', async () => {
+    const { item } = (await (await up('../../a<b>:c.txt', Buffer.from('x'))).json()) as any;
+    expect(path.basename(item.path)).toBe('abc.txt');
+    expect(path.dirname(path.dirname(item.path))).toBe(uploads());
+  });
+  it('按子目录 / 文件名读回：图片给信息和内容，非图片只给信息', async () => {
+    const { item } = (await (await up('截图 1.png', PNG)).json()) as any;
+    expect(item.isImage).toBe(true);
+    const dir = path.basename(path.dirname(item.path));
+    const at = `${base}/api/uploads/${dir}/${encodeURIComponent('截图 1.png')}`;
+    expect(await (await fetch(`${at}/info`)).json()).toMatchObject({ path: item.path, kind: 'file', size: PNG.length, isImage: true });
+    const raw = await fetch(`${at}/raw`);
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get('content-type')).toBe('image/png');
+    expect(Buffer.from(await raw.arrayBuffer()).equals(PNG)).toBe(true);
+
+    const txt = (await (await up('a.txt', Buffer.from('hi'))).json()) as any;
+    const tdir = path.basename(path.dirname(txt.item.path));
+    expect(((await (await fetch(`${base}/api/uploads/${tdir}/a.txt/info`)).json()) as any).isImage).toBe(false);
+    expect((await fetch(`${base}/api/uploads/${tdir}/a.txt/raw`)).status).toBe(404);
+  });
+  it('目录名不合格式 / 路径穿越 / 已清理 404', async () => {
+    expect((await fetch(`${base}/api/uploads/x/a.txt/info`)).status).toBe(404);
+    expect((await fetch(`${base}/api/uploads/1-000000000000/${encodeURIComponent('../a.txt')}/info`)).status).toBe(404);
+    expect((await fetch(`${base}/api/uploads/${encodeURIComponent('..')}/state.json/info`)).status).toBe(404);
+    const r = await fetch(`${base}/api/uploads/1-000000000000/a.txt/info`);
+    expect(r.status).toBe(404);
+    expect(((await r.json()) as any).error).toBe('文件已清理或不存在');
+  });
+  it('缺少文件名 400', async () => {
+    expect((await up(null, Buffer.from('x'))).status).toBe(400);
+    expect((await up('  ', Buffer.from('x'))).status).toBe(400);
+  });
+  it('超过 100MB 返回 413，不留半成品', async () => {
+    const before = dirs().length;
+    expect((await up('big.bin', Buffer.alloc(100 * 1024 * 1024 + 1))).status).toBe(413);
+    expect(dirs().length).toBe(before);
+  });
+  it('不带长度的分块上传超限时中止，并删掉半成品目录', async () => {
+    const before = dirs().length;
+    const status = await new Promise<number | 'reset'>((resolve) => {
+      const req = http.request(`${base}/api/uploads?name=big.bin`, { method: 'POST', agent: false, headers: { 'transfer-encoding': 'chunked' } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', () => resolve('reset'));
+      const chunk = Buffer.alloc(1024 * 1024);
+      let n = 0;
+      const pump = () => {
+        while (n < 101) {
+          n++;
+          if (!req.write(chunk)) return void req.once('drain', pump);
+        }
+        req.end();
+      };
+      pump();
+    });
+    expect([413, 'reset']).toContain(status);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(dirs().length).toBe(before);
+  });
+  it('白名单外的 Origin 403', async () => {
+    expect((await up('a.txt', Buffer.from('x'), { Origin: 'http://evil.com' })).status).toBe(403);
+  });
+});
+
 describe('静态托管', () => {
   it('index.html；SPA 回退；资源文件', async () => {
     const a = await fetch(`${base}/`);

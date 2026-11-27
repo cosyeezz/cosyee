@@ -19,6 +19,7 @@ import { gitBranch } from './git.js';
 import { baseClaudeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 import { readSkillContent } from './skillsDisk.js';
 import { PASTE_LIMIT, PasteTypeError, pasteTarget, savePaste } from './pastes.js';
+import { saveUpload, uploadTarget } from './uploads.js';
 import { type PickMode, pick, supportsMixed } from './picker/index.js';
 import type { Pins } from './pins.js';
 import type { Previews } from './preview.js';
@@ -957,6 +958,35 @@ export function createHandler(deps: HttpDeps) {
       }
       res.writeHead(200, {
         'content-type': t.type,
+        'content-length': t.size,
+        'cache-control': 'private, max-age=3600',
+        'x-content-type-options': 'nosniff',
+      });
+      const stream = fs.createReadStream(t.file);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    // 从本设备上传（远程连接的手机等）：请求体是文件原始字节，文件名放在 ?name=；存进 uploads 临时目录，7 天后清理
+    if (method === 'POST' && p === '/api/uploads') {
+      const name = q.get('name');
+      if (!name?.trim()) throw new HttpError(400, '缺少文件名');
+      const file = await saveUpload(req, name);
+      const [item] = deps.previews.register([{ path: file, kind: 'file' }]);
+      return sendJson(res, 200, { item });
+    }
+
+    // 按「子目录 / 文件名」读上传的文件（历史消息的标签没有预览令牌）；raw 只给图片（缩略图用）
+    if (method === 'GET' && (m = /^\/api\/uploads\/([^/]+)\/([^/]+)\/(info|raw)$/.exec(p))) {
+      const t = await uploadTarget(decodeURIComponent(m[1]!), decodeURIComponent(m[2]!));
+      if (m[3] === 'info') {
+        const info: PreviewInfo = { path: t.file, kind: 'file', size: t.size, mtime: t.mtime, isImage: !!t.image, childCount: null };
+        return sendJson(res, 200, info);
+      }
+      if (!t.image) throw new HttpError(404, '不是图片');
+      res.writeHead(200, {
+        'content-type': t.image.mime,
         'content-length': t.size,
         'cache-control': 'private, max-age=3600',
         'x-content-type-options': 'nosniff',

@@ -1349,7 +1349,7 @@ export function MainApp() {
         <PromptPanel
           items={view?.prompts ?? NO_PROMPTS}
           onReply={onPromptReply}
-          editor={{ pick: pickFiles, paste: api.paste, supportsMixed: boot.supportsMixedPick, previewInfo: api.previewInfo, previewRawUrl: api.previewRawUrl }}
+          editor={{ pick: pickFiles, paste: api.paste, upload: api.upload, remote, supportsMixed: boot.supportsMixedPick, previewInfo: api.previewInfo, previewRawUrl: api.previewRawUrl }}
         />
         <CallBar
           state={callState}
@@ -1378,6 +1378,8 @@ export function MainApp() {
           sessionKey={view?.id ?? null}
           pick={pickFiles}
           paste={api.paste}
+          upload={api.upload}
+          remote={remote}
           supportsMixed={boot.supportsMixedPick}
           previewInfo={api.previewInfo}
           previewRawUrl={api.previewRawUrl}

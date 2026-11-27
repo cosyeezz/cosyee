@@ -203,6 +203,8 @@ pub fn run() {
             let script = shell_script();
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .initialization_script(&script)
+                // 关掉 Tauri 自带的文件拖放拦截，让网页收到 HTML5 drop 事件（拖文件进输入框上传）
+                .disable_drag_drop_handler()
                 .on_page_load(watch_server);
             #[cfg(desktop)]
             let builder = if let Some(ref url) = proxy_url {

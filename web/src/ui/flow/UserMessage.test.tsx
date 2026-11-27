@@ -262,6 +262,61 @@ describe('UserMessage 附件标签预览（与输入框标签同一个浮窗）'
     expect(pasteName('/home/u/.cosyee/pastes/paste-1-0123456789ab.svg')).toBeNull();
   });
 
+  it('从本设备上传的文件：走上传接口取信息和缩略图', async () => {
+    const files = vi.spyOn(api, 'filePreview');
+    const dir = `${Date.now() - 3600_000}-0123456789ab`;
+    const p = `C:\\Users\\u\\.cosyee\\uploads\\${dir}\\截图.jpg`;
+    const spy = vi.spyOn(api, 'uploadInfo').mockResolvedValue({
+      path: p, kind: 'file', size: 4096, mtime: 0, isImage: true, childCount: null,
+    });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<UserMessage text="img1" attachments={[att('img', 'img1', p)]} />));
+    const tag = host.querySelector('.cz-flow__tag')!;
+    expect(tag.classList.contains('is-gone')).toBe(false);
+    click(tag);
+    await flush();
+    expect(spy).toHaveBeenCalledWith(dir, '截图.jpg');
+    expect(files).not.toHaveBeenCalled();
+    expect(document.querySelector('.cz-preview__thumb img')?.getAttribute('src')).toBe(api.uploadRawUrl(dir, '截图.jpg'));
+  });
+
+  it('上传超过 7 天的文件直接标「已清理」，预览不发请求', async () => {
+    const spy = vi.spyOn(api, 'uploadInfo');
+    const p = `/home/u/.cosyee/uploads/${Date.now() - 8 * 86400_000}-0123456789ab/a.pdf`;
+    const h = render('file1', [att('file', 'file1', p)]);
+    const tag = h.querySelector('.cz-flow__tag')!;
+    expect(tag.classList.contains('is-gone')).toBe(true);
+    expect(tag.textContent).toBe('file1已清理');
+    click(tag);
+    await flush();
+    expect(spy).not.toHaveBeenCalled();
+    expect(document.querySelector('.cz-preview__gone')?.textContent).toBe('文件已清理（上传超过 7 天）');
+    expect(document.querySelector('.cz-preview__thumb')).toBeNull();
+  });
+
+  it('未过期但取信息返回 404：标签和预览都改成已清理', async () => {
+    vi.spyOn(api, 'uploadInfo').mockRejectedValue(Object.assign(new Error('文件已清理或不存在'), { status: 404 }));
+    const p = `/home/u/.cosyee/uploads/${Date.now()}-0123456789ab/a.pdf`;
+    const h = render('file1', [att('file', 'file1', p)]);
+    const tag = h.querySelector('.cz-flow__tag')!;
+    click(tag);
+    await flush();
+    expect(document.querySelector('.cz-preview__gone')).not.toBeNull();
+    expect(tag.classList.contains('is-gone')).toBe(true);
+  });
+
+  it('上传接口其它错误不当作已清理', async () => {
+    vi.spyOn(api, 'uploadInfo').mockRejectedValue(Object.assign(new Error('网络错误'), { status: 0 }));
+    const p = `/home/u/.cosyee/uploads/${Date.now()}-0123456789ab/a.pdf`;
+    const h = render('file1', [att('file', 'file1', p)]);
+    click(h.querySelector('.cz-flow__tag')!);
+    await flush();
+    expect(document.querySelector('.cz-preview__gone')).toBeNull();
+    expect(h.querySelector('.cz-flow__tag')!.classList.contains('is-gone')).toBe(false);
+  });
+
   it('信息取不到（工作目录之外）时仍显示路径', async () => {
     vi.spyOn(api, 'filePreview').mockRejectedValue(new Error('403'));
     host = document.createElement('div');

@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import { parseElementRef, type ElementRef, type PreviewInfo } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { elementName } from '../../core/composer';
+import { uploadExpired, uploadRef } from '../../core/uploads';
 import { Icon } from '../icons/Icon';
 import { readChip, type ChipData } from './editorDom';
 import { CHIP_ICON } from './chipElement';
@@ -19,6 +20,8 @@ export interface ChipPreviewProps {
   onRemove?: () => void;
   previewInfo: (token: string) => Promise<PreviewInfo>;
   previewRawUrl: (token: string) => string;
+  /** 从本设备上传的文件已被清理（按上传时间判断，或取信息返回 404） */
+  onGone?: () => void;
 }
 
 export function formatSize(n: number): string {
@@ -45,9 +48,12 @@ function place(anchor: HTMLElement): Place {
   return { left, top: r.bottom + gap, maxHeight: Math.max(spaceBelow, 80) };
 }
 
-export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, previewInfo, previewRawUrl }: ChipPreviewProps) {
+export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, previewInfo, previewRawUrl, onGone }: ChipPreviewProps) {
   const chip = chipProp ?? readChip(anchor);
-  const token = chip.token;
+  // 从本设备上传的文件：过了保留期就直接当作已清理，不再请求
+  const upload = uploadRef(chip.path);
+  const [gone, setGone] = useState(() => !!upload && uploadExpired(upload));
+  const token = gone ? undefined : chip.token;
   const isImage = chip.kind === 'img';
   // 抓取的元素：描述文件旁边有同名截图（iframe / shadow DOM 里的元素没有截图，加载失败就不显示）
   const element = chip.kind === 'el' ? elementName(chip.path) : null;
@@ -61,9 +67,15 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
   useEffect(() => {
     if (!token || ref) return;
     let cancelled = false;
-    previewInfo(token).then((i) => { if (!cancelled) setInfo(i); }).catch(() => { /* 信息拿不到就只显示路径 */ });
+    previewInfo(token)
+      .then((i) => { if (!cancelled) setInfo(i); })
+      .catch((e: unknown) => {
+        // 上传的文件 404 = 已被清理；其它情况信息拿不到就只显示路径
+        if (!cancelled && upload && (e as { status?: number })?.status === 404) setGone(true);
+      });
     return () => { cancelled = true; };
   }, [token, previewInfo]);
+  useEffect(() => { if (gone) onGone?.(); }, [gone, onGone]);
 
   // 跟随标签位置（滚动 / 缩放 / 编辑区增高）
   useLayoutEffect(() => {
@@ -132,7 +144,8 @@ export function ChipPreview({ anchor, chip: chipProp, onClose, onRemove, preview
           <span className="cz-preview__path">{path}</span>
         </div>
       )}
-      {meta.length > 0 && <div className="cz-preview__meta">{meta.join(' · ')}</div>}
+      {gone && <div className="cz-preview__meta cz-preview__gone">文件已清理（上传超过 7 天）</div>}
+      {!gone && meta.length > 0 && <div className="cz-preview__meta">{meta.join(' · ')}</div>}
       {onRemove && (
         <button type="button" className="cz-preview__remove" onClick={() => { onRemove(); onClose(); }}>
           <Icon name="trash" size={14} />

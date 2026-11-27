@@ -209,6 +209,29 @@ export const api = {
   /** 按文件名读粘贴的图片（会话流里历史图片标签用，没有预览令牌）；名字见 pasteName */
   pasteInfo: (name: string) => req<PreviewInfo>('GET', `/api/pastes/${encodeURIComponent(name)}/info`),
   pasteRawUrl: (name: string) => `/api/pastes/${encodeURIComponent(name)}/raw`,
+  /**
+   * 从本设备上传任意文件（远程连接的手机等）：原始字节上传到宿主机的临时目录（7 天后清理），返回与「+」选出的文件同形的项。
+   * 用 XHR 是为了拿上传进度。
+   */
+  upload: (file: Blob, name: string, onProgress?: (ratio: number) => void): Promise<PickedItem> =>
+    new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/api/uploads?${q({ name })}`);
+      xhr.setRequestHeader('content-type', 'application/octet-stream');
+      xhr.responseType = 'json';
+      if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable && e.total > 0) onProgress(e.loaded / e.total); };
+      xhr.onload = () => {
+        const data = (xhr.response ?? {}) as { item?: PickedItem; error?: string };
+        if (xhr.status >= 200 && xhr.status < 300 && data.item) resolve(data.item);
+        else reject(new ApiError(data.error ?? `HTTP ${xhr.status}`, xhr.status, data as Record<string, unknown>));
+      };
+      xhr.onerror = () => reject(new Error('网络错误'));
+      xhr.onabort = () => reject(new Error('上传已取消'));
+      xhr.send(file);
+    }),
+  /** 按「子目录 / 文件名」读上传的文件（会话流里历史标签用）；已清理时抛 ApiError(404) */
+  uploadInfo: (dir: string, name: string) => reqDetailed<PreviewInfo>('GET', `/api/uploads/${encodeURIComponent(dir)}/${encodeURIComponent(name)}/info`),
+  uploadRawUrl: (dir: string, name: string) => `/api/uploads/${encodeURIComponent(dir)}/${encodeURIComponent(name)}/raw`,
   /** 内置浏览器（agent-browser）：状态 / 身份管理 / 打开地址 / 前进后退刷新 / 视口 / 抓取模式悬停与抓取（profile 是身份 id） */
   browserStatus: () => req<BrowserStatus>('GET', '/api/browser'),
   browserCreateProfile: (name: string) => req<BrowserProfileStatus>('POST', '/api/browser/profiles', { name }),

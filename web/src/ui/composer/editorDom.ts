@@ -12,6 +12,10 @@ export interface ChipData {
   token?: string;
 }
 
+/** 「上传中」占位标签：也是 .cz-chip（着色时和标签一样整体搬动），但不算内容、不编号、不发送 */
+export const PENDING_ATTR = 'data-pending';
+export const isPendingChip = (el: Element): boolean => el.hasAttribute(PENDING_ATTR);
+
 export function readChip(el: HTMLElement): ChipData {
   const kind = (el.dataset.kind as ChipKind) || 'file';
   return { kind, path: el.dataset.path ?? '', label: el.dataset.label ?? '', token: el.dataset.token || undefined };
@@ -36,6 +40,7 @@ export function readSegments(root: HTMLElement): Segment[] {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const el = node as HTMLElement;
     if (el.classList.contains(CHIP_CLASS)) {
+      if (isPendingChip(el)) return;
       const c = readChip(el);
       out.push({ t: 'chip', kind: c.kind, path: c.path, label: c.label });
       endsWithNewline = false;
@@ -62,7 +67,7 @@ export function isEditorEmpty(root: HTMLElement): boolean {
 
 /** 按文档顺序重新给标签编号并更新显示。返回是否有变化 */
 export function relabelChips(root: HTMLElement): void {
-  const els = Array.from(root.querySelectorAll<HTMLElement>(`.${CHIP_CLASS}`));
+  const els = Array.from(root.querySelectorAll<HTMLElement>(`.${CHIP_CLASS}:not([${PENDING_ATTR}])`));
   const segs = labelChips(
     els.map((el): Segment => {
       const c = readChip(el);

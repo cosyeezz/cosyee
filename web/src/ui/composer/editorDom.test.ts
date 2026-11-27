@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { insertNodesAt, isEditorEmpty, readSegments, relabelChips } from './editorDom';
-import { createChipElement } from './chipElement';
+import { createChipElement, createPendingChip } from './chipElement';
 import { parseUserText, serialize, labelChips } from '../../core/composer';
 
 function editor(html: string): HTMLElement {
@@ -55,6 +55,19 @@ describe('标签', () => {
     expect(segs.map((s) => s.t)).toEqual(['text', 'chip', 'text']);
     expect((segs[0] as { text: string }).text).toBe('ab ');
     expect((segs[2] as { text: string }).text).toBe(' cd');
+  });
+
+  it('上传中的占位标签：读内容时跳过，不参与编号', () => {
+    const ed = editor('看 ');
+    const p = createPendingChip('截图.png', true);
+    const a = createChipElement({ kind: 'file', path: '/x', label: 'file5' });
+    ed.append(p.el, document.createTextNode(' '), a);
+    relabelChips(ed);
+    expect(a.dataset.label).toBe('file1');
+    expect(p.el.dataset.label).toBeUndefined();
+    expect(readSegments(ed).map((s) => s.t)).toEqual(['text', 'chip']);
+    p.setProgress(0.5);
+    expect(p.el.textContent).toContain('50%');
   });
 
   it('没有保存位置时插到末尾', () => {

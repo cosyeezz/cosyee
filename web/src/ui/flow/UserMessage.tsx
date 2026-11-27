@@ -10,6 +10,7 @@ import { Icon, type IconName } from '../icons/Icon';
 import { parseQuotes } from '../../core/quote';
 import { api } from '../../core/api';
 import { elementName, expandLabels } from '../../core/composer';
+import { uploadExpired, uploadRef } from '../../core/uploads';
 import { openInBrowserPanel } from '../browser/links';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
@@ -41,10 +42,16 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
   const session = files?.session;
   const cwd = files?.cwd;
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  // 从本设备上传的文件：过了保留期直接标「已清理」；未过期但预览时 404 也标上
+  const upload = useMemo(() => uploadRef(attachment.path), [attachment.path]);
+  const [gone, setGone] = useState(() => !!upload && uploadExpired(upload));
+  const markGone = useCallback(() => setGone(true), []);
   const info = useCallback(
     async (path: string): Promise<PreviewInfo> => {
       const paste = pasteName(path);
       if (paste) return api.pasteInfo(paste);
+      const up = uploadRef(path);
+      if (up) return api.uploadInfo(up.dir, up.name);
       const element = elementName(path);
       if (element) return api.elementInfo(`${element}.md`);
       if (isElementRef(path)) throw new Error('element ref'); // 定位文字本身就是内容，没有文件
@@ -65,6 +72,8 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
   const rawUrl = useCallback((path: string) => {
     const paste = pasteName(path);
     if (paste) return api.pasteRawUrl(paste);
+    const up = uploadRef(path);
+    if (up) return api.uploadRawUrl(up.dir, up.name);
     const element = elementName(path);
     if (element) return api.elementRawUrl(`${element}.png`);
     return session ? api.fileRawUrl({ session, cwd, path }) : '';
@@ -73,8 +82,8 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
   return (
     <>
       <span
-        className={`cz-flow__tag cz-flow__tag--${attachment.kind}`}
-        title={attachment.path}
+        className={`cz-flow__tag cz-flow__tag--${attachment.kind}${gone ? ' is-gone' : ''}`}
+        title={gone ? `${attachment.path}（已清理）` : attachment.path}
         role="button"
         tabIndex={0}
         aria-expanded={anchor != null}
@@ -92,6 +101,7 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
       >
         <Icon name={KIND_ICON[attachment.kind]} size={13} />
         <span>{attachment.label}</span>
+        {gone && <span className="cz-flow__tag-gone">已清理</span>}
       </span>
       {anchor &&
         createPortal(
@@ -101,6 +111,7 @@ export const AttachmentTag = memo(function AttachmentTag({ attachment }: { attac
             onClose={close}
             previewInfo={info}
             previewRawUrl={rawUrl}
+            onGone={markGone}
           />,
           document.body,
         )}

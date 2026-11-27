@@ -6,7 +6,7 @@ import { parseUserText } from '../core/composer';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import {
-  MOCK_SKILLS, MOCK_SLASH_COMMANDS, mockPick, mockPreviewInfo, mockPreviewRawUrl,
+  MOCK_SKILLS, MOCK_SLASH_COMMANDS, mockPick, mockPreviewInfo, mockPreviewRawUrl, mockUpload,
 } from '../mock/composer';
 
 interface Sent { text: string; attachments: Attachment[] }
@@ -15,6 +15,7 @@ export default function ComposerDev() {
   const [running, setRunning] = useState(false);
   const [mixed, setMixed] = useState(false);
   const [disabled, setDisabled] = useState(false);
+  const [remote, setRemote] = useState(true);
   const [config, setConfig] = useState<SessionConfig>({ model: 'sonnet', effort: 'medium' });
   const [sent, setSent] = useState<Sent | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -34,6 +35,7 @@ export default function ComposerDev() {
         <button onClick={() => setRunning((v) => !v)}>running：{String(running)}</button>
         <label><input type="checkbox" checked={mixed} onChange={(e) => setMixed(e.target.checked)} /> supportsMixed</label>
         <label><input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} /> disabled</label>
+        <label title="远程连接：「+」可选从本设备上传；文件名含 fail 的上传会失败"><input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} /> 远程</label>
         <button
           onClick={() => {
             const n = ++replyCount.current;
@@ -65,6 +67,8 @@ export default function ComposerDev() {
         onInterrupt={() => { setLog((l) => [...l.slice(-9), 'onInterrupt']); setRunning(false); }}
         running={running}
         pick={mockPick}
+        upload={mockUpload}
+        remote={remote}
         supportsMixed={mixed}
         previewInfo={mockPreviewInfo}
         previewRawUrl={mockPreviewRawUrl}

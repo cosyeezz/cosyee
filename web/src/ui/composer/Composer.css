@@ -172,6 +172,58 @@
 .cz-chip:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .cz-chip__icon { display: inline-flex; color: var(--text-2); }
 
+/* 上传中的占位标签：底纹从左往右按进度填充；文件名过长截断 */
+.cz-chip--pending {
+  --p: 0;
+  cursor: default;
+  color: var(--text-2);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, transparent) calc(var(--p) * 100%), transparent 0),
+    var(--bg-active);
+  animation: cz-chip-in var(--dur) var(--ease);
+}
+.cz-chip--pending:hover { background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, transparent) calc(var(--p) * 100%), transparent 0),
+    var(--bg-active); border-color: var(--border); }
+.cz-chip--pending .cz-chip__label { max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+.cz-chip__pct { color: var(--text-3); font-variant-numeric: tabular-nums; }
+@keyframes cz-chip-in {
+  from { opacity: 0; transform: scale(.92); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 从本设备上传用的隐藏文件框（不能 display:none，部分移动浏览器不让程序点击隐藏的 input） */
+.cz-composer__file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 拖文件进输入框：描边高亮 + 居中提示，淡入 */
+.cz-composer__box.is-dragging { border-color: var(--accent); box-shadow: var(--mat-hi), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), 0 10px 32px -12px var(--scrim); }
+.cz-composer__drop {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+  color: var(--accent);
+  font-size: var(--fs-sm, 13px);
+  font-weight: 500;
+  pointer-events: none;
+  animation: cz-drop-in var(--dur-fast) var(--ease);
+}
+@keyframes cz-drop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* / 菜单 */
 .cz-slash {
   position: absolute;
