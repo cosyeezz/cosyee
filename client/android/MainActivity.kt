@@ -8,14 +8,16 @@
 // 2. 返回手势 / 返回键：先交给页面（关掉打开的侧栏等），页面不处理就回到服务器列表；
 //    已经在服务器列表页时走系统默认（退到后台）。
 // 3. 状态栏图标深浅跟随页面主题（titlebar.js 调 CosyeeNative.setDark）。
+// 4. 语音通话期间保持亮屏（网页调 CosyeeNative.keepScreenOn）。麦克风授权由 wry 的 WebChromeClient 处理。
 //
-// 暴露给页面（包括服务端网页）的 CosyeeNative 只有读避让值和改状态栏图标颜色两个方法。
+// 暴露给页面（包括服务端网页）的 CosyeeNative 只有读避让值、改状态栏图标颜色、保持亮屏三个方法。
 package app.cosyee.client
 
 import android.content.Intent
 import android.os.Bundle
 import android.os.Looper
 import android.util.Log
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -147,6 +149,15 @@ class MainActivity : TauriActivity() {
         val c = WindowCompat.getInsetsController(window, window.decorView)
         c.isAppearanceLightStatusBars = !dark
         c.isAppearanceLightNavigationBars = !dark
+      }
+    }
+
+    /** 通话 / 语音录音期间保持亮屏（WebView 不支持 Screen Wake Lock API） */
+    @JavascriptInterface
+    fun keepScreenOn(on: Boolean) {
+      runOnUiThread {
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
       }
     }
   }

@@ -25,7 +25,7 @@ import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import { ChartRail } from '../ui/context/ChartRail';
 import type { Billing } from '../ui/context/CostSection';
-import { getLiveText, isHiddenTurn, isTurnActive } from '../ui/flow/format';
+import { isHiddenTurn } from '../ui/flow/format';
 import { scrollBehavior } from '../ui/flow/motion';
 import { ConversationView } from '../ui/flow/ConversationView';
 import { FlowSkeleton, useFlowSkeleton } from '../ui/flow/FlowSkeleton';
@@ -502,6 +502,8 @@ export function MainApp() {
   /** mode 只在执行中有意义：next=插话（并入当前这一轮），later=排队（这一轮结束后再发）；空闲时后端一律立即开始新一轮 */
   const sendText = useCallback((text: string, mode?: QueueMode) => {
     if (!selCwd) return;
+    // 任何方式发出消息，立刻停止正在进行的朗读（含手动朗读）并清空队列
+    call.onUserTextSent();
     let id = sel?.id;
     let isNew = false;
     if (!id) {
@@ -584,39 +586,39 @@ export function MainApp() {
   const delegateActions = useMemo<DelegateActions>(() => ({ stop: onDelegateStop }), [onDelegateStop]);
 
   // ───────────── 通话模式 ─────────────
-  // 说完自动发送 → 执行完念交付 → 再听。控制逻辑在 core/speech/call.ts，这里只负责发消息和判断「这一轮结束了」。
+  // 全双工通话：控制逻辑在 core/speech/call.ts，这里负责发消息、中断与同步当前会话状态。
 
   const callState = useSyncExternalStore(call.subscribe, call.getState);
-  /** 发出这句话时的最后一轮：之后出现的、已结束的新一轮就是这句话的结果 */
-  const callBaseline = useRef<string | null>(null);
-  const callLive = useRef({ sendText, running, lastTurnId: null as string | null, canSend: !!selCwd });
-  callLive.current = { sendText, running, lastTurnId: shownTurns[shownTurns.length - 1]?.id ?? null, canSend: !!selCwd };
+  const callLive = useRef({ sendText, onInterrupt, running, canSend: !!selCwd });
+  callLive.current = { sendText, onInterrupt, running, canSend: !!selCwd };
 
   const onCall = useCallback(() => {
     if (call.inCall()) { call.hangup(); return; }
-    const live = callLive.current;
-    // 打开时正在执行：等这一轮结束、念它的结果
-    callBaseline.current = live.running ? null : live.lastTurnId;
     void call.start({
       send: (text) => {
         const cur = callLive.current;
         if (!cur.canSend) return false;
-        callBaseline.current = cur.lastTurnId;
-        cur.sendText(text);
+        // 与 Composer 一致：执行中走 'next'（插话，并入当前轮），空闲直接发送
+        cur.sendText(text, cur.running ? 'next' : undefined);
         return true;
       },
+      interrupt: () => callLive.current.onInterrupt(),
       running: () => callLive.current.running,
     });
   }, []);
 
+  const answerStreaming = !!view?.conv.book?.textStreaming[''];
   useEffect(() => {
-    if (callState.phase !== 'waiting' || running) return;
-    const t = shownTurns[shownTurns.length - 1];
-    if (!t || isTurnActive(t) || t.id === callBaseline.current) return;
-    callBaseline.current = t.id;
-    const text = getLiveText(t, false) || (t.status === 'error' ? '执行出错了，请看屏幕。' : '执行完了。');
-    void call.turnFinished(t.id, text);
-  }, [callState.phase, running, shownTurns]);
+    if (callState.phase !== 'active') return;
+    call.syncSession({
+      sessionId: sel?.id ?? null,
+      loading: !view || view.id !== sel?.id || view.loading,
+      running,
+      turns: shownTurns,
+      answerStreaming,
+      prompts: view?.prompts ?? NO_PROMPTS,
+    });
+  }, [callState.phase, sel?.id, view?.id, view?.loading, running, shownTurns, answerStreaming, view?.prompts]);
 
   // 离开页面（切走工作空间不算）时挂断，释放麦克风
   useEffect(() => () => call.hangup(), []);
@@ -1248,6 +1250,7 @@ export function MainApp() {
         <CallBar
           state={callState}
           needsAttention={!!view?.prompts?.length}
+          running={running}
           onHangup={call.hangup}
           onSkip={call.skipSpeaking}
           onInterrupt={onInterrupt}

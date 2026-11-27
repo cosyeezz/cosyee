@@ -6,6 +6,11 @@ interface CosyeeDesktop {
   pick(mode: string, title: string, startDir: string): Promise<string[]>;
 }
 
+interface CosyeeNative {
+  keepScreenOn?(on: boolean): void;
+}
+
 interface Window {
   cosyeeDesktop?: CosyeeDesktop;
+  CosyeeNative?: CosyeeNative;
 }

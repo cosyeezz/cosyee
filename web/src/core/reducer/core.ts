@@ -30,6 +30,8 @@ export interface Book {
   bufs: Record<string, string>;
   /** scope → 当前占据 turn.answer 的块 key */
   answerKey: Record<string, string>;
+  /** scope → 当前仍在流式输出中的文本块 key（content_block_stop 或完整 assistant 消息到达时清除） */
+  textStreaming: Record<string, string>;
   /** scope → 当前 message_start 的消息 id */
   curMsg: Record<string, string>;
   /** scope → 最近一个仍在流式的思考块 key（thinking_tokens 事件回填 tokens 用） */
@@ -70,6 +72,7 @@ export function newBook(now = 0): Book {
     tools: {},
     bufs: {},
     answerKey: {},
+    textStreaming: {},
     curMsg: {},
     thinkingKey: {},
     taskMap: {},
@@ -90,6 +93,7 @@ function cloneBook(b: Book): Book {
     tools: { ...b.tools },
     bufs: { ...b.bufs },
     answerKey: { ...b.answerKey },
+    textStreaming: { ...b.textStreaming },
     curMsg: { ...b.curMsg },
     thinkingKey: { ...b.thinkingKey },
     taskMap: { ...b.taskMap },
@@ -242,6 +246,7 @@ export function flushAnswer(d: Draft, scope: string): void {
   const key = d.book.answerKey[scope];
   if (key === undefined) return;
   delete d.book.answerKey[scope];
+  delete d.book.textStreaming[scope];
   const t = getTurn(d, scope);
   if (!t) return;
   const ref = d.book.blocks[key];
@@ -290,6 +295,12 @@ export function writeText(d: Draft, key: string, ref: BlockRef, text: string, mo
     t.statusText = line;
     markRunning(t);
   }
+}
+
+export function endText(d: Draft, key: string): void {
+  const ref = d.book.blocks[key];
+  if (!ref || ref.kind !== 'text') return;
+  if (d.book.textStreaming[ref.scope] === key) delete d.book.textStreaming[ref.scope];
 }
 
 // ───────────── 思考 ─────────────
@@ -616,6 +627,7 @@ export function applyAssistantMessage(d: Draft, scope: string, message: unknown)
       if (!text && !d.book.blocks[key]) continue;
       const ref = ensureText(d, scope, key);
       if (ref) writeText(d, key, ref, text, 'set');
+      if (d.book.textStreaming[scope] === key) delete d.book.textStreaming[scope];
     } else if (b.type === 'thinking') {
       const ref = ensureThinking(d, scope, key, false);
       const text = str(b.thinking);
