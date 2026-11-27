@@ -16,9 +16,16 @@ import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
 import { type ApiConfig, apiHost, apiInfo, isLegacyKiro, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
-import { ensureLinks, unlinkShared } from './links.js';
+import { ensureLinks, removeLink, unlinkShared } from './links.js';
 import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
+import {
+  prepareSubagentSpace,
+  removeSubagentSpace,
+  syncSubagentToMain,
+  writeFileAtomic,
+  type SubagentSpaceOptions,
+} from './subagent-space.js';
 
 export const DEFAULT_ID = 'default';
 const LABEL_MAX = 40;
@@ -44,6 +51,8 @@ export interface AccountsDeps {
   kiroState?: (id: string, dir: string) => Pick<AccountKiroInfo, 'proxy' | 'error' | 'credential' | 'credentialReason'>;
   /** 移除 Kiro 账号前，把它在内置 kiro.rs 服务里的凭据 / Key / 分组一并删掉（失败只记日志，不阻止移除） */
   removeKiroAccount?: (id: string, dir: string) => Promise<void>;
+  /** 测试替换：子代理配置空间的平台与钥匙串适配器 */
+  subagentSpace?: SubagentSpaceOptions;
 }
 
 interface LocalInfo {
@@ -114,14 +123,6 @@ function kiroIdentity(k: NonNullable<ApiConfig['kiro']>): string | null {
   return e || null;
 }
 
-/** 原子写回文件（临时文件 + rename） */
-function writeFileAtomic(file: string, data: string | Buffer, mode?: number): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, data, mode !== undefined ? { mode } : undefined);
-  fs.renameSync(tmp, file);
-}
-
 /** 重新登录前备份原目录的登录凭据（.credentials.json 原文 + .claude.json 的 oauthAccount） */
 function captureLoginBackup(dir: string | null): LoginBackup {
   const realDir = dir ?? baseClaudeHome();
@@ -173,6 +174,80 @@ function parseIsoMs(raw: unknown): number | null {
 
 function parseEpochMs(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/** 读取 JSON 文件并区分「文件明确不存在」与「存在但读取/解析失败（瞬时改写/占用）」 */
+function readJsonSafe(file: string): { kind: 'ok'; data: Record<string, unknown> } | { kind: 'missing' } | { kind: 'transient' } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { kind: 'missing' } : { kind: 'transient' };
+  }
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === 'object' && !Array.isArray(j)) return { kind: 'ok', data: j as Record<string, unknown> };
+    return { kind: 'transient' };
+  } catch {
+    return { kind: 'transient' };
+  }
+}
+
+/**
+ * 检查某个 Claude 账号目录（null = 默认账号）当前是否已登录（只读文件，不起进程不联网）：
+ * - API / Kiro 账号：有有效 cosyee-api.json 即已登录；
+ * - 订阅账号：.credentials.json 里有非空 claudeAiOauth.refreshToken 或 accessToken；macOS 凭据在钥匙串里，文件不存在时看 .claude.json 的 oauthAccount。
+ * - 防抖动：凭据刷新瞬间文件可能被短暂截断或占用，读/解析失败时若有 prev 则沿用上次结果，不误判为未登录。
+ */
+export function checkClaudeLoggedIn(dir: string | null, prev?: boolean, platform: NodeJS.Platform = process.platform): boolean {
+  const realDir = dir ?? baseClaudeHome();
+  const apiFile = path.join(realDir, 'cosyee-api.json');
+  const apiRead = readJsonSafe(apiFile);
+  if (apiRead.kind === 'ok') {
+    if (readApiConfig(dir)) return true;
+  } else if (apiRead.kind === 'transient' && prev !== undefined) {
+    return prev;
+  }
+
+  const credsFile = path.join(realDir, '.credentials.json');
+  const credsRead = readJsonSafe(credsFile);
+  if (credsRead.kind === 'ok') {
+    const ai = credsRead.data.claudeAiOauth as Record<string, unknown> | undefined;
+    const hasRefresh = typeof ai?.refreshToken === 'string' && ai.refreshToken.trim().length > 0;
+    const hasAccess = typeof ai?.accessToken === 'string' && ai.accessToken.trim().length > 0;
+    if (hasRefresh || hasAccess) return true;
+  } else if (credsRead.kind === 'transient') {
+    // 拿不准（凭据正被改写）时宁可当已登录：误判未登录会把子代理无故退回原生，真没登录派任务时自然会报错
+    return prev ?? true;
+  } else if (platform === 'darwin') {
+    // .credentials.json 明确不存在：macOS 凭据在钥匙串，改看 .claude.json 的 oauthAccount
+    const cjRead = readJsonSafe(claudeJsonPath(dir));
+    if (cjRead.kind === 'transient') return prev ?? true;
+    if (cjRead.kind === 'ok' && cjRead.data.oauthAccount && typeof cjRead.data.oauthAccount === 'object') return true;
+  }
+  return hasEnvAuth(realDir);
+}
+
+/** 不走凭据文件的登录方式：环境变量里的 API key / OAuth token / 第三方云，或共享 settings.json 的 env / apiKeyHelper */
+const AUTH_ENV_KEYS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+];
+function hasEnvAuth(realDir: string): boolean {
+  const set = (env: Record<string, unknown> | undefined) => AUTH_ENV_KEYS.some((k) => {
+    const v = env?.[k];
+    return typeof v === 'string' && v.trim() !== '' && v.trim() !== '0';
+  });
+  if (set(process.env)) return true;
+  for (const dir of new Set([realDir, baseClaudeHome()])) {
+    const r = readJsonSafe(path.join(dir, 'settings.json'));
+    if (r.kind !== 'ok') continue;
+    if (typeof r.data.apiKeyHelper === 'string' && r.data.apiKeyHelper.trim()) return true;
+    const env = r.data.env;
+    if (env && typeof env === 'object' && !Array.isArray(env) && set(env as Record<string, unknown>)) return true;
+  }
+  return false;
 }
 
 /** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程。API / Kiro 账号有配置就算已登录 */
@@ -258,6 +333,8 @@ export class Accounts {
   private login: LoginJob | null = null;
   /** 切换串行化 */
   private switching: Promise<void> = Promise.resolve();
+  /** 最近一次子代理（claude）复制 / 同步登录态失败的原因；正常时为 null */
+  private subagentClaudeError: string | null = null;
 
   constructor(private readonly deps: AccountsDeps) {}
 
@@ -289,6 +366,42 @@ export class Accounts {
 
   mode(): AccountMode {
     return this.s.mode;
+  }
+
+  /** Claude 委派子代理当前选用的账号 id（账号不在时退回 'default'） */
+  subagentClaudeId(): string {
+    const id = this.s.subagent.claude;
+    return this.has(id) ? id : DEFAULT_ID;
+  }
+
+  private loginCache = new Map<string, { loggedIn: boolean; at: number }>();
+
+  /** 标记登录状态缓存过期（保留上次值作为瞬时读取失败时的防抖兜底） */
+  invalidateLoginCache(id?: string): void {
+    if (id !== undefined) {
+      const c = this.loginCache.get(id);
+      if (c) c.at = 0;
+    } else {
+      for (const c of this.loginCache.values()) c.at = 0;
+    }
+  }
+
+  /** 当前选中的 Claude 子代理账号是否已登录（带 2s 内存缓存与防抖动） */
+  subagentClaudeLoggedIn(ttlMs = 2000): boolean {
+    const id = this.subagentClaudeId();
+    const dir = this.dirFor(id);
+    if (dir === undefined) return false;
+    const now = Date.now();
+    const cached = this.loginCache.get(id);
+    if (cached && now - cached.at < ttlMs) return cached.loggedIn;
+    const loggedIn = checkClaudeLoggedIn(dir, cached?.loggedIn);
+    this.loginCache.set(id, { loggedIn, at: now });
+    return loggedIn;
+  }
+
+  /** 指定账号的主代理空间是否正在进行重新登录（登录期间不得往主空间回写凭据） */
+  isLoggingIn(accountId: string): boolean {
+    return !!(this.login && this.busy() && this.login.target === accountId);
   }
 
   /** 账号是否存在（默认账号或列表里的） */
@@ -345,27 +458,104 @@ export class Accounts {
 
   /** 服务启动时调用：恢复上次的当前账号（目录没了就回到默认账号），补链接并同步 MCP */
   init(): void {
+    let dirty = false;
     let dir = this.activeDir();
     if (dir && !fs.existsSync(dir)) {
       this.s.active = null;
-      this.deps.store.save();
+      dirty = true;
       dir = null;
     }
+    const subId = this.s.subagent.claude;
+    if (subId !== DEFAULT_ID) {
+      const subMainDir = this.dirFor(subId);
+      if (!subMainDir || !fs.existsSync(subMainDir)) {
+        this.s.subagent.claude = DEFAULT_ID;
+        dirty = true;
+      }
+    }
+    if (dirty) this.deps.store.save();
     setActiveConfigDir(dir);
     this.prepare(this.activeId());
   }
 
   /**
-   * 账号没有 claude 进程时调用（启动它的第一个会话进程前）：补链接（有的程序会把链接换成真实文件）并同步 MCP 配置。
-   * 默认账号就是主配置，不用做。任何错误都吞掉，不影响启动会话。
+   * 账号没有 claude 进程时调用（启动它的第一个会话进程前）：先尝试把子代理空间刷新后的凭据回写到主空间，
+   * 再补链接（有的程序会把链接换成真实文件）并同步 MCP 配置。任何错误都吞掉，不影响启动会话。
    */
   prepare(accountId: string): void {
+    this.syncSubagentBack(accountId, { silent: true });
     const dir = this.dirFor(accountId);
     if (!dir) return;
     try {
       ensureLinks(baseClaudeHome(), dir);
     } catch { /* 下次再补 */ }
     this.sync(dir);
+  }
+
+  /**
+   * 启动 Claude 委派子代理进程前准备其独立配置空间：建共享链接、同步 .claude.json 必要字段与主→子凭据。
+   * 账号不存在返回 null；同步失败时记录 claudeError 并抛错。
+   */
+  prepareSubagent(accountId: string): { id: string; dir: string; mainDir: string | null } | null {
+    const mainDir = this.dirFor(accountId);
+    if (mainDir === undefined) return null;
+    try {
+      if (mainDir !== null && !fs.existsSync(mainDir)) {
+        throw new Error('账号的配置目录不存在了，请移除后重新添加');
+      }
+      const dir = prepareSubagentSpace(accountId, mainDir, this.deps.subagentSpace);
+      if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
+        this.subagentClaudeError = null;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      return { id: accountId, dir, mainDir };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== msg) {
+        this.subagentClaudeError = msg;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * 子代理空间 → 主代理空间回写凭据（较新者胜）。
+   * 主代理空间正在登录时跳过；silent=true（主代理启动前）失败静默不阻断，silent=false（子代理退出后）记录 claudeError。
+   */
+  syncSubagentBack(accountId: string, opts?: { silent?: boolean }): boolean {
+    const mainDir = this.dirFor(accountId);
+    if (mainDir === undefined) return false;
+    if (this.isLoggingIn(accountId)) return false;
+    try {
+      const wrote = syncSubagentToMain(accountId, mainDir, this.deps.subagentSpace);
+      if (!opts?.silent && accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
+        this.subagentClaudeError = null;
+        this.deps.onChanged({ notify: 'refresh' });
+      }
+      return wrote;
+    } catch (e) {
+      if (!opts?.silent) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== msg) {
+          this.subagentClaudeError = msg;
+          this.deps.onChanged({ notify: 'refresh' });
+        }
+      }
+      return false;
+    }
+  }
+
+  /** 设置 Claude 委派子代理使用的账号（只影响新的委派，与主代理模式和当前账号无关） */
+  setSubagentClaude(id: string): AccountList {
+    const dir = this.dirOf(id);
+    if (dir && !fs.existsSync(dir)) throw new HttpError(410, '账号的配置目录不存在了，请移除后重新添加');
+    if (!localInfo(dir).loggedIn) throw new HttpError(400, '该账号还没有登录');
+    this.s.subagent.claude = id;
+    this.subagentClaudeError = null;
+    this.deps.store.save();
+    this.deps.onChanged({ notify: 'refresh' });
+    return this.list();
   }
 
   /** 同步会写主文件：默认账号有进程在跑时（并行模式）跳过，避免与它的 CLI 写入冲突，下次再同步 */
@@ -486,6 +676,10 @@ export class Accounts {
       list: kept,
       login: this.login ? { ...this.login.state } : null,
       ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length, duplicateKinds: byKind } : {}),
+      subagent: {
+        claude: this.subagentClaudeId(),
+        ...(this.subagentClaudeError ? { claudeError: this.subagentClaudeError } : {}),
+      },
     };
   }
 
@@ -741,9 +935,14 @@ export class Accounts {
     if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再移除`);
     if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
     if (readApiConfig(a.dir)?.kiro) await this.deps.removeKiroAccount?.(id, a.dir);
+    removeSubagentSpace(id, this.deps.subagentSpace);
     this.removeDir(a.dir);
     this.s.list = this.s.list.filter((x) => x.id !== id);
     for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];
+    if (this.s.subagent.claude === id) {
+      this.s.subagent.claude = DEFAULT_ID;
+      this.subagentClaudeError = null;
+    }
   }
 
   /**
@@ -792,12 +991,21 @@ export class Accounts {
     const abs = path.resolve(dir);
     const rel = path.relative(root, abs);
     // 不在 accountsRoot 下的目录（不是 Cosyee 建的）只从列表移除，不删文件
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(path.sep)) return;
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(path.sep) || rel.includes('/')) return;
     if (pathKey(abs) === pathKey(baseClaudeHome())) return;
-    if (!fs.existsSync(abs)) return;
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(abs);
+    } catch {
+      return;
+    }
+    if (st.isSymbolicLink()) {
+      removeLink(abs);
+      return;
+    }
     const left = unlinkShared(abs);
     if (left.length) throw new HttpError(500, `解除共享链接失败：${left.join(', ')}`);
-    fs.rmSync(abs, { recursive: true, force: true });
+    fs.rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 
   // ───────────── 登录 ─────────────
@@ -942,8 +1150,11 @@ export class Accounts {
     this.names = null;
     // 账号目录此时可能有进程在跑（并行模式下重新登录），只在没有进程时同步
     if (!isDefault && !(job.target && (this.deps.processes?.(job.target) ?? 0) > 0)) this.sync(job.dir);
-    // 重新登录：凭据变了，该账号的信息与额度要重取
-    if (job.target) this.deps.onChanged({ reset: job.target });
+    // 重新登录：凭据变了，该账号的信息与额度要重取；下次启动子代理时会同步新凭据
+    if (job.target) {
+      if (job.target === this.s.subagent.claude) this.subagentClaudeError = null;
+      this.deps.onChanged({ reset: job.target });
+    }
   }
 
   /** 丢弃没登录成功的新账号目录（只删 accountsRoot 下、未登记的目录） */

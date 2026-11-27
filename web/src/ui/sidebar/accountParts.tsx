@@ -90,11 +90,11 @@ export function claudeUsable(a: AccountEntry, now: number): boolean {
   return !(claudeKind(a) === 'claude' && a.loginExpiresAt != null && a.loginExpiresAt <= now);
 }
 
-/** 左下角账户栏的头像：名字首字母 + 由名字算出的渐变底色；没登录是虚线空圈 */
-export function Avatar({ title, loggedIn }: { title: string; loggedIn: boolean }) {
+/** 头像：名字首字母 + 由名字算出的渐变底色；没登录是虚线空圈 */
+export function Avatar({ title, loggedIn, size = 'md' }: { title: string; loggedIn: boolean; size?: 'xs' | 'sm' | 'md' }) {
   return (
     <span
-      className={`cz-sidebar__avatar cz-sidebar__avatar--md${loggedIn ? '' : ' cz-sidebar__avatar--empty'}`}
+      className={`cz-sidebar__avatar cz-sidebar__avatar--${size}${loggedIn ? '' : ' cz-sidebar__avatar--empty'}`}
       style={loggedIn ? ({ '--av': avatarColor(title) } as CSSProperties) : undefined}
       aria-hidden="true"
     >

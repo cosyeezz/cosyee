@@ -68,6 +68,8 @@ export interface ComponentUpdaterOptions {
   timers?: Timers;
   firstTickMs?: number;
   tickIntervalMs?: number;
+  /** 组件安装 / 更新成功后的回调 */
+  onUpdated?: (id: ComponentId) => void;
 }
 
 interface CheckRecord {
@@ -103,10 +105,12 @@ export class ComponentUpdater {
   private ticking: Promise<void> | null = null;
   private stopped = true;
   private readonly home: () => string;
+  private readonly onUpdated?: (id: ComponentId) => void;
 
   constructor(opts: ComponentUpdaterOptions) {
     for (const a of opts.adapters) this.adapters.set(a.id, a);
     this.home = opts.home ?? cosyeeHome;
+    this.onUpdated = opts.onUpdated;
     this.settings = new ComponentSettings(this.home);
     this.now = opts.now ?? Date.now;
     this.timers = opts.timers ?? {
@@ -285,6 +289,7 @@ export class ComponentUpdater {
       try {
         await a.update();
         this.jobs.delete(a.id);
+        this.onUpdated?.(a.id);
       } catch (e) {
         this.jobs.set(a.id, { kind, state: 'failed', error: errText(e) });
       }

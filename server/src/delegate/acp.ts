@@ -2,7 +2,7 @@
 // 比起一次调用起一个进程，省掉冷启动，也能用「首次输出看门狗 + 重试一次」绕开冷启动偶发的卡死。
 import { type ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 import path from 'node:path';
-import type { DelegateModelList } from '@cosyee/shared';
+import type { DelegateModelList, SubagentAvailability } from '@cosyee/shared';
 import type { AgyAccountRef } from '../accounts/agy.js';
 import { agyAccountArgs, agyAccountEnv } from '../accounts/agy-env.js';
 import { DEFAULT_ID } from '../accounts/index.js';
@@ -1116,13 +1116,15 @@ export function sharedAcpPool(): AcpPool {
 
 export interface AgyBackendOptions {
   pool?: AcpPool;
-  /** 测试用：固定 agy 路径（null = 不可用）；不传则懒调用 resolveAgy() 并缓存 */
+  /** 测试用：固定 agy 路径（null = 不可用）；不传则每次按需调用 resolveAgy() */
   agyPath?: string | null;
   resolve?: () => string | null;
   /** 多账号来源；不传则始终使用默认账号 */
   accounts?: {
     activeAccount(): AgyAccountRef;
     accountFor(id: string): AgyAccountRef | null;
+    /** 当前活跃账号是否已登录（false = 明确未登录；true = 已登录；null = 未知/探测中） */
+    isLoggedIn?(): boolean | null;
   };
 }
 
@@ -1130,20 +1132,20 @@ export class AgyBackend implements DelegateBackend {
   readonly id = 'agy';
   readonly label = 'Antigravity';
   private readonly pool: AcpPool;
+  private readonly fixedPath: string | null | undefined;
   private readonly resolveFn: () => string | null;
   private readonly accounts?: AgyBackendOptions['accounts'];
-  private cachedPath: string | null | undefined;
 
   constructor(opts: AgyBackendOptions = {}) {
     this.pool = opts.pool ?? sharedAcpPool();
+    this.fixedPath = opts.agyPath;
     this.resolveFn = opts.resolve ?? resolveAgy;
     this.accounts = opts.accounts;
-    if (opts.agyPath !== undefined) this.cachedPath = opts.agyPath;
   }
 
   private getPath(): string | null {
-    if (this.cachedPath === undefined) this.cachedPath = this.resolveFn();
-    return this.cachedPath;
+    if (this.fixedPath !== undefined) return this.fixedPath;
+    return this.resolveFn();
   }
 
   private resolveAccount(accountId?: string): AgyAccountRef {
@@ -1159,8 +1161,14 @@ export class AgyBackend implements DelegateBackend {
     return this.accounts?.activeAccount() ?? DEFAULT_ACCOUNT;
   }
 
+  availability(): SubagentAvailability {
+    if (this.getPath() === null) return { ok: false, reason: '未安装 Antigravity CLI' };
+    if (this.accounts?.isLoggedIn?.() === false) return { ok: false, reason: 'Antigravity 账号未登录' };
+    return { ok: true };
+  }
+
   available(): boolean {
-    return this.getPath() !== null;
+    return this.availability().ok;
   }
 
   async models(o: { cwd: string; refresh?: boolean }): Promise<DelegateModelList> {

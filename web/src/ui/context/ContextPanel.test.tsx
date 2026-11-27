@@ -670,22 +670,24 @@ describe('ContextPanel 工具', () => {
       <ContextPanel usage={{ ...mockContextUsage, disabledTools: ['WebFetch', 'Notebook'] }} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={INIT} {...extra} />,
     );
   const toggles = (el: HTMLElement) => [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__tool [role="switch"]')];
+  const rowLabels = (el: HTMLElement) => [...el.querySelectorAll('.cz-ctx__tool .cz-ctx__row-label')].map((n) => n.textContent);
 
-  it('在 Skills 下方、MCP 上方；只列内置工具（排除 mcp__），已停用的工具即使不在 init 里也保留，便于重新启用', () => {
+  it('在 Skills 下方、MCP 上方；按常驻 / 懒加载 / 未确定分组，已停用工具留在各自组里', () => {
     const el = mountTools();
     const titles = [...el.querySelectorAll('.cz-ctx__fold-title')].map((t) => t.textContent);
     expect(titles.indexOf('工具')).toBeGreaterThan(titles.indexOf('Skills'));
     expect(titles.indexOf('工具')).toBeLessThan(titles.indexOf('MCP'));
     expect(el.textContent).toContain('2 已停用');
     openFold(el, '工具');
-    const names = [...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent);
-    expect(names).toEqual(['Bash', 'Glob', 'WebFetch', 'Read', 'Notebook']);
-    expect(toggles(el).map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'false', 'true', 'false']);
-    expect(el.querySelector('.cz-ctx__tool.is-off .cz-ctx__item-name')?.textContent).toBe('WebFetch');
+    const groupTitles = [...el.querySelectorAll('.cz-ctx__tgrp-title')].map((n) => n.textContent);
+    expect(groupTitles).toEqual(['常驻', '懒加载', '未确定']);
+    expect(rowLabels(el)).toEqual(['Bash', 'Glob', 'Read', 'WebFetch', 'Notebook']);
+    expect(toggles(el).map((b) => b.getAttribute('aria-checked'))).toEqual(['true', 'true', 'true', 'false', 'false']);
+    expect(el.querySelector('.cz-ctx__tool.is-off .cz-ctx__row-label')?.textContent).toBe('WebFetch');
     expect([...el.querySelectorAll('.cz-ctx__note')].some((n) => n.textContent?.includes('立即拦截'))).toBe(true);
   });
 
-  it('显示工具定义占用（常驻 / 延迟加载）与每个工具在本会话的调用次数', () => {
+  it('显示工具定义占用（常驻 / 懒加载）与每个工具在本会话的调用次数', () => {
     const step = (name: string) => ({ kind: 'tool' as const, id: `${name}-${Math.random()}`, name, input: {}, summary: name });
     const base = { id: 't', userText: '', attachments: [], status: 'done' as const, statusText: '', answer: '', startedAt: 0 };
     const turns: Turn[] = [
@@ -698,14 +700,14 @@ describe('ContextPanel 工具', () => {
     openFold(el, '工具');
     const stats = el.querySelector('.cz-ctx__tool-stats')!.textContent!;
     expect(stats).toContain('常驻占用9.8k');
-    expect(stats).toContain('延迟加载5.7k');
+    expect(stats).toContain('懒加载5.7k');
     expect(stats).toContain('本会话调用4 次');
     // 没拿到所有会话的统计：累计显示占位，行内不出累计列
     expect(stats).toContain('累计调用—');
     expect(el.querySelector('.cz-ctx__tool-total')).toBeNull();
-    expect(stats).toContain('不提供单个工具的占用');
+    expect(stats).toContain('分摊估算');
     const calls = Object.fromEntries(
-      [...el.querySelectorAll('.cz-ctx__tool')].map((r) => [r.querySelector('.cz-ctx__item-name')!.textContent, r.querySelector('.cz-ctx__tool-calls')!.textContent]),
+      [...el.querySelectorAll('.cz-ctx__tool')].map((r) => [r.querySelector('.cz-ctx__row-label')!.textContent, r.querySelector('.cz-ctx__tool-calls')!.textContent]),
     );
     expect(calls).toEqual({ Bash: '×2', Glob: '—', WebFetch: '—', Read: '×2', Notebook: '—' });
   });
@@ -731,7 +733,7 @@ describe('ContextPanel 工具', () => {
     expect(stats).toContain('本会话调用1 次');
     // 只合计列表里的内置工具：12345 + 7 + 0 + (3 + 2)
     expect(stats).toContain('累计调用12.4k 次');
-    const row = (n: string) => [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')!.textContent === n)!;
+    const row = (n: string) => [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__row-label')!.textContent === n)!;
     const cells = (n: string) => [row(n).querySelector('.cz-ctx__tool-calls')!.textContent, row(n).querySelector('.cz-ctx__tool-total')!.textContent];
     expect(cells('Bash')).toEqual(['×1', '12.3k']);
     expect(cells('Read')).toEqual(['—', '7']);
@@ -739,15 +741,127 @@ describe('ContextPanel 工具', () => {
     expect(cells('Agent')).toEqual(['—', '5']);
   });
 
-  it('CLI 给了单个工具占用时，行内显示 token，不再提示只有合计', () => {
+  it('精确值不带 ~，估算值带 ~；分组头可折叠，懒加载已加载工具带「已加载」标签，每行均有悬浮提示', () => {
     const el = render(
-      <ContextPanel usage={{ ...mockContextUsage, toolTokens: [{ name: 'Bash', tokens: 1_200 }] }} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={['Bash', 'Read']} />,
+      <ContextPanel
+        usage={{ ...mockContextUsage, disabledTools: ['WebSearch'] }}
+        loading={false}
+        onRefresh={() => undefined}
+        onCompact={() => undefined}
+        tools={[
+          'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+          'mcp__cosyee__delegate', 'mcp__cosyee__delegate_send', 'mcp__cosyee__delegate_stop', 'mcp__cosyee__delegate_result', 'mcp__cosyee__delegate_agents',
+          'WebFetch', 'Monitor', 'SendMessage', 'CustomProbe',
+        ]}
+      />,
+    );
+    openFold(el, '工具');
+
+    // 三组均出现且默认展开；分组计数保持行数，分组 token 合计按辅助工具各自加载方式并入并与 CLI 合计严格对平
+    const heads = [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__tgrp-head')];
+    expect(heads.map((h) => h.querySelector('.cz-ctx__tgrp-title')?.textContent)).toEqual(['常驻', '懒加载', '未确定']);
+    expect(heads.map((h) => h.getAttribute('aria-expanded'))).toEqual(['true', 'true', 'true']);
+    expect(heads[0]!.querySelector('.cz-ctx__tgrp-count')?.textContent).toBe('7');
+    expect(heads[0]!.querySelector('.cz-ctx__tgrp-tok')?.textContent).toBe('~9.8k');
+    expect(heads[1]!.querySelector('.cz-ctx__tgrp-count')?.textContent).toBe('4（已加载 2）');
+    expect(heads[1]!.querySelector('.cz-ctx__tgrp-tok')?.textContent).toBe('~5.7k');
+    expect(heads[2]!.querySelector('.cz-ctx__tgrp-tok')).toBeNull();
+
+    // 行内 token：Bash 估算带 ~，delegate 精确不带 ~，WebFetch 懒加载带「已加载」与 ~
+    const rowOf = (label: string) =>
+      [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__row-label')?.textContent === label)!;
+    expect(rowOf('Bash').querySelector('.cz-ctx__item-tokens')?.textContent).toBe('~2.6k');
+    expect(rowOf('delegate').querySelector('.cz-ctx__item-tokens')?.textContent).toBe('920');
+    expect(rowOf('WebFetch').querySelector('.cz-ctx__tool-tag')?.textContent).toBe('已加载');
+    expect(rowOf('WebFetch').querySelector('.cz-ctx__item-tokens')?.textContent).toBe('~590');
+    expect(rowOf('Monitor').querySelector('.cz-ctx__tool-tag')).toBeNull();
+    expect(rowOf('WebSearch').querySelector('.cz-ctx__item-tokens')?.textContent).toBe('—');
+
+    // 每行（含分组头）派发 mouseover(relatedTarget: document.body) 都能显示 .cz-ctx__tip
+    vi.useFakeTimers();
+    try {
+      const hoverEl = (node: Element) => {
+        act(() => { node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
+        act(() => { vi.advanceTimersByTime(400); });
+        const tip = document.querySelector('.cz-ctx__tip');
+        const text = tip?.textContent ?? '';
+        act(() => { node.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })); });
+        return text;
+      };
+      const resTip = hoverEl(heads[0]!);
+      expect(resTip).toContain('每次请求都随提示词发送完整定义');
+      expect(resTip).toContain('含委派辅助工具 3 个（在 delegate 行展开里）');
+      const defTip = hoverEl(heads[1]!);
+      expect(defTip).toContain('ToolSearch');
+      expect(defTip).toContain('含委派辅助工具 1 个（在 delegate 行展开里）');
+      expect(hoverEl(rowOf('Bash'))).toContain('约 2,600 token（按定义长度从 CLI 合计中分摊的估算）');
+      expect(hoverEl(rowOf('WebFetch'))).toContain('懒加载，定义约 590 token（未加载时只占名字）');
+      const delTip = hoverEl(rowOf('delegate'));
+      expect(delTip).toContain('代表整套 5 个委派工具');
+      for (const row of el.querySelectorAll('.cz-ctx__tool')) {
+        expect(hoverEl(row).length).toBeGreaterThan(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // 展开 delegate 行：展示只读配套辅助工具子列表（无开关）、标签、精确 token、整套合计与定义原文
+    click(rowOf('delegate').querySelector('.cz-ctx__row-name'));
+    const auxBox = rowOf('delegate').querySelector('.cz-ctx__aux')!;
+    expect(auxBox).not.toBeNull();
+    expect(auxBox.querySelectorAll('[role="switch"]')).toHaveLength(0);
+    expect(auxBox.textContent).toContain('整套 5 个工具共 2,620 token（常驻 2,400 · 懒加载 220）');
+    const auxNames = [...auxBox.querySelectorAll('.cz-ctx__aux-name')].map((n) => n.textContent);
+    expect(auxNames).toEqual(['delegate_send', 'delegate_stop', 'delegate_result', 'delegate_agents']);
+    const auxTokens = [...auxBox.querySelectorAll('.cz-ctx__aux-tok')].map((n) => n.textContent);
+    expect(auxTokens).toEqual(['680', '260', '540', '220']);
+    const agentsItem = auxBox.querySelectorAll('.cz-ctx__aux-item')[3]!;
+    expect(agentsItem.querySelector('.cz-ctx__aux-tag')?.textContent).toBe('懒加载');
+    expect(agentsItem.querySelector('.cz-ctx__tool-tag')?.textContent).toBe('已加载');
+    expect(rowOf('delegate').querySelector('.cz-ctx__prompt')?.textContent).toContain('Launch a delegate agent');
+
+    // delegate 停用时：子列表变暗显示「随 delegate 停用」，分组 token 合计不再计入委派整套 token
+    act(() =>
+      root!.render(
+        <ContextPanel
+          usage={{ ...mockContextUsage, disabledTools: ['WebSearch', 'mcp__cosyee__delegate'] }}
+          loading={false}
+          onRefresh={() => undefined}
+          onCompact={() => undefined}
+          tools={[
+            'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep',
+            'WebFetch', 'Monitor', 'SendMessage', 'CustomProbe',
+          ]}
+        />,
+      ),
+    );
+    const headsOff = [...el.querySelectorAll<HTMLButtonElement>('.cz-ctx__tgrp-head')];
+    expect(headsOff[0]!.querySelector('.cz-ctx__tgrp-tok')?.textContent).toBe('~7.4k');
+    expect(headsOff[1]!.querySelector('.cz-ctx__tgrp-tok')?.textContent).toBe('~5.5k');
+    const auxOff = rowOf('delegate').querySelector('.cz-ctx__aux')!;
+    expect(auxOff.classList.contains('is-off')).toBe(true);
+    expect(auxOff.textContent).toContain('随 delegate 停用');
+
+    // 点分组头收起
+    click(headsOff[0]);
+    expect(headsOff[0]!.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('CLI 给了单个工具精确占用时，行内显示不带 ~ 的 token，不显示估算提示', () => {
+    const el = render(
+      <ContextPanel
+        usage={{ ...mockContextUsage, toolLoad: undefined, toolTokens: [{ name: 'Bash', tokens: 1_200 }] }}
+        loading={false}
+        onRefresh={() => undefined}
+        onCompact={() => undefined}
+        tools={['Bash', 'Read']}
+      />,
     );
     openFold(el, '工具');
     const rows = [...el.querySelectorAll('.cz-ctx__tool')];
     expect(rows[0]!.querySelector('.cz-ctx__item-tokens')?.textContent).toBe('1.2k');
-    expect(rows[1]!.querySelector('.cz-ctx__item-tokens')).toBeNull();
-    expect(el.querySelector('.cz-ctx__tool-stats')!.textContent).not.toContain('不提供单个工具的占用');
+    expect(rows[1]!.querySelector('.cz-ctx__item-tokens')?.textContent).toBe('—');
+    expect(el.querySelector('.cz-ctx__tool-stats')!.textContent).not.toContain('分摊估算');
   });
 
   it('点开关回调 onToolToggle(名字, 目标状态)；不传回调时开关禁用', () => {
@@ -756,7 +870,7 @@ describe('ContextPanel 工具', () => {
     openFold(el, '工具');
     click(toggles(el)[1]);
     expect(onToolToggle).toHaveBeenLastCalledWith('Glob', false);
-    click(toggles(el)[2]);
+    click(toggles(el)[3]);
     expect(onToolToggle).toHaveBeenLastCalledWith('WebFetch', true);
     act(() => root!.render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={INIT} />));
     for (const b of toggles(el)) expect(b.disabled).toBe(true);
@@ -772,17 +886,16 @@ describe('ContextPanel 工具', () => {
     const usage = { ...mockContextUsage, tools: ['Bash', 'Read'], disabledTools: ['WebFetch'] };
     const el = render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={[]} />);
     openFold(el, '工具');
-    const names = [...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent);
-    expect(names).toEqual(['Bash', 'Read', 'WebFetch']);
+    expect(rowLabels(el)).toEqual(['Bash', 'Read', 'WebFetch']);
     // 悬浮：中文用途；核心工具提示不建议停用；未收录的给兜底说明
     vi.useFakeTimers();
     try {
       const hover = (name: string) => {
-        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === name)!;
-        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__row-label')?.textContent === name)!;
+        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
         act(() => { vi.advanceTimersByTime(400); });
         const text = document.querySelector('.cz-ctx__tip')?.textContent ?? '';
-        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); });
+        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })); });
         return text;
       };
       expect(hover('Bash')).toContain('shell 命令');
@@ -793,7 +906,7 @@ describe('ContextPanel 工具', () => {
     }
     // 本会话的 init 优先
     act(() => root!.render(<ContextPanel usage={usage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} tools={['Glob']} />));
-    expect([...el.querySelectorAll('.cz-ctx__tool .cz-ctx__item-name')].map((n) => n.textContent)).toEqual(['Glob', 'WebFetch']);
+    expect(rowLabels(el)).toEqual(['Glob', 'WebFetch']);
   });
 
   it('Cosyee 工具的悬浮提示不带 mcp__cosyee__ 原名，未收录工具也不显示为 MCP', () => {
@@ -816,13 +929,13 @@ describe('ContextPanel 工具', () => {
     vi.useFakeTimers();
     try {
       const hover = (name: string) => {
-        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__item-name')?.textContent === name)!;
-        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+        const row = [...el.querySelectorAll('.cz-ctx__tool')].find((r) => r.querySelector('.cz-ctx__row-label')?.textContent === name)!;
+        act(() => { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })); });
         act(() => { vi.advanceTimersByTime(400); });
         const tip = document.querySelector('.cz-ctx__tip')!;
         const text = tip.textContent ?? '';
         const hasFull = tip.querySelector('.cz-ctx__tip-full') !== null;
-        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })); });
+        act(() => { row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body })); });
         return { text, hasFull };
       };
       const d = hover('delegate');
@@ -836,5 +949,12 @@ describe('ContextPanel 工具', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('不再渲染独立的「智能体」折叠模块', () => {
+    const el = render(<ContextPanel usage={mockContextUsage} loading={false} onRefresh={() => undefined} onCompact={() => undefined} />);
+    const titles = [...el.querySelectorAll('.cz-ctx__fold-title')].map((t) => t.textContent);
+    expect(titles).not.toContain('智能体');
+    expect(titles).toEqual(['Skills', '工具', 'MCP']);
   });
 });

@@ -1,7 +1,7 @@
 // 账号菜单顶部（第一个账号上方）的模式切换：分段选择，不是开关。
 // 切换模式（默认）：同一时间只用一个账号；并行模式：每个会话用自己的账号，多个账号可以同时运行。
 // 回到切换模式时，其它账号有执行中的会话会被拦下，确认后强制切换（停止它们并整页刷新）。
-import { useState } from 'react';
+import { useRef, useState, type KeyboardEvent } from 'react';
 import type { AccountMode } from '@cosyee/shared';
 import { api, ApiError } from '../../core/api';
 import { GooeyIndicator } from '../motion/GooeyIndicator';
@@ -30,6 +30,7 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
   const [pending, setPending] = useState<AccountMode | null>(null);
   if (pending !== null && pending === mode) setPending(null);
   const shown = pending ?? mode;
+  const btnRefs = useRef<Partial<Record<AccountMode, HTMLButtonElement | null>>>({});
 
   const apply = async (next: AccountMode, force = false) => {
     if (busy || next === mode) return;
@@ -51,18 +52,37 @@ export function AccountModeSwitch({ mode, onChanged }: AccountModeSwitchProps) {
     }
   };
 
+  const focusMode: AccountMode = shown ?? OPTIONS[0].mode;
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (busy || mode === null) return;
+    let next: AccountMode | undefined;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      next = focusMode === 'switch' ? 'parallel' : 'switch';
+    } else if (e.key === 'Home') {
+      next = 'switch';
+    } else if (e.key === 'End') {
+      next = 'parallel';
+    }
+    if (!next) return;
+    e.preventDefault();
+    btnRefs.current[next]?.focus();
+    void apply(next);
+  };
+
   return (
     <div className="cz-sidebar__mode">
-      <div className="cz-sidebar__seg" role="radiogroup" aria-label="账号模式">
+      <div className="cz-sidebar__seg" role="radiogroup" aria-label="账号模式" onKeyDown={onKeyDown}>
         <GooeyIndicator activeKey={shown} selector=".cz-sidebar__seg-btn.is-on" />
         {OPTIONS.map((o) => {
           const on = mode === o.mode;
           return (
             <button
               key={o.mode}
+              ref={(el) => { btnRefs.current[o.mode] = el; }}
               type="button"
               role="radio"
               aria-checked={on}
+              tabIndex={focusMode === o.mode ? 0 : -1}
               title={o.tip}
               className={`cz-sidebar__seg-btn${shown === o.mode ? ' is-on' : ''}`}
               disabled={busy || mode === null}

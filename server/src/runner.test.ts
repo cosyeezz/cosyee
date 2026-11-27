@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_AGENTS } from './delegate/agents.js';
 import type { DelegateBackend } from './delegate/backend.js';
-import { CosyeeMcp, DELEGATE_TOOL_NAMES } from './delegate/mcp.js';
+import { CosyeeMcp, DELEGATE_TOOL_NAMES, NATIVE_SUBAGENT_TOOLS } from './delegate/mcp.js';
 import { DelegateJobs } from './delegate/jobs.js';
 import { removePrivateSettings, writePrivateSettings } from './claude/bin.js';
 import { DELEGATE_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, isDenied, validateConfig } from './claude/runner.js';
@@ -761,8 +761,9 @@ describe('子代理默认模型 / 强度（PreToolUse hook）', () => {
     type: 'control_request', request_id: 'h1',
     request: { subtype: 'hook_callback', callback_id, input: { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_a', tool_input } },
   });
-  const run = (tool_input: Json, d: Json | null = { claude: { model: 'sonnet', effort: 'medium' }, agy: { model: null, effort: null } }) => {
+  const run = (tool_input: Json, d: Json | null = { native: { model: 'sonnet', effort: 'medium' } }) => {
     const { r, anyR, writes, log } = make();
+    anyR.accountDir = path.join(os.tmpdir(), 'cosyee-runner-test-no-agents');
     anyR.agentDefaults = () => d;
     r.handleMessage(hook(tool_input));
     expect(writes[0]).toMatchObject({ type: 'control_response', response: { subtype: 'success', request_id: 'h1' } });
@@ -778,7 +779,7 @@ describe('子代理默认模型 / 强度（PreToolUse hook）', () => {
   it('fork / 没有配置：不介入；只配了强度就只补强度', () => {
     expect(run({ prompt: 'p', subagent_type: 'fork' })).toEqual({ res: {}, events: [] });
     expect(run({ prompt: 'p' }, null)).toEqual({ res: {}, events: [] });
-    expect(run({ prompt: 'p' }, { claude: { effort: 'low' }, agy: {} }).res.hookSpecificOutput.updatedInput).toEqual({ prompt: 'p', effort: 'low' });
+    expect(run({ prompt: 'p' }, { native: { effort: 'low' } }).res.hookSpecificOutput.updatedInput).toEqual({ prompt: 'p', effort: 'low' });
   });
   it('SessionStart(compact)：有委派状态就作为 additionalContext 返回，没有则不介入', () => {
     const compact = { type: 'control_request', request_id: 'c1', request: { subtype: 'hook_callback', callback_id: 'delegate-compact', input: { hook_event_name: 'SessionStart', source: 'compact' } } };
@@ -801,12 +802,15 @@ describe('子代理默认模型 / 强度（PreToolUse hook）', () => {
 });
 
 describe('delegate（cosyee MCP）', () => {
-  it('buildArgs delegate：带 --mcp-config 与追加提示词；默认不带', () => {
+  it('buildArgs delegate：带 --mcp-config 与追加提示词；delegatePrompt: false 时只挂 MCP 不加委派提示词；默认不带', () => {
     const a = buildArgs('sid', true, cfg, {}, { delegate: true });
     expect(JSON.parse(a[a.indexOf('--mcp-config') + 1]!)).toEqual({ mcpServers: { cosyee: { type: 'sdk', name: 'cosyee' } } });
     const p = a[a.indexOf('--append-system-prompt') + 1]!;
     expect(p).toBe(`${PATH_PROMPT} ${DELEGATE_PROMPT}`);
     expect(p).not.toContain('\n');
+    const b = buildArgs('sid', true, cfg, {}, { delegate: true, delegatePrompt: false });
+    expect(b).toContain('--mcp-config');
+    expect(b[b.indexOf('--append-system-prompt') + 1]).toBe(PATH_PROMPT);
     expect(buildArgs('sid', true, cfg)).not.toContain('--mcp-config');
   });
   it('DELEGATE_PROMPT：只讲何时派；无换行、不提后端 / 模型，不讲配套工具怎么用', () => {
@@ -819,18 +823,53 @@ describe('delegate（cosyee MCP）', () => {
     expect(DELEGATE_PROMPT.length).toBeLessThan(500);
     expect(buildArgs('sid', true, cfg, {}, { delegate: true }).join(' ').length).toBeLessThan(8191);
   });
-  it('withNativeDeny：开关关掉且有委派可用才停用整个 Agent；delegate 被停用时不生效；不重复', () => {
+  it('withSubagentDeny：三种类型互斥；后端不可用或 delegate 被停用时退回 native；不重复', () => {
     const { anyR } = make();
-    anyR.nativeAgents = () => false;
-    expect(anyR.withNativeDeny(['Glob'])).toEqual(['Glob']);
+    const okBackend = (id: string) => ({ id, label: id, available: () => true });
+    const badBackend = (id: string) => ({ id, label: id, available: () => false });
+    const mkCfg = (kind: 'native' | 'claude' | 'agy') => ({
+      kind,
+      native: { model: 'sonnet', effort: 'medium' },
+      claude: { model: null, effort: null },
+      agy: { model: null, effort: null },
+    });
+    const allDelegate = [
+      'mcp__cosyee__delegate',
+      'mcp__cosyee__delegate_send',
+      'mcp__cosyee__delegate_stop',
+      'mcp__cosyee__delegate_result',
+      'mcp__cosyee__delegate_agents',
+    ];
+    // 没有注册 MCP：原样返回
+    anyR.backends = { claude: okBackend('claude'), agy: okBackend('agy') };
+    anyR.subagents = () => mkCfg('claude');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob']);
+
+    // 注册了 MCP：claude / agy 可用时停用全部原生子代理相关工具（不含 TaskStop / Monitor），不额外停用 delegate
     anyR.mcp = {};
-    expect(anyR.withNativeDeny(['Glob'])).toEqual(['Glob', 'Agent']);
-    expect(anyR.withNativeDeny(['Agent'])).toEqual(['Agent']);
-    expect(anyR.withNativeDeny(['mcp__cosyee__delegate'])).toEqual(['mcp__cosyee__delegate']);
-    anyR.nativeAgents = () => true;
-    expect(anyR.withNativeDeny([])).toEqual([]);
-    anyR.nativeAgents = undefined;
-    expect(anyR.withNativeDeny([])).toEqual([]);
+    expect(NATIVE_SUBAGENT_TOOLS).toEqual(['Agent', 'SendMessage', 'ListAgents', 'TeamCreate', 'TeamDelete']);
+    expect(NATIVE_SUBAGENT_TOOLS).not.toContain('TaskStop');
+    expect(NATIVE_SUBAGENT_TOOLS).not.toContain('Monitor');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...NATIVE_SUBAGENT_TOOLS]);
+    // 用户自己停用了其中某些项时去重不重复
+    expect(anyR.withSubagentDeny(['Agent', 'SendMessage'])).toEqual(['Agent', 'SendMessage', 'ListAgents', 'TeamCreate', 'TeamDelete']);
+    anyR.subagents = () => mkCfg('agy');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...NATIVE_SUBAGENT_TOOLS]);
+
+    // native：放行原生子代理工具，停用全部 delegate 系列工具；用户自己停用的 SendMessage / Agent 仍保留不误放
+    anyR.subagents = () => mkCfg('native');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...allDelegate]);
+    expect(anyR.withSubagentDeny(['SendMessage', 'Glob'])).toEqual(['SendMessage', 'Glob', ...allDelegate]);
+    expect(anyR.withSubagentDeny(['mcp__cosyee__delegate'])).toEqual(allDelegate);
+
+    // 选中的后端不可用：退回 native 行为
+    anyR.backends = { claude: okBackend('claude'), agy: badBackend('agy') };
+    anyR.subagents = () => mkCfg('agy');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...allDelegate]);
+
+    // 用户手动停用了 delegate：退回 native 行为（不加原生子代理工具）
+    anyR.subagents = () => mkCfg('claude');
+    expect(anyR.withSubagentDeny(['mcp__cosyee__delegate'])).toEqual(allDelegate);
   });
   it('isDenied：permissions.deny 里整条停用 delegate 才算（启动时据此不注册 cosyee MCP）', () => {
     expect(isDenied({ permissions: { deny: ['Bash', 'mcp__cosyee__delegate'] } }, 'mcp__cosyee__delegate')).toBe(true);

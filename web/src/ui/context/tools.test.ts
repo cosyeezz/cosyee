@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Step, Turn } from '@cosyee/shared';
-import { agentRows, callsOf, skillCallCounts, skillCallsOf, toolCallCounts, toolLabel, toolRows, totalCallsOf, totalSkillCallsOf } from './tools';
+import { callsOf, delegateAuxItems, groupToolRows, skillCallCounts, skillCallsOf, toolCallCounts, toolLabel, toolRows, totalCallsOf, totalSkillCallsOf } from './tools';
 
 describe('toolRows', () => {
   it('Cosyee 自带的 mcp__cosyee__* 工具归到工具列表，其它 MCP 工具仍排除', () => {
@@ -8,6 +8,25 @@ describe('toolRows', () => {
       { name: 'Bash', enabled: true },
       { name: 'mcp__cosyee__delegate', enabled: true },
       { name: 'mcp__cosyee__other', enabled: false },
+    ]);
+  });
+
+  it('委派辅助工具（delegate_send/stop/result/agents/status）不单独列出，只用 delegate 一个开关代表', () => {
+    expect(
+      toolRows(
+        [
+          'Bash',
+          'mcp__cosyee__delegate',
+          'mcp__cosyee__delegate_send',
+          'mcp__cosyee__delegate_stop',
+          'mcp__cosyee__delegate_result',
+          'mcp__cosyee__delegate_agents',
+        ],
+        ['mcp__cosyee__delegate_result', 'mcp__cosyee__delegate_status'],
+      ),
+    ).toEqual([
+      { name: 'Bash', enabled: true },
+      { name: 'mcp__cosyee__delegate', enabled: true },
     ]);
   });
 
@@ -22,6 +41,88 @@ describe('toolRows', () => {
   });
   it('入参缺省时返回空', () => {
     expect(toolRows(undefined, undefined)).toEqual([]);
+  });
+});
+
+describe('groupToolRows', () => {
+  it('按 常驻 → 懒加载 → 未确定 分组，隐藏空组，组内保持顺序且保留已停用工具', () => {
+    const rows = [
+      { name: 'WebFetch', enabled: true },
+      { name: 'Bash', enabled: true },
+      { name: 'Mystery', enabled: true },
+      { name: 'Read', enabled: false },
+      { name: 'WebSearch', enabled: false },
+    ];
+    const groups = groupToolRows(rows, {
+      Bash: { load: 'resident', source: 'session' },
+      Read: { load: 'resident', source: 'static' },
+      WebFetch: { load: 'deferred', loaded: true, source: 'session' },
+      WebSearch: { load: 'deferred', source: 'cache' },
+      Mystery: { load: 'unknown' },
+    });
+    expect(groups).toEqual([
+      { load: 'resident', rows: [{ name: 'Bash', enabled: true }, { name: 'Read', enabled: false }] },
+      { load: 'deferred', rows: [{ name: 'WebFetch', enabled: true }, { name: 'WebSearch', enabled: false }] },
+      { load: 'unknown', rows: [{ name: 'Mystery', enabled: true }] },
+    ]);
+    // 没有 unknown 工具时隐藏「未确定」组
+    const onlyTwo = groupToolRows(rows.filter((r) => r.name !== 'Mystery'), {
+      Bash: { load: 'resident' },
+      Read: { load: 'resident' },
+      WebFetch: { load: 'deferred' },
+      WebSearch: { load: 'deferred' },
+    });
+    expect(onlyTwo.map((g) => g.load)).toEqual(['resident', 'deferred']);
+  });
+});
+
+describe('delegateAuxItems', () => {
+  it('按固定顺序收集实际存在的辅助工具；旧版 delegate_status 仅在已注册时才出现', () => {
+    const toolTokens = new Map([
+      ['mcp__cosyee__delegate_send', { tokens: 680 }],
+      ['mcp__cosyee__delegate_stop', { tokens: 260 }],
+      ['mcp__cosyee__delegate_result', { tokens: 540 }],
+      ['mcp__cosyee__delegate_agents', { tokens: 220, deferred: true as const, loaded: true as const }],
+    ]);
+    const toolLoad = {
+      mcp__cosyee__delegate_send: { load: 'resident' as const, source: 'session' as const },
+      mcp__cosyee__delegate_stop: { load: 'resident' as const, source: 'session' as const },
+      mcp__cosyee__delegate_result: { load: 'resident' as const, source: 'session' as const },
+      mcp__cosyee__delegate_agents: { load: 'deferred' as const, loaded: true as const, source: 'session' as const },
+    };
+    const items = delegateAuxItems({
+      initTools: ['mcp__cosyee__delegate_agents', 'mcp__cosyee__delegate_send', 'mcp__cosyee__delegate_stop', 'mcp__cosyee__delegate_result'],
+      toolTokens,
+      toolLoad,
+      delegateEnabled: true,
+    });
+    expect(items).toEqual([
+      { name: 'mcp__cosyee__delegate_send', load: 'resident', loaded: false, tokens: 680 },
+      { name: 'mcp__cosyee__delegate_stop', load: 'resident', loaded: false, tokens: 260 },
+      { name: 'mcp__cosyee__delegate_result', load: 'resident', loaded: false, tokens: 540 },
+      { name: 'mcp__cosyee__delegate_agents', load: 'deferred', loaded: true, tokens: 220 },
+    ]);
+
+    // 停用 delegate 时：tokens 清空、loaded 为 false，即使 initTools 为空也能从 toolLoad 保留 4 个标准辅助工具（不含旧版 status）
+    const off = delegateAuxItems({
+      initTools: [],
+      toolLoad,
+      delegateEnabled: false,
+    });
+    expect(off.map((a) => [a.name, a.load, a.loaded, a.tokens])).toEqual([
+      ['mcp__cosyee__delegate_send', 'resident', false, null],
+      ['mcp__cosyee__delegate_stop', 'resident', false, null],
+      ['mcp__cosyee__delegate_result', 'resident', false, null],
+      ['mcp__cosyee__delegate_agents', 'deferred', false, null],
+    ]);
+
+    // 旧版 delegate_status 真的注册在 initTools 里时才包含
+    const withLegacy = delegateAuxItems({
+      initTools: ['mcp__cosyee__delegate_send', 'mcp__cosyee__delegate_status'],
+      cosyeeTools: new Map([['mcp__cosyee__delegate_status', { tokens: 150 }]]),
+      delegateEnabled: true,
+    });
+    expect(withLegacy.map((a) => a.name)).toEqual(['mcp__cosyee__delegate_send', 'mcp__cosyee__delegate_status']);
   });
 });
 
@@ -97,17 +198,5 @@ describe('skillCallCounts / skillCallsOf / totalSkillCallsOf', () => {
     expect(totalSkillCallsOf({ 'p:pdf': 2, pdf: 3 }, 'pdf')).toBe(3);
     expect(totalSkillCallsOf({}, 'pdf')).toBe(0);
     expect(totalSkillCallsOf(undefined, 'pdf')).toBeNull();
-  });
-});
-
-describe('agentRows', () => {
-  it('init 智能体在前，合并自定义智能体的 token，再并上已关闭的；去重', () => {
-    expect(agentRows(['general-purpose', 'Explore', 'mine'], [{ name: 'mine', tokens: 120 }, { name: 'other', tokens: 30 }], ['Explore', 'gone'])).toEqual([
-      { name: 'general-purpose', enabled: true, tokens: null },
-      { name: 'Explore', enabled: false, tokens: null },
-      { name: 'mine', enabled: true, tokens: 120 },
-      { name: 'other', enabled: true, tokens: 30 },
-      { name: 'gone', enabled: false, tokens: null },
-    ]);
   });
 });

@@ -25,6 +25,19 @@ export const SHARED_DIRS = [
 /** 共享文件：设置、全局 CLAUDE.md、输入历史、快捷键 */
 export const SHARED_FILES = ['settings.json', 'CLAUDE.md', 'history.jsonl', 'keybindings.json'] as const;
 
+/** 子代理配置空间共享的目录（隔离 projects / file-history / todos / plans / tasks / session-env / paste-cache） */
+export const SUBAGENT_SHARED_DIRS = [
+  'skills',
+  'agents',
+  'commands',
+  'plugins',
+  'output-styles',
+  'hooks',
+] as const;
+
+/** 子代理配置空间共享的文件（隔离 history.jsonl） */
+export const SUBAGENT_SHARED_FILES = ['settings.json', 'CLAUDE.md', 'keybindings.json'] as const;
+
 /** 基础目录里没有时要先建出来的文件（其余的没有就不链接） */
 const CREATE_IF_MISSING: Record<string, string> = {
   'settings.json': '{}\n',
@@ -36,6 +49,17 @@ const isWin = process.platform === 'win32';
 
 function stamp(): string {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
+}
+
+/** 生成不与现有文件/目录冲突的带时间戳备份路径（避免同一秒内两次重命名撞名失败） */
+function uniqueStampedPath(basePath: string, suffix: string): string {
+  const first = `${basePath}.${suffix}-${stamp()}`;
+  if (!lstat(first)) return first;
+  for (let i = 1; i < 1000; i++) {
+    const cand = `${first}-${i}`;
+    if (!lstat(cand)) return cand;
+  }
+  return `${first}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 function lstat(p: string): fs.Stats | null {
@@ -132,9 +156,9 @@ function ensureDirLink(base: string, dir: string, name: string): void {
     // 链接被换成了真实目录（比如在别处被复制 / 重建）：内容并进基础目录，剩下的改名留存
     const all = mergeInto(at, master);
     if (all) fs.rmdirSync(at);
-    else fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    else fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   } else if (st) {
-    fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   }
   linkDir(master, at);
 }
@@ -156,15 +180,15 @@ function ensureFileLink(base: string, dir: string, name: string): void {
     } else if (sameContent(at, master)) {
       fs.rmSync(at, { force: true });
     } else if (st.mtimeMs > ms.mtimeMs) {
-      fs.copyFileSync(master, `${master}.cosyee-bak-${stamp()}`);
+      fs.copyFileSync(master, uniqueStampedPath(master, 'cosyee-bak'));
       fs.copyFileSync(at, master);
       fs.rmSync(at, { force: true });
     } else {
-      fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+      fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
     }
     ms = lstat(master);
   } else if (st) {
-    fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   }
   if (!ms) {
     const init = CREATE_IF_MISSING[name];
@@ -178,19 +202,25 @@ function ensureFileLink(base: string, dir: string, name: string): void {
  * 保证账号目录 dir 里的共享项都正确链接到基础目录 base。可重复调用（已正确的项不动）。
  * 单项失败不影响其它项；返回失败的项名。
  */
-export function ensureLinks(base: string, dir: string): string[] {
+export function ensureLinks(
+  base: string,
+  dir: string,
+  opts?: { dirs?: readonly string[]; files?: readonly string[] },
+): string[] {
   if (samePath(base, dir)) return [];
   fs.mkdirSync(base, { recursive: true });
   fs.mkdirSync(dir, { recursive: true });
+  const dirs = opts?.dirs ?? SHARED_DIRS;
+  const files = opts?.files ?? SHARED_FILES;
   const failed: string[] = [];
-  for (const name of SHARED_DIRS) {
+  for (const name of dirs) {
     try {
       ensureDirLink(base, dir, name);
     } catch {
       failed.push(name);
     }
   }
-  for (const name of SHARED_FILES) {
+  for (const name of files) {
     try {
       ensureFileLink(base, dir, name);
     } catch {

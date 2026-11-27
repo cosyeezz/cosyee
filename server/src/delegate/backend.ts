@@ -1,8 +1,18 @@
 // 委派后端的统一接口：模型只认识 delegate 系列工具，不知道背后是谁在干活。
 // 第一个实现是 Antigravity（acp.ts，agy acp 常驻进程池）；以后接别的后端只需再实现一个 DelegateBackend。
 // 后端名（label）只给界面用，永远不进工具说明、提示词或返回给模型的文字。
-import type { DelegateModelList, Effort } from '@cosyee/shared';
+import type { DelegateModelList, Effort, SubagentAvailability, SubagentTypeOverrides } from '@cosyee/shared';
 import type { Json } from '../transcript.js';
+
+export interface BackendDefaults {
+  model: string | null;
+  effort: Effort | null;
+  /** 主会话当前的模型 / 强度：后端配置为 null 时作为回退（Claude 委派用） */
+  parentModel?: string | null;
+  parentEffort?: Effort | null;
+  /** 按代理类型名单独配置（新会话按智能体名匹配） */
+  agents?: SubagentTypeOverrides<string>;
+}
 
 export interface BackendRunOptions {
   cwd: string;
@@ -11,10 +21,18 @@ export interface BackendRunOptions {
   sessionId?: string;
   /** 续接时绑定的后端账号 id；不传 = 使用当前账号（新会话） */
   accountId?: string;
-  /** 只用于新会话：追加到后端系统提示词（智能体正文、项目规则）；续接的会话后端自己保留。权限不做控制 */
+  /** 主会话当前的 Claude 账号（dir 为 null = 默认账号）；Claude 委派新会话沿用 */
+  account?: { id: string; dir: string | null };
+  /** 主会话处于计划模式（只读） */
+  readOnly?: boolean;
+  /** 智能体允许的内置工具白名单（frontmatter tools:，不含 '*'）；仅 Claude 后端生效 */
+  tools?: readonly string[];
+  /** 智能体额外禁用的工具（Explore / Plan 只读工具 + frontmatter disallowedTools:）；在 Claude 后端与 NATIVE_SUBAGENT_TOOLS 合并 */
+  disallowedTools?: readonly string[];
+  /** 只用于新会话：追加到后端系统提示词（智能体正文、项目规则）；续接的会话后端自己保留 */
   systemPrompt?: string;
   /** 用户设置里的默认模型 / 强度，只用于新会话 */
-  defaults?: { model: string | null; effort: Effort | null };
+  defaults?: BackendDefaults;
   /** 智能体定义里的强度：用户设置没填强度时才用，只用于新会话 */
   effort?: Effort;
   signal: AbortSignal;
@@ -51,8 +69,10 @@ export interface DelegateBackend {
   readonly id: string;
   /** 界面显示名（如 'Antigravity'）；不给模型看 */
   readonly label: string;
-  /** 已安装、可以启动（不保证已登录：未登录在运行时报错） */
+  /** 已安装且登录态可用（不保证网络可达） */
   available(): boolean;
+  /** 详细可用性（含不可用原因，供界面显示与 fallbackReason）；未实现时按 available() 退回 */
+  availability?(): SubagentAvailability;
   /** 可用模型；refresh = 强制重新拉取 */
   models(o: { cwd: string; refresh?: boolean }): Promise<DelegateModelList>;
   run(o: BackendRunOptions): Promise<BackendResult>;

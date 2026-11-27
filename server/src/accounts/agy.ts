@@ -484,6 +484,27 @@ export class AgyAccounts {
     return this.accountFor(id) ?? { id: DEFAULT_ID, dir: null };
   }
 
+  /**
+   * 当前活跃的 Antigravity 账号是否已登录（便宜、绝不阻塞）：
+   * - 优先读内存探测缓存；缓存过期时在后台去重刷新（结果变化后通过 onChanged 广播）；
+   * - 尚未探测过时：添加账号看令牌文件存在性，默认账号触发一次后台探测并返回 null（未知时不误判为未登录）。
+   */
+  activeLoggedIn(): boolean | null {
+    if (!this.installed()) return false;
+    const id = this.activeId();
+    const dir = this.dirFor(id);
+    if (dir === undefined) return false;
+    const c = this.cache.get(id);
+    if (c) {
+      if (this.shouldProbe(c)) void this.triggerProbe(id, dir);
+      if (c.loggedIn !== null) return c.loggedIn;
+      return dir ? hasTokenFile(dir) : null;
+    }
+    if (dir) return hasTokenFile(dir);
+    void this.triggerProbe(id, null);
+    return null;
+  }
+
   /** 启动时调用：恢复上次的当前账号（目录没了就回到默认账号），并清理遗留的未登记临时目录 */
   init(): void {
     const dir = this.activeDir();

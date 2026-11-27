@@ -1,5 +1,5 @@
 // 会话流用到的纯函数（无 React 依赖，便于单测）。
-import type { AgentModelConfig, Attachment, SubagentRun, ToolStep, Turn } from '@cosyee/shared';
+import type { Attachment, SubagentConfig, SubagentRun, ToolStep, Turn } from '@cosyee/shared';
 import { EFFORTS, modelLabel } from '@cosyee/shared';
 import { toolLabel } from '../../core/reducer/util';
 
@@ -345,15 +345,21 @@ export function effortText(effort: string | undefined): string {
   return effort ? `思考 ${effortName(effort)}` : '';
 }
 
-/** 子代理的模型 / 思考等级：实际值优先，还不知道时用「子代理模型」设置里的值（fork 沿用主会话，设置不管它） */
-export function runParams(run: SubagentRun, cfg?: AgentModelConfig | null): { model?: string; effort?: string } {
+/** 子代理的模型 / 思考等级：实际值优先，还不知道时按类型用「子代理」设置里的值（fork 沿用主会话，设置不管它） */
+export function runParams(run: SubagentRun, cfg?: SubagentConfig | null): { model?: string; effort?: string } {
   const { model, effort } = run;
   if (!cfg || run.subagentType === 'fork') return { model, effort };
   if (run.delegate === true) {
-    // 已知实际模型却没有强度 = 这个模型不分强度，不拿设置里的值顶
-    return model ? { model, effort } : { model: cfg.agy.model ?? undefined, effort: effort ?? cfg.agy.effort ?? undefined };
+    if (cfg.kind === 'claude') {
+      return { model: model ?? cfg.claude.model ?? undefined, effort: effort ?? cfg.claude.effort ?? undefined };
+    }
+    if (cfg.kind === 'agy') {
+      // 已知实际模型却没有强度 = 这个模型不分强度，不拿设置里的值顶
+      return model ? { model, effort } : { model: cfg.agy.model ?? undefined, effort: effort ?? cfg.agy.effort ?? undefined };
+    }
+    return { model, effort };
   }
-  return { model: model ?? cfg.claude.model, effort: effort ?? cfg.claude.effort };
+  return { model: model ?? cfg.native.model, effort: effort ?? cfg.native.effort };
 }
 
 // ───────────── AskUserQuestion / ExitPlanMode 的展示 ─────────────

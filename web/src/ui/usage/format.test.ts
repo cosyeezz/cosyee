@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { limitLine, limitShortTitle, limitTitle, loginExpiry, nextBillingDate, resetShort, resetText, subscriptionEstimate, worstLimit } from './format';
+import { limitLine, limitShortTitle, limitTitle, loginExpiry, nextBillingDate, resetBrief, resetShort, resetText, subscriptionEstimate, worstLimit } from './format';
 
 describe('resetText', () => {
   const now = new Date(2026, 10, 16, 10, 0).getTime();
@@ -94,5 +94,18 @@ describe('loginExpiry', () => {
     expect(loginExpiry(null, now)).toBeNull();
     expect(loginExpiry(undefined, now)).toBeNull();
     expect(loginExpiry(-1, now)).toBeNull();
+  });
+});
+
+describe('resetBrief', () => {
+  const now = new Date(2026, 10, 16, 10, 0).getTime();
+  it('去掉「重置」字样，只留时间', () => {
+    expect(resetBrief(null, now)).toBe('');
+    expect(resetBrief(now - 1, now)).toBe('即将重置');
+    expect(resetBrief(now + 25 * 60_000, now)).toBe('25分钟后');
+    expect(resetBrief(now + (2 * 60 + 14) * 60_000, now)).toBe('2小时14分后');
+    expect(resetBrief(now + 3 * 3_600_000, now)).toBe('3小时后');
+    expect(resetBrief(new Date(2026, 10, 16, 23, 30).getTime(), now)).toBe('今天 23:30');
+    expect(resetBrief(new Date(2026, 10, 19, 9, 0).getTime(), now)).toBe('周四 09:00');
   });
 });

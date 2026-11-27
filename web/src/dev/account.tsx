@@ -1,8 +1,12 @@
 // 账号菜单 + API 账号对话框（模型映射）+ Antigravity 多账号调试页：http://127.0.0.1:5173/?dev=account&w=240
 // 不连后端：替换 api 里账号相关的方法，返回假数据。
-// w = 侧栏宽度；dlg=api|edit|agy 直接打开对话框；agy=open|none|missing 控制 Antigravity 组状态。
+// w = 侧栏宽度；dlg=api|edit|agy 直接打开对话框；agy=open|none|missing 控制 Antigravity 组状态；
+// tab=main|sub 初始分段；eff=native|claude|agy 子代理生效类型；suberr=1 模拟 claudeError；legacy=1 模拟老服务端（无 subagent 字段）。
 import { useState } from 'react';
-import type { AccountEntry, AccountList, AccountLogin, AccountMode, AgyAccountEntry, AgyAccountList, AgyQuota, ComponentList, KiroBalance, KiroStatus, UsageInfo, UsageSeverity } from '@cosyee/shared';
+import {
+  DEFAULT_SUBAGENTS,
+  type AccountEntry, type AccountList, type AccountLogin, type AccountMode, type AgyAccountEntry, type AgyAccountList, type AgyQuota, type ComponentList, type KiroBalance, type KiroStatus, type SubagentKind, type SubagentState, type UsageInfo, type UsageSeverity,
+} from '@cosyee/shared';
 import '../styles/tokens.css';
 import '../styles/motion.css';
 import '../ui/layout/AppShell.css';
@@ -16,11 +20,16 @@ import { KiroAccountDialog } from '../ui/sidebar/KiroAccountDialog';
 
 const params = new URLSearchParams(location.search);
 const agyParam = params.get('agy');
-if (agyParam === 'open') {
+const tabParam = params.get('tab');
+if (tabParam === 'main' || tabParam === 'sub') {
   try {
-    localStorage.setItem('cz-acct-groups-v2', JSON.stringify({ claude: true, agy: true }));
+    localStorage.setItem('cz-acct-tab', tabParam);
   } catch { /* ignore */ }
 }
+const legacyMode = params.get('legacy') === '1';
+const subErrParam = params.get('suberr') === '1';
+const effRaw = params.get('eff');
+const effKind: SubagentKind = effRaw === 'native' || effRaw === 'agy' || effRaw === 'claude' ? effRaw : 'claude';
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -120,7 +129,26 @@ const delay = <T,>(v: T, ms = 150) => new Promise<T>((r) => setTimeout(() => r(v
 const a = api as unknown as Record<string, unknown>;
 // dup=N：模拟 N 个被隐藏的重复账号（清理入口）
 let dupCount = Number(params.get('dup') ?? 0);
-a.accounts = () => delay<AccountList>({ mode, list, login: null, duplicates: dupCount });
+let subClaudeId = 'a1';
+let subClaudeError: string | undefined = subErrParam ? '同步子代理登录态失败：凭据文件无写入权限' : undefined;
+const buildAccountList = (): AccountList => ({
+  mode,
+  list: list.map((e) => ({ ...e })),
+  login: null,
+  duplicates: dupCount,
+  ...(legacyMode ? {} : { subagent: { claude: subClaudeId, ...(subClaudeError ? { claudeError: subClaudeError } : {}) } }),
+});
+a.accounts = () => delay<AccountList>(buildAccountList());
+a.setSubagentAccount = (id: string) => {
+  subClaudeId = id;
+  subClaudeError = undefined;
+  return delay<AccountList>(buildAccountList(), 120);
+};
+a.subagents = () => delay<SubagentState>({
+  config: { ...DEFAULT_SUBAGENTS, kind: effKind },
+  available: { native: { ok: true }, claude: { ok: true }, agy: { ok: agyInstalled } },
+  effective: effKind,
+}, 80);
 a.dedupeAccounts = () => {
   const r = { removed: Math.max(0, dupCount - 1), skipped: dupCount > 0 ? 1 : 0 };
   dupCount = r.skipped;

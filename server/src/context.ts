@@ -1,8 +1,9 @@
 // get_context_usage 响应 -> 前端的 ContextUsage（换算规则见 shared/src/protocol.ts 与 spike/FINDINGS2.md B1 §4）。
 // skills / mcpServers 另外合并 system/init 的 skills、get_settings 的 effective.skillOverrides 与 mcp_status。
-import { DELEGATE_TOOLS, MCP_SERVER } from './delegate/mcp.js';
+import { DELEGATE_AUX_TOOL_NAMES, DELEGATE_TOOL_NAME, DELEGATE_TOOLS, MCP_SERVER } from './delegate/mcp.js';
 import type { DiskSkill } from './skillsDisk.js';
-import type { ContextMcpServer, ContextSkill, ContextUsage, SkillMode } from '@cosyee/shared';
+import { allocateLargestRemainder, classifyTools, type TranscriptToolState, weightOfTool } from './toolLoad.js';
+import type { ContextMcpServer, ContextSkill, ContextUsage, SkillMode, ToolLoadEntry, ToolLoadSource, ToolTokenEntry } from '@cosyee/shared';
 
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -40,6 +41,10 @@ export interface ContextExtra {
   skillDescriptions?: ReadonlyMap<string, string> | null;
   /** 智能体名 → 描述原文 */
   agentDescriptions?: ReadonlyMap<string, string> | null;
+  /** 本会话记录解析出的工具加载状态（常驻/懒加载/已加载/实时权重） */
+  sessionToolLoad?: TranscriptToolState | null;
+  /** state.json 缓存的上次观测到的懒加载工具名单（兜底用） */
+  cachedDeferredTools?: readonly string[] | null;
 }
 
 /** 描述原文的长度上限（防止异常大的 frontmatter 撑大每次下发的上下文数据） */
@@ -222,17 +227,24 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
   // 界面上它们属于自带工具而非 MCP：把这部分 token 挪回 System tools / System tools (deferred)，保持总和不变。
   let cosyeeResident = 0;
   let cosyeeDeferred = 0;
+  const cosyeeMcpTokens = new Map<string, { tokens: number; isLoaded: boolean }>();
   for (const t of rawMcpTools) {
     if (String(t.serverName ?? t.server ?? '') !== MCP_SERVER) continue;
+    const name = String(t.name ?? '');
     const tok = Math.max(0, num(t.tokens));
-    if (t.isLoaded === false) cosyeeDeferred += tok;
+    const isLoaded = t.isLoaded !== false;
+    if (name) cosyeeMcpTokens.set(name, { tokens: tok, isLoaded });
+    if (!isLoaded) cosyeeDeferred += tok;
     else cosyeeResident += tok;
   }
+  let movedCosyeeResident = 0;
+  let movedCosyeeDeferred = 0;
   if (cosyeeResident > 0) {
     const srcIdx = categories.findIndex((c) => c.name === 'MCP tools');
     if (srcIdx >= 0 && categories[srcIdx]!.tokens > 0) {
       const src = categories[srcIdx]!;
       const move = Math.min(cosyeeResident, src.tokens);
+      movedCosyeeResident = move;
       src.tokens -= move;
       src.percent = max > 0 ? (src.tokens / max) * 100 : null;
       const dst = categories.find((c) => c.name === 'System tools');
@@ -256,6 +268,7 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     if (srcIdx >= 0 && deferred[srcIdx]!.tokens > 0) {
       const src = deferred[srcIdx]!;
       const move = Math.min(cosyeeDeferred, src.tokens);
+      movedCosyeeDeferred = move;
       src.tokens -= move;
       const dst = deferred.find((d) => d.name === 'System tools (deferred)');
       if (dst) {
@@ -273,19 +286,104 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     tokens: num(a.tokens),
   }));
 
-  // 单个内置工具的占用：当前 CLI 恒不给（只有合计），给了就带上；同名以常驻的为准
-  const toolTokens: NonNullable<ContextUsage['toolTokens']> = [];
+  // 单个内置工具的占用：
+  // 1. CLI 直接给了 systemTools / deferredBuiltinTools 时优先用精确值；
+  // 2. 否则按加载分类（常驻 / 懒加载）+ 定义长度权重从「System tools」/「System tools (deferred)」合计分摊，
+  //    Cosyee 自带 MCP 工具先扣除并保留精确值，其余内置工具标 estimated: true。
+  const toolTokens: ToolTokenEntry[] = [];
   const seenTool = new Set<string>();
-  const pushTools = (list: unknown, deferred: boolean): void => {
+  const pushCliTools = (list: unknown, isDeferred: boolean): void => {
     for (const t of Array.isArray(list) ? (list as Raw[]) : []) {
       const name = typeof t?.name === 'string' ? t.name : '';
       if (!name || seenTool.has(name)) continue;
       seenTool.add(name);
-      toolTokens.push({ name, tokens: num(t.tokens), ...(deferred && t.isLoaded !== true ? { deferred: true as const } : {}) });
+      toolTokens.push({ name, tokens: num(t.tokens), ...(isDeferred && t.isLoaded !== true ? { deferred: true as const } : {}) });
     }
   };
-  pushTools(raw.systemTools, false);
-  pushTools(raw.deferredBuiltinTools, true);
+  pushCliTools(raw.systemTools, false);
+  pushCliTools(raw.deferredBuiltinTools, true);
+
+  let toolLoad: Record<string, ToolLoadEntry> | undefined;
+  let toolLoadSource: ToolLoadSource | undefined;
+  const disabledSet = new Set(extra.disabledTools ?? []);
+  const delegateDisabled = disabledSet.has(DELEGATE_TOOL_NAME);
+  if (delegateDisabled) {
+    for (const aux of DELEGATE_AUX_TOOL_NAMES) disabledSet.add(aux);
+  }
+  // 合并 extra.tools 与 raw.mcpTools 里的 cosyee 工具，保证 delegate 辅助工具始终进入 toolLoad 分类
+  const enabledSet = new Set<string>();
+  for (const n of extra.tools ?? []) if (!disabledSet.has(n)) enabledSet.add(n);
+  for (const n of cosyeeMcpTokens.keys()) if (!disabledSet.has(n)) enabledSet.add(n);
+  const enabledTools = [...enabledSet];
+  const hasToolList = enabledTools.length > 0 || disabledSet.size > 0;
+  if (hasToolList) {
+    const cosyeeLoadedMap = new Map<string, boolean>();
+    for (const [k, v] of cosyeeMcpTokens) cosyeeLoadedMap.set(k, v.isLoaded);
+    const classified = classifyTools({
+      enabled: enabledTools,
+      disabled: [...disabledSet],
+      session: extra.sessionToolLoad,
+      cachedDeferred: extra.cachedDeferredTools,
+      cosyeeMcpLoaded: cosyeeLoadedMap,
+    });
+    toolLoad = classified.toolLoad;
+    toolLoadSource = classified.source;
+
+    if (toolTokens.length === 0) {
+      // 先放 Cosyee 自带工具的精确值（含 delegate 及其辅助工具）
+      for (const name of enabledTools) {
+        const cm = cosyeeMcpTokens.get(name);
+        if (!cm || seenTool.has(name)) continue;
+        seenTool.add(name);
+        const info = toolLoad[name];
+        const isDef = info?.load === 'deferred';
+        toolTokens.push({
+          name,
+          tokens: cm.tokens,
+          ...(isDef ? { deferred: true as const } : {}),
+          ...(isDef && info?.loaded ? { loaded: true as const } : {}),
+        });
+      }
+
+      // 再按定义长度权重分摊内置工具（非 mcp__）
+      const sysResCat = categories.find((c) => c.name === 'System tools');
+      const sysDefCat = deferred.find((d) => d.name === 'System tools (deferred)');
+      const runtimeWeights = extra.sessionToolLoad?.weights;
+
+      const residentBuiltins: { name: string; weight: number }[] = [];
+      const deferredBuiltins: { name: string; weight: number }[] = [];
+      for (const name of enabledTools) {
+        if (name.startsWith('mcp__') || seenTool.has(name)) continue;
+        const info = toolLoad[name];
+        if (info?.load === 'resident') residentBuiltins.push({ name, weight: weightOfTool(name, runtimeWeights) });
+        else if (info?.load === 'deferred') deferredBuiltins.push({ name, weight: weightOfTool(name, runtimeWeights) });
+      }
+
+      if (sysResCat && residentBuiltins.length > 0) {
+        const budget = Math.max(0, sysResCat.tokens - movedCosyeeResident);
+        const alloc = allocateLargestRemainder(budget, residentBuiltins);
+        for (const it of residentBuiltins) {
+          seenTool.add(it.name);
+          toolTokens.push({ name: it.name, tokens: alloc.get(it.name) ?? 0, estimated: true });
+        }
+      }
+      if (sysDefCat && deferredBuiltins.length > 0) {
+        const budget = Math.max(0, sysDefCat.tokens - movedCosyeeDeferred);
+        const alloc = allocateLargestRemainder(budget, deferredBuiltins);
+        for (const it of deferredBuiltins) {
+          seenTool.add(it.name);
+          const info = toolLoad[it.name];
+          toolTokens.push({
+            name: it.name,
+            tokens: alloc.get(it.name) ?? 0,
+            deferred: true,
+            estimated: true,
+            ...(info?.loaded ? { loaded: true as const } : {}),
+          });
+        }
+      }
+    }
+  }
 
   const threshold = raw.autoCompactThreshold;
   const untilAutocompact =
@@ -310,6 +408,7 @@ export function toContextUsage(raw: Raw, at: number = Date.now(), extra: Context
     ...(extra.tools ? { tools: [...extra.tools] } : {}),
     ...(extra.slashCommands?.length ? { slashCommands: [...extra.slashCommands] } : {}),
     ...(toolTokens.length ? { toolTokens } : {}),
+    ...(toolLoad ? { toolLoad, toolLoadSource } : {}),
     untilAutocompact,
     ...(raw.isAutoCompactEnabled !== false && typeof threshold === 'number' ? { autoCompactThreshold: threshold } : {}),
     compactWindow: extra.compactWindow ?? null,

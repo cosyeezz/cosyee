@@ -13,9 +13,11 @@ export interface LiquidCapsuleProps {
   activeKey: string | null;
   /** 在容器里查找选中行的选择器 */
   selector: string;
+  /** 滑动方向：默认 y（竖向列表）；x 用于横向分段控件 */
+  axis?: 'y' | 'x';
 }
 
-export function LiquidCapsule({ activeKey, selector }: LiquidCapsuleProps) {
+export function LiquidCapsule({ activeKey, selector, axis = 'y' }: LiquidCapsuleProps) {
   const ref = useRef<HTMLSpanElement>(null);
   const last = useRef<{ key: string | null; box: Box | null }>({ key: null, box: null });
   const anim = useRef<Animation | null>(null);
@@ -23,20 +25,42 @@ export function LiquidCapsule({ activeKey, selector }: LiquidCapsuleProps) {
   // 每次父组件渲染后都同步一次位置（行可能因为折叠、重排、增删而移动）
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el) sync(el, activeKey, selector, last.current, anim);
+    if (el) sync(el, activeKey, selector, axis, last.current, anim);
   });
 
-  // 容器尺寸变化（侧栏宽度、滚动条出现）时也要重新贴位
+  // 容器尺寸变化（侧栏宽度、滚动条出现）、窗口缩放、字体加载后都要重新贴位
   useLayoutEffect(() => {
     const el = ref.current;
     const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => sync(el, last.current.key, selector, last.current, anim, true));
-    ro.observe(host);
-    return () => ro.disconnect();
-  }, [selector]);
+    if (!el || !host) return;
+    let alive = true;
+    const resync = () => {
+      if (alive) sync(el, last.current.key, selector, axis, last.current, anim, true);
+    };
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resync) : null;
+    ro?.observe(host);
+    window.addEventListener('resize', resync);
+    document.fonts?.ready?.then(resync).catch(() => {});
+    return () => {
+      alive = false;
+      ro?.disconnect();
+      window.removeEventListener('resize', resync);
+    };
+  }, [selector, axis]);
+
+  // 卸载时取消正在播放的动画
+  useLayoutEffect(() => () => {
+    anim.current?.cancel();
+    anim.current = null;
+  }, []);
 
   return <span ref={ref} className="cz-capsule" aria-hidden="true" />;
+}
+
+function hostScale(host: HTMLElement, hr: DOMRect): { sx: number; sy: number } {
+  const sx = host.offsetWidth > 0 && hr.width > 0 ? hr.width / host.offsetWidth : 1;
+  const sy = host.offsetHeight > 0 && hr.height > 0 ? hr.height / host.offsetHeight : 1;
+  return { sx, sy };
 }
 
 function measure(el: HTMLElement, selector: string): Box | null {
@@ -46,7 +70,13 @@ function measure(el: HTMLElement, selector: string): Box | null {
   const hr = host.getBoundingClientRect();
   const rr = row.getBoundingClientRect();
   if (rr.width === 0 || rr.height === 0) return null;
-  return { x: rr.left - hr.left + host.scrollLeft, y: rr.top - hr.top + host.scrollTop, w: rr.width, h: rr.height };
+  const { sx, sy } = hostScale(host, hr);
+  return {
+    x: (rr.left - hr.left) / sx + host.scrollLeft,
+    y: (rr.top - hr.top) / sy + host.scrollTop,
+    w: rr.width / sx,
+    h: rr.height / sy,
+  };
 }
 
 function place(el: HTMLElement, b: Box) {
@@ -62,7 +92,13 @@ function current(el: HTMLElement, fallback: Box): Box {
   const hr = host.getBoundingClientRect();
   const r = el.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return fallback;
-  return { x: r.left - hr.left + host.scrollLeft, y: r.top - hr.top + host.scrollTop, w: r.width, h: r.height };
+  const { sx, sy } = hostScale(host, hr);
+  return {
+    x: (r.left - hr.left) / sx + host.scrollLeft,
+    y: (r.top - hr.top) / sy + host.scrollTop,
+    w: r.width / sx,
+    h: r.height / sy,
+  };
 }
 
 const same = (a: Box | null, b: Box | null) =>
@@ -72,6 +108,7 @@ function sync(
   el: HTMLElement,
   key: string | null,
   selector: string,
+  axis: 'y' | 'x',
   state: { key: string | null; box: Box | null },
   anim: { current: Animation | null },
   force = false,
@@ -99,10 +136,15 @@ function sync(
   el.classList.add('is-on');
 
   if (!keyChanged || force || !wasShown || !start || reducedMotion() || !canAnimate(el)) return;
-  anim.current = el.animate(liquidFrames(start, target), { duration: durationFor(start, target), easing: 'linear' });
+  const frames = axis === 'x' ? liquidFramesX(start, target) : liquidFrames(start, target);
+  anim.current = el.animate(frames, { duration: durationFor(start, target, axis), easing: 'linear' });
 }
 
-function durationFor(a: Box, b: Box) {
+function durationFor(a: Box, b: Box, axis: 'y' | 'x' = 'y') {
+  if (axis === 'x') {
+    const dist = Math.abs(b.x - a.x);
+    return Math.round(Math.min(440, Math.max(320, 300 + dist * 0.4)));
+  }
   const dist = Math.abs(b.y - a.y);
   return Math.round(Math.min(620, Math.max(420, 400 + dist * 0.35)));
 }
@@ -160,6 +202,44 @@ export function liquidFrames(a: Box, b: Box, steps = 32): Keyframe[] {
     frames.push({
       offset: i / steps,
       transform: `translate3d(${x.toFixed(2)}px, ${top.toFixed(2)}px, 0) scale(${(w / b.w).toFixed(4)}, ${(h / b.h).toFixed(4)})`,
+    });
+  }
+  return frames;
+}
+
+/** 横向液态流动：前沿先冲过去、后沿滞后 14% 跟上，沿 X 轴拉伸（上限 1.45 倍）并伴随轻微纵向收窄 */
+export function liquidFramesX(a: Box, b: Box, steps = 32): Keyframe[] {
+  const dur = durationFor(a, b, 'x');
+  const lag = dur * 0.14;
+  const right = b.x >= a.x;
+  const dist = Math.abs(b.x - a.x);
+  const cap = Math.min(3.5, 1 + dist * 0.02);
+  const rest = (a.w + b.w) / 2;
+  const frames: Keyframe[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * dur;
+    const pLead = spring(t, dur * 0.68, 0.84);
+    const pTrail = spring(t - lag, dur * 0.70, 0.68);
+    const l0 = a.x, r0 = a.x + a.w, l1 = b.x, r1 = b.x + b.w;
+    let left: number, rgt: number;
+    if (right) {
+      rgt = edge(r0, r1, pLead, cap);
+      left = edge(l0, l1, pTrail, cap);
+    } else {
+      left = edge(l0, l1, pLead, cap);
+      rgt = edge(r0, r1, pTrail, cap);
+    }
+    if (i === steps) { left = l1; rgt = r1; }
+    let w = Math.min(Math.max(rgt - left, b.w * 0.84), b.w * 1.45);
+    if (rgt - left > w) left = right ? rgt - w : left;
+    if (i === steps) w = b.w;
+    const k = w / rest;
+    const inset = i === steps ? 0 : Math.max(-1, Math.min(2.8, (k - 1) * 1.8));
+    const y = a.y + (b.y - a.y) * Math.min(1, pLead) + inset;
+    const h = a.h + (b.h - a.h) * Math.min(1, pLead) - inset * 2;
+    frames.push({
+      offset: i / steps,
+      transform: `translate3d(${left.toFixed(2)}px, ${y.toFixed(2)}px, 0) scale(${(w / b.w).toFixed(4)}, ${(h / b.h).toFixed(4)})`,
     });
   }
   return frames;

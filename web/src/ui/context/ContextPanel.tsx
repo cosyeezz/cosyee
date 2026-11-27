@@ -1,11 +1,11 @@
-// 右侧上下文面板：已用占比 / 分段条 / 分类明细 / deferred / Skills（三态）/ MCP（按服务器开关）/ 智能体 / 压缩。
+// 右侧上下文面板：已用占比 / 分段条 / 分类明细 / deferred / Skills（三态）/ MCP（按服务器开关）/ 子代理 / 压缩。
 // 约定：ContextUsage.percent 与 categories[].percent 均按 0–100 解释（22.6 表示 22.6%）。
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   BUILTIN_PRICES,
   type CachePoint, type CliModelCost, type CompactMark, type ContextMcpServer, type ContextSkill, type ContextUsage, type PriceTable,
-  type SkillMode, type SubagentCost, type ToolStats as ToolStatsData, type Turn,
+  type SkillMode, type SubagentCost, type ToolLoadClass, type ToolLoadEntry, type ToolStats as ToolStatsData, type ToolTokenEntry, type Turn,
 } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { viewportBounds } from '../layout/viewport';
@@ -13,7 +13,7 @@ import { Menu, type MenuEntry } from '../menus/Menu';
 import { CountUp } from '../motion/CountUp';
 import { useWake } from '../motion/useWake';
 import { useHeld } from '../motion/useHeld';
-import { AgentModels, type AgentModelsProps } from './AgentModels';
+import { Subagents, type SubagentsProps } from './Subagents';
 import { CacheChart } from './CacheChart';
 import { ContextChart } from './ContextChart';
 import { CostSection, type Billing } from './CostSection';
@@ -22,8 +22,8 @@ import { Switch } from './Switch';
 import { toolInfo } from './toolCatalog';
 import { COSYEE_TOOL_PREFIX, isCosyeeTool } from '../../core/reducer/util';
 import {
-  agentRows, callsOf, COSYEE_MCP_SERVER, skillCallCounts, skillCallsOf, toolCallCounts, toolLabel, toolRows, totalCallsOf, totalSkillCallsOf,
-  type AgentRow, type SkillCalls, type ToolCalls, type ToolRow,
+  callsOf, COSYEE_MCP_SERVER, DELEGATE_TOOL, delegateAuxItems, groupToolRows, skillCallCounts, skillCallsOf, toolCallCounts, toolLabel, toolRows, totalCallsOf, totalSkillCallsOf,
+  type DelegateAuxItem, type SkillCalls, type ToolCalls, type ToolGroup, type ToolRow,
 } from './tools';
 import { formatPercent, formatTokens } from './formatTokens';
 import { skillBaseName, skillInfo } from './skillCatalog';
@@ -50,10 +50,6 @@ export interface ContextPanelProps {
   tools?: string[];
   /** 启用 / 停用内置工具；不传则只读 */
   onToolToggle?: (name: string, enabled: boolean) => void;
-  /** 本会话 init 报告的智能体名（SessionMeta.agents，含内置）；没有时只列 usage.agents 里的自定义智能体 */
-  agents?: string[];
-  /** 开启 / 关闭智能体；不传则只读 */
-  onAgentToggle?: (name: string, enabled: boolean) => void;
   /** 缓存命中率走势（SessionMeta.cache）；不传或为空则显示空态 */
   cache?: CachePoint[];
   /** 会话流（上下文走势点开某次请求时，按 tool_use id 找工具摘要与结果大小） */
@@ -78,8 +74,8 @@ export interface ContextPanelProps {
   model?: string;
   /** 计费方式，决定花费一节的标题与说明 */
   billing?: Billing;
-  /** 「子代理模型」（智能体下方）；不传则不显示 */
-  agentModels?: AgentModelsProps | null;
+  /** 「子代理」（智能体下方）；不传则不显示 */
+  subagents?: SubagentsProps | null;
   /** 点花费图的柱子跳到会话流里的这一轮 */
   onJumpTurn?: (turn: number) => void;
 }
@@ -120,23 +116,23 @@ function categoryColor(name: string): string {
 const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
-  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onSkillReveal, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, agents: liveAgents, onAgentToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
-  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, agentModels,
+  usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onSkillReveal, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
+  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, subagents,
 }: ContextPanelProps) {
   // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
   const live = useMemo(
     () =>
       liveUsage
         ? {
-            usage: liveUsage, cache: liveCache, turns: liveTurns, tools: liveTools, agents: liveAgents,
+            usage: liveUsage, cache: liveCache, turns: liveTurns, tools: liveTools,
             compactions: liveCompactions, subCosts: liveSubCosts, cliCost: liveCliCost, model: liveModel,
           }
         : null,
-    [liveUsage, liveCache, liveTurns, liveTools, liveAgents, liveCompactions, liveSubCosts, liveCliCost, liveModel],
+    [liveUsage, liveCache, liveTurns, liveTools, liveCompactions, liveSubCosts, liveCliCost, liveModel],
   );
   const held = useHeld(live);
   const usage = held.value?.usage ?? null;
-  const { cache, turns, tools, agents, compactions, subCosts, cliCost, model } = held.value ?? {};
+  const { cache, turns, tools, compactions, subCosts, cliCost, model } = held.value ?? {};
   const stale = held.stale;
   const [skillsOpen, setSkillsOpen] = useState(false);
   // 批量设置之前的状态，用于撤销；手动改任何一个 skill 或移除后失效
@@ -170,7 +166,6 @@ export function ContextPanel({
   }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
   // 数据第一次到达时：数字滚动、条形擦出、走势描出、各块依次出现
   const waking = useWake(!!usage);
   // 每个工具在本会话里的调用次数（会话流每次更新都会变，按 turns 记忆）
@@ -229,15 +224,29 @@ export function ContextPanel({
   // Cosyee 自带的 MCP 服务器不在这里列：它的工具（delegate 等）归到「工具」一节，按工具开关
   const servers = (usage.mcpServers ?? []).filter((s) => s.name !== COSYEE_MCP_SERVER);
   // 本会话收到过 init 就用它；没收到（探测进程不发消息 / 页面重开错过了 init）用服务端记下的
-  const toolList = toolRows(tools?.length ? tools : usage.tools, usage.disabledTools);
+  const activeInitTools = tools?.length ? tools : usage.tools;
+  const toolList = toolRows(activeInitTools, usage.disabledTools);
   const toolTok = toolTokenSummary(usage);
   const toolTokOf = new Map((usage.toolTokens ?? []).map((t) => [t.name, t]));
+  const hasEstimatedTools = (usage.toolTokens ?? []).some((t) => t.estimated === true);
+  const toolGroups = usage.toolLoad ? groupToolRows(toolList, usage.toolLoad) : null;
   // Cosyee 自带工具（mcp__cosyee__*）挂在 cosyee 这台 MCP 服务器下：定义原文与 token 从那里取
   const cosyeeDefs = new Map<string, ContextMcpServer['tools'][number]>(
     (usage.mcpServers ?? [])
       .find((s) => s.name === COSYEE_MCP_SERVER)
       ?.tools.map((t) => [`${COSYEE_TOOL_PREFIX}${t.name}`, t]) ?? [],
   );
+  const delegateRow = toolList.find((t) => t.name === DELEGATE_TOOL);
+  const delegateAux = delegateRow
+    ? delegateAuxItems({
+        initTools: activeInitTools,
+        cosyeeTools: cosyeeDefs,
+        mcpTools: usage.mcpTools,
+        toolTokens: toolTokOf,
+        toolLoad: usage.toolLoad,
+        delegateEnabled: delegateRow.enabled,
+      })
+    : [];
   const sessionCalls = toolList.reduce((n, t) => {
     const c = callsOf(callCounts, t.name);
     return n + c.main + c.sub;
@@ -245,8 +254,6 @@ export function ContextPanel({
   const allCounts = toolStats?.counts;
   const allCalls = allCounts ? toolList.reduce((n, t) => n + totalCallsOf(allCounts, t.name), 0) : null;
   const offCount = toolList.filter((t) => !t.enabled).length;
-  const agentList = agentRows(agents, usage.agents, usage.disabledAgents);
-  const agentOff = agentList.filter((a) => !a.enabled).length;
 
   return (
     <div className={`cz-ctx${loading ? ' is-loading' : ''}${waking ? ' is-waking' : ''}${stale ? ' is-stale' : ''}`} aria-busy={stale || undefined}>
@@ -381,41 +388,67 @@ export function ContextPanel({
           ))}
         </Collapsible>
 
-        {/* 可展开：内置工具（按工具开关；停用名单全局保存） */}
-        <Collapsible
+        {/* 可展开：内置工具（按常驻 / 懒加载 / 未确定分组；停用名单全局保存） */}
+        <Fold
           title="工具"
           count={toolList.length}
           extra={[toolTok.resident !== null && formatTokens(toolTok.resident), offCount > 0 && `${offCount} 已停用`].filter(Boolean).join(' · ') || undefined}
-          cols={{ total: !!allCounts, tokens: toolTokOf.size > 0 }}
           open={toolsOpen}
           onToggle={() => setToolsOpen((v) => !v)}
-          toolbar={
-            <>
-              <ToolStats
-                resident={toolTok.resident}
-                deferred={toolTok.deferred}
-                perTool={toolTokOf.size > 0}
-                session={sessionCalls}
-                all={allCalls}
-                sessions={toolStats?.sessions ?? 0}
-              />
-              <p className="cz-ctx__note">停用后当前会话立即拦截调用；新会话里模型将看不到该工具。设置对所有会话生效。</p>
-            </>
-          }
         >
-          {toolList.map((t) => (
-            <ToolItem
-              key={t.name}
-              tool={t}
-              calls={callsOf(callCounts, t.name)}
-              total={allCounts ? totalCallsOf(allCounts, t.name) : null}
-              tokens={toolTokOf.get(t.name)}
-              def={cosyeeDefs.get(t.name)}
-              sums={toolTok}
-              onToggle={onToolToggle}
-            />
-          ))}
-        </Collapsible>
+          <ToolStats
+            resident={toolTok.resident}
+            deferred={toolTok.deferred}
+            perTool={toolTokOf.size > 0}
+            estimated={hasEstimatedTools}
+            session={sessionCalls}
+            all={allCalls}
+            sessions={toolStats?.sessions ?? 0}
+          />
+          <p className="cz-ctx__note">停用后当前会话立即拦截调用；新会话里模型将看不到该工具。设置对所有会话生效。</p>
+          {toolGroups ? (
+            <div className="cz-ctx__tgroups">
+              {toolGroups.map((g) => (
+                <ToolGroupSection
+                  key={g.load}
+                  group={g}
+                  toolLoad={usage.toolLoad}
+                  toolTokOf={toolTokOf}
+                  cosyeeDefs={cosyeeDefs}
+                  delegateAux={delegateAux}
+                  callCounts={callCounts}
+                  allCounts={allCounts}
+                  sums={toolTok}
+                  showTokens={toolTokOf.size > 0}
+                  onToggle={onToolToggle}
+                />
+              ))}
+            </div>
+          ) : (
+            <ul className="cz-ctx__list cz-ctx__list--plain cz-ctx__list--cols">
+              <li className="cz-ctx__cols" aria-hidden="true">
+                <span className="cz-ctx__tool-calls" title="本会话的调用次数">本会话</span>
+                {!!allCounts && <span className="cz-ctx__tool-total" title="所有会话累计的调用次数">累计</span>}
+                {toolTokOf.size > 0 && <span className="cz-ctx__item-tokens" title="占用的 token">占用</span>}
+              </li>
+              {toolList.map((t) => (
+                <ToolItem
+                  key={t.name}
+                  tool={t}
+                  calls={callsOf(callCounts, t.name)}
+                  total={allCounts ? totalCallsOf(allCounts, t.name) : null}
+                  tokens={toolTokOf.get(t.name)}
+                  loadEntry={usage.toolLoad?.[t.name]}
+                  showTokenCol={toolTokOf.size > 0}
+                  def={cosyeeDefs.get(t.name)}
+                  auxTools={t.name === DELEGATE_TOOL ? delegateAux : undefined}
+                  sums={toolTok}
+                  onToggle={onToolToggle}
+                />
+              ))}
+            </ul>
+          )}
+        </Fold>
 
         {/* 可展开：MCP（按服务器开关，点名字展开工具） */}
         <Collapsible
@@ -430,21 +463,7 @@ export function ContextPanel({
           ))}
         </Collapsible>
 
-        {/* 可展开：智能体（含内置；按智能体开关，名单全局保存） */}
-        <Collapsible
-          title="智能体"
-          count={agentList.length}
-          extra={agentOff > 0 ? `${agentOff} 已关闭` : undefined}
-          open={agentsOpen}
-          onToggle={() => setAgentsOpen((v) => !v)}
-          toolbar={<p className="cz-ctx__note">关闭后模型不能再派发该智能体（当前会话立即拦截，新会话里看不到它）。设置对所有会话生效。</p>}
-        >
-          {agentList.map((a) => (
-            <AgentItem key={a.name} agent={a} description={usage.agentDescriptions?.[a.name]} onToggle={onAgentToggle} />
-          ))}
-        </Collapsible>
-
-        {agentModels && <AgentModels {...agentModels} />}
+        {subagents && <Subagents {...subagents} fallbackDisabledAgents={subagents.fallbackDisabledAgents ?? usage.disabledAgents} />}
       </div>
 
       {/* 底部：自动压缩 */}
@@ -1148,13 +1167,14 @@ function toolTokenSummary(usage: ContextUsage): { resident: number | null; defer
   return { resident: resident ? resident.tokens : null, deferred: deferred ? deferred.tokens : null };
 }
 
-/** 工具列表上方的统计：定义占用（常驻 / 延迟加载）与调用次数（本会话 / 所有会话累计） */
+/** 工具列表上方的统计：定义占用（常驻 / 懒加载）与调用次数（本会话 / 所有会话累计） */
 function ToolStats({
-  resident, deferred, perTool, session, all, sessions,
+  resident, deferred, perTool, estimated, session, all, sessions,
 }: {
   resident: number | null;
   deferred: number | null;
   perTool: boolean;
+  estimated: boolean;
   session: number;
   /** 所有会话累计；取不到为 null */
   all: number | null;
@@ -1163,12 +1183,12 @@ function ToolStats({
   return (
     <div className="cz-ctx__tool-stats">
       <dl>
-        <div title="每次请求都随提示词发送的内置工具定义">
+        <div title="每次请求都随提示词发送的内置工具定义（CLI 精确合计）">
           <dt>常驻占用</dt>
           <dd>{resident === null ? '—' : formatTokens(resident)}</dd>
         </div>
-        <div title="平时只列名字（几乎不占上下文），模型用 ToolSearch 加载后才放入完整定义">
-          <dt>延迟加载</dt>
+        <div title="平时只列名字（几乎不占上下文），模型用 ToolSearch 加载后才放入完整定义（CLI 精确合计）">
+          <dt>懒加载</dt>
           <dd>{deferred === null ? '—' : formatTokens(deferred)}</dd>
         </div>
         <div title="本会话（含历史与子智能体）调用内置工具的总次数">
@@ -1180,7 +1200,149 @@ function ToolStats({
           <dd>{all === null ? '—' : `${formatCount(all)} 次`}</dd>
         </div>
       </dl>
-      {!perTool && <p className="cz-ctx__note">CLI 只报告工具定义的合计，不提供单个工具的占用。</p>}
+      {estimated ? (
+        <p className="cz-ctx__note">带 ~ 的单工具 token 按定义长度权重从 CLI 合计中分摊估算；Cosyee 自带工具为精确值。</p>
+      ) : (
+        !perTool && <p className="cz-ctx__note">暂无单工具 token 数据，上方常驻 / 懒加载为 CLI 报告的合计。</p>
+      )}
+    </div>
+  );
+}
+
+const TOOL_GROUP_META: Record<ToolLoadClass, { title: string; tip: string }> = {
+  resident: {
+    title: '常驻',
+    tip: '每次请求都随提示词发送完整定义。',
+  },
+  deferred: {
+    title: '懒加载',
+    tip: '平时只列名字，模型用 ToolSearch 加载后才放入完整定义；括号里显示本会话已加载的个数。',
+  },
+  unknown: {
+    title: '未确定',
+    tip: '本会话尚未观测到这些工具的加载方式，且不在 CLI 静态默认表中。',
+  },
+};
+
+function ToolGroupSection({
+  group, toolLoad, toolTokOf, cosyeeDefs, delegateAux, callCounts, allCounts, sums, showTokens, onToggle,
+}: {
+  group: ToolGroup;
+  toolLoad: Readonly<Record<string, ToolLoadEntry>> | undefined;
+  toolTokOf: ReadonlyMap<string, ToolTokenEntry>;
+  cosyeeDefs: ReadonlyMap<string, ContextMcpServer['tools'][number]>;
+  delegateAux: readonly DelegateAuxItem[];
+  callCounts: ReadonlyMap<string, ToolCalls>;
+  allCounts: Readonly<Record<string, number>> | undefined;
+  sums: { resident: number | null; deferred: number | null };
+  showTokens: boolean;
+  onToggle?: (name: string, enabled: boolean) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const bodyId = useId();
+  const meta = TOOL_GROUP_META[group.load];
+  const auxInGroup = delegateAux.filter((a) => a.load === group.load);
+
+  let tokenSum = 0;
+  let hasAnyTok = false;
+  let anyEstimated = false;
+  let loadedCount = 0;
+  for (const r of group.rows) {
+    const info = toolLoad?.[r.name];
+    const t = toolTokOf.get(r.name);
+    if (group.load === 'deferred' && r.enabled && (info?.loaded || t?.loaded)) loadedCount++;
+    if (!r.enabled) continue;
+    const tok = t?.tokens ?? cosyeeDefs.get(r.name)?.tokens ?? null;
+    if (tok !== null) {
+      tokenSum += tok;
+      hasAnyTok = true;
+      if (t?.estimated) anyEstimated = true;
+    }
+  }
+  // 委派辅助工具按自身加载方式并入所在分组的 token 合计（delegate 停用时 a.tokens 为 null，不计入）
+  for (const a of auxInGroup) {
+    if (a.tokens !== null) {
+      tokenSum += a.tokens;
+      hasAnyTok = true;
+    }
+  }
+
+  const countLabel =
+    group.load === 'deferred' && loadedCount > 0 ? `${group.rows.length}（已加载 ${loadedCount}）` : String(group.rows.length);
+  const tokenLabel = hasAnyTok ? `${anyEstimated ? '~' : ''}${formatTokens(tokenSum)}` : null;
+
+  const tip = useRowTip<HTMLButtonElement>(() => (
+    <>
+      <div className="cz-ctx__tip-name">{meta.title}</div>
+      <div className="cz-ctx__tip-purpose">{meta.tip}</div>
+      <div className="cz-ctx__tip-row">
+        <span className="cz-ctx__tip-k">工具</span>
+        <span className="cz-ctx__tip-why">
+          共 {group.rows.length} 个（启用 {group.rows.filter((r) => r.enabled).length} 个
+          {group.load === 'deferred' ? `，已加载 ${loadedCount} 个` : ''}）
+          {auxInGroup.length > 0 && (
+            <>
+              <br />
+              含委派辅助工具 {auxInGroup.length} 个（在 delegate 行展开里）
+            </>
+          )}
+        </span>
+      </div>
+      {hasAnyTok && (
+        <div className="cz-ctx__tip-row">
+          <span className="cz-ctx__tip-k">启用合计</span>
+          <span className="cz-ctx__tip-tok">
+            {anyEstimated ? `约 ${tokenSum.toLocaleString()} token` : `${tokenSum.toLocaleString()} token`}
+          </span>
+        </div>
+      )}
+    </>
+  ));
+
+  return (
+    <div className={`cz-ctx__tgrp${open ? ' is-open' : ''}`} data-tool-group={group.load}>
+      <button
+        ref={tip.ref}
+        type="button"
+        className="cz-ctx__tgrp-head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => {
+          tip.hide();
+          setOpen((v) => !v);
+        }}
+        {...tip.handlers}
+      >
+        <Chevron open={open} size={12} />
+        <span className="cz-ctx__tgrp-title">{meta.title}</span>
+        <span className="cz-ctx__tgrp-count">{countLabel}</span>
+        {tokenLabel && <span className="cz-ctx__tgrp-tok">{tokenLabel}</span>}
+      </button>
+      {tip.node}
+      <Reveal open={open} id={bodyId}>
+        <ul className="cz-ctx__list cz-ctx__list--plain cz-ctx__list--cols">
+          <li className="cz-ctx__cols" aria-hidden="true">
+            <span className="cz-ctx__tool-calls" title="本会话的调用次数">本会话</span>
+            {!!allCounts && <span className="cz-ctx__tool-total" title="所有会话累计的调用次数">累计</span>}
+            {showTokens && <span className="cz-ctx__item-tokens" title="占用的 token">占用</span>}
+          </li>
+          {group.rows.map((t) => (
+            <ToolItem
+              key={t.name}
+              tool={t}
+              calls={callsOf(callCounts, t.name)}
+              total={allCounts ? totalCallsOf(allCounts, t.name) : null}
+              tokens={toolTokOf.get(t.name)}
+              loadEntry={toolLoad?.[t.name]}
+              showTokenCol={showTokens}
+              def={cosyeeDefs.get(t.name)}
+              auxTools={t.name === DELEGATE_TOOL ? delegateAux : undefined}
+              sums={sums}
+              onToggle={onToggle}
+            />
+          ))}
+        </ul>
+      </Reveal>
     </div>
   );
 }
@@ -1190,18 +1352,85 @@ function formatCount(n: number): string {
   return n < 10_000 ? String(n) : formatTokens(n);
 }
 
+const AUX_LOAD_LABEL: Record<ToolLoadClass, string> = {
+  resident: '常驻',
+  deferred: '懒加载',
+  unknown: '未确定',
+};
+
+/** delegate 行展开后的只读配套辅助工具子列表 + 整套合计 */
+function DelegateAuxList({
+  aux, delegateEnabled, delegateTokens,
+}: {
+  aux: readonly DelegateAuxItem[];
+  delegateEnabled: boolean;
+  delegateTokens: number | null;
+}) {
+  if (aux.length === 0) return null;
+  let resSum = delegateEnabled && delegateTokens !== null ? delegateTokens : 0;
+  let defSum = 0;
+  let hasTok = delegateEnabled && delegateTokens !== null;
+  for (const a of aux) {
+    if (!delegateEnabled || a.tokens === null) continue;
+    hasTok = true;
+    if (a.load === 'deferred') defSum += a.tokens;
+    else resSum += a.tokens;
+  }
+  const setTotal = resSum + defSum;
+  const totalParts = [resSum > 0 && `常驻 ${resSum.toLocaleString()}`, defSum > 0 && `懒加载 ${defSum.toLocaleString()}`].filter(Boolean);
+
+  return (
+    <div className={`cz-ctx__aux${delegateEnabled ? '' : ' is-off'}`}>
+      <div className="cz-ctx__aux-head">
+        <span className="cz-ctx__aux-title">配套辅助工具（{aux.length} 个）</span>
+        {!delegateEnabled && <span className="cz-ctx__aux-status">随 delegate 停用</span>}
+      </div>
+      <div className="cz-ctx__aux-total">
+        {delegateEnabled
+          ? hasTok
+            ? `整套 ${1 + aux.length} 个工具共 ${setTotal.toLocaleString()} token${totalParts.length > 1 ? `（${totalParts.join(' · ')}）` : ''}`
+            : `整套 ${1 + aux.length} 个工具，随 delegate 一并启停`
+          : `整套 ${1 + aux.length} 个工具已随 delegate 停用，不在上下文里`}
+      </div>
+      <ul className="cz-ctx__aux-list">
+        {aux.map((a) => {
+          const label = toolLabel(a.name);
+          const purpose = toolInfo(a.name)?.purpose ?? genericToolPurpose(a.name);
+          return (
+            <li key={a.name} className="cz-ctx__aux-item">
+              <div className="cz-ctx__aux-top">
+                <span className="cz-ctx__aux-name" title={label}>{label}</span>
+                <span className={`cz-ctx__aux-tag is-${a.load}`}>{AUX_LOAD_LABEL[a.load]}</span>
+                {a.loaded && <span className="cz-ctx__tool-tag">已加载</span>}
+                <span className="cz-ctx__aux-tok" aria-label={delegateEnabled ? undefined : '随 delegate 停用'}>
+                  {delegateEnabled ? (a.tokens === null ? '—' : formatTokens(a.tokens)) : '—'}
+                </span>
+              </div>
+              <div className="cz-ctx__aux-purpose" title={purpose}>{purpose}</div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function ToolItem({
-  tool, calls, total, tokens, def, sums, onToggle,
+  tool, calls, total, tokens, loadEntry, showTokenCol = false, def, auxTools, sums, onToggle,
 }: {
   tool: ToolRow;
   /** 本会话的调用次数 */
   calls: ToolCalls;
   /** 所有会话累计；取不到为 null */
   total: number | null;
-  tokens?: { tokens: number; deferred?: true };
+  tokens?: ToolTokenEntry;
+  loadEntry?: ToolLoadEntry;
+  showTokenCol?: boolean;
   /** Cosyee 自带工具：cosyee MCP 服务器报告的定义原文与 token */
   def?: { tokens: number | null; description?: string };
-  /** 内置工具定义的合计（常驻 / 延迟加载） */
+  /** 仅 mcp__cosyee__delegate：随它一起启停的配套辅助工具 */
+  auxTools?: readonly DelegateAuxItem[];
+  /** 内置工具定义的合计（常驻 / 懒加载） */
   sums: { resident: number | null; deferred: number | null };
   onToggle?: (name: string, enabled: boolean) => void;
 }) {
@@ -1209,9 +1438,23 @@ function ToolItem({
   const info = toolInfo(tool.name);
   const label = toolLabel(tool.name);
   const own = isCosyeeTool(tool.name);
-  const tok = tokens?.tokens ?? def?.tokens ?? null;
+  const hasAux = tool.name === DELEGATE_TOOL && !!auxTools && auxTools.length > 0;
+  const tok = tool.enabled ? (tokens?.tokens ?? def?.tokens ?? null) : null;
+  const isDeferred = loadEntry ? loadEntry.load === 'deferred' : !!tokens?.deferred;
+  const isLoaded = tool.enabled && isDeferred && (loadEntry?.loaded === true || tokens?.loaded === true);
+  const isEstimated = tokens?.estimated === true;
   const [open, setOpen] = useState(false);
   const detailId = useId();
+  const tipTokText =
+    tok === null
+      ? null
+      : isDeferred
+        ? isEstimated
+          ? `懒加载，定义约 ${tok.toLocaleString()} token（未加载时只占名字）`
+          : `懒加载，定义 ${formatTokens(tok)} token（未加载时只占名字）`
+        : isEstimated
+          ? `约 ${tok.toLocaleString()} token（按定义长度从 CLI 合计中分摊的估算）`
+          : `占 ${formatTokens(tok)} token`;
   const tip = useRowTip(() => (
     <>
       <div className='cz-ctx__tip-name'>{label}</div>
@@ -1219,12 +1462,17 @@ function ToolItem({
       <div className='cz-ctx__tip-row'>
         <span className='cz-ctx__tip-k'>当前</span>
         <span className={`cz-ctx__tip-mode is-${tool.enabled ? 'on' : 'off'}`}>{tool.enabled ? '启用' : '已停用'}</span>
-        {tok !== null && (
-          <span className='cz-ctx__tip-tok'>
-            {tokens?.deferred ? `延迟加载，定义 ${formatTokens(tok)} token` : `占 ${formatTokens(tok)} token`}
-          </span>
-        )}
+        {isLoaded && <span className='cz-ctx__tool-tag'>已加载</span>}
+        {tipTokText && <span className='cz-ctx__tip-tok'>{tipTokText}</span>}
       </div>
+      {hasAux && (
+        <div className='cz-ctx__tip-row'>
+          <span className='cz-ctx__tip-k'>整套</span>
+          <span className='cz-ctx__tip-why'>
+            此开关代表整套 {1 + auxTools!.length} 个委派工具（含 {auxTools!.map((a) => toolLabel(a.name)).join(' / ')}），同开同关。
+          </span>
+        </div>
+      )}
       <div className='cz-ctx__tip-row'>
         <span className='cz-ctx__tip-k'>调用</span>
         <span className='cz-ctx__tip-why'>
@@ -1238,12 +1486,18 @@ function ToolItem({
           {info?.core ? '核心工具，停用后模型多数任务都做不了，不建议停用。' : (info?.note ?? '停用后当前会话立即拦截调用，新会话里模型看不到它。')}
         </span>
       </div>
-      <div className='cz-ctx__tip-hint'>点击名字展开它在上下文里的定义</div>
+      <div className='cz-ctx__tip-hint'>{hasAux ? '点击名字展开定义与配套辅助工具' : '点击名字展开它在上下文里的定义'}</div>
     </>
   ));
   return (
     <li ref={tip.ref} className={`cz-ctx__item cz-ctx__tool${tool.enabled ? '' : ' is-off'}`} {...tip.handlers}>
-      <RowName label={label} open={open} controls={detailId} onToggle={() => { tip.hide(); setOpen((v) => !v); }} />
+      <RowName
+        label={label}
+        badge={isLoaded ? <span className="cz-ctx__tool-tag">已加载</span> : undefined}
+        open={open}
+        controls={detailId}
+        onToggle={() => { tip.hide(); setOpen((v) => !v); }}
+      />
       <span className={`cz-ctx__tool-calls${here === 0 ? ' is-zero' : ''}`} aria-label={`本会话调用 ${here} 次`}>
         {here > 0 ? `×${here}` : '—'}
       </span>
@@ -1252,7 +1506,11 @@ function ToolItem({
           {total > 0 ? formatCount(total) : '—'}
         </span>
       )}
-      {tokens && <span className="cz-ctx__item-tokens">{formatTokens(tokens.tokens)}</span>}
+      {showTokenCol && (
+        <span className={`cz-ctx__item-tokens${tok === null ? ' is-empty' : ''}`}>
+          {tok === null ? '—' : `${isEstimated ? '~' : ''}${formatTokens(tok)}`}
+        </span>
+      )}
       <Switch
         on={tool.enabled}
         label={`${tool.enabled ? '停用' : '启用'}工具 ${label}`}
@@ -1265,104 +1523,36 @@ function ToolItem({
       {tip.node}
       <Reveal open={open} id={detailId}>
         {own ? (
-          <PromptDetail
-            where="工具定义 · Cosyee 注册"
-            tokens={tool.enabled ? tok : null}
-            tokenNote={tool.enabled ? undefined : '已停用，不在上下文里'}
-            text={def?.description}
-            empty="这次没有读到 Cosyee 工具的定义，刷新上下文后再试。"
-            note="工具定义 = 名字 + 描述 + 参数 schema，每次请求随工具列表发给模型。"
-          />
+          <div className="cz-ctx__detail-stack">
+            {hasAux && <DelegateAuxList aux={auxTools!} delegateEnabled={tool.enabled} delegateTokens={tok} />}
+            <PromptDetail
+              where="工具定义 · Cosyee 注册"
+              tokens={tool.enabled ? tok : null}
+              tokenNote={tool.enabled ? undefined : '已停用，不在上下文里'}
+              text={def?.description}
+              empty="这次没有读到 Cosyee 工具的定义，刷新上下文后再试。"
+              note="工具定义 = 名字 + 描述 + 参数 schema，每次请求随工具列表发给模型。"
+            />
+          </div>
         ) : (
           <PromptDetail
             where="工具定义 · Claude Code 内置"
-            tokens={tokens && tool.enabled ? tokens.tokens : null}
+            tokens={tok !== null && !isEstimated ? tok : null}
             tokenNote={
               !tool.enabled
                 ? '已停用，不在上下文里'
-                : tokens
-                  ? undefined
-                  : `内置工具合计 常驻 ${sums.resident === null ? '—' : formatTokens(sums.resident)} · 延迟 ${sums.deferred === null ? '—' : formatTokens(sums.deferred)}`
+                : tok !== null && isEstimated
+                  ? `约 ${tok.toLocaleString()} token（估算）`
+                  : `内置工具合计 常驻 ${sums.resident === null ? '—' : formatTokens(sums.resident)} · 懒加载 ${sums.deferred === null ? '—' : formatTokens(sums.deferred)}`
             }
             empty={`CLI 只报告全部内置工具定义的合计 token，不提供单个工具的定义原文。${info ? `\n用途：${info.purpose}` : ''}`}
             note={
-              tokens?.deferred
-                ? '延迟加载：平时只列名字，模型用 ToolSearch 加载后才放入完整定义。'
+              isDeferred
+                ? '懒加载：平时只列名字，模型用 ToolSearch 加载后才放入完整定义。'
                 : '工具定义 = 名字 + 描述 + 参数 schema，每次请求随工具列表发给模型。'
             }
           />
         )}
-      </Reveal>
-    </li>
-  );
-}
-
-/** 内置智能体的中文说明（自定义智能体用它自己的描述） */
-const BUILTIN_AGENTS: Record<string, string> = {
-  'general-purpose': '通用子智能体：调研复杂问题、搜索代码、执行多步骤任务。',
-  Explore: '只读的快速搜索子智能体：按模式找文件、搜关键字，回答「X 定义在哪」。',
-  Plan: '架构师子智能体：设计实现方案，列出步骤与关键文件。',
-  'statusline-setup': '配置 Claude Code 状态栏（statusLine）的子智能体。',
-  'output-style-setup': '创建 Claude Code 输出风格（output style）的子智能体。',
-  'claude-code-guide': '解答 Claude Code / Agent SDK / API 用法问题的子智能体。',
-  claude: '兜底子智能体：没有更合适的智能体时使用。',
-  'web-fetch': '抓取并阅读网页的子智能体（没有 WebFetch 工具时代替它）。',
-};
-
-function AgentItem({
-  agent, description, onToggle,
-}: {
-  agent: AgentRow;
-  /** 描述原文（Agent 工具里列给模型的那段） */
-  description?: string;
-  onToggle?: (name: string, enabled: boolean) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const detailId = useId();
-  const custom = agent.tokens !== null;
-  const purpose = BUILTIN_AGENTS[agent.name] ?? description ?? '自定义子智能体（没有读到它的描述）。';
-  const tip = useRowTip(() => (
-    <>
-      <div className='cz-ctx__tip-name'>
-        {agent.name}
-        <span className='cz-ctx__tip-full'>{custom ? '自定义智能体' : agent.name in BUILTIN_AGENTS ? '内置智能体' : '智能体'}</span>
-      </div>
-      <div className='cz-ctx__tip-purpose cz-ctx__tip-clamp'>{purpose}</div>
-      <div className='cz-ctx__tip-row'>
-        <span className='cz-ctx__tip-k'>当前</span>
-        <span className={`cz-ctx__tip-mode is-${agent.enabled ? 'on' : 'off'}`}>{agent.enabled ? '开启' : '已关闭'}</span>
-        <span className='cz-ctx__tip-tok'>{custom ? `占 ${formatTokens(agent.tokens!)} token` : '说明计入 System tools'}</span>
-      </div>
-      <div className='cz-ctx__tip-row'>
-        <span className='cz-ctx__tip-k'>关闭</span>
-        <span className='cz-ctx__tip-why'>模型不能再派发它（当前会话立即拦截，新会话里看不到）。</span>
-      </div>
-      <div className='cz-ctx__tip-hint'>点击名字展开它在上下文里的说明</div>
-    </>
-  ));
-  return (
-    <li ref={tip.ref} className={`cz-ctx__item cz-ctx__tool${agent.enabled ? '' : ' is-off'}`} {...tip.handlers}>
-      <RowName label={agent.name} open={open} controls={detailId} onToggle={() => { tip.hide(); setOpen((v) => !v); }} />
-      <span className="cz-ctx__item-tokens">{custom ? formatTokens(agent.tokens!) : '—'}</span>
-      <Switch
-        on={agent.enabled}
-        label={`${agent.enabled ? '关闭' : '开启'}智能体 ${agent.name}`}
-        disabled={!onToggle}
-        onChange={() => {
-          tip.hide();
-          onToggle?.(agent.name, !agent.enabled);
-        }}
-      />
-      {tip.node}
-      <Reveal open={open} id={detailId}>
-        <PromptDetail
-          where="Agent 工具 · 智能体清单"
-          tokens={agent.enabled ? agent.tokens : null}
-          tokenNote={!agent.enabled ? '已关闭，不在上下文里' : custom ? undefined : '计入 System tools，CLI 不单独计数'}
-          text={description ? `- ${agent.name}: ${description}` : undefined}
-          empty="CLI 没有报告这个智能体的描述，磁盘上也读不到它的定义文件。"
-          note="模型只看到这一行；派发时，智能体定义的正文才作为子智能体的系统提示词（不占主会话上下文）。"
-        />
       </Reveal>
     </li>
   );
@@ -1378,9 +1568,10 @@ function genericToolPurpose(name: string): string {
 
 /** 可展开行的名字：箭头 + 名字（单行省略），点击展开 / 收起下方详情 */
 function RowName({
-  label, open, controls, onToggle, className = '',
+  label, badge, open, controls, onToggle, className = '',
 }: {
   label: string;
+  badge?: ReactNode;
   open: boolean;
   controls: string;
   onToggle: () => void;
@@ -1396,6 +1587,7 @@ function RowName({
     >
       <Chevron open={open} size={11} />
       <span className="cz-ctx__row-label">{label}</span>
+      {badge}
     </button>
   );
 }

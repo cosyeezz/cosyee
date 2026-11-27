@@ -31,15 +31,18 @@ export function setBeforeClaudeEnv(hook: BeforeClaudeEnvHook | null): void {
  * 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。
  * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）；
  * Kiro 账号在读取配置前先触发钩子确保本地代理已启动并完成端口同步。
+ * apiDir：API / Kiro 配置的读取目录，默认同 dir；子代理空间传入主代理账号目录（CLAUDE_CONFIG_DIR 仍指向子代理空间）。
  */
-export function claudeEnv(dir: string | null = activeConfigDir()): NodeJS.ProcessEnv {
+export function claudeEnv(dir: string | null = activeConfigDir(), apiDir: string | null = dir): NodeJS.ProcessEnv {
   const env = cleanEnv();
   if (dir) {
     for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k];
     env.CLAUDE_CONFIG_DIR = dir;
-    const api0 = readApiConfig(dir);
-    if (api0?.kiro) beforeClaudeEnvHook?.(dir);
-    const api = api0?.kiro ? readApiConfig(dir) : api0;
+  }
+  if (apiDir) {
+    const api0 = readApiConfig(apiDir);
+    if (api0?.kiro) beforeClaudeEnvHook?.(apiDir);
+    const api = api0?.kiro ? readApiConfig(apiDir) : api0;
     if (api) applyApiEnv(env, api);
   }
   return env;
@@ -65,7 +68,12 @@ export function writePrivateSettings(name: string, settings: Record<string, unkn
   const file = path.join(dir, `${name}.json`);
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(settings), { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    removePrivateSettings(tmp);
+    throw e;
+  }
   return file;
 }
 
@@ -85,12 +93,15 @@ export function isFile(p: string): boolean {
   }
 }
 
-/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 'claude'（让 spawn 报 ENOENT）。 */
-export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
+/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 null。 */
+export function findClaude(env: NodeJS.ProcessEnv = process.env): string | null {
   const override = env.COSYEE_CLAUDE;
   if (override) return override;
   const names = isWin ? ['claude.exe', 'claude.cmd', 'claude.bat'] : ['claude'];
-  const dirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean);
+  const dirs = (env.PATH ?? env.Path ?? '')
+    .split(path.delimiter)
+    .map((d) => (isWin ? d.trim().replace(/^"|"$/g, '') : d.trim()))
+    .filter(Boolean);
   dirs.push(path.join(os.homedir(), '.local', 'bin'));
   for (const d of dirs) {
     for (const n of names) {
@@ -98,7 +109,12 @@ export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
       if (isFile(p)) return p;
     }
   }
-  return 'claude';
+  return null;
+}
+
+/** 找 claude：COSYEE_CLAUDE > PATH > ~/.local/bin。找不到返回 'claude'（让 spawn 报 ENOENT）。 */
+export function resolveClaude(env: NodeJS.ProcessEnv = process.env): string {
+  return findClaude(env) ?? 'claude';
 }
 
 export interface SpawnSpec {
@@ -108,15 +124,26 @@ export interface SpawnSpec {
   verbatim: boolean;
 }
 
-/** 参数里允许出现的字符（模型名、effort、会话 id 等已在入口校验；这里只做 cmd.exe 的引用）。 */
+const CMD_META = /([()\][%!^"`<>&|;,*?])/g;
+
+/**
+ * 为 Windows `cmd.exe /d /s /c` + `.cmd/.bat` 的 `%*` 二次展开安全转义单个参数：
+ * 先按 Win32 CRT（CommandLineToArgvW）规则处理反斜杠与双引号并加外层引号，
+ * 再对 cmd.exe 元字符做两轮 `^` 转义（防引号逃逸、命令注入与 `%VAR%` 展开）。
+ */
 function quoteForCmd(a: string): string {
-  return '"' + a.replace(/"/g, '\\"') + '"';
+  let s = a.replace(/(\\*)"/g, '$1$1\\"');
+  s = '"' + s.replace(/(\\*)$/, '$1$1') + '"';
+  s = s.replace(CMD_META, '^$1');
+  s = s.replace(CMD_META, '^$1');
+  return s;
 }
 
 /** 生成 spawn 的命令与参数；Windows 的 .cmd/.bat 需要经 cmd.exe /d /s /c 包装。 */
 export function spawnSpec(claudePath: string, args: string[]): SpawnSpec {
   if (isWin && /\.(cmd|bat)$/i.test(claudePath)) {
-    const line = [claudePath, ...args].map(quoteForCmd).join(' ');
+    const cmd = `"${claudePath.replace(/"/g, '')}"`;
+    const line = [cmd, ...args.map(quoteForCmd)].join(' ');
     return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
   }
   return { command: claudePath, args, verbatim: false };
