@@ -33,6 +33,30 @@
     } catch (e) { /* 忽略 */ }
     return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   }
+  // ── 切换服务器时沿用界面习惯 ──
+  // localStorage 按源隔离，换一台服务器就是另一份；切换时把这几项编码进目标地址的 #cz-carry=，
+  // 目标页面上本脚本先于页面脚本运行，在页面读取之前写进它的 localStorage，再把 hash 去掉。
+  // 值为 null 表示当前页面没设（用默认），目标上也删掉，两边保持一致。
+  var CARRY = ['cz-layout', 'cz-theme', 'cz.flowZoom', 'cosyee.browser.width'];
+  var CARRY_TAG = '#cz-carry=';
+  function carryHash() {
+    var o = {};
+    try { CARRY.forEach(function (k) { o[k] = localStorage.getItem(k); }); } catch (e) { return ''; }
+    return CARRY_TAG + encodeURIComponent(JSON.stringify(o));
+  }
+  if (!isHome && location.hash.indexOf(CARRY_TAG) === 0) {
+    try {
+      var carried = JSON.parse(decodeURIComponent(location.hash.slice(CARRY_TAG.length)));
+      CARRY.forEach(function (k) {
+        if (!carried || !Object.prototype.hasOwnProperty.call(carried, k)) return;
+        var v = carried[k];
+        if (v === null) localStorage.removeItem(k);
+        else if (typeof v === 'string' && v.length < 4096) localStorage.setItem(k, v);
+      });
+    } catch (e) { /* 带过来的内容不对就忽略，用目标自己的设置 */ }
+    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
+  }
+
   function goList(extra) {
     location.href = HOME + 'index.html?list=1&theme=' + pageTheme() + (extra || '');
   }
@@ -439,7 +463,7 @@
         toggleServers(false);
         if (b.getAttribute('data-a') === 'list') return goList();
         var s = list[Number(b.getAttribute('data-i'))];
-        if (s && !sameOrigin(s.url)) location.href = s.url.replace(/\/+$/, '') + '/';
+        if (s && !sameOrigin(s.url)) location.href = s.url.replace(/\/+$/, '') + '/' + carryHash();
       };
     });
     Array.prototype.forEach.call(smenu.querySelectorAll('.cp'), function (b) {

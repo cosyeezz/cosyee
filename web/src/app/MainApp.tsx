@@ -12,6 +12,7 @@ import { CallBar } from '../ui/call/CallBar';
 import { resolveSessionConfig } from '../core/sessionConfig';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { uuid } from '../core/browser';
+import { readLayout, saveLayout } from '../core/layoutPrefs';
 import { expandLabels } from '../core/composer';
 import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
@@ -117,9 +118,11 @@ export function MainApp() {
   /** 账号信息有变化但不整页刷新（并行模式下切换新会话用的账号、改模式、移除账号等）时递增：额度、账号菜单、模式开关重新读取 */
   const [accountVersion, setAccountVersion] = useState(0);
   const [branch, setBranch] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => readLayout().left);
   /** 右侧上下文栏收起；新开会话、切换会话都保持当前布局 */
-  const [ctxCollapsed, setCtxCollapsed] = useState(false);
+  const [ctxCollapsed, setCtxCollapsed] = useState(() => readLayout().right);
+  // 两侧收起状态记下来：刷新 / 重开 / 桌面端切换服务器都沿用（见 core/layoutPrefs）
+  useEffect(() => saveLayout({ left: collapsed, right: ctxCollapsed }), [collapsed, ctxCollapsed]);
   /** 窄屏（手机）：两侧栏是浮层抽屉，同一时间最多开一个；与宽屏的收起状态各管各的 */
   const narrow = useMediaQuery(NARROW_QUERY);
   const [drawer, setDrawer] = useState<'left' | 'right' | null>(null);
