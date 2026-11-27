@@ -36,7 +36,11 @@ export type IconName =
   // 内置浏览器：地球、后退 / 前进、抓取元素（准星）
   | 'globe' | 'arrow-left' | 'arrow-right' | 'pick'
   // 账号弹层：管理账号
-  | 'users';
+  | 'users'
+  // 通用：更多（横向三点）
+  | 'more'
+  // 内置终端：历史、重新执行
+  | 'history' | 'play';
 
 export interface IconProps {
   name: IconName;
@@ -313,6 +317,21 @@ const SIMPLE: Record<string, JSX.Element> = {
       <path d="M12.6 1.8v3M11.1 3.3h3" />
     </>
   ),
+  more: (
+    <>
+      <circle cx="3.8" cy="8" r="1" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12.2" cy="8" r="1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  history: (
+    <>
+      <path d="M2.8 4.2v3h3" />
+      <path d="M3.1 7.2a5.2 5.2 0 101.2-3.3L2.8 5.4" />
+      <path d="M8 5.4V8l2 1.2" />
+    </>
+  ),
+  play: <path d="M5 3.6l7.5 4.4L5 12.4z" fill="currentColor" stroke="none" />,
 };
 
 /** 设计图标：icons.js 每次调用都会生成新的 id（let uid），所以按 (name, size, running) 只生成一次 */

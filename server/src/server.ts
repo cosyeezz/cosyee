@@ -44,6 +44,7 @@ import { UsageProvider, fetchUsage } from './usage.js';
 import { CliModelsDisk, CliModelsProvider, fetchCliModels, type FetchedModels } from './cliModels.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
 import { Speech } from './speech/index.js';
+import { TerminalManager } from './terminal/index.js';
 
 /** state.json 里最多保留多少个会话的配置记录（超出丢最久没用的） */
 const MAX_SESSION_CONFIGS = 2000;
@@ -419,6 +420,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   let actualPort = wantPort;
   const speech = new Speech();
+  const terminals = new TerminalManager({ workspaces, dataDir: dataHome });
   const handler = createHandler({
     delegateModels: (cwd, refresh) => agyBackend.models({ cwd, refresh }),
     port: () => actualPort,
@@ -465,6 +467,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   // 内置浏览器画面：转发 agent-browser 的推流（帧是服务端发出的，前端只发输入，消息很小）
   const browserWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const terminalWss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
     const reject = (code: number, text: string) => {
@@ -474,12 +477,20 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     try {
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${actualPort}`);
       if (opts.authToken && !requestAuthorized(req.headers, actualPort, opts.authToken)) return reject(403, 'Forbidden');
-      if (url.pathname !== '/ws' && url.pathname !== '/api/browser/stream') return reject(404, 'Not Found');
+      if (url.pathname !== '/ws' && url.pathname !== '/api/browser/stream' && url.pathname !== '/api/terminal/ws') return reject(404, 'Not Found');
       if (!hostAllowed(req.headers.host, actualPort, bindHost)) return reject(403, 'Forbidden');
       const origin = req.headers.origin;
       if (!originAllowed(typeof origin === 'string' ? origin : undefined, actualPort, bindHost)) return reject(403, 'Forbidden');
       if (url.pathname === '/api/browser/stream') {
         browserWss.handleUpgrade(req, socket, head, (ws) => void browser.attach(ws, url.searchParams.get('profile')));
+        return;
+      }
+      if (url.pathname === '/api/terminal/ws') {
+        terminalWss.handleUpgrade(req, socket, head, (ws) => {
+          alive.set(ws, true);
+          ws.on('pong', () => alive.set(ws, true));
+          void terminals.attach(ws, url.searchParams.get('root'));
+        });
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
@@ -514,15 +525,17 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   // 心跳：每 30s 发 ping；上一轮没回 pong 的连接直接终止
   const heartbeat = setInterval(() => {
-    for (const ws of wss.clients) {
-      if (alive.get(ws) === false) {
-        ws.terminate();
-        continue;
+    for (const set of [wss.clients, terminalWss.clients]) {
+      for (const ws of set) {
+        if (alive.get(ws) === false) {
+          ws.terminate();
+          continue;
+        }
+        alive.set(ws, false);
+        try {
+          ws.ping();
+        } catch { /* 已断开 */ }
       }
-      alive.set(ws, false);
-      try {
-        ws.ping();
-      } catch { /* 已断开 */ }
     }
   }, HEARTBEAT_MS);
   heartbeat.unref();
@@ -547,6 +560,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       components.stop();
       browser.dispose();
       browserWss.close();
+      for (const ws of terminalWss.clients) ws.terminate();
+      terminalWss.close();
+      await terminals.dispose();
       setBeforeClaudeEnv(null);
       process.off('exit', onExitKiro);
       await kiro?.dispose();

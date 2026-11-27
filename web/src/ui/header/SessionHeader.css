@@ -88,3 +88,29 @@
 .cz-header__copy.is-copied { color: var(--tk-ok, var(--accent)); }
 /* 触屏 / 粗指针：常显，点击热区 44px（负外边距让整行高度不变）；与路径操作按钮 cz-pathact 一致 */
 @media (hover: none), (pointer: coarse) { .cz-header__copy { opacity: 1; width: 44px; height: 44px; margin: -11px 0; } }
+
+/* 应用内终端开关按钮：所有端常驻可见，打开时呈现主题强调色激活态 */
+.cz-header__term {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.cz-header__term:hover { background: var(--bg-hover); color: var(--text); }
+.cz-header__term:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-header__term.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+@media (hover: none), (pointer: coarse) {
+  .cz-header__term { width: 44px; height: 44px; margin: -11px 0; }
+}

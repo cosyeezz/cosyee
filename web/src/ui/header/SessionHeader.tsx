@@ -17,9 +17,12 @@ export interface SessionHeaderProps {
   session?: SessionSummary | null;
   /** 提交新标题（已 trim、非空、与原标题不同才会触发） */
   onRename: (title: string) => void;
+  /** 内置终端面板是否打开（传入 onToggleTerminal 时在工作目录旁显示应用内终端按钮） */
+  terminalOpen?: boolean;
+  onToggleTerminal?: () => void;
 }
 
-export function SessionHeader({ title, cwd, branch, session, onRename }: SessionHeaderProps) {
+export function SessionHeader({ title, cwd, branch, session, onRename, terminalOpen = false, onToggleTerminal }: SessionHeaderProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -126,7 +129,19 @@ export function SessionHeader({ title, cwd, branch, session, onRename }: Session
           <div className="cz-header__meta cz-pathact-host" title={cwd}>
             <Icon name="folder" size={14} />
             <span className="cz-header__meta-text">{cwd}</span>
-            <PathActions path={cwd} copyClassName="cz-header__copy" copyLabel="复制工作目录" />
+            <PathActions path={cwd} copyClassName="cz-header__copy" copyLabel="复制工作目录" hideTerminal={!!onToggleTerminal} />
+            {onToggleTerminal && (
+              <button
+                type="button"
+                className={`cz-header__term${terminalOpen ? ' is-active' : ''}`}
+                aria-label={terminalOpen ? '关闭内置终端' : '打开内置终端'}
+                aria-pressed={terminalOpen}
+                title={terminalOpen ? '关闭内置终端' : '打开内置终端'}
+                onClick={onToggleTerminal}
+              >
+                <Icon name="terminal" size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -13,6 +13,7 @@ import { resolveSessionConfig } from '../core/sessionConfig';
 import { addQuote, type QuoteReply } from '../core/quote';
 import { uuid } from '../core/browser';
 import { readLayout, saveLayout } from '../core/layoutPrefs';
+import { readTerminalPrefs, saveTerminalPrefs } from '../core/terminalPrefs';
 import { expandLabels } from '../core/composer';
 import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
@@ -36,8 +37,10 @@ import { DelegateContext, type DelegateActions } from '../ui/flow/delegateContex
 import { FilesContext, type FileOpenRequest, type FilesApi } from '../ui/files/FileContext';
 import { FilePreview } from '../ui/files/FilePreview';
 import { BrowserPanel } from '../ui/browser/BrowserPanel';
+import { TerminalPanel } from '../ui/terminal/TerminalPanel';
 import { isBrowserToggle } from '../ui/browser/input';
 import { BROWSER_OPEN_EVENT, type BrowserLink, type BrowserOpenDetail } from '../ui/browser/links';
+import { Icon } from '../ui/icons/Icon';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
@@ -134,6 +137,19 @@ export function MainApp() {
     window.addEventListener('cosyee:back', onBack);
     return () => window.removeEventListener('cosyee:back', onBack);
   }, [narrow, drawer]);
+  /** 内置终端面板开关与停靠高度（持久化到 localStorage 键 cz-terminal） */
+  const [termPrefs, setTermPrefs] = useState(readTerminalPrefs);
+  useEffect(() => saveTerminalPrefs(termPrefs), [termPrefs]);
+  const toggleTerminal = useCallback(() => setTermPrefs((p) => ({ ...p, open: !p.open })), []);
+  const closeTerminal = useCallback(() => setTermPrefs((p) => (p.open ? { ...p, open: false } : p)), []);
+  const setTermHeight = useCallback((height: number) => setTermPrefs((p) => (p.height === height ? p : { ...p, height })), []);
+  // 安卓返回手势：打开终端时先关闭终端
+  useEffect(() => {
+    if (!termPrefs.open) return;
+    const onBack = (e: Event) => { e.preventDefault(); closeTerminal(); };
+    window.addEventListener('cosyee:back', onBack);
+    return () => window.removeEventListener('cosyee:back', onBack);
+  }, [termPrefs.open, closeTerminal]);
   const [config, setConfig] = useState<SessionConfig>(FALLBACK_CONFIG);
   const [openSub, setOpenSub] = useState<{ turnId: string; toolUseId: string } | null>(null);
   const [loadedSub, setLoadedSub] = useState<SubagentRun | null>(null);
@@ -1312,15 +1328,29 @@ export function MainApp() {
           onRefreshModels={refreshModels}
           footLeft={showWorkspacePicker ? (
             // 只在新会话（还没发出第一条消息）时显示；会话开始后工作空间就固定了
-            <WorkspaceMenu
-              workspaces={wsState.list}
-              currentWorkspace={selCwd}
-              onSelectWorkspace={selectWorkspace}
-              onOpenFolder={openFolder}
-              onMoveToTop={moveWorkspaceTop}
-              onRemove={removeWorkspace}
-              onReveal={remote ? undefined : revealWorkspace}
-            />
+            <div className="cz-term-wsrow">
+              <WorkspaceMenu
+                workspaces={wsState.list}
+                currentWorkspace={selCwd}
+                onSelectWorkspace={selectWorkspace}
+                onOpenFolder={openFolder}
+                onMoveToTop={moveWorkspaceTop}
+                onRemove={removeWorkspace}
+                onReveal={remote ? undefined : revealWorkspace}
+              />
+              {selCwd && (
+                <button
+                  type="button"
+                  className={`cz-term-wsbtn${termPrefs.open ? ' is-active' : ''}`}
+                  aria-label={termPrefs.open ? '关闭内置终端' : '打开内置终端'}
+                  aria-pressed={termPrefs.open}
+                  title={termPrefs.open ? '关闭内置终端' : '打开内置终端'}
+                  onClick={toggleTerminal}
+                >
+                  <Icon name="terminal" size={14} />
+                </button>
+              )}
+            </div>
           ) : undefined}
         />
       </div>
@@ -1360,8 +1390,28 @@ export function MainApp() {
             onPurgeSessions={purgeSessions}
           />
         }
-        header={selCwd ? <SessionHeader title={current?.title ?? null} cwd={selCwd} branch={branch} session={current} onRename={onRename} /> : null}
+        header={selCwd ? (
+          <SessionHeader
+            title={current?.title ?? null}
+            cwd={selCwd}
+            branch={branch}
+            session={current}
+            onRename={onRename}
+            terminalOpen={termPrefs.open}
+            onToggleTerminal={toggleTerminal}
+          />
+        ) : null}
         main={main}
+        bottom={
+          <TerminalPanel
+            open={termPrefs.open && !!selCwd}
+            root={selCwd}
+            height={termPrefs.height}
+            onHeightChange={setTermHeight}
+            onClose={closeTerminal}
+            onOpenSystemTerminal={filesApi?.terminal}
+          />
+        }
         context={
           <ContextPanel
             usage={sel && view?.id === sel.id ? view.context : null}

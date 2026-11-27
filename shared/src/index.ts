@@ -6,3 +6,4 @@ export * from './files.ts';
 export * from './pricing.ts';
 export * from './runnable.ts';
 export * from './browserRef.ts';
+export * from './terminal.ts';

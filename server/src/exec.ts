@@ -107,7 +107,7 @@ async function launchFor(shell: SnippetShell, file: string, platform: NodeJS.Pla
   return shell === 'zsh' ? { cmd: 'zsh', args: ['-f', file] } : { cmd: 'bash', args: ['--noprofile', '--norc', file] };
 }
 
-function killTree(proc: ChildProcess): void {
+export function killTree(proc: ChildProcess): void {
   const pid = proc.pid;
   if (!pid) return;
   if (process.platform === 'win32') {
