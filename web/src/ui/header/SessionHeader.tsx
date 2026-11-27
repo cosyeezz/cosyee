@@ -1,5 +1,5 @@
-// 会话标题区：标题（点击原地改名）/ 工作目录 / git 分支（两行悬停时右侧出现操作按钮：
-// 工作目录是 复制 / 在文件管理器显示 / 在此处打开终端，分支只有复制）。
+// 会话标题区：标题（点击原地改名），下面一行是 git 分支与工作目录（点击复制；工作目录后面是
+// 内置终端开关，悬停时行尾出现「在文件管理器显示」）。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionSummary } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
@@ -116,20 +116,21 @@ export function SessionHeader({ title, cwd, branch, session, onRename, terminalO
           )}
         </div>
 
-        {/* 分支与工作目录并排在标题下方一行（三行叠放太占高度）。分支短、放前面；工作目录放最后，
-            它悬停才出现的几个操作按钮落在行尾，不会在两项之间留出一大段空白 */}
+        {/* 分支与工作目录并排在标题下方一行（三行叠放太占高度）。每项是一整块可点的「图标 + 文字」：
+            点击复制，悬停时图标换成复制图标；不再在两项之间垫一个看不见的复制按钮，所以没有空白。
+            工作目录放最后，常驻的终端开关紧跟其后，悬停才出现的「在文件管理器显示」落在行尾 */}
         <div className="cz-header__metas">
           {branch !== null && (
-            <div className="cz-header__meta" title={branch}>
-              <Icon name="branch" size={14} />
-              <span className="cz-header__meta-text">{branch}</span>
-              <CopyButton text={branch} label="复制分支名" className="cz-header__copy" />
+            <div className="cz-header__meta">
+              <CopyButton text={branch} label="复制分支名" className="cz-header__copy" glyph="branch">
+                <span className="cz-header__meta-text">{branch}</span>
+              </CopyButton>
             </div>
           )}
-          <div className="cz-header__meta cz-pathact-host" title={cwd}>
-            <Icon name="folder" size={14} />
-            <span className="cz-header__meta-text">{cwd}</span>
-            <PathActions path={cwd} copyClassName="cz-header__copy" copyLabel="复制工作目录" hideTerminal={!!onToggleTerminal} />
+          <div className="cz-header__meta cz-pathact-host">
+            <CopyButton text={cwd} label="复制工作目录" className="cz-header__copy" glyph="folder">
+              <span className="cz-header__meta-text">{cwd}</span>
+            </CopyButton>
             {onToggleTerminal && (
               <button
                 type="button"
@@ -142,6 +143,7 @@ export function SessionHeader({ title, cwd, branch, session, onRename, terminalO
                 <Icon name="terminal" size={14} />
               </button>
             )}
+            <PathActions path={cwd} hideCopy hideTerminal={!!onToggleTerminal} />
           </div>
         </div>
       </div>

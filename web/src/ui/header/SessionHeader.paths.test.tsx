@@ -69,8 +69,14 @@ describe('SessionHeader 工作目录的路径操作', () => {
     expect(el.querySelector('[aria-label="在此处打开终端"]')).toBeNull();
   });
 
-  it('工作目录行带完整路径 tooltip', () => {
+  it('工作目录块的 tooltip 带完整路径和「点击复制」提示，块里显示路径文字', () => {
     const el = mount(null);
-    expect(el.querySelector('.cz-header__meta.cz-pathact-host')!.getAttribute('title')).toBe(CWD);
+    const chip = el.querySelector<HTMLButtonElement>('.cz-header__meta.cz-pathact-host .cz-header__copy')!;
+    expect(chip.getAttribute('title')).toBe(`${CWD}
+点击复制`);
+    expect(chip.querySelector('.cz-header__meta-text')!.textContent).toBe(CWD);
+    // 前导图标槽：平时的文件夹图标和悬停时的复制图标叠在一起
+    expect(chip.querySelector('.cz-copyslot .icon-folder')).not.toBeNull();
+    expect(chip.querySelector('.cz-copyslot .icon-copy')).not.toBeNull();
   });
 });
