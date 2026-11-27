@@ -1,10 +1,20 @@
-// 交付文字下方的操作行：朗读 / 复制。
+// 交付文字下方的操作行：朗读 / 复制 / 分支。
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { copyText } from '../../core/browser';
 import { getState, speak, subscribe } from '../../core/speech/player';
 import { Icon } from '../icons/Icon';
+import { ForkButton } from './ForkButton';
 
-export function AnswerActions({ turnId, text }: { turnId: string; text: string }) {
+export function AnswerActions({
+  turnId,
+  text,
+  onFork,
+}: {
+  turnId: string;
+  text: string;
+  /** 从这条回复之后分支：stay=true 表示分支完留在当前会话；不传则不显示分支按钮 */
+  onFork?: (stay: boolean) => void;
+}) {
   const sp = useSyncExternalStore(subscribe, getState);
   const mine = sp.key === turnId;
   const phase = mine ? sp.phase : 'idle';
@@ -46,6 +56,16 @@ export function AnswerActions({ turnId, text }: { turnId: string; text: string }
       >
         <Icon name={copied ? 'check' : 'copy'} size={15} />
       </button>
+      {onFork && (
+        <ForkButton
+          onFork={onFork}
+          className="cz-flow__action"
+          iconSize={15}
+          title="从这条回复分支"
+          goNote="保留到这条回复，在新会话里接着聊"
+          onMouseDown={(e) => e.preventDefault()}
+        />
+      )}
       {phase === 'downloading' && (
         <span className="cz-flow__action-hint">{sp.pct != null ? `下载语音模型 ${sp.pct}%` : '下载语音模型…'}</span>
       )}

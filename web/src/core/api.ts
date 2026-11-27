@@ -100,9 +100,9 @@ export const api = {
   /** 会话里各子代理的花费（服务端读子代理记录、按价格表算） */
   subagentCosts: (id: string, cwd: string) => req<{ items: SubagentCost[] }>('GET', `/api/sessions/${id}/subagent-costs?${q({ cwd })}`),
   rename: (id: string, cwd: string, title: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/rename`, { cwd, title }),
-  /** 分支：把 targetId 这条用户消息之前的记录复制成一个新会话（源会话不变），返回新会话 id */
-  forkSession: (id: string, cwd: string, targetId: string) =>
-    req<{ sessionId: string }>('POST', `/api/sessions/${id}/fork`, { cwd, targetId }),
+  /** 分支：把 targetId 这条用户消息之前（省略 targetId 则整份）的记录复制成一个新会话（源会话不变），返回新会话 id */
+  forkSession: (id: string, cwd: string, targetId?: string) =>
+    req<{ sessionId: string }>('POST', `/api/sessions/${id}/fork`, targetId !== undefined ? { cwd, targetId } : { cwd }),
   viewed: (id: string, cwd: string) => req<{ ok: true }>('POST', `/api/sessions/${id}/viewed`, { cwd }),
   git: (cwd: string) => req<{ branch: string | null }>('GET', `/api/git?${q({ cwd })}`),
   /** 额度：传会话 id 时取该会话所用账号的额度（并行模式下各会话账号可能不同） */

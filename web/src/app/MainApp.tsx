@@ -591,8 +591,8 @@ export function MainApp() {
   // 全双工通话：控制逻辑在 core/speech/call.ts，这里负责发消息、中断与同步当前会话状态。
 
   const callState = useSyncExternalStore(call.subscribe, call.getState);
-  const callLive = useRef({ sendText, onInterrupt, running, canSend: !!selCwd });
-  callLive.current = { sendText, onInterrupt, running, canSend: !!selCwd };
+  const callLive = useRef({ sendText, onInterrupt, onQueueSendNow, running, canSend: !!selCwd });
+  callLive.current = { sendText, onInterrupt, onQueueSendNow, running, canSend: !!selCwd };
 
   const onCall = useCallback(() => {
     if (call.inCall()) { call.hangup(); return; }
@@ -685,6 +685,25 @@ export function MainApp() {
       })
       .catch((e) => flash(`分支失败：${errText(e)}`));
   }, [sel, selCwd, shownTurns, config, selectSession, flash]);
+
+  /**
+   * 从某条助手回复之后分支出新会话：targetId 是下一组用户消息的 id，省略表示复制整份记录。
+   * stay=false 时切到新会话且不预填输入框，直接接着往下聊；stay=true 时留在当前会话。
+   */
+  const onForkAfter = useCallback((targetId: string | undefined, stay: boolean) => {
+    if (!sel || !selCwd) return;
+    const dir = selCwd;
+    api.forkSession(sel.id, dir, targetId)
+      .then(({ sessionId }) => {
+        configs.current.set(sessionId, config); // 分支沿用当前会话此刻的模型 / 思考强度
+        if (stay) {
+          flash('已分支出新会话，见侧栏');
+          return;
+        }
+        selectSession(sessionId, dir);
+      })
+      .catch((e) => flash(`分支失败：${errText(e)}`));
+  }, [sel, selCwd, config, selectSession, flash]);
 
   // ───────────── 上下文面板 ─────────────
 
@@ -1206,6 +1225,7 @@ export function MainApp() {
             meta={meta}
             onReply={onReply}
             onFork={onFork}
+            onForkAfter={onForkAfter}
             sessionKey={sel?.id ?? null}
             reveal={skeleton.reveal}
             stop={view?.stop ?? null}

@@ -116,11 +116,13 @@ export interface TurnViewProps {
   turn: Turn;
   /** 轮中途发生的模型切换 / 上下文压缩：展开时插在对应步骤之间，收起时排在状态行与答复之间 */
   dividers?: readonly InlineDivider[];
+  /** 从这条回复之后分支：stay=true 表示分支完留在当前会话 */
+  onForkAfter?: (stay: boolean) => void;
 }
 
 const NO_DIVIDERS: readonly InlineDivider[] = [];
 
-export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS }: TurnViewProps) {
+export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS, onForkAfter }: TurnViewProps) {
   const [expanded, setExpanded] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLElement>(null);
@@ -170,7 +172,7 @@ export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS }:
       )}
 
       {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
-      {delivered && !active && <AnswerActions turnId={turn.id} text={delivered} />}
+      {delivered && !active && <AnswerActions turnId={turn.id} text={delivered} onFork={onForkAfter} />}
     </div>
   );
 });

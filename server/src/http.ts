@@ -691,7 +691,7 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       const id = decodeURIComponent(m[1]!);
       if (!isSafe(id)) throw new HttpError(400, '会话 id 不合法');
-      if (typeof body.targetId !== 'string') throw new HttpError(400, 'targetId 不合法');
+      if (body.targetId !== undefined && typeof body.targetId !== 'string') throw new HttpError(400, 'targetId 不合法');
       return sendJson(res, 200, await deps.manager.fork(id, needCwd(body.cwd), body.targetId));
     }
 

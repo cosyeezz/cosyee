@@ -29,6 +29,8 @@ export interface ConversationViewProps {
   reveal?: boolean;
   /** 用户气泡的「分支」：targetId 是这条用户消息的 id，stay=true 表示分支完留在当前会话。不传则不显示分支按钮 */
   onFork?: (targetId: string, stay: boolean) => void;
+  /** 助手回复下方的「分支」：targetId 是下一组用户消息的 id，省略表示复制整份记录，stay=true 表示分支完留在当前会话 */
+  onForkAfter?: (targetId: string | undefined, stay: boolean) => void;
   /** 渲染在内容列末尾的附加区域（不传则不渲染） */
   footer?: ReactNode;
   /** 会话因错误 / 服务重启停止与自动重试状态 */
@@ -66,6 +68,7 @@ function revealVisible(scroll: HTMLElement, column: HTMLElement) {
 const TurnItem = memo(function TurnItem({
   group,
   onFork,
+  onForkAfter,
   stop,
   onRetryNow,
   onRetryCancel,
@@ -76,6 +79,8 @@ const TurnItem = memo(function TurnItem({
   dividers?: readonly InlineDivider[];
   /** 只给组里的第一条：后面的都是插话，不能分支 */
   onFork?: (stay: boolean) => void;
+  /** 从这条回复之后分支（传给 TurnView -> AnswerActions） */
+  onForkAfter?: (stay: boolean) => void;
   stop?: StopInfo | null;
   onRetryNow?: () => void;
   onRetryCancel?: () => void;
@@ -94,7 +99,7 @@ const TurnItem = memo(function TurnItem({
       {parts.map((p, i) => (
         <UserMessage key={p.id} text={p.userText} attachments={p.attachments} onFork={i === 0 ? onFork : undefined} />
       ))}
-      <TurnView turn={displayTurn} dividers={dividers} />
+      <TurnView turn={displayTurn} dividers={dividers} onForkAfter={onForkAfter} />
       {showStop && <StopNotice stop={stop} onRetryNow={onRetryNow} onRetryCancel={onRetryCancel} />}
     </section>
   );
@@ -107,6 +112,7 @@ export function ConversationView({
   sessionKey,
   reveal = false,
   onFork,
+  onForkAfter,
   footer,
   stop = null,
   onRetryNow,
@@ -177,6 +183,37 @@ export function ConversationView({
     return m;
   }, [turns, firstId, canFork]);
 
+  // 每组助手回复下方的固定引用分支回调：
+  // 截断点取「下一组里第一个有 userId 的 part 之前」；最后一组省略 targetId（复制整份）；
+  // 后面有组但都没有 userId 时不提供回调，避免把后续内容带进新会话。
+  const forkAfterRef = useRef(onForkAfter);
+  forkAfterRef.current = onForkAfter;
+  const canForkAfter = !!onForkAfter;
+  const forkAfterCbs = useMemo(() => {
+    const m = new Map<string, (stay: boolean) => void>();
+    if (!canForkAfter) return m;
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i]!;
+      if (i === groups.length - 1) {
+        m.set(g.turn.id, (stay: boolean) => forkAfterRef.current?.(undefined, stay));
+        continue;
+      }
+      let nextTarget: string | undefined;
+      for (let j = i + 1; j < groups.length; j++) {
+        const part = groups[j]!.parts.find((p) => p.userId);
+        if (part?.userId) {
+          nextTarget = part.userId;
+          break;
+        }
+      }
+      if (nextTarget) {
+        const target = nextTarget;
+        m.set(g.turn.id, (stay: boolean) => forkAfterRef.current?.(target, stay));
+      }
+    }
+    return m;
+  }, [groups, canForkAfter]);
+
   const wrapRef = useRef<HTMLDivElement>(null);
   const { zoom, hint } = useFlowZoomControls(wrapRef, scrollRef, contentRef);
 
@@ -205,6 +242,7 @@ export function ConversationView({
                 <TurnItem
                   group={g}
                   onFork={forkCbs.get(g.turn.id)}
+                  onForkAfter={forkAfterCbs.get(g.turn.id)}
                   stop={isLast ? stop : null}
                   onRetryNow={isLast ? onRetryNow : undefined}
                   onRetryCancel={isLast ? onRetryCancel : undefined}

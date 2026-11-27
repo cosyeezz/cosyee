@@ -1470,10 +1470,10 @@ export class Manager {
   // ───────────── 分支（fork） ─────────────
 
   /**
-   * 从某条用户消息之前分支出一个新会话（只复制记录文件，不启动进程；源会话与它的进程都不受影响）。
+   * 从某条用户消息之前（省略 targetId 则复制整份记录）分支出一个新会话（只复制记录文件，不启动进程；源会话与它的进程都不受影响）。
    * 记下「新会话 ← 来源会话」，分支点之前的子代理记录仍在来源会话目录下，打开它们时顺着这条链找。
    */
-  async fork(id: string, cwd: string, targetId: string): Promise<{ sessionId: string }> {
+  async fork(id: string, cwd: string, targetId?: string): Promise<{ sessionId: string }> {
     const dir = normalizeDir(cwd);
     const res = await this.sessions.fork(id, dir, targetId);
     this.forks?.set(res.sessionId, dir, id);

@@ -774,7 +774,7 @@
 .cz-flow__plan-status { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); }
 .cz-flow__plan-status.is-no { color: var(--warn); }
 
-/* ---------- 交付文字下方的操作行（朗读 / 复制） ---------- */
+/* ---------- 交付文字下方的操作行（朗读 / 复制 / 分支） ---------- */
 .cz-flow__actions {
   display: flex;
   align-items: center;
@@ -795,7 +795,7 @@
   color: var(--text-3);
   cursor: pointer;
 }
-.cz-flow__action:hover, .cz-flow__action.is-playing { background: var(--bg-hover); color: var(--text); }
+.cz-flow__action:hover, .cz-flow__action.is-playing, .cz-flow__action.is-open { background: var(--bg-hover); color: var(--text); }
 .cz-flow__action-hint {
   margin-left: var(--sp-2);
   min-width: 0;

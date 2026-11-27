@@ -544,15 +544,17 @@ export class Sessions {
   // ───────────── 分支（fork） ─────────────
 
   /**
-   * 从某条用户消息「之前」分支出一个新会话：把源记录里这条消息之前的行写成一份新的 <新id>.jsonl，
+   * 分支出一个新会话：
+   * - 传 targetId：把源记录里这条用户消息「之前」的行写成一份新的 <新id>.jsonl；
+   * - 省略 targetId：复制整份记录（用于从最后一条回复之后分支）。
    * 每行的 sessionId 改成新 id（不改就会被 CLI 当作 stale_target）。源会话不受任何改动。
    *
-   * 截断点取「最后一条对话消息（user / assistant / system）之后」：目标消息前面可能还跟着
-   * 只服务于它的附属行（attachment、last-prompt 等），一并丢掉，新文件的内容正好等于界面上看到的分支点之前。
+   * 截断点取「最后一条对话消息（user / assistant / system）之后」：截断点前（或文件末尾）
+   * 未被对话消息带出的附属行（attachment、last-prompt 等）一并丢掉，新文件的内容正好等于界面上看到的分支点之前。
    * 返回新会话 id；新会话还会追加一个「分支 · 原标题」的标题，便于在侧栏区分。
    */
-  async fork(id: string, cwd: string, targetId: string): Promise<{ sessionId: string }> {
-    if (!isSessionUuid(targetId)) throw new HttpError(400, '消息 id 不合法');
+  async fork(id: string, cwd: string, targetId?: string): Promise<{ sessionId: string }> {
+    if (targetId !== undefined && !isSessionUuid(targetId)) throw new HttpError(400, '消息 id 不合法');
     const loc = await this.locate(id, cwd);
     if (!loc) throw new HttpError(404, '会话不存在');
     const scan = await this.scan(id, cwd);
@@ -571,13 +573,13 @@ export class Sessions {
 
     let found = false;
     let kept = 0;
-    /** 还没遇到下一条对话消息的附属行：遇到对话消息就跟着写出，到截断点则一起丢掉 */
+    /** 还没遇到下一条对话消息的附属行：遇到对话消息就跟着写出，到截断点或文件末尾则一起丢掉 */
     let pending: string[] = [];
     const rl = readline.createInterface({ input: fs.createReadStream(loc.file, { encoding: 'utf8' }), crlfDelay: Infinity });
     try {
       for await (const line of rl) {
         if (!line) continue;
-        if (line.includes(targetId)) {
+        if (targetId !== undefined && line.includes(targetId)) {
           const e = parseLine(line);
           if (e && e.type === 'user' && e.uuid === targetId) {
             found = true;
@@ -604,8 +606,10 @@ export class Sessions {
       await fs.promises.rm(tmpFile, { force: true });
       throw err;
     };
-    if (!found) return fail(new HttpError(404, '在会话记录里找不到这条消息'));
-    if (kept === 0) return fail(new HttpError(400, '这已经是第一条消息，它之前没有可分支的内容'));
+    if (targetId !== undefined && !found) return fail(new HttpError(404, '在会话记录里找不到这条消息'));
+    if (kept === 0) {
+      return fail(new HttpError(400, targetId !== undefined ? '这已经是第一条消息，它之前没有可分支的内容' : '会话里还没有可分支的内容'));
+    }
 
     await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())));
     await fs.promises.rename(tmpFile, outFile);

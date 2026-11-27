@@ -237,3 +237,43 @@ describe('ConversationView：模型切换与上下文压缩分隔提示', () => 
     expect(seq).toEqual(['a', 'sep', 'b']);
   });
 });
+
+describe('ConversationView：助手回复下方分支（onForkAfter）', () => {
+  const click = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  const forkBtnOf = (turnId: string) =>
+    host!.querySelector<HTMLButtonElement>(`[data-turn-id="${turnId}"] .cz-flow__actions button[aria-label="从这条回复分支"]`);
+
+  it('首组取下一组首个有 userId 的 part，最后一组传 undefined', async () => {
+    const onForkAfter = vi.fn();
+    const turns = [
+      makeTurn('t1', { userId: 'u1', answer: '答复一' }),
+      makeTurn('t2', { userId: 'u2', answer: '答复二' }),
+    ];
+    await mount({ turns, onForkAfter });
+
+    const b1 = forkBtnOf('t1');
+    const b2 = forkBtnOf('t2');
+    expect(b1).not.toBeNull();
+    expect(b2).not.toBeNull();
+
+    click(b1!);
+    click(document.querySelectorAll('.cz-menu__row')[0]!);
+    expect(onForkAfter).toHaveBeenLastCalledWith('u2', false);
+
+    click(b2!);
+    click(document.querySelectorAll('.cz-menu__row')[1]!);
+    expect(onForkAfter).toHaveBeenLastCalledWith(undefined, true);
+  });
+
+  it('后续组都没有 userId 时不显示分支按钮，最后一组仍可分支', async () => {
+    const onForkAfter = vi.fn();
+    const turns = [
+      makeTurn('t1', { userId: 'u1', answer: '答复一' }),
+      makeTurn('t2', { answer: '答复二（无 userId）' }),
+    ];
+    await mount({ turns, onForkAfter });
+
+    expect(forkBtnOf('t1')).toBeNull();
+    expect(forkBtnOf('t2')).not.toBeNull();
+  });
+});
