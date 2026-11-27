@@ -10,6 +10,7 @@ import { Icon, type IconName } from '../icons/Icon';
 import { parseQuotes } from '../../core/quote';
 import { api } from '../../core/api';
 import { elementName, expandLabels } from '../../core/composer';
+import { openInBrowserPanel } from '../browser/links';
 import { ChipPreview } from '../composer/ChipPreview';
 import { useFiles } from '../files/FileContext';
 import { Menu } from '../menus/Menu';
@@ -117,14 +118,14 @@ function buildComponents(attachments: Attachment[]): Components {
       const idx = attachmentIndex(href);
       if (idx !== null && attachments[idx]) return <AttachmentTag attachment={attachments[idx]} />;
       return (
-        <a href={href} target="_blank" rel="noreferrer noopener">
+        <a href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => openInBrowserPanel(e, href)}>
           {children}
         </a>
       );
     },
     img({ alt, src }) {
       return (
-        <a href={src} target="_blank" rel="noreferrer noopener">
+        <a href={src} target="_blank" rel="noreferrer noopener" onClick={(e) => openInBrowserPanel(e, src)}>
           {alt || src}
         </a>
       );

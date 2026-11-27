@@ -55,6 +55,34 @@
 .cz-menu__note { font-size: var(--fs-xs); color: var(--text-3); line-height: 1.4; }
 .cz-menu__shortcut { margin-left: var(--sp-3); color: var(--text-3); font-size: var(--fs-xs); font-family: var(--font-mono); }
 .cz-menu__arrow { color: var(--text-3); }
+/* 行尾复制按钮：悬停 / 键盘移到该行、刚复制完时可见；触屏常显、热区 44px。负外边距让行高不变 */
+.cz-menu__copy-slot { flex: none; display: inline-flex; margin: -4px -6px -4px 0; }
+.cz-menu__copy {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-menu__row.is-active .cz-menu__copy,
+.cz-menu__row:hover .cz-menu__copy,
+.cz-menu__copy:focus-visible,
+.cz-menu__copy.is-copied { opacity: 1; }
+/* 行本身悬停是 --bg-hover，按钮再深一档才看得出 */
+.cz-menu__copy:hover { background: var(--bg-active); color: var(--text); }
+.cz-menu__copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cz-menu__copy.is-copied { color: var(--tk-ok, var(--accent)); }
+@media (hover: none), (pointer: coarse) {
+  .cz-menu__copy { opacity: 1; width: 44px; height: 44px; }
+  .cz-menu__copy-slot { margin: -13px -12px -13px 0; }
+}
 .cz-menu__switch {
   position: relative;
   flex: none;

@@ -35,6 +35,7 @@ describe('toolIconName', () => {
     ['TaskUpdate', 'tool-todo'],
     ['TaskList', 'tool-todo'],
     ['TaskGet', 'tool-todo'],
+    ['Skill', 'tool-skill'],
     ['AskUserQuestion', 'info'],
     ['ExitPlanMode', 'mode-plan'],
   ])('%s -> %s', (name, icon) => {
@@ -47,7 +48,7 @@ describe('toolIconName', () => {
   });
 
   it('其他工具走兜底图标，包括原型链上的名字', () => {
-    for (const n of ['Skill', 'KillShell', 'SendToProject', 'toString', 'constructor', '', 'mcp_single']) {
+    for (const n of ['KillShell', 'SendToProject', 'toString', 'constructor', '', 'mcp_single']) {
       expect(toolIconName(n)).toBe('tool-generic');
     }
   });

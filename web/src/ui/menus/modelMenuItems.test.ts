@@ -40,9 +40,13 @@ describe('buildModelMenu', () => {
     expect(onChange).toHaveBeenLastCalledWith({ model: 'sonnet', effort: 'medium', ultracode: true });
     expect(eff[1].checked).toBe(true);
   });
-  it('更多模型子菜单', () => {
-    const more = find(buildModelMenu(cfg, () => {}), 'more').submenu!;
+  it('更多模型子菜单：每行可复制模型 id', () => {
+    const more = find(buildModelMenu(cfg, () => {}), 'more').submenu! as MenuItem[];
     expect(more.length).toBeGreaterThan(5);
+    expect(more.every((e) => e.kind === undefined && e.copy === e.key.slice('m:'.length))).toBe(true);
+  });
+  it('常用项不带复制按钮', () => {
+    expect(buildModelMenu(cfg, () => {}).slice(0, 4).map((i) => (i as MenuItem).copy)).toEqual([undefined, undefined, undefined, undefined]);
   });
   it('数字热键 1–4', () => {
     const onChange = vi.fn();
@@ -130,11 +134,30 @@ describe('CLI 列表驱动的菜单', () => {
     const r = menuModels(list, map);
     expect(r.primary.map((m) => [m.id, m.label, m.key])).toEqual([['sonnet', 'minimax-m2.5', '1'], ['haiku', '小 Grok', '2']]);
     expect(r.primary[0]!.note).toBe('1M 上下文');
-    expect(r.more.map((m) => m.id)).toEqual(['gpt-5.6-sol']);
+    // 「自定义模型」列全部映射模型：别名在前，target 记实际模型
+    expect(r.more.map((m) => [m.id, m.target])).toEqual([['sonnet', 'minimax-m2.5'], ['haiku', 'grok-4.7'], ['gpt-5.6-sol', undefined]]);
     expect(r.moreLabel).toBe('自定义模型');
     // 自定义条目不在 CLI 列表里：强度按全部 5 档
     expect(effortsFor('gpt-5.6-sol', list)).toEqual([...ALL5]);
     expect(modelSummary({ model: 'gpt-5.6-sol', effort: 'high' }, { list, map })).toBe('gpt-5.6-sol · 高');
+  });
+
+  it('「自定义模型」子菜单：别名在前（选中仍传别名）、分隔线、自定义条目去重；复制的是实际模型名', () => {
+    const map = {
+      alias: { opus: { id: 'claude-opus-5.5' }, haiku: { id: 'claude-haiku-5.5', label: '小 Haiku', m1: true } },
+      extra: [{ id: 'claude-opus-4.6' }, { id: 'claude-opus-5.5' }],
+    };
+    const onChange = vi.fn();
+    const sub = find(buildModelMenu({ model: 'opus', effort: 'medium' }, onChange, true, { map }), 'more')!.submenu!;
+    expect(sub.map((e) => (e.kind === 'sep' ? '—' : (e as MenuItem).label))).toEqual(['claude-opus-5.5', '小 Haiku', '—', 'claude-opus-4.6']);
+    const rows = sub.filter((e): e is MenuItem => e.kind === undefined);
+    expect(rows.map((e) => e.copy)).toEqual(['claude-opus-5.5', 'claude-haiku-5.5', 'claude-opus-4.6']);
+    expect(rows[0]!.checked).toBe(true);
+    expect(rows[1]!.note).toBe('1M 上下文');
+    rows[1]!.onSelect!();
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'haiku', effort: 'medium' });
+    rows[2]!.onSelect!();
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'claude-opus-4.6', effort: 'medium' });
   });
 
   it('「刷新模型列表」：传了 onRefresh 才有，不关菜单；刷新中禁用', () => {

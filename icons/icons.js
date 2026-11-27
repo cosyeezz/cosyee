@@ -113,6 +113,10 @@ export const ICONS = {
     label: '任务清单', where: '展开区 · TodoWrite', runnable: true, line: true,
     render: () => `<path class="l hi w" pathLength="1" d="M9 17L15 23L25 11"/><path class="l" d="M34 17H55"/><rect class="l" x="10" y="38" width="13" height="13" rx="3.5"/><path class="l" d="M34 45H55"/>`,
   },
+  'tool-skill': {
+    label: 'Skill 工具', where: '展开区 · 加载 skill（摊开的书 + 星光，与技能面板的魔法书同一意象）', runnable: true, line: true,
+    render: () => `<path class="l" d="M27.5 29C21.9 24.5 14 24 6 26.5V52.5C14 50 21.9 50.5 27.5 55C33.1 50.5 41 50 49 52.5V26.5C41 24 33.1 24.5 27.5 29Z"/><path class="l" d="M27.5 29V55"/><path class="l dot hi spk" d="M51 2C51.8 7.9 54.6 10.7 60.5 11.5C54.6 12.3 51.8 15.1 51 21C50.2 15.1 47.4 12.3 41.5 11.5C47.4 10.7 50.2 7.9 51 2Z"/>`,
+  },
   'tool-generic': {
     label: '其他工具', where: '展开区 · 兜底图标', runnable: true, line: true,
     render: () => `<g class="nut"><polygon class="l hi" points="55,32 43.5,51.9 20.5,51.9 9,32 20.5,12.1 43.5,12.1"/><circle class="l" cx="32" cy="32" r="8.5"/></g>`,

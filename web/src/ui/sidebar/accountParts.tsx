@@ -110,13 +110,13 @@ export function PlanChip({ plan, tip = true }: { plan: string | null | undefined
   return <span className="cz-acct-chip" title={tip ? plan ?? undefined : undefined}>{chip}</span>;
 }
 
-/** Kiro 账号凭据被 kiro.rs 停用时名字后面的红色小标签文字；正常返回 null */
+/** Kiro 账号凭据被 kiro.rs 停用时的红色问题标签文字；正常返回 null */
 export function kiroIssue(a: AccountEntry): string | null {
   const c = a.kiro?.credential;
   return c === 'quota' ? '额度用完' : c === 'disabled' ? '已停用' : null;
 }
 
-/** 名字后面的红色问题标签（额度用完 / 已停用） */
+/** 弹层账号行右端的红色问题标签（额度用完 / 已停用）；管理面板里改用右上角的状态徽标 */
 export function IssueChip({ text }: { text: string | null | undefined }) {
   if (!text) return null;
   return <span className="cz-acct-chip is-danger">{text}</span>;

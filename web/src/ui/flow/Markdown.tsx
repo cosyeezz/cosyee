@@ -1,12 +1,13 @@
 // Markdown 渲染：remark-gfm + rehype-highlight；代码块带语言标签和复制按钮。
-// 本地路径：链接里的本地文件路径渲染成 FilePathLink（点击打开预览浮窗），行内代码里的路径带完整路径 tooltip；
-// 远程链接只放行 http / https / mailto，其它（javascript: 等）退化成纯文本。
+// 本地路径：链接里的本地文件路径渲染成 FilePathLink（点击打开预览浮窗）；行内代码里的路径保持代码样式，悬停显示完整路径，点击同样打开预览浮窗；
+// 远程链接只放行 http / https / mailto，其它（javascript: 等）退化成纯文本；http(s) 链接默认在内置浏览器面板里打开（ui/browser/links.ts）。
 import { createContext, isValidElement, memo, useContext, useState, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { type ExecResult, SHELL_LABEL, isLocalPath, localFileLink, localPathHref, pathRelativeToFile, resolveAgainst, snippetShell } from '@cosyee/shared';
 import { copyText } from '../../core/browser';
+import { openInBrowserPanel } from '../browser/links';
 import { useFiles } from '../files/FileContext';
 import { FilePathLink } from '../files/FilePathLink';
 
@@ -43,7 +44,7 @@ function MdLink({ children, href }: { children?: ReactNode; href?: string }) {
   }
   if (href && REMOTE_HREF.test(href)) {
     return (
-      <a href={href} target="_blank" rel="noreferrer noopener">
+      <a href={href} target="_blank" rel="noreferrer noopener" onClick={(e) => openInBrowserPanel(e, href)}>
         {children}
       </a>
     );
@@ -51,15 +52,47 @@ function MdLink({ children, href }: { children?: ReactNode; href?: string }) {
   return <span>{children}</span>;
 }
 
-/** 行内代码：内容像本地路径时，悬停显示解析后的完整路径 */
+/** 开头像路径但不当路径的行内代码：只有一段的根路径（`/compact` 多半是斜杠命令）、带选项的命令行（`./run.sh --watch`） */
+const NOT_A_PATH = /^\/[^/\\]*$|\s--?[A-Za-z]/;
+
+/**
+ * 行内代码：内容像本地路径时，悬停显示解析后的完整路径，点击打开预览浮窗。
+ * 用 <code role=button> 而不是 <button>：按钮是原子行内盒，长路径没法跟着正文换行，里面的文字也拖不出选区；
+ * 在里面拖选了文字时不打开，方便复制路径。
+ */
 function InlineCode({ text, children }: { text: string; children?: ReactNode }) {
   const files = useFiles();
   const baseFile = useContext(BaseFileContext);
   const t = text.trim();
   // 行内代码是原样的文件系统路径：先转义 % # ?，免得文件名里的这些字符被当成 URL 语法
-  const link = isLocalPath(t) ? localFileLink(localPathHref(t)) : null;
-  const title = link ? fullPath(link.path, files?.cwd, baseFile) + (link.line ? `:${link.line}` : '') : undefined;
-  return <code title={title}>{children}</code>;
+  const link = isLocalPath(t) && !NOT_A_PATH.test(t) ? localFileLink(localPathHref(t)) : null;
+  if (!link) return <code>{children}</code>;
+  const path = fullPath(link.path, files?.cwd, baseFile);
+  const title = link.line ? `${path}:${link.line}` : path;
+  if (!files) return <code title={title}>{children}</code>;
+  const open = (el: HTMLElement) => files.open({ path, ...(link.line ? { line: link.line } : {}) }, el);
+  return (
+    <code
+      className="cz-codepath"
+      title={title}
+      role="button"
+      tabIndex={0}
+      data-file-path={path}
+      onClick={(e) => {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return;
+        open(e.currentTarget);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open(e.currentTarget);
+        }
+      }}
+    >
+      {children}
+    </code>
+  );
 }
 
 /** 递归取 React 节点里的纯文本（高亮后代码被拆成很多 span） */

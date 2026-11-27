@@ -68,7 +68,6 @@ export function PinnedRail({ open, pinned, workspaces, currentSessionId, onSelec
                   )}
                   <span className="cz-prail__title">{title}</span>
                 </span>
-                {status && <span className="cz-sr-only">（{status}）</span>}
               </button>
             </div>
           );

@@ -63,7 +63,18 @@ const list: AccountEntry[] = [
     id: 'k1', label: 'Kiro 个人', name: 'Kiro 个人', plan: null, loggedIn: true, active: false, isDefault: false,
     kiro: { method: 'builderId', proxy: 'ready', error: null, credential: 'ok' },
   },
+  // 额度用完：名字长短不一（邮箱差一个字符），用来检查同组的标签、额度是否对齐
+  ...['dev.team@example.com', 'dev.team2@example.com', 'ops@example.com'].map((email, i): AccountEntry => ({
+    id: `kq${i}`, label: '', name: email, plan: 'Kiro', loggedIn: true, active: false, isDefault: false,
+    kiro: { method: 'idc', proxy: 'ready', error: null, credential: 'quota', credentialReason: 'QuotaExceeded', email },
+  })),
 ];
+const kiroBalances: Record<string, KiroBalance> = {
+  k1: { subscription: 'Kiro Pro', used: 120, limit: 500, resetsAt: now + 6 * D },
+  kq0: { subscription: 'KIRO PRO+', used: 2000, limit: 2000, resetsAt: now + 4 * D },
+  kq1: { subscription: 'KIRO PRO+', used: 2000, limit: 2000, resetsAt: now + 4 * D },
+  kq2: { subscription: 'KIRO PRO+', used: 1000, limit: 1000, resetsAt: now + 4 * D },
+};
 const usage: Record<string, UsageInfo> = {
   default: { at: now, limits: [
     { kind: 'session', percent: 71, severity: 'normal', resetsAt: now + 2 * H + 29 * 60_000 },
@@ -123,7 +134,7 @@ a.saveApiAccount = () => delay({ ok: true, id: 'a2' });
 a.apiModelList = () => delay({ url: 'http://100.64.0.10:8990/v1/models', models: ['glm-4.6', 'glm-4.5-air', 'kimi-k2-turbo-preview', 'deepseek-v3.2-exp', 'qwen3-coder-plus-2025-09-23'] }, 400);
 
 let kiroState: KiroStatus = {
-  service: { enabled: true, accounts: 1, running: 1, failed: 0, busySessions: 0, outdated: 0, usable: 1 },
+  service: { enabled: true, accounts: 4, running: 1, failed: 0, busySessions: 0, outdated: 0, usable: 1 },
   imports: { kiroIde: true, kiroCli: false },
   login: null,
 };
@@ -131,12 +142,12 @@ a.kiroStatus = () => delay<KiroStatus>({ ...kiroState });
 a.components = () => delay<ComponentList>({ list: [{
   id: 'kiro', name: 'kiro.rs', installed: true, custom: false, version: '0.9.9', latest: '0.9.9', updateAvailable: false,
   checkedAt: now - 10 * 60_000, checkError: null, autoUpdate: true, busy: 0, pending: false, updatedBy: 'server', installable: true, job: null,
-  service: { state: 'ready', error: null, enabled: true, outdated: false, port: 21395, accounts: { total: 1, usable: 1 } },
+  service: { state: 'ready', error: null, enabled: true, outdated: false, port: 21395, accounts: { total: 4, usable: 1 } },
 }] });
 a.kiroLogin = () => delay<AccountLogin>({ loginId: 'k-L1', status: 'waiting', userCode: 'ABCD-1234', url: 'https://view.awsapps.com/start/#/device', accountId: null, error: null });
 a.kiroLoginStatus = () => delay<AccountLogin>({ loginId: 'k-L1', status: 'waiting', userCode: 'ABCD-1234', url: 'https://view.awsapps.com/start/#/device', accountId: null, error: null });
 a.kiroLoginCancel = () => delay({ ok: true });
-a.kiroBalance = () => delay<KiroBalance>({ subscription: 'Kiro Pro', used: 120, limit: 500, resetsAt: now + 6 * D });
+a.kiroBalance = (id: string) => delay<KiroBalance>(kiroBalances[id] ?? kiroBalances.k1!);
 
 a.agyAccounts = () => delay<AgyAccountList>({
   installed: agyInstalled,

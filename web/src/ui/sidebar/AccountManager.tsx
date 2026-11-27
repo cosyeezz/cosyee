@@ -14,7 +14,7 @@ import { ConfirmActionButton } from './ActionButtons';
 import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
 import {
   agyRemoveBlock, agyTitle, apiHost, apiMapNote, claudeKind, claudeRemoveBlock, claudeUsable,
-  DuplicateNote, entryTitle, IssueChip, kiroIssue, msg, PlanChip, planChip, type ClaudeKind,
+  DuplicateNote, entryTitle, kiroIssue, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { useDismiss } from './useDismiss';
 import { useFocusTrap } from './useFocusTrap';
@@ -139,12 +139,17 @@ function Card({ title, plan, issue, sub, active, off, badge, meta, quota, editin
             <div className="cz-acct-card__name">
               <b title={title}>{title}</b>
               <PlanChip plan={plan} />
-              <IssueChip text={issue} />
             </div>
             {sub && <div className="cz-acct-card__sub" title={sub}>{sub}</div>}
           </div>
         )}
-        {badge && !editing && <span className={`cz-acct-card__badge${badge.danger ? ' is-danger' : ''}`}>{badge.text}</span>}
+        {/* 右上角的状态徽标：问题标签放最后，同一组卡片里都贴着右边 */}
+        {!editing && (badge || issue) && (
+          <span className="cz-acct-card__badges">
+            {badge && <span className={`cz-acct-card__badge${badge.danger ? ' is-danger' : ''}`}>{badge.text}</span>}
+            {issue && <span className="cz-acct-card__badge is-danger">{issue}</span>}
+          </span>
+        )}
       </div>
       {meta && <div className="cz-acct-card__meta">{meta}</div>}
       {quota}

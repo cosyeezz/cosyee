@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Markdown } from './Markdown';
+import { BROWSER_OPEN_EVENT, type BrowserOpenDetail } from '../browser/links';
 import { FilesContext, type FilesApi } from '../files/FileContext';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -92,19 +93,131 @@ describe('Markdown 本地路径链接', () => {
   });
 });
 
+/** 点链接，返回默认打开方式有没有被取消（在 window 上看，和桌面客户端 opener 插件的位置一样）；看完取消掉，免得 jsdom 去导航 */
+function clickLink(a: Element, init: MouseEventInit = {}): boolean {
+  let prevented = false;
+  const spy = (e: Event) => {
+    prevented = e.defaultPrevented;
+    e.preventDefault();
+  };
+  window.addEventListener('click', spy);
+  try {
+    act(() => {
+      a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...init }));
+    });
+  } finally {
+    window.removeEventListener('click', spy);
+  }
+  return prevented;
+}
+
+/** 模拟 MainApp 收下 cosyee:browser-open 事件；返回收到的地址 */
+function claimBrowserOpen(): { urls: string[]; stop: () => void } {
+  const urls: string[] = [];
+  const on = (e: Event) => {
+    urls.push((e as CustomEvent<BrowserOpenDetail>).detail.url);
+    e.preventDefault();
+  };
+  window.addEventListener(BROWSER_OPEN_EVENT, on);
+  return { urls, stop: () => window.removeEventListener(BROWSER_OPEN_EVENT, on) };
+}
+
+describe('Markdown 远程链接默认在内置浏览器打开', () => {
+  let claim: ReturnType<typeof claimBrowserOpen> | null = null;
+  afterEach(() => {
+    claim?.stop();
+    claim = null;
+  });
+
+  it('普通左键点 http(s) 链接：交给面板打开，链接默认的打开方式被取消', () => {
+    claim = claimBrowserOpen();
+    const el = mount('[文档](https://example.com/a?b=1) 和 [内网](http://grafana.example.com/d/1)');
+    const [a, b] = Array.from(el.querySelectorAll('a'));
+    expect(clickLink(a!)).toBe(true);
+    expect(clickLink(b!)).toBe(true);
+    expect(claim.urls).toEqual(['https://example.com/a?b=1', 'http://grafana.example.com/d/1']);
+  });
+
+  it('按住修饰键、mailto 链接：保持默认打开方式', () => {
+    claim = claimBrowserOpen();
+    const el = mount('[文档](https://example.com/) 和 [邮件](mailto:a@b.c)');
+    const [web, mail] = Array.from(el.querySelectorAll('a'));
+    for (const mod of ['shiftKey', 'metaKey', 'ctrlKey', 'altKey'] as const) {
+      expect(clickLink(web!, { [mod]: true })).toBe(false);
+    }
+    expect(clickLink(mail!)).toBe(false);
+    expect(claim.urls).toEqual([]);
+  });
+
+  it('没有面板收下事件时（不在主界面里）保持默认打开方式', () => {
+    const el = mount('[文档](https://example.com/)');
+    expect(clickLink(el.querySelector('a')!)).toBe(false);
+  });
+});
+
 describe('Markdown 行内代码路径', () => {
-  it('行内代码是路径：tooltip 是解析后的完整路径（带行号）', () => {
-    const el = mount('改了 `./src/a.ts:12` 这里');
+  afterEach(() => window.getSelection()?.removeAllRanges());
+
+  it('行内代码是路径：tooltip 是解析后的完整路径（带行号），点击通过 context 打开预览', () => {
+    const files = makeFiles();
+    const el = mount('改了 `./src/a.ts:12` 这里', files);
     const code = el.querySelector('code')!;
     expect(code.title).toBe('F:\\proj\\src\\a.ts:12');
     expect(code.textContent).toBe('./src/a.ts:12');
-    // 行内代码不会变成按钮
+    expect(code.getAttribute('role')).toBe('button');
+    // 仍是 <code>（跟着正文换行、文字可选），不换成 <button>
     expect(el.querySelector('button')).toBeNull();
+    act(() => code.click());
+    expect(files.open).toHaveBeenCalledTimes(1);
+    expect(files.open.mock.calls[0]![0]).toEqual({ path: 'F:\\proj\\src\\a.ts', line: 12 });
+    expect(files.open.mock.calls[0]![1]).toBe(code);
   });
 
-  it('不像路径的行内代码没有 tooltip', () => {
+  it('`~/` 路径原样交给服务端展开；Enter / 空格也能打开', () => {
+    const files = makeFiles();
+    const el = mount('改 `~/.cosyee/kiro-rs/service/config.json` 里的 `adminApiKey`。', files);
+    const [path, key] = Array.from(el.querySelectorAll('code'));
+    expect(key!.hasAttribute('role')).toBe(false);
+    for (const k of ['Enter', ' ']) {
+      act(() => {
+        path!.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      });
+    }
+    expect(files.open.mock.calls.map((c) => c[0])).toEqual([
+      { path: '~/.cosyee/kiro-rs/service/config.json' },
+      { path: '~/.cosyee/kiro-rs/service/config.json' },
+    ]);
+  });
+
+  it('在路径里拖选了文字时点击不打开（方便复制）', () => {
+    const files = makeFiles();
+    const code = mount('看 `/etc/xray/config.json`', files).querySelector('code')!;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    window.getSelection()!.addRange(range);
+    act(() => code.click());
+    expect(files.open).not.toHaveBeenCalled();
+  });
+
+  it('斜杠命令、带选项的命令行不当路径', () => {
+    const el = mount('用 `/compact`，或运行 `./run.sh --watch`、`/usr/local/bin/xray -test`');
+    for (const code of Array.from(el.querySelectorAll('code'))) {
+      expect(code.hasAttribute('role')).toBe(false);
+      expect(code.hasAttribute('title')).toBe(false);
+    }
+  });
+
+  it('没有 FilesContext：只有 tooltip，不可点击', () => {
+    const code = mount('改了 `./src/a.ts`', null).querySelector('code')!;
+    expect(code.title).toBe('./src/a.ts');
+    expect(code.hasAttribute('role')).toBe(false);
+    expect(code.hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('不像路径的行内代码没有 tooltip、不可点击', () => {
     const el = mount('调用 `foo()` 即可');
     expect(el.querySelector('code')!.hasAttribute('title')).toBe(false);
+    expect(el.querySelector('code')!.hasAttribute('role')).toBe(false);
   });
 
   it('围栏代码块不受影响（没有 tooltip、仍有复制按钮）', () => {
