@@ -48,6 +48,11 @@ function toolOutput(u: Json): string {
 
 const DONE = new Set(['completed', 'failed']);
 
+/** 把 ACP toolCallId 换算成前端子代理会话里 ToolStep.id（tool_use.id） */
+export function delegateToolId(parentToolUseId: string, toolCallId: string): string {
+  return `agy_${parentToolUseId}_${toolCallId}`;
+}
+
 export class AcpProgress {
   private readonly parent: string;
   /** 展示用的模型名；实际模型确定后会改写 */
@@ -93,7 +98,7 @@ export class AcpProgress {
         parent_tool_use_id: this.parent,
         message: {
           role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: `agy_${this.parent}_${callId}`, content: '已中断', is_error: true }],
+          content: [{ type: 'tool_result', tool_use_id: delegateToolId(this.parent, callId), content: '已中断', is_error: true }],
         },
       });
     }
@@ -148,7 +153,7 @@ export class AcpProgress {
 
   private tool(u: Json): Json[] {
     const callId = typeof u.toolCallId === 'string' && u.toolCallId ? u.toolCallId : `n${this.seq++}`;
-    const id = `agy_${this.parent}_${callId}`;
+    const id = delegateToolId(this.parent, callId);
     const out: Json[] = [];
     if (!this.tools.has(callId)) {
       // 工具调用打断文字 / 思考：先把前面的流式块关掉，之后另起一段

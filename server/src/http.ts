@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXEC_CODE_LIMIT, SKILL_MODES, snippetShell, type Account, type ExecStreamMsg, type Bootstrap, type BrowserPickResult, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
+import { EXEC_CODE_LIMIT, SKILL_MODES, snippetShell, type Account, type ExecStreamMsg, type Bootstrap, type BrowserPickResult, type DelegateBackendId, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
 import type { AgyAccounts } from './accounts/agy.js';
+import type { CodexAccounts } from './accounts/codex.js';
 import { type Accounts, RunningError } from './accounts/index.js';
 import type { KiroService } from './kiro/index.js';
 import { browseDir, statFolder, statPicked } from './browse.js';
@@ -48,6 +49,8 @@ export interface HttpDeps {
   accounts?: Accounts;
   /** Antigravity（agy）多账号；不传则 agy 账号相关接口返回 404（旧测试） */
   agyAccounts?: AgyAccounts;
+  /** Codex 多账号；不传则 codex 账号相关接口返回 404（旧测试） */
+  codexAccounts?: CodexAccounts;
   /** 本机组件版本与自动更新；不传则 /api/components 返回 404（旧测试） */
   components?: ComponentUpdater;
   /** 内置浏览器（agent-browser）；不传则 /api/browser 接口返回 404（旧测试） */
@@ -58,8 +61,8 @@ export interface HttpDeps {
   usage: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<UsageInfo | null> };
   /** CLI 报告的可用模型（模型菜单用）；账号解析同 usage。不传 = 返回 null（旧测试） */
   cliModels?: { get(refresh: boolean, session?: string | null, account?: string | null): Promise<CliModelList | null> };
-  /** Antigravity 的可用模型；不传则 GET /api/delegate/models 返回 404（旧测试） */
-  delegateModels?: (cwd: string, refresh: boolean) => Promise<DelegateModelList>;
+  /** 委派后端的可用模型；不传则 GET /api/delegate/models 返回 404（旧测试） */
+  delegateModels?: (cwd: string, refresh: boolean, backend: DelegateBackendId, account: string | null) => Promise<DelegateModelList>;
   store: StateStore;
   previews: Previews;
   pins: Pins;
@@ -355,6 +358,52 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
       agy.setLabel(body.id, body.label);
+      return sendJson(res, 200, { ok: true });
+    }
+    throw new HttpError(404, '未找到');
+  }
+
+  async function codexAccountRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string, q: URLSearchParams): Promise<void> {
+    const codex = deps.codexAccounts;
+    if (!codex) throw new HttpError(404, '未找到');
+    let m: RegExpExecArray | null;
+    if (method === 'GET' && p === '/api/codex-accounts') {
+      return sendJson(res, 200, codex.list({ refresh: q.get('refresh') === '1' }));
+    }
+    if (method === 'POST' && p === '/api/codex-accounts/switch') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      await codex.switchTo(body.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/codex-accounts/login') {
+      const body = await readJson(req);
+      return sendJson(
+        res,
+        200,
+        codex.startLogin({ method: body.method, label: body.label, accountId: body.accountId, apiKey: body.apiKey }),
+      );
+    }
+    if (method === 'GET' && (m = /^\/api\/codex-accounts\/login\/([a-z0-9]{1,32})$/.exec(p))) {
+      return sendJson(res, 200, codex.getLogin(m[1]!));
+    }
+    if (method === 'POST' && (m = /^\/api\/codex-accounts\/login\/([a-z0-9]{1,32})\/cancel$/.exec(p))) {
+      codex.cancelLogin(m[1]!);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/codex-accounts/remove') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      await codex.remove(body.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/codex-accounts/dedupe') {
+      return sendJson(res, 200, await codex.dedupe());
+    }
+    if (method === 'POST' && p === '/api/codex-accounts/label') {
+      const body = await readJson(req);
+      if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');
+      codex.setLabel(body.id, body.label);
       return sendJson(res, 200, { ok: true });
     }
     throw new HttpError(404, '未找到');
@@ -720,6 +769,7 @@ export function createHandler(deps: HttpDeps) {
 
     if (p === '/api/accounts' || p.startsWith('/api/accounts/')) return accountRoutes(req, res, method, p);
     if (p === '/api/agy-accounts' || p.startsWith('/api/agy-accounts/')) return agyAccountRoutes(req, res, method, p);
+    if (p === '/api/codex-accounts' || p.startsWith('/api/codex-accounts/')) return codexAccountRoutes(req, res, method, p, q);
     if (deps.components && (p === '/api/components' || p.startsWith('/api/components/'))) {
       const r = await componentRoutes(deps.components, { method, pathname: p, query: q, fromLocal: fromLocal(req) });
       if (!r) throw new HttpError(404, '未找到');
@@ -810,8 +860,12 @@ export function createHandler(deps: HttpDeps) {
     if (method === 'GET' && p === '/api/delegate/models' && deps.delegateModels) {
       const raw = q.get('cwd');
       const cwd = raw && raw.trim() ? needCwd(raw) : os.homedir();
+      const backend = q.get('backend') ?? 'agy';
+      if (backend !== 'claude' && backend !== 'agy' && backend !== 'codex') throw new HttpError(400, 'backend 只能是 claude、agy 或 codex');
+      const account = q.get('account');
+      if (account !== null && !/^[A-Za-z0-9._-]{1,80}$/.test(account)) throw new HttpError(400, 'account 不合法');
       try {
-        return sendJson(res, 200, await deps.delegateModels(cwd, q.get('refresh') === '1'));
+        return sendJson(res, 200, await deps.delegateModels(cwd, q.get('refresh') === '1', backend, account));
       } catch (e) {
         throw new HttpError(503, e instanceof Error ? e.message : String(e));
       }

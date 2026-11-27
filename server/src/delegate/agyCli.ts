@@ -127,6 +127,8 @@ export function sanitizeLogLine(raw: string): string {
   // Google OAuth access / refresh token
   s = s.replace(/\bya29\.[A-Za-z0-9._-]{10,}/g, '[REDACTED]');
   s = s.replace(/\b1\/\/[A-Za-z0-9._-]{20,}/g, '[REDACTED]');
+  // OpenAI API Key（sk-... / sk-proj-... / sk-svcacct-... / sk-admin-...）
+  s = s.replace(/\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{16,}/g, '[REDACTED]');
   // URL 查询参数中的敏感字段
   s = s.replace(/([?&](?:access_token|refresh_token|id_token|token|api_key|key|secret|code)=)[^&\s"'<>]+/gi, '$1[REDACTED]');
   // 键值对形式的 token / secret / key / authorization

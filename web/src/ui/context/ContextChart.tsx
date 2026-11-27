@@ -24,10 +24,13 @@ export function ContextChart({
   points,
   turns,
   intro = false,
+  singleTurn = false,
 }: {
   points: CachePoint[] | undefined;
   turns: Turn[] | undefined;
   intro?: boolean;
+  /** 单轮模式（子代理）：悬停提示省略「第 1 轮」 */
+  singleTurn?: boolean;
 }) {
   const list = points ?? [];
   const [hover, setHover] = useState<number | null>(null);
@@ -138,10 +141,11 @@ export function ContextChart({
         {hover !== null && (
           <ChartTip at={tipAt} testId="ctx-tip">
             <div className="cz-ctx__cache-tip-title">
-              第 {list[hover]!.turn + 1} 轮 · 第 {hover + 1} 次请求
+              {singleTurn ? `第 ${hover + 1} 次请求` : `第 ${list[hover]!.turn + 1} 轮 · 第 ${hover + 1} 次请求`}
             </div>
             <div className="cz-ctx__cache-tip-row">输入 {formatTokens(geo.vals[hover]!)}</div>
             {hover > 0 && <div className="cz-ctx__cache-tip-row">较上次 {signed(geo.deltas[hover]!)}</div>}
+            {list[hover]!.estimated && <div className="cz-ctx__cache-tip-row is-total">拆分按本轮合计估算</div>}
             <div className="cz-ctx__cache-tip-row is-total">点击查看来自哪些工具</div>
           </ChartTip>
         )}

@@ -652,7 +652,9 @@ describe('ContextPanel 花费', () => {
       ),
     );
     expect(section(el).textContent).not.toContain('子代理的花费还在读取');
-    expect(section(el).textContent).toContain('含子代理 $1.00');
+    expect(section(el).textContent).toContain('整个会话');
+    expect(section(el).textContent).toContain('原生子代理');
+    expect(section(el).textContent).toContain('$1.00');
     expect(section(el).querySelector('rect.cz-ctx__cost-bar.is-sub')).not.toBeNull();
   });
 

@@ -1,4 +1,4 @@
-import { DEFAULT_SUBAGENTS } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS, type SubagentConfig } from '@cosyee/shared';
 import { describe, expect, it } from 'vitest';
 import { groupModels, parseAvailable, resolveModelId, splitModelId, toModelList } from './delegate/models.js';
 import { migrateSubagents, parseSubagents, sanitizeSubagents } from './workspaces.js';
@@ -56,29 +56,40 @@ describe('agy 模型 id', () => {
 describe('子代理配置与迁移', () => {
   it('sanitize 落回默认；parse 有非法字段就拒绝', () => {
     expect(sanitizeSubagents(null)).toEqual(DEFAULT_SUBAGENTS);
-    const ok = {
-      kind: 'claude' as const,
-      native: { model: 'opus' as const, effort: 'max' as const },
-      claude: { model: 'sonnet' as const, effort: 'high' as const },
-      agy: { model: 'gemini-4-neon', effort: 'low' as const },
+    const ok: SubagentConfig = {
+      mode: 'delegate',
+      native: { model: 'opus', effort: 'max' },
+      delegate: {
+        default: { backend: 'claude', accountId: 'default', model: 'sonnet', effort: 'high' },
+        agents: {
+          Explore: { backend: 'agy', accountId: 'agy1', model: 'gemini-4-neon', effort: 'low' },
+        },
+      },
     };
     expect(sanitizeSubagents(ok)).toEqual(ok);
     expect(parseSubagents(ok)).toEqual(ok);
-    const withNulls = { ...ok, kind: 'agy' as const, claude: { model: null, effort: null }, agy: { model: null, effort: null } };
+    const withNulls: SubagentConfig = {
+      mode: 'delegate',
+      native: { model: 'opus', effort: 'max' },
+      delegate: { default: { backend: 'agy', accountId: 'agy1', model: null, effort: null } },
+    };
     expect(parseSubagents(withNulls)).toEqual(withNulls);
+    expect(parseSubagents({ ...ok, delegate: { default: null } })).toEqual({
+      mode: 'delegate',
+      native: { model: 'opus', effort: 'max' },
+      delegate: { default: null },
+    });
     for (const bad of [
       null,
       {},
-      { ...ok, kind: 'other' },
+      { ...ok, mode: 'other' },
       { ...ok, native: undefined },
-      { ...ok, claude: undefined },
-      { ...ok, agy: undefined },
+      { ...ok, delegate: undefined },
       { ...ok, native: { model: 'gpt', effort: 'low' } },
       { ...ok, native: { model: 'opus', effort: 'x' } },
-      { ...ok, claude: { model: 'gpt', effort: null } },
-      { ...ok, claude: { model: null, effort: 'x' } },
-      { ...ok, agy: { model: 'a b', effort: null } },
-      { ...ok, agy: { model: null, effort: 'bad' } },
+      { ...ok, delegate: { default: { backend: 'unknown', accountId: 'default', model: null, effort: null } } },
+      { ...ok, delegate: { default: { backend: 'claude', accountId: 'bad id!', model: null, effort: null } } },
+      { ...ok, delegate: { default: null, agents: [] } },
     ]) {
       expect(parseSubagents(bad)).toBeNull();
     }
@@ -87,7 +98,22 @@ describe('子代理配置与迁移', () => {
   it('migrateSubagents：老数据从 agentModels + nativeAgents 迁移，已有 subagents 优先', () => {
     // 空对象 -> 默认配置
     expect(migrateSubagents({})).toEqual(DEFAULT_SUBAGENTS);
-    // nativeAgents: false -> kind: 'agy'，老 agentModels.claude -> native，agentModels.agy -> agy
+    // nativeAgents: false 且有 agy 账号 -> mode: 'delegate'，老 agentModels.claude -> native，agentModels.agy -> delegate.default
+    expect(
+      migrateSubagents({
+        nativeAgents: false,
+        agyAccounts: { list: [{ id: 'agy1', label: 'A', dir: '/tmp/agy1', createdAt: 1 }], active: 'agy1' },
+        agentModels: {
+          claude: { model: 'opus', effort: 'high' },
+          agy: { model: 'gemini-4-neon', effort: 'low' },
+        },
+      }),
+    ).toEqual({
+      mode: 'delegate',
+      native: { model: 'opus', effort: 'high' },
+      delegate: { default: { backend: 'agy', accountId: 'agy1', model: 'gemini-4-neon', effort: 'low' } },
+    });
+    // nativeAgents: false 但无 agy 账号 -> 退回 native
     expect(
       migrateSubagents({
         nativeAgents: false,
@@ -97,28 +123,27 @@ describe('子代理配置与迁移', () => {
         },
       }),
     ).toEqual({
-      kind: 'agy',
+      mode: 'native',
       native: { model: 'opus', effort: 'high' },
-      claude: { model: null, effort: null },
-      agy: { model: 'gemini-4-neon', effort: 'low' },
+      delegate: { default: null },
     });
-    // nativeAgents: true -> kind: 'native'
+    // nativeAgents: true -> mode: 'native'
     expect(
       migrateSubagents({
         nativeAgents: true,
         agentModels: { claude: { model: 'haiku', effort: 'low' }, agy: { model: null, effort: null } },
       }),
     ).toEqual({
-      kind: 'native',
+      mode: 'native',
       native: { model: 'haiku', effort: 'low' },
-      claude: { model: null, effort: null },
-      agy: { model: null, effort: null },
+      delegate: { default: null },
     });
-    // 已有 subagents 时忽略旧字段
+    // 已有 subagents（旧 kind 结构）时忽略更老的 nativeAgents / agentModels，按 kind 迁移
     expect(
       migrateSubagents({
         nativeAgents: false,
         agentModels: { claude: { model: 'opus', effort: 'max' }, agy: { model: 'old', effort: 'low' } },
+        accounts: { subagent: { claude: 'acc1' } },
         subagents: {
           kind: 'claude',
           native: { model: 'sonnet', effort: 'medium' },
@@ -127,10 +152,9 @@ describe('子代理配置与迁移', () => {
         },
       }),
     ).toEqual({
-      kind: 'claude',
+      mode: 'delegate',
       native: { model: 'sonnet', effort: 'medium' },
-      claude: { model: 'haiku', effort: 'low' },
-      agy: { model: null, effort: null },
+      delegate: { default: { backend: 'claude', accountId: 'acc1', model: 'haiku', effort: 'low' } },
     });
   });
 });

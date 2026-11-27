@@ -31,6 +31,8 @@ export interface SidebarProps {
   account: Account | null;
   /** 账号信息有变化但没有整页刷新时递增（并行模式下切换新会话用的账号等）：账号菜单重新读取 */
   accountVersion?: number;
+  /** 是否远程访问（bootstrap.remote）：Codex 登录对话框默认选设备码 */
+  remote?: boolean;
   onNewSession: () => void;
   onCollapse: () => void;
   onSelectSession: (id: string) => void;
@@ -54,6 +56,7 @@ export function Sidebar({
   currentSessionId,
   account,
   accountVersion = 0,
+  remote = false,
   onNewSession,
   onCollapse,
   onSelectSession,
@@ -179,7 +182,7 @@ export function Sidebar({
 
       {/* 底部账户栏 */}
       <div className="cz-sidebar__account">
-        <AccountMenu account={account} version={accountVersion} />
+        <AccountMenu account={account} version={accountVersion} remote={remote} />
       </div>
       </div>
     </SessionCardProvider>

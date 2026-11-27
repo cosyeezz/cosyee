@@ -1,71 +1,60 @@
-// 子代理浮层：右侧滑出的面板外壳，主体直接复用 ConversationView 与 SessionDock 展示单轮子代理会话。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DelegateJobInfo, DelegateSendMode, SubagentConfig, SubagentRun } from '@cosyee/shared';
+// 子代理浮层：右侧滑出的面板外壳，主体复用 ConversationView 与 SessionDock 展示单轮子代理会话，
+// 底部固定 SubagentStatsDock 展示与主会话统一的四块用量统计。
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import type {
+  AccountEntry, ApiModelMap, CliModelCost, DelegateJobInfo, PriceTable,
+  SubagentAccountOption, SubagentConfig, SubagentRun, UsageBilling,
+} from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
 import { useMorph } from '../motion/morph';
 import { ConversationView } from './ConversationView';
 import { SessionDock } from './SessionDock';
+import { SubagentStatsDock } from './SubagentStatsDock';
 import { SUBAGENT_TITLE_CLASS } from './TurnView';
-import { effortText, prettyModel, runParams } from './format';
 import './status.css';
 import './flow.css';
 
 const STATUS_ICON: Record<SubagentRun['status'], IconName> = { running: 'agent-running', done: 'done', error: 'error' };
-const STATUS_LABEL: Record<SubagentRun['status'], string> = { running: '执行中', done: '已完成', error: '出错' };
 
 export interface SubagentOverlayProps {
   run: SubagentRun | null;
   onClose: () => void;
-  /** 「子代理」设置：还不知道实际模型 / 思考等级时显示设置里的值 */
+  /** 「子代理」设置：还不知道实际模型 / 思考等级 / 委派路线时使用 */
   subagents?: SubagentConfig | null;
-  /** 本会话的委派任务快照：运行中的委派子代理按 toolUseId 在其中找到对应任务，才显示停止 / 追加消息 */
+  /** 委派路线可选账号（展示账号名与后端） */
+  subagentAccounts?: readonly SubagentAccountOption[];
+  /** 主会话账号列表（用于判断 Claude 委派账号的计费方式） */
+  accounts?: readonly AccountEntry[];
+  /** 主会话的计费方式（原生子代理或查不到账号时兜底） */
+  sessionBilling?: UsageBilling;
+  /** 价格表（默认内置价格表） */
+  pricing?: PriceTable;
+  /** 本会话 CLI modelUsage（补全原生子代理上下文窗口） */
+  cliCost?: readonly CliModelCost[];
+  /** 主会话模型映射（判断 [1m] / m1） */
+  modelMap?: ApiModelMap | null;
+  /** 本会话的委派任务快照：运行中的委派子代理按 toolUseId 找到对应任务，显示停止按钮与耗时/排队信息 */
   delegates?: readonly DelegateJobInfo[];
   onDelegateStop?: (toolUseId: string) => void;
-  onDelegateSend?: (toolUseId: string, text: string, mode: DelegateSendMode) => void;
-}
-
-/** 面板底部：给运行中的委派任务追加消息。Enter = 插话（steer，立即送进当前这一轮）；「排队」= 等当前这一轮做完再处理 */
-function AppendBar({ onSend }: { onSend: (text: string, mode: DelegateSendMode) => void }) {
-  const [text, setText] = useState('');
-  const send = (mode: DelegateSendMode) => {
-    const t = text.trim();
-    if (!t) return;
-    onSend(t, mode);
-    setText('');
-  };
-  return (
-    <form
-      className="cz-flow__append"
-      onSubmit={(e) => {
-        e.preventDefault();
-        send('steer');
-      }}
-    >
-      <input
-        className="cz-flow__append-input"
-        type="text"
-        value={text}
-        placeholder="追加消息…"
-        aria-label="追加消息"
-        onChange={(e) => setText(e.target.value)}
-      />
-      <button type="button" className="cz-flow__append-btn" disabled={!text.trim()} onClick={() => send('queue')} title="排在当前这一轮之后处理">
-        排队
-      </button>
-      <button type="submit" className="cz-flow__icon-btn cz-flow__append-send" disabled={!text.trim()} aria-label="发送（插话）" title="发送（Enter，立即插话）">
-        <Icon name="send" size={16} />
-      </button>
-    </form>
-  );
 }
 
 /** 面板主体：只在 run 存在时挂载，切换子代理时由外层 key 重置 */
-function OverlayPanel({ run, onClose, subagents, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps & { run: SubagentRun }) {
-  const params = runParams(run, subagents);
-  // 运行中的委派任务（有对应的任务快照）才能停止 / 追加消息
-  const job = run.delegate === true && run.status === 'running' ? delegates?.find((j) => j.toolUseId === run.toolUseId) : undefined;
-  const canStop = !!job && !!onDelegateStop;
-  const canSend = !!job && !!onDelegateSend;
+function OverlayPanel({
+  run,
+  onClose,
+  subagents,
+  subagentAccounts,
+  accounts,
+  sessionBilling,
+  pricing,
+  cliCost,
+  modelMap,
+  delegates,
+  onDelegateStop,
+}: SubagentOverlayProps & { run: SubagentRun }) {
+  // 运行中的委派任务（有对应的任务快照）才能停止
+  const job = run.delegate === true ? delegates?.find((j) => j.toolUseId === run.toolUseId) : undefined;
+  const canStop = run.status === 'running' && !!job && !!onDelegateStop;
   const scrimRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const turns = useMemo(() => [run.turn], [run.turn]);
@@ -103,18 +92,6 @@ function OverlayPanel({ run, onClose, subagents, delegates, onDelegateStop, onDe
             <span className="cz-flow__panel-name" title={run.title}>
               <span className={SUBAGENT_TITLE_CLASS[run.status]}>{run.title}</span>
             </span>
-            <span className="cz-flow__panel-meta">
-              {[
-                run.subagentType,
-                prettyModel(params.model),
-                effortText(params.effort),
-                STATUS_LABEL[run.status],
-                run.background && run.status === 'running' ? '后台' : '',
-                job && job.pending > 0 ? `排队 ${job.pending} 条` : '',
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </span>
           </div>
           {canStop && (
             <button type="button" className="cz-flow__head-btn" onClick={() => onDelegateStop!(run.toolUseId)} title="停止这个委派任务">
@@ -133,14 +110,25 @@ function OverlayPanel({ run, onClose, subagents, delegates, onDelegateStop, onDe
             footer={<>{noRecord}<SessionDock turns={turns} sessionKey={run.toolUseId} /></>}
           />
         </div>
-        {canSend && <AppendBar onSend={(text, mode) => onDelegateSend!(run.toolUseId, text, mode)} />}
+        <SubagentStatsDock
+          run={run}
+          turns={turns}
+          subagents={subagents}
+          subagentAccounts={subagentAccounts}
+          accounts={accounts}
+          sessionBilling={sessionBilling}
+          pricing={pricing}
+          cliCost={cliCost}
+          modelMap={modelMap}
+          job={job}
+        />
       </aside>
     </div>
   );
 }
 
-export function SubagentOverlay({ run, onClose, subagents, delegates, onDelegateStop, onDelegateSend }: SubagentOverlayProps) {
-  if (!run) return null;
+export function SubagentOverlay(props: SubagentOverlayProps) {
+  if (!props.run) return null;
   // 以 toolUseId 作 key：切换子代理时重置面板内部状态
-  return <OverlayPanel key={run.toolUseId} run={run} onClose={onClose} subagents={subagents} delegates={delegates} onDelegateStop={onDelegateStop} onDelegateSend={onDelegateSend} />;
+  return <OverlayPanel key={props.run.toolUseId} {...props} run={props.run} />;
 }

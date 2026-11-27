@@ -660,9 +660,9 @@ pub async fn kiro_admin(app: tauri::AppHandle) -> Result<(), LocalApiError> {
     Ok(())
 }
 
-// ───────────── 本机组件（Claude CLI / kiro.rs / agy / 内置浏览器 / cosyee 服务端）版本管理 ─────────────
+// ───────────── 本机组件（Claude CLI / kiro.rs / agy / codex / 内置浏览器 / cosyee 服务端）版本管理 ─────────────
 
-const COMPONENT_IDS: [&str; 5] = ["claude", "kiro", "agy", "browser", "server"];
+const COMPONENT_IDS: [&str; 6] = ["claude", "kiro", "agy", "codex", "browser", "server"];
 
 /// id 只能是这几个固定值，拼进请求路径前先校验。
 fn component_id(id: &str) -> Result<&'static str, LocalApiError> {
@@ -1203,7 +1203,7 @@ mod tests {
 
     #[test]
     fn component_id_whitelist() {
-        for id in ["claude", "kiro", "agy", "browser", "server"] {
+        for id in ["claude", "kiro", "agy", "codex", "browser", "server"] {
             assert_eq!(component_id(id).unwrap(), id);
         }
         for bad in ["", "Claude", "../x", "kiro/check", "agy?x=1", "other"] {

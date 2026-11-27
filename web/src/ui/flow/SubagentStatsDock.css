@@ -1,0 +1,75 @@
+/* 子代理浮层底部固定统计区（SubagentStatsDock.tsx） */
+.cz-subdock {
+  flex: none;
+  container: cz-subdock / inline-size;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.cz-subdock__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.cz-subdock__head:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-subdock__head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cz-subdock__meta {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 展开 / 收起平滑高度过渡（不跟随 prefers-reduced-motion 关闭） */
+.cz-subdock__wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 240ms var(--ease-out), opacity 200ms var(--ease-out);
+}
+.cz-subdock__wrap.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.cz-subdock__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 限高并内部滚动，确保不会把上方会话流挤没 */
+.cz-subdock__body {
+  max-height: min(42vh, 320px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+}
+
+.cz-subdock__empty {
+  padding: var(--sp-2) 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-align: center;
+}

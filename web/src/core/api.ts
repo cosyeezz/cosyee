@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, CodexAccountList, CodexLoginMethod, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 
@@ -128,7 +128,15 @@ export const api = {
   saveSubagents: (c: SubagentConfig, cwd?: string | null) =>
     req<{ ok: true; state: SubagentState }>('POST', `/api/subagents${cwd ? `?${q({ cwd })}` : ''}`, c),
   /** 委派后端的可用模型；后端未安装 / 未登录时抛错 */
-  delegateModels: (refresh = false) => req<DelegateModelList>('GET', `/api/delegate/models${refresh ? '?refresh=1' : ''}`),
+  /** 委派后端的模型列表：backend 缺省为 agy，account 缺省为该后端当前账号 */
+  delegateModels: (o: { backend?: 'claude' | 'agy' | 'codex'; account?: string | null; refresh?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (o.backend) q.set('backend', o.backend);
+    if (o.account) q.set('account', o.account);
+    if (o.refresh) q.set('refresh', '1');
+    const qs = q.toString();
+    return req<DelegateModelList>('GET', `/api/delegate/models${qs ? '?' + qs : ''}`);
+  },
   /** 记住模型与思考强度（全局） */
   saveDefaults: (c: SessionConfig) => req<{ ok: true }>('POST', '/api/defaults', { model: c.model, effort: c.effort }),
   account: () => req<Account | null>('GET', '/api/account'),
@@ -173,6 +181,17 @@ export const api = {
   removeAgyAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/agy-accounts/remove', { id }),
   dedupeAgyAccounts: () => req<AccountDedupeResult>('POST', '/api/agy-accounts/dedupe', {}),
   setAgyLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/agy-accounts/label', { id, label }),
+  /** OpenAI Codex 多账号：列表、切换、登录（设备码 / 浏览器 / API Key）、取消、移除、去重、改备注名 */
+  codexAccounts: (refresh = false) =>
+    req<CodexAccountList>('GET', refresh ? '/api/codex-accounts?refresh=1' : '/api/codex-accounts'),
+  switchCodexAccount: (id: string) => req<{ ok: true }>('POST', '/api/codex-accounts/switch', { id }),
+  startCodexLogin: (o: { method: CodexLoginMethod; label?: string; accountId?: string; apiKey?: string }) =>
+    reqDetailed<AccountLogin>('POST', '/api/codex-accounts/login', o),
+  codexLogin: (loginId: string) => reqDetailed<AccountLogin>('GET', `/api/codex-accounts/login/${encodeURIComponent(loginId)}`),
+  cancelCodexLogin: (loginId: string) => req<{ ok: true }>('POST', `/api/codex-accounts/login/${encodeURIComponent(loginId)}/cancel`, {}),
+  removeCodexAccount: (id: string) => reqDetailed<{ ok: true }>('POST', '/api/codex-accounts/remove', { id }),
+  dedupeCodexAccounts: () => req<AccountDedupeResult>('POST', '/api/codex-accounts/dedupe', {}),
+  setCodexLabel: (id: string, label: string) => req<{ ok: true }>('POST', '/api/codex-accounts/label', { id, label }),
   /** 本机组件：列表 / 安装或更新（内置浏览器面板里装 agent-browser 用；POST 仅本机连接，非本机 403） */
   components: () => req<ComponentList>('GET', '/api/components'),
   updateComponent: (id: ComponentId) => reqDetailed<ComponentStatus>('POST', `/api/components/${id}/update`),

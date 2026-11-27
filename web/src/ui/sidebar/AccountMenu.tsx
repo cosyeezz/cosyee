@@ -1,46 +1,45 @@
-// 左下角账户栏 + 账号弹层（向上弹出）。弹层分「主代理 / 子代理」两段（液态玻璃胶囊切换，记住上次选择）：
-// - 主代理：模式切换（切换模式 / 并行模式，只对主代理生效）+ 已登录的 Claude 订阅 / API / Kiro 分组，
-//   每个账号一行名字 + 一条最先重置的额度「5h ━━━ 94% 2小时14分后」，悬停显示详情卡（AccountCard）；
-// - 子代理：按类型三张卡片（原生 / Claude / Antigravity），按 GET /api/subagents 的 effective 标注「正在使用」，
-//   原生只读跟随主代理；Claude 从 Claude 账号列表单选（POST /api/accounts/subagent，未登录项置灰并说明）；
-//   Antigravity 复用原有 agy 账号组（切换不刷新页面、不关弹层）；
-// - 底部是「管理账号」（AccountManager：全部账号的卡片、添加、编辑、改名、移除、清理重复、kiro.rs 引擎）、外观。
+// 左下角账户栏 + 账号弹层（向上弹出）。
+// 弹层顶部是模式切换（切换模式 / 并行模式）+ 已登录的 Claude 订阅 / API / Kiro 分组（点击切换主账号），
+// 每个账号一行名字 + 一条最先重置的额度「5h ━━━ 94% 2小时14分后」，悬停显示详情卡（AccountCard）；
+// 下面用分隔线隔开 Antigravity 分组（仅展示额度与悬停详情，不可点击切换；未安装或无已登录账号时不显示）；
+// 底部是「管理账号」（AccountManager：全部账号的卡片、添加、编辑、改名、移除、清理重复、kiro.rs 引擎）、外观。
 // 状态和接口调用都在这里，弹层和管理面板共用。
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  SUBAGENT_KINDS,
-  type Account, type AccountApiInfo, type AccountEntry, type AccountList, type AccountLogin, type AgyAccountEntry, type AgyAccountList, type SubagentKind,
+  type Account, type AccountApiInfo, type AccountEntry, type AccountList, type AccountLogin,
+  type AgyAccountEntry, type AgyAccountList, type CodexAccountEntry, type CodexAccountList,
 } from '@cosyee/shared';
-import { LiquidCapsule } from '../motion/LiquidCapsule';
-import { reducedMotion } from '../motion/reduced';
 import { leavingProps, usePresence } from '../motion/usePresence';
 import { api, ApiError } from '../../core/api';
 import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
-import { AccountCardLayer, AgyCardBody, ClaudeCardBody, useAccountCard } from './AccountCard';
+import { AccountCardLayer, AgyCardBody, ClaudeCardBody, CodexCardBody, useAccountCard } from './AccountCard';
 import { AccountDialog } from './AccountDialog';
 import { AgyAccountDialog } from './AgyAccountDialog';
 import { ApiAccountDialog } from './ApiAccountDialog';
+import { CodexAccountDialog } from './CodexAccountDialog';
 import { KiroAccountDialog } from './KiroAccountDialog';
 import { AccountManager, type AddDialogKind } from './AccountManager';
 import { AccountModeSwitch } from './AccountModeSwitch';
 import {
-  agyWindows, claudeWindows, kiroWindow, nearestWindow, QuotaBrief, type KiroBalanceState, type QuotaState,
+  agyWindows, claudeWindows, codexWindows, kiroWindow, nearestWindow, QuotaBrief, type KiroBalanceState, type QuotaState,
 } from './AccountQuota';
 import {
-  ActiveMark, agyTitle, Avatar, claudeKind, claudeUsable, entryTitle, IssueChip, kiroIssue, loginPending, msg, PlanChip, planChip, type ClaudeKind,
+  ActiveMark, agyTitle, Avatar, claudeKind, claudeUsable, codexPlan, codexTitle, entryTitle, IssueChip, kiroIssue, loginPending, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { ThemeSwitch } from './ThemeSwitch';
 import { useDismiss } from './useDismiss';
 
 export {
-  agyRemoveBlock, agySubtitle, agyTitle, apiHost, apiMapNote, claudeRemoveBlock, entrySubtitle, entryTitle, planChip,
+  agyRemoveBlock, agySubtitle, agyTitle, apiHost, apiMapNote, claudeRemoveBlock, codexPlan, codexRemoveBlock, codexSubtitle, codexTitle, entrySubtitle, entryTitle, planChip,
 } from './accountParts';
 
 export interface AccountMenuProps {
   account: Account | null;
   /** 账号信息有变化但没有整页刷新时递增：弹层 / 管理面板开着就重读列表 */
   version?: number;
+  /** 是否远程访问（bootstrap.remote）：Codex 登录对话框默认选设备码 */
+  remote?: boolean;
 }
 
 interface DialogState {
@@ -50,27 +49,6 @@ interface DialogState {
   resume: AccountLogin | null;
   /** 修改的 API 账号 */
   editApi?: { id: string; label: string; title: string; api: AccountApiInfo };
-}
-
-type AccountTab = 'main' | 'sub';
-const TAB_STORAGE_KEY = 'cz-acct-tab';
-const TABS: readonly { id: AccountTab; label: string }[] = [
-  { id: 'main', label: '主代理' },
-  { id: 'sub', label: '子代理' },
-];
-
-function readSavedTab(): AccountTab {
-  try {
-    return localStorage.getItem(TAB_STORAGE_KEY) === 'sub' ? 'sub' : 'main';
-  } catch {
-    return 'main';
-  }
-}
-
-function saveTab(tab: AccountTab) {
-  try {
-    localStorage.setItem(TAB_STORAGE_KEY, tab);
-  } catch { /* ignore */ }
 }
 
 /** 整页刷新（单独放一个对象里，测试可以替换） */
@@ -133,177 +111,54 @@ function PickRow({
   );
 }
 
-/** 子代理 Claude 卡片里的账号单选行：带头像、名字、套餐标签、额度简要，未登录 / 已失效置灰并说明原因 */
-function SubClaudeRow({
-  title, plan, issue, usable, unavailReason, selected, busy, disabled, tabIndex, btnRef, quota, card, onPick,
+/** 弹层里的只读账号行（Antigravity）：展示名字、套餐、最近额度与悬浮详情卡，点击不触发任何操作 */
+function DisplayRow({
+  title, plan, quota, card,
 }: {
   title: string;
   plan?: string | null;
-  issue?: string | null;
-  usable: boolean;
-  unavailReason: string | null;
-  selected: boolean;
-  busy: boolean;
-  disabled: boolean;
-  tabIndex: number;
-  btnRef?: (el: HTMLButtonElement | null) => void;
   quota: ReactNode;
-  card?: ReturnType<ReturnType<typeof useAccountCard>['bind']>;
-  onPick: () => void;
+  card: ReturnType<ReturnType<typeof useAccountCard>['bind']>;
 }) {
   return (
-    <button
-      ref={btnRef}
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      tabIndex={tabIndex}
-      className={`cz-acct-pick cz-acct-sub-pick${selected ? ' is-active' : ''}${usable ? '' : ' is-unavail'}`}
-      disabled={disabled}
-      title={unavailReason ?? undefined}
-      {...(card ?? {})}
-      onClick={onPick}
-    >
-      <Avatar title={title} loggedIn={usable} size="xs" />
-      <span className="cz-acct-pick__name">
-        <b>{title}</b>
-        <PlanChip plan={plan} tip={false} />
-        <IssueChip text={issue} />
-      </span>
-      {!usable ? (
-        <span className="cz-acct-sub-reason">{unavailReason}</span>
-      ) : busy ? (
-        <span className="cz-sidebar__acct-tag">切换中…</span>
-      ) : selected ? (
-        <ActiveMark />
-      ) : (
-        <span />
-      )}
+    <div className="cz-acct-pick cz-acct-pick--readonly" {...card}>
+      <span className="cz-acct-pick__name"><b>{title}</b></span>
+      <PlanChip plan={plan} tip={false} />
       {quota}
-    </button>
+    </div>
   );
 }
 
-export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
+export function AccountMenu({ account, version = 0, remote = false }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
   /** 管理账号面板 */
   const [manage, setManage] = useState(false);
-  /** 顶部主代理 / 子代理分段（localStorage 记忆） */
-  const [tab, setTab] = useState<AccountTab>(readSavedTab);
   const [data, setData] = useState<AccountList | null>(null);
   const [agyData, setAgyData] = useState<AgyAccountList | null>(null);
-  const [agyStatus, setAgyStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
-  /** 当前实际生效的子代理类型（来自 GET /api/subagents） */
-  const [subEffective, setSubEffective] = useState<SubagentKind | null>(null);
+  const [codexData, setCodexData] = useState<CodexAccountList | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** 切换被执行中的会话拦下：等用户决定是否强制切换 */
   const [confirm, setConfirm] = useState<{ id: string; running: number } | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
-  const [subClaudeSwitching, setSubClaudeSwitching] = useState<string | null>(null);
   const [agySwitching, setAgySwitching] = useState<string | null>(null);
+  const [codexSwitching, setCodexSwitching] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   /** 弹层或管理面板开着时每分钟推进一次，驱动额度重置倒计时与到期提示刷新 */
   const [now, setNow] = useState(() => Date.now());
   const wrapRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Partial<Record<AccountTab, HTMLButtonElement | null>>>({});
-  const subClaudeRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const aliveRef = useRef(true);
   const claudeSeq = useRef(0);
   const agySeq = useRef(0);
-  const subSeq = useRef(0);
+  const codexSeq = useRef(0);
   useEffect(() => {
     aliveRef.current = true;
     return () => { aliveRef.current = false; };
   }, []);
-  const tabIdBase = useId();
   // 关闭时留着播完退场（.cz-pop），退场途中再打开会从当前状态接回去
   const { mounted, leaving } = usePresence(open, menuRef);
   const shown = open || manage;
   const card = useAccountCard(open && !manage && !dialog);
-
-  // 分段切换方向（-1 向左、+1 向右、0 首次）与内容区高度平滑过渡（快速切换可打断接续）
-  const prevTabRef = useRef<AccountTab>(tab);
-  const tabDirRef = useRef<number>(0);
-  if (prevTabRef.current !== tab) {
-    tabDirRef.current = tab === 'sub' ? 1 : -1;
-    prevTabRef.current = tab;
-  }
-  const paneRef = useRef<HTMLDivElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const lastPaneH = useRef<number | null>(null);
-
-  useLayoutEffect(() => {
-    const pane = paneRef.current;
-    const stage = stageRef.current;
-    if (!open || !pane || !stage) {
-      lastPaneH.current = null;
-      return;
-    }
-    const toH = stage.scrollHeight;
-    const fromH = lastPaneH.current;
-    lastPaneH.current = toH;
-    if (fromH === null || Math.abs(toH - fromH) < 1 || reducedMotion()) {
-      pane.style.height = '';
-      pane.style.overflow = '';
-      return;
-    }
-    pane.style.height = `${fromH}px`;
-    pane.style.overflow = 'hidden';
-    // 强制同步起始高度，随后过渡到目标高度
-    void pane.offsetHeight;
-    pane.style.height = `${toH}px`;
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      pane.style.height = '';
-      pane.style.overflow = '';
-      lastPaneH.current = stage.scrollHeight;
-    };
-    const onEnd = (e: TransitionEvent) => {
-      if (e.target === pane && e.propertyName === 'height') finish();
-    };
-    pane.addEventListener('transitionend', onEnd);
-    const timer = window.setTimeout(finish, 240);
-    return () => {
-      pane.removeEventListener('transitionend', onEnd);
-      window.clearTimeout(timer);
-      const curH = pane.getBoundingClientRect().height;
-      if (curH > 0) lastPaneH.current = curH;
-    };
-  }, [tab, open]);
-
-  // 同分段下异步数据到达后同步高度基准
-  useEffect(() => {
-    if (open && stageRef.current && paneRef.current && !paneRef.current.style.height) {
-      lastPaneH.current = stageRef.current.scrollHeight;
-    }
-  });
-
-  const selectTab = useCallback((next: AccountTab) => {
-    setTab((cur) => {
-      if (cur === next) return cur;
-      saveTab(next);
-      return next;
-    });
-    card.closeNow();
-  }, [card]);
-
-  const onTabKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    let next: AccountTab | undefined;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      next = tab === 'main' ? 'sub' : 'main';
-    } else if (e.key === 'Home') {
-      next = 'main';
-    } else if (e.key === 'End') {
-      next = 'sub';
-    }
-    if (!next) return;
-    e.preventDefault();
-    selectTab(next);
-    tabRefs.current[next]?.focus();
-  };
 
   const close = useCallback(() => {
     setOpen(false);
@@ -337,37 +192,38 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
         if (!aliveRef.current || seq !== agySeq.current) return;
         if (res && typeof res.installed === 'boolean' && Array.isArray(res.list)) {
           setAgyData(res);
-          setAgyStatus('loaded');
         } else {
           setAgyData(null);
-          setAgyStatus('error');
         }
       },
       () => {
         if (!aliveRef.current || seq !== agySeq.current) return;
         setAgyData(null);
-        setAgyStatus('error');
       },
     );
   }, []);
-  const loadSubagents = useCallback(() => {
-    const seq = ++subSeq.current;
-    api.subagents().then(
+  const loadCodex = useCallback(() => {
+    const seq = ++codexSeq.current;
+    api.codexAccounts().then(
       (res) => {
-        if (!aliveRef.current || seq !== subSeq.current) return;
-        setSubEffective(res && SUBAGENT_KINDS.includes(res.effective) ? res.effective : null);
+        if (!aliveRef.current || seq !== codexSeq.current) return;
+        if (res && typeof res.installed === 'boolean' && Array.isArray(res.list)) {
+          setCodexData(res);
+        } else {
+          setCodexData(null);
+        }
       },
       () => {
-        if (!aliveRef.current || seq !== subSeq.current) return;
-        setSubEffective(null);
+        if (!aliveRef.current || seq !== codexSeq.current) return;
+        setCodexData(null);
       },
     );
   }, []);
   const load = useCallback(() => {
     loadClaude();
     loadAgy();
-    loadSubagents();
-  }, [loadClaude, loadAgy, loadSubagents]);
+    loadCodex();
+  }, [loadClaude, loadAgy, loadCodex]);
 
   useEffect(() => {
     if (shown) load();
@@ -383,6 +239,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   const parallel = data?.mode === 'parallel';
   const list = data?.list ?? [];
   const agyList = agyData?.list ?? [];
+  const codexList = codexData?.list ?? [];
 
   /** 每个可用的 claude.ai 订阅账号的额度：弹层或管理面板开着时并行读取 */
   const [quotas, setQuotas] = useState<Record<string, QuotaState>>({});
@@ -435,23 +292,6 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     }
   };
 
-  const doSwitchSubClaude = async (id: string) => {
-    setError(null);
-    setSubClaudeSwitching(id);
-    const seq = ++claudeSeq.current;
-    try {
-      const next = await api.setSubagentAccount(id);
-      if (!aliveRef.current || seq !== claudeSeq.current) return;
-      if (next && Array.isArray(next.list)) setData(next);
-      else loadClaude();
-    } catch (e) {
-      if (!aliveRef.current) return;
-      setError(msg(e));
-    } finally {
-      if (aliveRef.current) setSubClaudeSwitching(null);
-    }
-  };
-
   const doSwitchAgy = async (id: string) => {
     setError(null);
     setAgySwitching(id);
@@ -467,6 +307,21 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     }
   };
 
+  const doSwitchCodex = async (id: string) => {
+    setError(null);
+    setCodexSwitching(id);
+    try {
+      await api.switchCodexAccount(id);
+      if (!aliveRef.current) return;
+      loadCodex();
+    } catch (e) {
+      if (!aliveRef.current) return;
+      setError(msg(e));
+    } finally {
+      if (aliveRef.current) setCodexSwitching(null);
+    }
+  };
+
   const pick = (a: AccountEntry) => {
     if (switching) return;
     if (a.active) {
@@ -476,14 +331,14 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     void doSwitch(a.id);
   };
 
-  const pickSubClaude = (a: AccountEntry) => {
-    if (subClaudeSwitching || !claudeUsable(a, now) || data?.subagent?.claude === a.id) return;
-    void doSwitchSubClaude(a.id);
-  };
-
   const pickAgy = (a: AgyAccountEntry) => {
     if (agySwitching || a.active) return;
     void doSwitchAgy(a.id);
+  };
+
+  const pickCodex = (a: CodexAccountEntry) => {
+    if (codexSwitching || a.active) return;
+    void doSwitchCodex(a.id);
   };
 
   /** 这次对话框里登录成功了（Claude 当前账号重新登录成功后要刷新整页，名字 / 套餐可能变了） */
@@ -521,6 +376,12 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     void doSwitchAgy(id);
   };
 
+  const dialogSwitchCodex = (id: string) => {
+    setDialog(null);
+    if (!manage) setOpen(true);
+    void doSwitchCodex(id);
+  };
+
   const claudeReloginOf = (l: AccountLogin | null | undefined) => {
     if (!l?.accountId) return undefined;
     const hit = list.find((x) => x.id === l.accountId);
@@ -533,6 +394,12 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     return { id: l.accountId, title: hit ? agyTitle(hit) : l.accountId, active: !!hit?.active };
   };
 
+  const codexReloginOf = (l: AccountLogin | null | undefined) => {
+    if (!l?.accountId) return undefined;
+    const hit = codexList.find((x) => x.id === l.accountId);
+    return { id: l.accountId, title: hit ? codexTitle(hit) : l.accountId, active: !!hit?.active };
+  };
+
   /** 管理面板里每组的「添加」：登录进行中时接着那次登录 */
   const add = (kind: AddDialogKind) => {
     if (kind === 'login') {
@@ -543,6 +410,10 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
       const l = agyData?.login ?? null;
       const resume = loginPending(l) ? l : null;
       openDialog({ kind, relogin: agyReloginOf(resume), resume });
+    } else if (kind === 'codex') {
+      const l = codexData?.login ?? null;
+      const resume = loginPending(l) ? l : null;
+      openDialog({ kind, relogin: codexReloginOf(resume), resume });
     } else openDialog({ kind, resume: null });
   };
 
@@ -551,6 +422,9 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
 
   const reloginAgy = (a: AgyAccountEntry) =>
     openDialog({ kind: 'agy', relogin: { id: a.id, title: agyTitle(a), active: a.active }, resume: null });
+
+  const reloginCodex = (a: CodexAccountEntry) =>
+    openDialog({ kind: 'codex', relogin: { id: a.id, title: codexTitle(a), active: a.active }, resume: null });
 
   const editApi = (a: AccountEntry) => {
     if (!a.api) return;
@@ -581,6 +455,18 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
     }
   };
 
+  const renameCodex = async (a: CodexAccountEntry, label: string) => {
+    setError(null);
+    try {
+      await api.setCodexLabel(a.id, label);
+      loadCodex();
+      return true;
+    } catch (e) {
+      setError(msg(e));
+      return false;
+    }
+  };
+
   const remove = (a: AccountEntry) => {
     setError(null);
     api.removeAccount(a.id).then(loadClaude, (e) => setError(msg(e)));
@@ -589,6 +475,11 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   const removeAgy = (a: AgyAccountEntry) => {
     setError(null);
     api.removeAgyAccount(a.id).then(loadAgy, (e) => setError(msg(e)));
+  };
+
+  const removeCodex = (a: CodexAccountEntry) => {
+    setError(null);
+    api.removeCodexAccount(a.id).then(loadCodex, (e) => setError(msg(e)));
   };
 
   const confirmEntry = confirm ? list.find((a) => a.id === confirm.id) : undefined;
@@ -654,43 +545,16 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
   })).filter((x) => x.rows.length > 0);
 
   const usableAgy = agyData?.installed ? agyList.filter((a) => a.loggedIn === true) : [];
-  const usableClaude = list.filter((a) => claudeUsable(a, now));
-  const subClaudeSelected = data?.subagent?.claude ?? null;
-  const focusSubClaudeId = usableClaude.some((a) => a.id === subClaudeSelected)
-    ? subClaudeSelected
-    : (usableClaude[0]?.id ?? null);
-
-  const onSubClaudeKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (!usableClaude.length || subClaudeSwitching) return;
-    let next: AccountEntry | undefined;
-    const focused = usableClaude.find((a) => subClaudeRefs.current[a.id] === document.activeElement);
-    const baseId = focused?.id ?? focusSubClaudeId;
-    const curIdx = Math.max(0, usableClaude.findIndex((a) => a.id === baseId));
-    const len = usableClaude.length;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-      next = usableClaude[(curIdx + 1) % len];
-    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-      next = usableClaude[(curIdx - 1 + len) % len];
-    } else if (e.key === 'Home') {
-      next = usableClaude[0];
-    } else if (e.key === 'End') {
-      next = usableClaude[len - 1];
-    }
-    if (!next) return;
-    e.preventDefault();
-    subClaudeRefs.current[next.id]?.focus();
-    pickSubClaude(next);
-  };
+  const usableCodex = codexData?.installed ? codexList.filter((a) => a.loggedIn === true) : [];
 
   // 悬浮详情卡的内容：从最新列表里取，额度读回来后跟着更新；账号不在了就不显示
   const cardClaude = list.find((a) => `c:${a.id}` === card.hover.key);
   const cardAgy = usableAgy.find((a) => `g:${a.id}` === card.hover.key);
+  const cardCodex = usableCodex.find((a) => `x:${a.id}` === card.hover.key);
   const cardBody = cardClaude ? (
     <ClaudeCardBody a={cardClaude} quota={quotas[cardClaude.id]} balance={kiroBalances[cardClaude.id]} parallel={parallel} now={now} />
-  ) : cardAgy ? <AgyCardBody a={cardAgy} now={now} /> : null;
-
-  const subCardCls = (k: SubagentKind) =>
-    `cz-acct-sub-card${subEffective === k ? ' is-used' : subEffective !== null ? ' is-dim' : ''}`;
+  ) : cardAgy ? <AgyCardBody a={cardAgy} now={now} />
+    : cardCodex ? <CodexCardBody a={cardCodex} now={now} /> : null;
 
   return (
     <div className="cz-sidebar__account-wrap" ref={wrapRef}>
@@ -730,175 +594,81 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
           {...leavingProps(leaving)}
           style={{ '--pop-origin': 'bottom left', '--pop-dy': '4px' } as CSSProperties}
         >
-          <div className="cz-acct-tabs" role="tablist" aria-label="账号分组" onKeyDown={onTabKeyDown}>
-            <LiquidCapsule activeKey={tab} selector=".cz-acct-tab.is-active" axis="x" />
-            {TABS.map((t) => {
-              const active = tab === t.id;
-              return (
+          <AccountModeSwitch mode={data?.mode ?? null} onChanged={loadClaude} />
+          <div className="cz-sidebar__menu-list">
+            {data === null && !error && <div className="cz-acct-pick-empty">正在读取…</div>}
+            {data !== null && mainGroupRows.length === 0 && (
+              <div className="cz-acct-pick-empty cz-acct-pick-empty--action">
+                <span>没有可用的账号，可在「管理账号」中登录</span>
                 <button
-                  key={t.id}
-                  id={`${tabIdBase}-tab-${t.id}`}
-                  ref={(el) => { tabRefs.current[t.id] = el; }}
                   type="button"
-                  role="tab"
-                  aria-selected={active}
-                  aria-controls={`${tabIdBase}-panel-${t.id}`}
-                  tabIndex={active ? 0 : -1}
-                  className={`cz-acct-tab${active ? ' is-active' : ''}`}
-                  onClick={() => selectTab(t.id)}
+                  className="cz-acct-empty-btn"
+                  onClick={() => {
+                    close();
+                    setManage(true);
+                  }}
                 >
-                  {t.label}
+                  添加账号
                 </button>
-              );
-            })}
-          </div>
-
-          <div ref={paneRef} className="cz-acct-pane">
-            <div
-              key={tab}
-              ref={stageRef}
-              id={`${tabIdBase}-panel-${tab}`}
-              role="tabpanel"
-              aria-labelledby={`${tabIdBase}-tab-${tab}`}
-              className="cz-acct-stage"
-              style={{ '--tab-dir': tabDirRef.current } as CSSProperties}
-            >
-              {tab === 'main' ? (
-                <>
-                  <AccountModeSwitch mode={data?.mode ?? null} onChanged={loadClaude} />
-                  <div className="cz-sidebar__menu-list">
-                    {data === null && !error && <div className="cz-acct-pick-empty">正在读取…</div>}
-                    {data !== null && mainGroupRows.length === 0 && (
-                      <div className="cz-acct-pick-empty cz-acct-pick-empty--action">
-                        <span>没有可用的账号，可在「管理账号」中登录</span>
-                        <button
-                          type="button"
-                          className="cz-acct-empty-btn"
-                          onClick={() => {
-                            close();
-                            setManage(true);
-                          }}
-                        >
-                          添加账号
-                        </button>
-                      </div>
-                    )}
-                    {mainGroupRows.map(({ g, rows }) => (
-                      <div key={g.kind} className="cz-acct-pick-sec" role="group" aria-label={g.title}>
-                        <div className="cz-acct-pick-grp" title={g.tip}><BrandIcon kind={g.kind} size={13} />{g.title}</div>
-                        {rows}
-                      </div>
-                    ))}
+              </div>
+            )}
+            {mainGroupRows.map(({ g, rows }) => (
+              <div key={g.kind} className="cz-acct-pick-sec" role="group" aria-label={g.title}>
+                <div className="cz-acct-pick-grp" title={g.tip}><BrandIcon kind={g.kind} size={13} />{g.title}</div>
+                {rows}
+              </div>
+            ))}
+            {usableAgy.length > 0 && (
+              <>
+                <div className="cz-sidebar__menu-sep" />
+                <div className="cz-acct-pick-sec cz-acct-pick-sec--readonly" role="group" aria-label="Antigravity">
+                  <div className="cz-acct-pick-grp" title="子代理委派账号可在右侧子代理面板中配置">
+                    <BrandIcon kind="agy" size={13} />
+                    <span>Antigravity</span>
+                    <span className="cz-acct-pick-grp__tag">仅展示</span>
                   </div>
-                </>
-              ) : (
-                <div className="cz-sidebar__menu-list cz-acct-sub-list">
-                  {/* 原生子代理：主进程内运行，只能跟随主代理账号 */}
-                  <section className={subCardCls('native')} aria-label="原生">
-                    <div className="cz-acct-sub-card__head">
-                      <BrandIcon kind="api" size={14} />
-                      <b>原生</b>
-                      {subEffective === 'native' && <span className="cz-acct-sub-badge">正在使用</span>}
-                    </div>
-                  </section>
-
-                  {/* Claude 委派：从 Claude 账号列表单选，复用登录态、环境隔离 */}
-                  <section className={subCardCls('claude')} aria-label="Claude">
-                    <div className="cz-acct-sub-card__head">
-                      <BrandIcon kind="claude" size={14} />
-                      <b>Claude</b>
-                      {subEffective === 'claude' && <span className="cz-acct-sub-badge">正在使用</span>}
-                    </div>
-                    {data === null && !error ? (
-                      <div className="cz-acct-sub-note">正在读取…</div>
-                    ) : data && !data.subagent ? (
-                      <div className="cz-acct-sub-note">当前服务端不支持单独设置子代理账号</div>
-                    ) : data?.subagent ? (
-                      <>
-                        {data.subagent.claudeError && (
-                          <div className="cz-acct-sub-err" role="alert">{data.subagent.claudeError}</div>
-                        )}
-                        {list.length === 0 ? (
-                          <div className="cz-acct-sub-note">没有可用的账号，可在「管理账号」中登录</div>
-                        ) : (
-                          <div className="cz-acct-sub-rows" role="radiogroup" aria-label="Claude 委派账号" onKeyDown={onSubClaudeKeyDown}>
-                            {list.map((a) => {
-                              const kind = claudeKind(a);
-                              const usable = claudeUsable(a, now);
-                              const unavailReason = usable ? null : (!a.loggedIn ? '未登录' : '登录已失效');
-                              const selected = data.subagent?.claude === a.id;
-                              return (
-                                <SubClaudeRow
-                                  key={a.id}
-                                  btnRef={(el) => { subClaudeRefs.current[a.id] = el; }}
-                                  title={entryTitle(a)}
-                                  plan={kind === 'kiro' && planChip(a.plan)?.toLowerCase() === 'kiro' ? null : a.plan}
-                                  issue={kiroIssue(a)}
-                                  usable={usable}
-                                  unavailReason={unavailReason}
-                                  selected={selected}
-                                  busy={subClaudeSwitching === a.id}
-                                  disabled={!usable || (subClaudeSwitching !== null && subClaudeSwitching !== a.id)}
-                                  tabIndex={usable && a.id === focusSubClaudeId ? 0 : -1}
-                                  quota={usable ? claudeBrief(a, kind) : null}
-                                  card={usable ? card.bind(`c:${a.id}`) : undefined}
-                                  onPick={() => pickSubClaude(a)}
-                                />
-                              );
-                            })}
-                          </div>
-                        )}
-                      </>
-                    ) : null}
-                  </section>
-
-                  {/* Antigravity 委派：原有 agy 账号组 */}
-                  <section className={subCardCls('agy')} aria-label="Antigravity">
-                    <div className="cz-acct-sub-card__head">
-                      <BrandIcon kind="agy" size={14} />
-                      <b>Antigravity</b>
-                      {subEffective === 'agy' && <span className="cz-acct-sub-badge">正在使用</span>}
-                    </div>
-                    {agyData === null ? (
-                      <div className="cz-acct-sub-note">
-                        {agyStatus === 'loading' ? '正在读取…' : '未能读取 Antigravity 账号'}
-                      </div>
-                    ) : !agyData.installed ? (
-                      <div className="cz-acct-sub-note">未安装 Antigravity CLI</div>
-                    ) : usableAgy.length === 0 ? null : (
-                      <div className="cz-acct-sub-rows" role="group" aria-label="Antigravity 账号">
-                        {usableAgy.map((a) => {
-                          const title = agyTitle(a);
-                          const win = a.quota && a.quota.groups.length > 0 ? nearestWindow(agyWindows(a.quota)) : null;
-                          return (
-                            <PickRow
-                              key={a.id}
-                              title={title}
-                              plan={a.plan}
-                              active={a.active}
-                              busy={agySwitching === a.id}
-                              disabled={agySwitching !== null && agySwitching !== a.id}
-                              quota={win ? <QuotaBrief win={win} now={now} /> : null}
-                              card={card.bind(`g:${a.id}`)}
-                              onPick={() => pickAgy(a)}
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
+                  {usableAgy.map((a) => {
+                    const win = a.quota && a.quota.groups.length > 0 ? nearestWindow(agyWindows(a.quota)) : null;
+                    return (
+                      <DisplayRow
+                        key={a.id}
+                        title={agyTitle(a)}
+                        plan={a.plan}
+                        quota={win ? <QuotaBrief win={win} now={now} /> : null}
+                        card={card.bind(`g:${a.id}`)}
+                      />
+                    );
+                  })}
                 </div>
-              )}
-            </div>
+              </>
+            )}
+            {usableCodex.length > 0 && (
+              <>
+                <div className="cz-sidebar__menu-sep" />
+                <div className="cz-acct-pick-sec cz-acct-pick-sec--readonly" role="group" aria-label="Codex">
+                  <div className="cz-acct-pick-grp" title="子代理委派账号可在右侧子代理面板中配置">
+                    <BrandIcon kind="codex" size={13} />
+                    <span>Codex</span>
+                    <span className="cz-acct-pick-grp__tag">仅展示</span>
+                  </div>
+                  {usableCodex.map((a) => {
+                    const win = a.authMode !== 'apiKey' && a.quota ? nearestWindow(codexWindows(a.quota)) : null;
+                    return (
+                      <DisplayRow
+                        key={a.id}
+                        title={codexTitle(a)}
+                        plan={codexPlan(a)}
+                        quota={win ? <QuotaBrief win={win} now={now} /> : null}
+                        card={card.bind(`x:${a.id}`)}
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
 
-          {/* 切换确认条只属于「主代理」分段，切到「子代理」时隐藏但不丢弃 */}
-          {!manage && (
-            <>
-              {tab === 'main' && confirmBar}
-              {errorBar}
-            </>
-          )}
+          {!manage && notice}
 
           <div className="cz-sidebar__menu-sep" />
           <button
@@ -923,6 +693,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
         <AccountManager
           data={data}
           agyData={agyData}
+          codexData={codexData}
           error={error}
           quotas={quotas}
           kiroBalances={kiroBalances}
@@ -930,6 +701,7 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
           version={version}
           switching={switching}
           agySwitching={agySwitching}
+          codexSwitching={codexSwitching}
           covered={!!dialog}
           notice={notice}
           onClose={() => {
@@ -959,6 +731,15 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
             loadAgy();
             return r;
           }}
+          onSwitchCodex={pickCodex}
+          onReloginCodex={reloginCodex}
+          onRenameCodex={renameCodex}
+          onRemoveCodex={removeCodex}
+          onDedupeCodex={async () => {
+            const r = await api.dedupeCodexAccounts();
+            loadCodex();
+            return r;
+          }}
         />
       )}
 
@@ -973,6 +754,9 @@ export function AccountMenu({ account, version = 0 }: AccountMenuProps) {
       )}
       {dialog?.kind === 'agy' && (
         <AgyAccountDialog relogin={dialog.relogin} resume={dialog.resume} onClose={closeDialog} onDone={onDialogDone} onSwitch={dialogSwitchAgy} />
+      )}
+      {dialog?.kind === 'codex' && (
+        <CodexAccountDialog relogin={dialog.relogin} resume={dialog.resume} remote={remote} onClose={closeDialog} onDone={onDialogDone} onSwitch={dialogSwitchCodex} />
       )}
     </div>
   );

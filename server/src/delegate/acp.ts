@@ -11,6 +11,7 @@ import { type Json, LineSplitter } from '../transcript.js';
 import { AGY_NOT_LOGGED_IN, resolveAgy } from './agy.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
 import { type AvailableModel, parseAvailable, resolveModelId, splitModelId, toModelList } from './models.js';
+import { AgyUsageAdapter } from './usage/agyUsage.js';
 
 const DEFAULT_ACCOUNT: AgyAccountRef = { id: DEFAULT_ID, dir: null };
 /** 接了账号管理、但一个 Antigravity 账号都没有时的提示 */
@@ -29,7 +30,7 @@ const PROGRESS_UPDATES = new Set(['agent_message_chunk', 'agent_thought_chunk', 
 /** agy 冷启动竞态：会话建立时模型配置为空，prompt 立即以文字报这个错 */
 const NO_MODEL_RE = /plan model not specified/i;
 /** 进程意外退出后自动重试一次时，加在原 prompt 前的提示 */
-const CRASH_RETRY_PREFIX =
+export const CRASH_RETRY_PREFIX =
   '(Your previous run of this task was interrupted because your process exited unexpectedly. Before continuing, check what has already been done, such as files changed and commands run, and do not repeat completed steps.)\n\n';
 
 export interface AcpRunOptions extends BackendRunOptions {
@@ -44,6 +45,8 @@ export interface AcpPoolOptions {
   now?: () => number;
   /** 当前活跃的 agy 账号 id（用于 hold 语义：切账号后只保活新账号的桶，旧账号的桶按空闲时间正常回收） */
   activeAccountId?: () => string;
+  /** 需要保活的 agy 账号 id（委派路线里用到的）；传了就代替 activeAccountId 判断 hold */
+  heldAccountIds?: () => readonly string[];
   sessionIdleMs?: number;
   processIdleMs?: number;
   extraProcessIdleMs?: number;
@@ -335,6 +338,7 @@ export class AcpPool {
   private readonly kill: (pid: number) => void;
   private readonly now: () => number;
   private readonly activeAccountId: () => string;
+  private readonly heldAccountIds?: () => readonly string[];
   private readonly sessionIdleMs: number;
   private readonly processIdleMs: number;
   private readonly extraProcessIdleMs: number;
@@ -356,6 +360,7 @@ export class AcpPool {
     this.kill = opts.kill ?? killTree;
     this.now = opts.now ?? Date.now;
     this.activeAccountId = opts.activeAccountId ?? (() => DEFAULT_ID);
+    this.heldAccountIds = opts.heldAccountIds;
     this.sessionIdleMs = opts.sessionIdleMs ?? 5 * 60_000;
     this.processIdleMs = opts.processIdleMs ?? 10 * 60_000;
     this.extraProcessIdleMs = opts.extraProcessIdleMs ?? 2 * 60_000;
@@ -846,6 +851,7 @@ export class AcpPool {
     let afterToolText = '';
     const tools = new Set<string>();
     const activeTools = new Set<string>();
+    const usageAdapter = o.onUsage ? new AgyUsageAdapter({ sessionId: sid, model: proc.sessions.get(sid)?.model ?? null }) : null;
     let gotFirst = false;
     let wdTimer: ReturnType<typeof setTimeout> | undefined;
     let fireWd!: (reason: WatchdogReason) => void;
@@ -893,6 +899,13 @@ export class AcpPool {
       try {
         o.onUpdate?.(u);
       } catch { /* 展示出错不影响执行 */ }
+      if (usageAdapter && (t === 'usage_update' || t === 'tool_call')) {
+        for (const pt of usageAdapter.push(u)) {
+          try {
+            o.onUsage?.(pt, usageAdapter.window());
+          } catch { /* 展示出错不影响执行 */ }
+        }
+      }
     });
     const done = proc
       .request('session/prompt', { sessionId: sid, prompt: [{ type: 'text', text: promptText }] }, 0)
@@ -907,6 +920,13 @@ export class AcpPool {
           throw first.e;
         }
         const usage = first.v.usage;
+        if (usageAdapter && usage && typeof usage === 'object') {
+          for (const pt of usageAdapter.push({ type: 'prompt_response', usage })) {
+            try {
+              o.onUsage?.(pt, usageAdapter.window());
+            } catch { /* 展示出错不影响执行 */ }
+          }
+        }
         return {
           kind: 'done',
           result: {
@@ -956,9 +976,9 @@ export class AcpPool {
   /** 立即执行一次回收 */
   sweep(): void {
     const now = this.now();
-    const activeId = this.activeAccountId();
+    const heldIds = this.heldAccountIds ? this.heldAccountIds() : [this.activeAccountId()];
     for (const [key, bucket] of [...this.buckets]) {
-      const held = bucket.accountId === activeId && (this.cwdHolds.get(bucket.cwdKey) ?? 0) > 0;
+      const held = heldIds.includes(bucket.accountId) && (this.cwdHolds.get(bucket.cwdKey) ?? 0) > 0;
       const primary = bucket.procs.find((p) => !p.dead && !p.draining);
       for (const proc of [...bucket.procs]) {
         if (proc.dead) continue;
@@ -1128,6 +1148,8 @@ export interface AgyBackendOptions {
     accountFor(id: string): AgyAccountRef | null;
     /** 当前账号是否已登录（false = 未登录；true = 已登录；null = 未知） */
     isLoggedIn?(): boolean | null;
+    /** 指定账号是否已登录（同上）；不传 = 未知 */
+    isAccountLoggedIn?(id: string): boolean | null;
   };
 }
 
@@ -1167,6 +1189,18 @@ export class AgyBackend implements DelegateBackend {
     return acc;
   }
 
+  /** 新会话的账号：委派路线里选的（不存在报错）> 当前账号 */
+  private routeAccount(routeAccountId?: string): AgyAccountRef {
+    if (routeAccountId === undefined) return this.resolveAccount();
+    if (!this.accounts) {
+      if (routeAccountId === DEFAULT_ID) return DEFAULT_ACCOUNT;
+      throw new Error('子代理账号不存在，请在子代理设置里重新选择');
+    }
+    const acc = this.accounts.accountFor(routeAccountId);
+    if (!acc) throw new Error('子代理账号不存在，请在子代理设置里重新选择');
+    return acc;
+  }
+
   availability(): SubagentAvailability {
     if (this.getPath() === null) return { ok: false, reason: '未安装 Antigravity CLI' };
     if (this.accounts && !this.accounts.activeAccount()) return { ok: false, reason: NO_AGY_ACCOUNT };
@@ -1174,27 +1208,41 @@ export class AgyBackend implements DelegateBackend {
     return { ok: true };
   }
 
+  accountAvailability(accountId: string): SubagentAvailability {
+    if (this.getPath() === null) return { ok: false, reason: '未安装 Antigravity CLI' };
+    if (!this.accounts) return accountId === DEFAULT_ID ? { ok: true } : { ok: false, reason: 'Antigravity 账号不存在' };
+    if (!this.accounts.accountFor(accountId)) return { ok: false, reason: 'Antigravity 账号已移除' };
+    if (this.accounts.isAccountLoggedIn?.(accountId) === false) return { ok: false, reason: 'Antigravity 账号未登录' };
+    return { ok: true };
+  }
+
   available(): boolean {
     return this.availability().ok;
   }
 
-  async models(o: { cwd: string; refresh?: boolean }): Promise<DelegateModelList> {
+  async models(o: { cwd: string; refresh?: boolean; accountId?: string }): Promise<DelegateModelList> {
     const agyPath = this.getPath();
     if (!agyPath) throw new Error('没有安装 Antigravity CLI（agy）');
-    return this.pool.models({ agyPath, cwd: o.cwd, refresh: o.refresh, account: this.resolveAccount() });
+    return this.pool.models({ agyPath, cwd: o.cwd, refresh: o.refresh, account: this.routeAccount(o.accountId) });
   }
 
   async run(o: BackendRunOptions): Promise<BackendResult> {
     const agyPath = this.getPath();
     if (!agyPath) throw new Error('没有安装 Antigravity CLI（agy）');
-    const account = this.resolveAccount(o.accountId);
+    const account = o.accountId !== undefined ? this.resolveAccount(o.accountId) : this.routeAccount(o.routeAccountId);
     return this.pool.run({ ...o, agyPath, account });
   }
 
-  prewarm(cwd: string): void {
+  prewarm(cwd: string, accountId?: string): void {
     const agyPath = this.getPath();
     if (!agyPath) return;
-    this.pool.prewarm(agyPath, cwd, this.resolveAccount());
+    let account: AgyAccountRef;
+    try {
+      account = this.routeAccount(accountId);
+    } catch {
+      return;
+    }
+    this.pool.prewarm(agyPath, cwd, account);
   }
 
   hold(cwd: string): () => void {

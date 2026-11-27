@@ -1,7 +1,7 @@
 // 实时事件：CLI stdout 的一行 JSON（原样转发）+ 后端合成的 cosyee_user。
 // 所有函数都是纯函数：不认识的事件原样返回 s，不抛错。
 
-import { parseDelegateNotification, type CliModelCost, type SessionMeta } from '@cosyee/shared';
+import { COSYEE_USAGE_SUBTYPE, isCosyeeUsageEvent, parseDelegateNotification, type CachePoint, type CliModelCost, type SessionMeta, type SubagentRun, type Turn } from '@cosyee/shared';
 import {
   addUserSkill,
   appendToolJson,
@@ -34,7 +34,7 @@ import {
 import { arr, isObj, str, textOf } from './util';
 import { delegateEnded, resolveRun } from './resume';
 import { applyDelegateNotification } from './delegate';
-import { recordCache, recordCacheDelta, recordCompact } from './cacheHit';
+import { applyCacheDelta, pushCachePoint, recordCache, recordCacheDelta, recordCompact, recordRunCache } from './cacheHit';
 
 const strList = (v: unknown): string[] | undefined => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
 
@@ -94,8 +94,43 @@ function taskEnd(status: unknown): 'done' | 'error' | null {
   return null;
 }
 
+/** 不可变地按 toolUseId 更新所有轮里对应的子代理（不重开已结束的轮，也不创建副本）；没变化原样返回 s */
+function mapSubagentRuns(s: ConvState, toolUseId: string, fn: (run: SubagentRun) => SubagentRun): ConvState {
+  let turns: Turn[] | null = null;
+  s.turns.forEach((t, i) => {
+    let subs: SubagentRun[] | null = null;
+    t.subagents.forEach((r, j) => {
+      if (r.toolUseId !== toolUseId) return;
+      const n = fn(r);
+      if (n === r) return;
+      subs ??= t.subagents.slice();
+      subs[j] = n;
+    });
+    if (!subs) return;
+    turns ??= s.turns.slice();
+    turns[i] = { ...t, subagents: subs };
+  });
+  return turns ? { ...s, turns } : s;
+}
+
 function applySystem(s: ConvState, e: Record<string, unknown>, now: number): ConvState {
   switch (e.subtype) {
+    case COSYEE_USAGE_SUBTYPE: {
+      if (!isCosyeeUsageEvent(e)) return s;
+      const pt: CachePoint = e.point.turn === 0 ? e.point : { ...e.point, turn: 0 };
+      const win = e.window;
+      return mapSubagentRuns(s, e.parent_tool_use_id, (run) => {
+        const list = (run.cache ?? []).slice();
+        const cacheChanged = pushCachePoint(list, pt);
+        const winChanged = win !== undefined && run.contextWindow !== win;
+        if (!cacheChanged && !winChanged) return run;
+        return {
+          ...run,
+          ...(cacheChanged ? { cache: list } : {}),
+          ...(win !== undefined ? { contextWindow: win } : {}),
+        };
+      });
+    }
     case 'init': {
       // init 只更新元信息，不开新轮；若当前轮在等后台收尾，标记新一回合已开始
       const meta = mergeInit(s.meta, e);
@@ -178,11 +213,18 @@ function applyStream(s: ConvState, e: Record<string, unknown>, now: number): Con
   if (!isObj(ev)) return s;
   const type = ev.type;
   if (type === 'message_delta') {
-    // 最终 usage 补到缓存命中率的点上（只记主线程）
-    if (scopeOf(e) !== '' || !s.turns.length) return s;
-    const id = str(e.api_message_id) || s.book?.curMsg[''] || '';
-    const meta = recordCacheDelta(s.meta, id, ev.usage, s.turns.length - 1);
-    return meta === s.meta ? s : { ...s, meta };
+    // 最终 usage 补到缓存命中率的点上（主线程写 meta.cache，子代理写 run.cache）
+    if (!s.turns.length) return s;
+    const scope = scopeOf(e);
+    const id = str(e.api_message_id) || s.book?.curMsg[scope] || '';
+    if (scope === '') {
+      const meta = recordCacheDelta(s.meta, id, ev.usage, s.turns.length - 1);
+      return meta === s.meta ? s : { ...s, meta };
+    }
+    return mapSubagentRuns(s, scope, (run) => {
+      const list = applyCacheDelta(run.cache, id, ev.usage, 0);
+      return list ? { ...run, cache: list } : run;
+    });
   }
   if (type !== 'message_start' && type !== 'content_block_start' && type !== 'content_block_delta' && type !== 'content_block_stop') return s;
   const scope = scopeOf(e);
@@ -261,7 +303,17 @@ export function cliCostOf(modelUsage: unknown): CliModelCost[] | null {
     const create = n(u.cacheCreationInputTokens);
     const h1 = n(u.cacheCreationEphemeral1hInputTokens);
     const m5 = 'cacheCreationEphemeral5mInputTokens' in u ? n(u.cacheCreationEphemeral5mInputTokens) : Math.max(0, create - h1);
-    out.push({ model, input: n(u.inputTokens), output: n(u.outputTokens), read: n(u.cacheReadInputTokens), create5m: m5, create1h: h1, costUSD: n(u.costUSD) });
+    const cw = n(u.contextWindow);
+    out.push({
+      model,
+      input: n(u.inputTokens),
+      output: n(u.outputTokens),
+      read: n(u.cacheReadInputTokens),
+      create5m: m5,
+      create1h: h1,
+      costUSD: n(u.costUSD),
+      ...(cw > 0 ? { contextWindow: cw } : {}),
+    });
   }
   return out.length ? out : null;
 }
@@ -305,11 +357,13 @@ export function applyLive(s: ConvState, e: unknown, now: number): ConvState {
       const d = openDraft(s, now);
       if (!d) return s;
       const scope = scopeOf(e);
-      if (scope !== '' && !resolveRun(s, d, { toolUseId: scope })) return s;
+      const run = scope !== '' ? resolveRun(s, d, { toolUseId: scope }) : undefined;
+      if (scope !== '' && !run) return s;
       touch(d, scope);
       applyAssistantMessage(d, scope, e.message);
+      if (run) recordRunCache(run, isObj(e.message) ? e.message : null);
       const next = commit(s, d);
-      // 缓存命中率：只记主线程（子代理的 usage 不算）
+      // 缓存命中率：主线程记入 meta.cache，子代理记入 run.cache（不混入主线程）
       return scope === '' ? { ...next, meta: recordCache(next.meta, isObj(e.message) ? e.message : null, next.turns.length - 1) } : next;
     }
     case 'user': {

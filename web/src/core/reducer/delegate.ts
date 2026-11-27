@@ -3,8 +3,9 @@
 // （resolveRun 把旧轮的子代理复制进当前轮），所以按 toolUseId 更新所有轮里的同名运行。
 // 对外函数都是不可变更新：没变化的轮 / 运行保持原引用。
 
-import type { DelegateJobInfo, DelegateNotification, SubagentRun, Turn } from '@cosyee/shared';
+import type { CachePoint, DelegateJobInfo, DelegateNotification, SubagentRun, Turn } from '@cosyee/shared';
 import { cloneTurn, finishTurn, type ConvState } from './core';
+import { mergeCachePoints } from './cacheHit';
 
 /** 停止的任务：回答为空时给尾部加这个前缀，让人看出不是正常做完 */
 export const STOPPED_PREFIX = '（已停止）';
@@ -143,12 +144,25 @@ export function recordFuller(run: SubagentRun, rec: Turn): boolean {
   return a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
 }
 
-/** 用过程记录补全委派子代理：补步骤、正在写的文字与最终结果；状态、任务文字仍以页面上的为准 */
-export function withRecord(run: SubagentRun, rec: Turn): SubagentRun {
+/** 用过程记录补全委派子代理：补步骤、正在写的文字、最终结果与历史用量；状态、任务文字仍以页面上的为准 */
+export function withRecord(
+  run: SubagentRun,
+  rec: Turn,
+  extra?: { cache?: readonly CachePoint[]; contextWindow?: number },
+): SubagentRun {
   const fuller = recordFuller(run, rec);
   const answer = run.status === 'running' ? (fuller ? rec.answer : run.turn.answer) : finalAnswer(run, rec.answer);
-  if (!fuller && answer === run.turn.answer) return run;
-  return { ...run, turn: { ...run.turn, ...(fuller ? { steps: rec.steps } : {}), answer } };
+  const mergedCache = extra?.cache?.length ? mergeCachePoints(extra.cache, run.cache) : run.cache;
+  const cacheChanged = mergedCache !== run.cache;
+  const contextWindow = run.contextWindow ?? extra?.contextWindow;
+  const winChanged = contextWindow !== run.contextWindow;
+  if (!fuller && answer === run.turn.answer && !cacheChanged && !winChanged) return run;
+  return {
+    ...run,
+    ...(cacheChanged && mergedCache ? { cache: mergedCache } : {}),
+    ...(winChanged && contextWindow !== undefined ? { contextWindow } : {}),
+    ...(fuller || answer !== run.turn.answer ? { turn: { ...run.turn, ...(fuller ? { steps: rec.steps } : {}), answer } } : {}),
+  };
 }
 
 /** 已结束的委派：完成通知不带正文，页面上的回答可能是空的或任务快照里截过的尾部，记录里的更长就用记录的 */

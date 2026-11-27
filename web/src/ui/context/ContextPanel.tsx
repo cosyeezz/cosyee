@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { createPortal } from 'react-dom';
 import {
   BUILTIN_PRICES,
-  type CachePoint, type CliModelCost, type CompactMark, type ContextMcpServer, type ContextSkill, type ContextUsage, type PriceTable,
+  type AccountEntry, type CachePoint, type CliModelCost, type CompactMark, type ContextMcpServer, type ContextSkill, type ContextUsage, type PriceTable,
   type SkillMode, type SubagentCost, type ToolLoadClass, type ToolLoadEntry, type ToolStats as ToolStatsData, type ToolTokenEntry, type Turn,
 } from '@cosyee/shared';
 import { Icon, type IconName } from '../icons/Icon';
@@ -76,8 +76,12 @@ export interface ContextPanelProps {
   billing?: Billing;
   /** 「子代理」（智能体下方）；不传则不显示 */
   subagents?: SubagentsProps | null;
+  /** 主会话账号列表（用于花费来源的混合计费判断） */
+  accounts?: readonly AccountEntry[];
   /** 点花费图的柱子跳到会话流里的这一轮 */
   onJumpTurn?: (turn: number) => void;
+  /** 点击花费来源明细里的子代理打开其浮层 */
+  onOpenSubagent?: (turnId: string, toolUseId: string) => void;
 }
 
 const SKILL_MODES: { mode: SkillMode; label: string; hint: string; icon: IconName }[] = [
@@ -117,7 +121,7 @@ const isFree = (name: string) => name.toLowerCase().includes('free');
 
 export function ContextPanel({
   usage: liveUsage, loading, onRefresh, onCompact, onSkillMode, onSkillModes, onSkillRemove, onSkillReveal, onMcpToggle, mcpBusy = null, tools: liveTools, onToolToggle, cache: liveCache, turns: liveTurns, toolStats = null, compactDisabled = false, onCompactWindow, onCollapse,
-  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, subagents,
+  compactions: liveCompactions, pricing = BUILTIN_PRICES, subCosts: liveSubCosts = null, cliCost: liveCliCost, model: liveModel, billing = 'api', onJumpTurn, onOpenSubagent, accounts, subagents,
 }: ContextPanelProps) {
   // 切换会话时新会话的上下文要晚到一点：这期间留着上一份（变淡），不闪成空态，也不从 0 重新滚一遍
   const live = useMemo(
@@ -311,8 +315,12 @@ export function ContextPanel({
           historyTokens={usage.categories.find((c) => c.name.trim().toLowerCase().includes('message'))?.tokens ?? null}
           cliCost={cliCost}
           billing={billing}
+          subagents={subagents?.state.config}
+          subagentAccounts={subagents?.state.accounts}
+          accounts={accounts}
           intro={waking}
           onJumpTurn={onJumpTurn}
+          onOpenSubagent={onOpenSubagent}
         />
 
         {/* 可展开：Skills（开 / 手动 / 关 三态） */}
@@ -490,18 +498,26 @@ export function usageDenom(usage: ContextUsage): number {
   return Math.max(usage.totalTokens, catSum, 1);
 }
 
-/** 上下文占用的分段条（上下文栏和收起后的图表浮层共用）：hot 是被指着的那一类，条上只亮这一段 */
-export function UsageBar({ usage, denom, hot, onHot }: { usage: ContextUsage; denom: number; hot: string | null; onHot: (name: string | null) => void }) {
-  const on = hot !== null && usage.categories.some((c) => c.name === hot && c.tokens > 0);
+/** 上下文占用的分段条（上下文栏、收起后的图表浮层与子代理统计区共用）：hot 是被指着的那一类，条上只亮这一段 */
+export function UsageBar(props:
+  | { usage: ContextUsage; denom: number; hot: string | null; onHot: (name: string | null) => void; segments?: undefined; ariaLabel?: undefined }
+  | { segments: readonly { key: string; label: string; tokens: number; color: string }[]; denom: number; hot: string | null; onHot: (name: string | null) => void; ariaLabel: string; usage?: undefined },
+) {
+  const { denom, hot, onHot } = props;
+  const items = props.usage
+    ? props.usage.categories.filter((c) => c.tokens > 0).map((c) => ({ key: c.name, label: c.name, tokens: c.tokens, color: categoryColor(c.name) }))
+    : props.segments.filter((s) => s.tokens > 0);
+  const on = hot !== null && items.some((c) => c.key === hot);
+  const label = props.usage ? `已用 ${formatPercent(props.usage.percent)}` : props.ariaLabel;
   return (
-    <div className={`cz-ctx__bar${on ? ' has-hot' : ''}`} role="img" aria-label={`已用 ${formatPercent(usage.percent)}`}>
-      {usage.categories.filter((c) => c.tokens > 0).map((c) => (
+    <div className={`cz-ctx__bar${on ? ' has-hot' : ''}`} role="img" aria-label={label}>
+      {items.map((c) => (
         <span
-          key={c.name}
-          className={`cz-ctx__seg${c.name === hot ? ' is-hot' : ''}`}
-          style={{ width: `${(c.tokens / denom) * 100}%`, background: categoryColor(c.name) }}
-          title={`${c.name}：${formatTokens(c.tokens)}`}
-          onMouseEnter={() => onHot(c.name)}
+          key={c.key}
+          className={`cz-ctx__seg${c.key === hot ? ' is-hot' : ''}`}
+          style={{ width: `${(c.tokens / denom) * 100}%`, background: c.color }}
+          title={`${c.label}：${formatTokens(c.tokens)}`}
+          onMouseEnter={() => onHot(c.key)}
           onMouseLeave={() => onHot(null)}
         />
       ))}

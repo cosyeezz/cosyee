@@ -344,7 +344,8 @@ export function prettyModel(id: string | undefined): string {
   return `${name} ${m[2]}${m[3] ? `.${m[3]}` : ''}`;
 }
 
-const effortName = (e: string): string => EFFORTS.find((x) => x.id === e)?.label ?? e;
+const EXTRA_EFFORT_NAMES: Record<string, string> = { none: '关闭', minimal: '极低', ultra: '极高' };
+const effortName = (e: string): string => EFFORTS.find((x) => x.id === e)?.label ?? EXTRA_EFFORT_NAMES[e] ?? e;
 
 export function effortText(effort: string | undefined): string {
   return effort ? `思考 ${effortName(effort)}` : '';
@@ -355,14 +356,13 @@ export function runParams(run: SubagentRun, cfg?: SubagentConfig | null): { mode
   const { model, effort } = run;
   if (!cfg || run.subagentType === 'fork') return { model, effort };
   if (run.delegate === true) {
-    if (cfg.kind === 'claude') {
-      return { model: model ?? cfg.claude.model ?? undefined, effort: effort ?? cfg.claude.effort ?? undefined };
+    const route = (run.subagentType ? cfg.delegate.agents?.[run.subagentType] : undefined) ?? cfg.delegate.default;
+    if (!route) return { model, effort };
+    if (route.backend === 'claude') {
+      return { model: model ?? route.model ?? undefined, effort: effort ?? route.effort ?? undefined };
     }
-    if (cfg.kind === 'agy') {
-      // 已知实际模型却没有强度 = 这个模型不分强度，不拿设置里的值顶
-      return model ? { model, effort } : { model: cfg.agy.model ?? undefined, effort: effort ?? cfg.agy.effort ?? undefined };
-    }
-    return { model, effort };
+    // 已知实际模型却没有强度 = 这个模型不分强度，不拿设置里的值顶
+    return model ? { model, effort } : { model: route.model ?? undefined, effort: effort ?? route.effort ?? undefined };
   }
   // 与服务端 PreToolUse 钩子一致：类型单独配置优先于原生默认值（subagent_type 缺省视为 general-purpose）
   const ov = cfg.native.agents?.[run.subagentType || 'general-purpose'];

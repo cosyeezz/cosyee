@@ -388,9 +388,14 @@ export class Accounts {
 
   /** 当前选中的 Claude 子代理账号是否已登录（带 2s 内存缓存与防抖动） */
   subagentClaudeLoggedIn(ttlMs = 2000): boolean {
-    const id = this.subagentClaudeId();
+    return this.claudeLoggedIn(this.subagentClaudeId(), ttlMs) === true;
+  }
+
+  /** 指定账号是否已登录（带 2s 内存缓存与防抖动）；账号不存在返回 null。委派路线按账号检查用 */
+  claudeLoggedIn(id: string, ttlMs = 2000): boolean | null {
+    if (!this.has(id)) return null;
     const dir = this.dirFor(id);
-    if (dir === undefined) return false;
+    if (dir === undefined) return null;
     const now = Date.now();
     const cached = this.loginCache.get(id);
     if (cached && now - cached.at < ttlMs) return cached.loggedIn;

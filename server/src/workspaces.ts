@@ -1,7 +1,7 @@
 // 工作空间列表与持久化：~/.cosyee/state.json = { workspaces, current, unread }，原子写。
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_SUBAGENTS, MODEL_ALIASES, SKILL_MODES, SUBAGENT_KINDS, type AccountMode, type Effort, type ModelAlias, type SessionConfig, type SkillMode, type StopInfo, type StopKind, type StopState, type SubagentConfig, type SubagentKind, type SubagentTypeOverrides, type Workspace } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS, DELEGATE_BACKEND_IDS, DELEGATE_EFFORTS, MODEL_ALIASES, SKILL_MODES, SUBAGENT_MODES, type AccountMode, type DelegateBackendId, type DelegateEffort, type Effort, type ModelAlias, type SessionConfig, type SkillMode, type StopInfo, type StopKind, type StopState, type SubagentConfig, type SubagentMode, type SubagentRoute, type SubagentTypeOverrides, type Workspace } from '@cosyee/shared';
 import { cosyeeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 
 export interface PersistedState {
@@ -38,7 +38,7 @@ export interface PersistedState {
    * null = 不覆盖（沿用 ~/.claude/settings.json 或 CLI 默认）
    */
   compactWindow: number | null;
-  /** 子代理配置（全局）：类型（native / claude / agy）及各自的默认模型与强度 */
+  /** 子代理配置（全局）：类型（native / claude / agy / codex）及各自的默认模型与强度 */
   subagents: SubagentConfig;
   /**
    * 额外账号（默认账号 = 基础配置目录，不在列表里）；active 为 null 表示默认账号。
@@ -55,6 +55,8 @@ export interface PersistedState {
   };
   /** Antigravity（agy）额外账号（默认账号 = 本机系统凭据，不在列表里）；active 为 null 表示默认账号 */
   agyAccounts: { list: StoredAccount[]; active: string | null };
+  /** Codex 额外账号（默认账号 = 本机 CODEX_HOME / ~/.codex，不在列表里）；active 为 null 表示默认账号 */
+  codexAccounts: { list: StoredAccount[]; active: string | null };
   /** 会话因错误停止的记录（自动重试 / 显示错误原因），按 sessionId 索引 */
   stops: Record<string, StopInfo>;
   /** 执行中的轮次，服务关闭/崩溃后启动时据此补记中断 */
@@ -133,80 +135,123 @@ function sanitizeAgentOverrides<M extends string>(
 
 /** 接口提交的子代理配置：顶层结构不合法返回 null；agents 内的非法项静默丢弃 */
 export function parseSubagents(v: unknown): SubagentConfig | null {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const o = v as Record<string, unknown>;
-  const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
-  if (!isObj(o.native) || !isObj(o.claude) || !isObj(o.agy)) return null;
-  if (o.native.agents !== undefined && !isObj(o.native.agents)) return null;
-  if (o.claude.agents !== undefined && !isObj(o.claude.agents)) return null;
-  if (o.agy.agents !== undefined && !isObj(o.agy.agents)) return null;
+  if (!isPlainObj(v)) return null;
+  const o = v;
+  if (!SUBAGENT_MODES.includes(o.mode as SubagentMode)) return null;
+  if (!isPlainObj(o.native) || !isPlainObj(o.delegate)) return null;
+  if (o.native.agents !== undefined && !isPlainObj(o.native.agents)) return null;
+  if (o.delegate.agents !== undefined && !isPlainObj(o.delegate.agents)) return null;
+  const def = o.delegate.default;
+  if (def !== null && def !== undefined && !sanitizeRoute(def)) return null;
   const c = sanitizeSubagents(v);
-  const same =
-    o.kind === c.kind &&
-    o.native.model === c.native.model &&
-    o.native.effort === c.native.effort &&
-    (o.claude.model ?? null) === c.claude.model &&
-    (o.claude.effort ?? null) === c.claude.effort &&
-    (o.agy.model ?? null) === c.agy.model &&
-    (o.agy.effort ?? null) === c.agy.effort;
+  const same = o.native.model === c.native.model && o.native.effort === c.native.effort;
   return same ? c : null;
+}
+
+function isPlainObj(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object' && !Array.isArray(x);
+}
+
+const ROUTE_ACCOUNT_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/** 一条委派路线：后端 / 账号不合法返回 null；模型、强度不合法落回 null（= 默认）。claude 仅允许 Effort，agy/codex 允许 DelegateEffort */
+export function sanitizeRoute(v: unknown): SubagentRoute | null {
+  if (!isPlainObj(v)) return null;
+  if (!DELEGATE_BACKEND_IDS.includes(v.backend as DelegateBackendId)) return null;
+  if (typeof v.accountId !== 'string' || !ROUTE_ACCOUNT_RE.test(v.accountId)) return null;
+  const backend = v.backend as DelegateBackendId;
+  const allowedEfforts: readonly string[] = backend === 'claude' ? EFFORT_IDS : DELEGATE_EFFORTS;
+  return {
+    backend,
+    accountId: v.accountId,
+    model: typeof v.model === 'string' && DELEGATE_MODEL_RE.test(v.model) ? v.model : null,
+    effort: typeof v.effort === 'string' && allowedEfforts.includes(v.effort) ? (v.effort as DelegateEffort) : null,
+  };
 }
 
 /** 子代理配置：非法的字段落回默认值；agents 内的非法项或全 null 项直接丢弃 */
 export function sanitizeSubagents(v: unknown): SubagentConfig {
-  const obj = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : {});
+  const obj = (x: unknown): Record<string, unknown> => (isPlainObj(x) ? x : {});
   const root = obj(v);
   const native = obj(root.native);
-  const claude = obj(root.claude);
-  const agy = obj(root.agy);
+  const delegate = obj(root.delegate);
   const d = DEFAULT_SUBAGENTS;
   const checkAlias = (m: unknown): ModelAlias | null => (MODEL_ALIASES.includes(m as ModelAlias) ? (m as ModelAlias) : null);
-  const checkAgyModel = (m: unknown): string | null => (typeof m === 'string' && DELEGATE_MODEL_RE.test(m) ? m : null);
   const nativeAgents = sanitizeAgentOverrides(native.agents, checkAlias);
-  const claudeAgents = sanitizeAgentOverrides(claude.agents, checkAlias);
-  const agyAgents = sanitizeAgentOverrides(agy.agents, checkAgyModel);
+  const routes: Record<string, SubagentRoute> = {};
+  let count = 0;
+  for (const [name, r] of Object.entries(obj(delegate.agents))) {
+    if (count >= MAX_SUBAGENT_OVERRIDES) break;
+    if (!AGENT_NAME_RE.test(name)) continue;
+    const route = sanitizeRoute(r);
+    if (!route) continue;
+    routes[name] = route;
+    count++;
+  }
   return {
-    kind: SUBAGENT_KINDS.includes(root.kind as SubagentKind) ? (root.kind as SubagentKind) : d.kind,
+    mode: SUBAGENT_MODES.includes(root.mode as SubagentMode) ? (root.mode as SubagentMode) : d.mode,
     native: {
       model: MODEL_ALIASES.includes(native.model as ModelAlias) ? (native.model as ModelAlias) : d.native.model,
       effort: EFFORT_IDS.includes(native.effort as Effort) ? (native.effort as Effort) : d.native.effort,
       ...(nativeAgents ? { agents: nativeAgents } : {}),
     },
-    claude: {
-      model: MODEL_ALIASES.includes(claude.model as ModelAlias) ? (claude.model as ModelAlias) : d.claude.model,
-      effort: EFFORT_IDS.includes(claude.effort as Effort) ? (claude.effort as Effort) : d.claude.effort,
-      ...(claudeAgents ? { agents: claudeAgents } : {}),
-    },
-    agy: {
-      model: typeof agy.model === 'string' && DELEGATE_MODEL_RE.test(agy.model) ? agy.model : d.agy.model,
-      effort: EFFORT_IDS.includes(agy.effort as Effort) ? (agy.effort as Effort) : d.agy.effort,
-      ...(agyAgents ? { agents: agyAgents } : {}),
+    delegate: {
+      default: sanitizeRoute(delegate.default),
+      ...(count ? { agents: routes } : {}),
     },
   };
 }
 
-/** 从持久化对象读取子代理配置；没有 subagents 时从旧版 agentModels + nativeAgents 迁移 */
-export function migrateSubagents(raw: Record<string, unknown>): SubagentConfig {
-  if (raw.subagents && typeof raw.subagents === 'object' && !Array.isArray(raw.subagents)) {
-    return sanitizeSubagents(raw.subagents);
+/**
+ * 旧版（kind = native / claude / agy / codex，每个后端一份默认模型与按类型覆盖）转成新版：
+ * kind 不是 native 的转成 delegate，默认路线用原来选的后端（Claude 用 subagent.claude 那个账号，agy 用当前账号），
+ * 该后端的按类型覆盖搬成各类型自己的路线（没写的字段跟随该后端的默认）。codex 没有接入：退回原生。
+ */
+function migrateLegacySubagents(old: Record<string, unknown>, raw: Record<string, unknown>): SubagentConfig {
+  const obj = (x: unknown): Record<string, unknown> => (isPlainObj(x) ? x : {});
+  const native = obj(old.native);
+  const base = sanitizeSubagents({ mode: 'native', native, delegate: { default: null } });
+  const kind = old.kind;
+  if (kind !== 'claude' && kind !== 'agy') return base;
+  const accounts = obj(raw.accounts);
+  const agy = obj(raw.agyAccounts);
+  let accountId: string | null;
+  if (kind === 'claude') {
+    const sub = obj(accounts.subagent).claude;
+    accountId = typeof sub === 'string' && sub ? sub : 'default';
+  } else {
+    const list = Array.isArray(agy.list) ? (agy.list as unknown[]) : [];
+    const first = list.map((a) => obj(a).id).find((id): id is string => typeof id === 'string');
+    accountId = typeof agy.active === 'string' && agy.active ? agy.active : (first ?? null);
   }
-  const old = raw.agentModels && typeof raw.agentModels === 'object' && !Array.isArray(raw.agentModels)
-    ? (raw.agentModels as Record<string, unknown>)
-    : {};
-  const kind: SubagentKind = raw.nativeAgents === false ? 'agy' : 'native';
-  return sanitizeSubagents({
-    kind,
-    native: old.claude,
-    claude: DEFAULT_SUBAGENTS.claude,
-    agy: old.agy,
-  });
+  if (!accountId) return base;
+  const sec = obj(old[kind]);
+  const def = sanitizeRoute({ backend: kind, accountId, model: sec.model, effort: sec.effort });
+  if (!def) return base;
+  const agents: Record<string, unknown> = {};
+  for (const [name, ov] of Object.entries(obj(sec.agents))) {
+    const o = obj(ov);
+    agents[name] = { backend: kind, accountId, model: o.model ?? def.model, effort: o.effort ?? def.effort };
+  }
+  return sanitizeSubagents({ mode: 'delegate', native, delegate: { default: def, agents } });
+}
+
+/** 从持久化对象读取子代理配置；旧版（kind 结构）转成新版；没有 subagents 时从更早的 agentModels + nativeAgents 迁移 */
+export function migrateSubagents(raw: Record<string, unknown>): SubagentConfig {
+  if (isPlainObj(raw.subagents)) {
+    const sub = raw.subagents;
+    if (sub.mode === undefined && sub.kind !== undefined) return migrateLegacySubagents(sub, raw);
+    return sanitizeSubagents(sub);
+  }
+  const old = isPlainObj(raw.agentModels) ? raw.agentModels : {};
+  return migrateLegacySubagents({ kind: raw.nativeAgents === false ? 'agy' : 'native', native: old.claude, agy: old.agy }, raw);
 }
 
 const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
 const IDENTITY_HASH_RE = /^[0-9a-f]{64}$/;
 
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], knownDeferredTools: [], disabledAgents: [], compactWindow: null, subagents: structuredClone(DEFAULT_SUBAGENTS), accounts: { list: [], active: null, mode: 'switch', sessions: {}, subagent: { claude: 'default' } }, agyAccounts: { list: [], active: null }, stops: {}, inflight: {} };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], knownDeferredTools: [], disabledAgents: [], compactWindow: null, subagents: structuredClone(DEFAULT_SUBAGENTS), accounts: { list: [], active: null, mode: 'switch', sessions: {}, subagent: { claude: 'default' } }, agyAccounts: { list: [], active: null }, codexAccounts: { list: [], active: null }, stops: {}, inflight: {} };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -341,6 +386,26 @@ function sanitize(raw: unknown): PersistedState {
       }
     }
     if (typeof agy.active === 'string' && s.agyAccounts.list.some((x) => x.id === agy.active)) s.agyAccounts.active = agy.active;
+  }
+  const cx = o.codexAccounts as Record<string, unknown> | undefined;
+  if (cx && typeof cx === 'object') {
+    if (Array.isArray(cx.list)) {
+      for (const a of cx.list as Record<string, unknown>[]) {
+        if (!a || typeof a !== 'object') continue;
+        if (typeof a.id !== 'string' || !ACCOUNT_ID_RE.test(a.id) || typeof a.dir !== 'string' || !path.isAbsolute(a.dir)) continue;
+        const dir = a.dir;
+        if (s.codexAccounts.list.some((x) => x.id === a.id || pathKey(x.dir) === pathKey(dir))) continue;
+        const hash = typeof a.identityHash === 'string' && IDENTITY_HASH_RE.test(a.identityHash) ? a.identityHash : undefined;
+        s.codexAccounts.list.push({
+          id: a.id,
+          label: typeof a.label === 'string' ? a.label.slice(0, 40) : '',
+          dir: a.dir,
+          createdAt: num(a.createdAt, 0),
+          ...(hash ? { identityHash: hash } : {}),
+        });
+      }
+    }
+    if (typeof cx.active === 'string' && s.codexAccounts.list.some((x) => x.id === cx.active)) s.codexAccounts.active = cx.active;
   }
   if (o.stops && typeof o.stops === 'object' && !Array.isArray(o.stops)) {
     for (const [sid, v] of Object.entries(o.stops as Record<string, unknown>)) {

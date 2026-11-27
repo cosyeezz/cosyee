@@ -229,6 +229,13 @@ export class AgyAccounts {
     return id ? this.accountFor(id) : null;
   }
 
+  /** 指定账号是否已登录：令牌文件在（不起进程探测）；账号不存在返回 null */
+  loggedIn(id: string): boolean | null {
+    const a = this.accountFor(id);
+    if (!a) return null;
+    return !!a.dir && hasTokenFile(a.dir);
+  }
+
   /** 当前账号是否可用：有账号且令牌文件在（不起进程探测） */
   activeLoggedIn(): boolean {
     if (!this.installed()) return false;

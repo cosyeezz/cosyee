@@ -4,13 +4,15 @@ import { useEffect, useState, type KeyboardEvent } from 'react';
 import { GooeyIndicator } from '../motion/GooeyIndicator';
 import { motionOK } from '../motion/reduced';
 
-export type AddTarget = 'claude' | 'agy';
+export type AddTarget = 'claude' | 'agy' | 'codex';
 
 export interface AddTargetSegProps {
   target: AddTarget;
   onChange: (t: AddTarget) => void;
   /** 本机没装 Antigravity CLI：禁用 Antigravity 选项并给出说明 */
   agyDisabled?: boolean;
+  /** 本机没装 Codex CLI：禁用 Codex 选项并给出说明 */
+  codexDisabled?: boolean;
   /** 从另一组切过来时的旧值，用于触发胶囊滑动 */
   fromTarget?: AddTarget;
 }
@@ -18,9 +20,10 @@ export interface AddTargetSegProps {
 const TARGETS: { id: AddTarget; label: string }[] = [
   { id: 'claude', label: 'Claude' },
   { id: 'agy', label: 'Antigravity' },
+  { id: 'codex', label: 'Codex' },
 ];
 
-export function AddTargetSeg({ target, onChange, agyDisabled, fromTarget }: AddTargetSegProps) {
+export function AddTargetSeg({ target, onChange, agyDisabled, codexDisabled, fromTarget }: AddTargetSegProps) {
   const [shown, setShown] = useState<AddTarget>(() => (fromTarget && fromTarget !== target && motionOK() ? fromTarget : target));
 
   useEffect(() => {
@@ -47,8 +50,9 @@ export function AddTargetSeg({ target, onChange, agyDisabled, fromTarget }: AddT
       <div className="cz-sidebar__seg" role="radiogroup" aria-label="添加到">
         <GooeyIndicator activeKey={shown} selector=".cz-sidebar__seg-btn.is-on" />
         {TARGETS.map((o) => {
-          const disabled = o.id === 'agy' && !!agyDisabled;
+          const disabled = (o.id === 'agy' && !!agyDisabled) || (o.id === 'codex' && !!codexDisabled);
           const on = target === o.id;
+          const disabledTip = o.id === 'agy' ? '没有安装 Antigravity CLI' : o.id === 'codex' ? '没有安装 Codex CLI' : undefined;
           return (
             <button
               key={o.id}
@@ -57,7 +61,7 @@ export function AddTargetSeg({ target, onChange, agyDisabled, fromTarget }: AddT
               data-target={o.id}
               aria-checked={on}
               disabled={disabled}
-              title={disabled ? '没有安装 Antigravity CLI' : undefined}
+              title={disabled ? disabledTip : undefined}
               className={`cz-sidebar__seg-btn${shown === o.id ? ' is-on' : ''}`}
               onClick={() => !disabled && target !== o.id && onChange(o.id)}
               onKeyDown={onKeyDown}
@@ -68,6 +72,7 @@ export function AddTargetSeg({ target, onChange, agyDisabled, fromTarget }: AddT
         })}
       </div>
       {agyDisabled && <div className="cz-acct-dlg__target-note">没有安装 Antigravity CLI，暂不能添加 Antigravity 账号</div>}
+      {codexDisabled && <div className="cz-acct-dlg__target-note">没有安装 Codex CLI，暂不能添加 Codex 账号</div>}
     </div>
   );
 }

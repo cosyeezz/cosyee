@@ -4,17 +4,17 @@
 // 状态和接口调用都在 AccountMenu 里，这里只负责展示和回调；kiro.rs 引擎状态自己读。
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, AgyAccountList, ComponentStatus } from '@cosyee/shared';
+import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, AgyAccountList, CodexAccountEntry, CodexAccountList, ComponentStatus } from '@cosyee/shared';
 import { api } from '../../core/api';
 import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
 import { useMorph } from '../motion/morph';
 import { loginExpiry, subscriptionEstimate } from '../usage/format';
 import { ConfirmActionButton } from './ActionButtons';
-import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
+import { AccountQuota, AgyQuotaView, CodexQuotaView, codexWindows, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
 import {
   agyRemoveBlock, agyTitle, apiHost, apiMapNote, claudeKind, claudeRemoveBlock, claudeUsable,
-  DuplicateNote, entryTitle, kiroIssue, msg, PlanChip, planChip, type ClaudeKind,
+  codexPlan, codexRemoveBlock, codexTitle, DuplicateNote, entryTitle, kiroIssue, msg, PlanChip, planChip, type ClaudeKind,
 } from './accountParts';
 import { useDismiss } from './useDismiss';
 import { useFocusTrap } from './useFocusTrap';
@@ -25,11 +25,12 @@ function dupCount(data: AccountList, kind: ClaudeKind): number {
   return kind === 'claude' ? data.duplicates ?? 0 : 0;
 }
 
-export type AddDialogKind = 'login' | 'api' | 'kiro' | 'agy';
+export type AddDialogKind = 'login' | 'api' | 'kiro' | 'agy' | 'codex';
 
 export interface AccountManagerProps {
   data: AccountList | null;
   agyData: AgyAccountList | null;
+  codexData?: CodexAccountList | null;
   error: string | null;
   quotas: Record<string, QuotaState>;
   kiroBalances: Record<string, KiroBalanceState>;
@@ -38,6 +39,7 @@ export interface AccountManagerProps {
   version: number;
   switching: string | null;
   agySwitching: string | null;
+  codexSwitching?: string | null;
   /** 上面叠着添加 / 重新登录对话框：Esc、点外面、Tab 循环都让给它 */
   covered: boolean;
   /** 切换确认、错误提示等（放在标题下面） */
@@ -56,20 +58,27 @@ export interface AccountManagerProps {
   onRenameAgy: (a: AgyAccountEntry, label: string) => Promise<boolean>;
   onRemoveAgy: (a: AgyAccountEntry) => void;
   onDedupeAgy: () => Promise<AccountDedupeResult>;
+  onSwitchCodex?: (a: CodexAccountEntry) => void;
+  onReloginCodex?: (a: CodexAccountEntry) => void;
+  onRenameCodex?: (a: CodexAccountEntry, label: string) => Promise<boolean>;
+  onRemoveCodex?: (a: CodexAccountEntry) => void;
+  onDedupeCodex?: () => Promise<AccountDedupeResult>;
 }
 
-const SECTIONS: { kind: ClaudeKind | 'agy'; title: string; tip: string; add: string; dialog: AddDialogKind; empty: string }[] = [
+const SECTIONS: { kind: ClaudeKind | 'agy' | 'codex'; title: string; tip: string; add: string; dialog: AddDialogKind; empty: string }[] = [
   { kind: 'claude', title: 'Claude 订阅', tip: 'claude.ai 订阅账号', add: '用 claude.ai 登录', dialog: 'login', empty: '还没有 Claude 订阅账号' },
   { kind: 'api', title: 'API', tip: '用 API Key 按量计费，可配置模型映射', add: '添加 API Key', dialog: 'api', empty: '还没有 API 账号' },
   { kind: 'kiro', title: 'Kiro', tip: '经 kiro.rs 代理使用 Kiro 额度', add: '登录 Kiro', dialog: 'kiro', empty: '还没有 Kiro 账号' },
   { kind: 'agy', title: 'Antigravity', tip: '委派任务用的账号：新的委派使用选中的账号，已有的委派继续用原来的账号', add: '登录 Antigravity', dialog: 'agy', empty: '' },
+  { kind: 'codex', title: 'Codex', tip: '委派任务用的 OpenAI Codex 账号：新的委派使用选中的账号，已有的委派继续用原来的账号', add: '登录 Codex', dialog: 'codex', empty: '' },
 ];
 
-const REMOVE_NOTE: Record<ClaudeKind | 'agy', string> = {
+const REMOVE_NOTE: Record<ClaudeKind | 'agy' | 'codex', string> = {
   claude: '只删除该账号的登录信息；skill、设置和会话历史是共享的，不受影响',
   api: '会删除该账号保存的 API Key；skill、设置和会话历史是共享的，不受影响',
   kiro: '会删除该账号保存的 Kiro 凭据；skill、设置和会话历史是共享的，不受影响',
   agy: '会删除该账号的登录信息和它的委派会话记录',
+  codex: '会删除该账号的登录信息和它的委派会话记录',
 };
 
 /** 卡片里改备注名：Enter 保存，Esc 取消（通过 useDismiss 分层，不关外层面板） */
@@ -123,8 +132,6 @@ interface CardProps {
   /** 不能直接使用（没登录 / 登录已失效） */
   off: boolean;
   badge?: { text: string; danger?: boolean } | null;
-  /** 附加标签（例如「子代理」） */
-  extraBadge?: string | null;
   meta?: ReactNode;
   quota?: ReactNode;
   /** 改备注名时替换名字那一块 */
@@ -132,7 +139,7 @@ interface CardProps {
   children: ReactNode;
 }
 
-function Card({ title, plan, issue, sub, active, off, badge, extraBadge, meta, quota, editing, children }: CardProps) {
+function Card({ title, plan, issue, sub, active, off, badge, meta, quota, editing, children }: CardProps) {
   return (
     <div className={`cz-acct-card${active ? ' is-active' : ''}${off ? ' is-off' : ''}`} aria-current={active ? 'true' : undefined}>
       <div className="cz-acct-card__top">
@@ -146,9 +153,8 @@ function Card({ title, plan, issue, sub, active, off, badge, extraBadge, meta, q
           </div>
         )}
         {/* 右上角的状态徽标：问题标签放最后，同一组卡片里都贴着右边 */}
-        {!editing && (badge || extraBadge || issue) && (
+        {!editing && (badge || issue) && (
           <span className="cz-acct-card__badges">
-            {extraBadge && <span className="cz-acct-card__badge is-sub">{extraBadge}</span>}
             {badge && <span className={`cz-acct-card__badge${badge.danger ? ' is-danger' : ''}`}>{badge.text}</span>}
             {issue && <span className="cz-acct-card__badge is-danger">{issue}</span>}
           </span>
@@ -257,7 +263,7 @@ function KiroEngineNote({ version }: { version: number }) {
 }
 
 export function AccountManager(p: AccountManagerProps) {
-  const { data, agyData, quotas, kiroBalances, now, switching, agySwitching, covered } = p;
+  const { data, agyData, codexData = null, quotas, kiroBalances, now, switching, agySwitching, codexSwitching = null, covered } = p;
   const scrimRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true });
@@ -309,7 +315,6 @@ export function AccountManager(p: AccountManagerProps) {
         active={a.active}
         off={!usable}
         badge={badge}
-        extraBadge={usable && data?.subagent?.claude === a.id ? '子代理' : null}
         meta={hasMeta ? meta : null}
         quota={quota}
         editing={editing === key ? (
@@ -406,6 +411,69 @@ export function AccountManager(p: AccountManagerProps) {
     );
   };
 
+  const codexCard = (a: CodexAccountEntry) => {
+    const title = codexTitle(a);
+    const plan = codexPlan(a);
+    const off = a.loggedIn === false;
+    const sub = [
+      a.running > 0 ? `${a.running} 个委派执行中` : null,
+      a.email && a.email !== title ? a.email : null,
+      a.loggedIn === null ? '正在检测…' : null,
+    ].filter(Boolean).join(' · ');
+    const badge = off ? { text: '需要登录', danger: true } : a.active ? { text: '当前' } : null;
+    const meta = !off && a.authMode === 'apiKey' ? <span>按量计费（API Key）</span> : null;
+    const quota = !off && a.authMode !== 'apiKey' && a.quota && codexWindows(a.quota).length > 0
+      ? <CodexQuotaView quota={a.quota} now={now} />
+      : null;
+    const removeBlock = codexRemoveBlock(a);
+    const key = `x:${a.id}`;
+    return (
+      <Card
+        key={a.id}
+        title={title}
+        plan={plan}
+        sub={sub}
+        active={a.active}
+        off={off}
+        badge={badge}
+        meta={meta}
+        quota={quota}
+        editing={editing === key ? (
+          <RenameField
+            initial={a.label}
+            onCancel={() => setEditing(null)}
+            onSave={async (v) => {
+              const ok = await (p.onRenameCodex?.(a, v) ?? Promise.resolve(false));
+              if (ok) setEditing(null);
+              return ok;
+            }}
+          />
+        ) : null}
+      >
+        {off ? (
+          <button type="button" className="cz-acct-mgr__btn is-primary" onClick={() => p.onReloginCodex?.(a)}>重新登录</button>
+        ) : !a.active && a.loggedIn === true && (
+          <button type="button" className="cz-acct-mgr__btn" disabled={codexSwitching !== null} onClick={() => p.onSwitchCodex?.(a)}>
+            {codexSwitching === a.id ? '切换中…' : '切换'}
+          </button>
+        )}
+        {!a.isDefault && <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>}
+        <ConfirmActionButton
+          icon="trash"
+          text="移除"
+          className="cz-acct-mgr__btn is-danger"
+          label={`移除账号「${title}」`}
+          confirmText={`移除账号「${title}」？`}
+          note={REMOVE_NOTE.codex}
+          confirmLabel="移除"
+          disabled={removeBlock !== null}
+          disabledTitle={removeBlock ?? undefined}
+          onConfirm={() => p.onRemoveCodex?.(a)}
+        />
+      </Card>
+    );
+  };
+
   return createPortal(
     <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim">
       <div ref={panelRef} className="cz-acct-mgr cz-modal" role="dialog" aria-modal="true" aria-label="管理账号">
@@ -436,6 +504,26 @@ export function AccountManager(p: AccountManagerProps) {
                 {/* 没有账号时下面留空，不提示去登录 */}
                 {agyData.installed && rows.length > 0 && <div className="cz-acct-mgr__cards">{rows.map(agyCard)}</div>}
                 {agyData.installed && <DuplicateNote count={agyData.duplicates ?? 0} onClean={p.onDedupeAgy} />}
+              </section>
+            );
+          }
+          if (s.kind === 'codex') {
+            if (codexData === null) return null;
+            const rows = codexData.list;
+            return (
+              <section key={s.kind} className="cz-acct-mgr__sec" aria-label={s.title}>
+                <div className="cz-acct-mgr__sec-head">
+                  <h3><BrandIcon kind={s.kind} size={15} />{s.title}</h3>
+                  {codexData.installed && <span className="cz-acct-mgr__count">{rows.length}</span>}
+                  <span className="cz-acct-mgr__tip" title={s.tip}>{codexData.installed ? s.tip : '没有安装 Codex CLI'}</span>
+                  {codexData.installed && (
+                    <button type="button" className="cz-acct-mgr__add" onClick={() => p.onAdd(s.dialog)}>
+                      <Icon name="plus" size={12} />{s.add}
+                    </button>
+                  )}
+                </div>
+                {codexData.installed && rows.length > 0 && <div className="cz-acct-mgr__cards">{rows.map(codexCard)}</div>}
+                {codexData.installed && p.onDedupeCodex && <DuplicateNote count={codexData.duplicates ?? 0} onClean={p.onDedupeCodex} />}
               </section>
             );
           }

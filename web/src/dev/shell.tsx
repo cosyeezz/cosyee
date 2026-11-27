@@ -1,7 +1,7 @@
 // 外壳调试页：http://127.0.0.1:5173/?dev=shell
 import { useMemo, useState } from 'react';
 import { BUILTIN_PRICES, DEFAULT_SUBAGENTS } from '@cosyee/shared';
-import type { CachePoint, ContextUsage, DelegateModelList, DeletedSession, SessionSummary, SkillMode, SubagentConfig, SubagentState, SubagentTypeInfo, Turn, Workspace } from '@cosyee/shared';
+import type { CachePoint, ContextUsage, DelegateJobInfo, DelegateModelList, DeletedSession, SessionSummary, SkillMode, SubagentConfig, SubagentCost, SubagentRun, SubagentState, SubagentTypeInfo, Turn, Workspace } from '@cosyee/shared';
 import { AppShell } from '../ui/layout/AppShell';
 import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
 import { PinnedRail } from '../ui/sidebar/PinnedRail';
@@ -11,6 +11,7 @@ import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
 import { ChartRail } from '../ui/context/ChartRail';
+import { SubagentOverlay } from '../ui/flow/SubagentOverlay';
 import { FilesContext, type FilesApi } from '../ui/files/FileContext';
 import {
   mockAccount,
@@ -26,14 +27,28 @@ import {
 /** 上下文走势 / 缓存命中率的演示数据：第 4 次请求读了个大文件，第 5 次因此涨了一大截 */
 const devTurns: Turn[] = [
   {
-    id: 'dt0', userText: '看看这个项目的结构', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0,
+    id: 'dt0', userText: '看看这个项目的结构', attachments: [], status: 'done', statusText: '', answer: '', startedAt: 0,
+    subagents: [
+      { toolUseId: 'demo-native', title: '梳理 reducer 用量统计链路', subagentType: 'Explore', model: 'claude-sonnet-4-5-20250929', status: 'done', turn: { id: 'sub-demo-native', userText: '梳理 reducer', attachments: [], status: 'done', statusText: '', steps: [], answer: '', subagents: [], startedAt: 0 } },
+      { toolUseId: 'demo-agy', title: '探索前端交互动效与布局细节', subagentType: 'Explore', delegate: true, model: 'gemini-4-neon', status: 'done', turn: { id: 'sub-demo-agy', userText: '探索前端交互动效', attachments: [], status: 'done', statusText: '', steps: [], answer: '', subagents: [], startedAt: 0 } },
+    ],
     steps: [
       { kind: 'tool', id: 'd1', name: 'Glob', input: { pattern: 'src/**/*.ts' }, summary: 'Glob: src/**/*.ts', result: { content: 'a.ts b.ts '.repeat(80), isError: false } },
       { kind: 'tool', id: 'd2', name: 'Read', input: { file_path: 'src/reducer.ts' }, summary: 'Read: src/reducer.ts', result: { content: 'x'.repeat(56_000), isError: false } },
       { kind: 'tool', id: 'd3', name: 'Bash', input: { command: 'git log -5' }, summary: 'Bash: git log -5', result: { content: 'commit …'.repeat(60), isError: false } },
     ],
   },
-  { id: 'dt1', userText: '把 reducer 拆开', attachments: [], status: 'done', statusText: '', answer: '', subagents: [], startedAt: 0, steps: [] },
+  {
+    id: 'dt1', userText: '把 reducer 拆开', attachments: [], status: 'done', statusText: '', answer: '', startedAt: 0, steps: [],
+    subagents: [
+      { toolUseId: 'demo-codex', title: '实现 UsageBoard 单测与类型校验', subagentType: 'general-purpose', delegate: true, model: 'gpt-5.3-codex', status: 'done', turn: { id: 'sub-demo-codex', userText: '补充单测', attachments: [], status: 'done', statusText: '', steps: [], answer: '', subagents: [], startedAt: 0 } },
+    ],
+  },
+];
+const devSubCosts: SubagentCost[] = [
+  { agentId: 'ag-native-1', toolUseId: 'demo-native', agentType: 'Explore', source: 'native', requests: 4, cost: { input: 0.02, write: 0.14, read: 0.03, output: 0.04 }, uncached: 0.35, unpriced: 0, models: ['claude-sonnet-4-5-20250929'] },
+  { agentId: 'ag-agy-1', toolUseId: 'demo-agy', agentType: 'Explore', source: 'agy', requests: 3, cost: { input: 0.11, write: 0, read: 0.01, output: 0.03 }, uncached: 0.22, unpriced: 0, models: ['gemini-4-neon'] },
+  { agentId: 'ag-codex-1', toolUseId: 'demo-codex', agentType: 'general-purpose', source: 'codex', requests: 3, cost: { input: 0.04, write: 0, read: 0.01, output: 0.04 }, uncached: 0.14, unpriced: 0, models: ['gpt-5.3-codex'] },
 ];
 const devCache: CachePoint[] = [
   [0, 0, 18_000, 120, undefined],
@@ -44,6 +59,7 @@ const devCache: CachePoint[] = [
   [5, 37_100, 800, 30, undefined],
 ].map(([i, read, create, input, tools], n) => ({
   id: `dm${i}`, turn: n < 4 ? 0 : 1, read: read as number, create: create as number, input: input as number,
+  output: 420, model: 'claude-sonnet-4-5-20250929',
   rate: ((read as number) / ((read as number) + (create as number) + (input as number))) * 100,
   ...(tools ? { tools: tools as string[] } : {}),
 }));
@@ -66,10 +82,166 @@ const devDelegate: DelegateModelList = {
   at: 0,
 };
 
-/** ?dev=shell&stress=1：长名字、大数字，检查上下文栏在最窄时会不会溢出；&sub=claude|agy|unavail|fallback 切换子代理演示状态 */
+const devCodexDelegate: DelegateModelList = {
+  models: [
+    { value: 'gpt-5.3-codex', displayName: 'GPT-5.3 Codex', efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+    { value: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', efforts: ['low', 'medium', 'high'] },
+  ],
+  current: { model: 'gpt-5.3-codex', effort: 'medium' },
+  at: 0,
+};
+
+/** ?dev=shell&stress=1：长名字、大数字，检查上下文栏在最窄时会不会溢出；&sub=claude|agy|unavail|fallback 切换子代理演示状态；&overlay=native|codex|agy|empty 打开子代理统计浮层 */
 const devQuery = new URLSearchParams(location.search);
 const stress = devQuery.has('stress');
 const subMode = devQuery.get('sub');
+type OverlayDemoKind = 'native' | 'codex' | 'agy' | 'empty';
+const overlayParam = devQuery.get('overlay') as OverlayDemoKind | null;
+
+const nowTs = Date.now();
+const mkPt = (over: Partial<CachePoint> & { id: string; input: number; create: number; read: number }): CachePoint => {
+  const total = over.input + over.create + over.read;
+  return {
+    turn: 0,
+    rate: total > 0 ? (over.read / total) * 100 : 0,
+    ...over,
+  };
+};
+
+const OVERLAY_DEMOS: Record<OverlayDemoKind, { label: string; run: SubagentRun; job?: DelegateJobInfo }> = {
+  native: {
+    label: '原生（精确）',
+    run: {
+      toolUseId: 'demo-native',
+      title: '梳理 reducer 用量统计链路',
+      subagentType: 'Explore',
+      model: 'claude-sonnet-4-5-20250929',
+      effort: 'medium',
+      status: 'done',
+      contextWindow: 200_000,
+      cache: [
+        mkPt({ id: 'n1', input: 420, create: 22_000, read: 0, output: 380, model: 'claude-sonnet-4-5-20250929', tools: ['nt1'] }),
+        mkPt({ id: 'n2', input: 160, create: 6_400, read: 22_420, output: 520, model: 'claude-sonnet-4-5-20250929', tools: ['nt2'] }),
+        mkPt({ id: 'n3', input: 90, create: 14_200, read: 28_980, output: 640, model: 'claude-sonnet-4-5-20250929' }),
+        mkPt({ id: 'n4', input: 120, create: 1_800, read: 43_270, output: 910, model: 'claude-sonnet-4-5-20250929' }),
+      ],
+      turn: {
+        id: 'sub-demo-native',
+        userText: '检查 web/src/core/reducer 里缓存统计和历史还原的调用关系',
+        attachments: [],
+        status: 'done',
+        statusText: '',
+        steps: [
+          { kind: 'tool', id: 'nt1', name: 'Glob', input: { pattern: 'web/src/core/reducer/*.ts' }, summary: 'Glob: web/src/core/reducer/*.ts', result: { content: 'live.ts history.ts cacheHit.ts delegate.ts', isError: false } },
+          { kind: 'tool', id: 'nt2', name: 'Read', input: { file_path: 'web/src/core/reducer/live.ts' }, summary: 'Read: web/src/core/reducer/live.ts', result: { content: 'x'.repeat(28_000), isError: false } },
+        ],
+        answer: '已完成梳理：主线程统计落在 `SessionMeta.cache`，子代理统计落在 `SubagentRun.cache`。',
+        subagents: [],
+        startedAt: nowTs - 42_000,
+        endedAt: nowTs - 3_000,
+      },
+    },
+  },
+  codex: {
+    label: 'Codex（无写缓存）',
+    run: {
+      toolUseId: 'demo-codex',
+      title: '实现 UsageBoard 单测与类型校验',
+      subagentType: 'general-purpose',
+      delegate: true,
+      model: 'gpt-5.3-codex',
+      effort: 'high',
+      status: 'done',
+      contextWindow: 400_000,
+      cache: [
+        mkPt({ id: 'c1', input: 18_500, create: 0, read: 0, output: 640, model: 'gpt-5.3-codex', tools: ['ct1'] }),
+        mkPt({ id: 'c2', input: 3_200, create: 0, read: 18_500, output: 1_120, model: 'gpt-5.3-codex' }),
+        mkPt({ id: 'c3', input: 2_100, create: 0, read: 21_700, output: 880, model: 'gpt-5.3-codex' }),
+      ],
+      turn: {
+        id: 'sub-demo-codex',
+        userText: '补充 UsageBoard 和 usageStats 的单元测试',
+        attachments: [],
+        status: 'done',
+        statusText: '',
+        steps: [
+          { kind: 'tool', id: 'ct1', name: 'Bash', input: { command: 'npm test -w web' }, summary: 'Bash: npm test -w web', result: { content: 'PASS 12 tests', isError: false } },
+        ],
+        answer: '所有单测已通过。OpenAI / Codex 采用隐式缓存，`create = 0`，占用条展示读缓存与未缓存两段。',
+        subagents: [],
+        startedAt: nowTs - 68_000,
+        endedAt: nowTs - 5_000,
+      },
+    },
+  },
+  agy: {
+    label: 'Antigravity（估算）',
+    run: {
+      toolUseId: 'demo-agy',
+      title: '探索前端交互动效与布局细节',
+      subagentType: 'Explore',
+      delegate: true,
+      model: 'gemini-4-neon',
+      effort: 'low',
+      status: 'done',
+      contextWindow: 1_000_000,
+      cache: [
+        mkPt({ id: 'a1', input: 26_000, create: 0, read: 0, output: 450, model: 'gemini-4-neon', estimated: true, tools: ['at1'] }),
+        mkPt({ id: 'a2', input: 8_400, create: 0, read: 26_000, output: 720, model: 'gemini-4-neon', estimated: true }),
+        mkPt({ id: 'a3', input: 4_100, create: 0, read: 34_400, output: 610, model: 'gemini-4-neon', estimated: true }),
+      ],
+      turn: {
+        id: 'sub-demo-agy',
+        userText: '检查 ChartRail 和 ContextPanel 的响应式断点与动画参数',
+        attachments: [],
+        status: 'done',
+        statusText: '',
+        steps: [
+          { kind: 'tool', id: 'at1', name: 'Read', input: { file_path: 'web/src/ui/context/ChartRail.css' }, summary: 'Read: web/src/ui/context/ChartRail.css', result: { content: '/* ... */', isError: false } },
+        ],
+        answer: '已完成调研。悬停走势 / 命中率 / 花费图可查看「拆分按本轮合计估算」提示。',
+        subagents: [],
+        startedAt: nowTs - 29_000,
+        endedAt: nowTs - 2_000,
+      },
+    },
+  },
+  empty: {
+    label: '无数据（运行中）',
+    run: {
+      toolUseId: 'demo-empty',
+      title: '正在初始化代码审查任务',
+      subagentType: 'code-reviewer',
+      delegate: true,
+      background: true,
+      model: 'opus',
+      effort: 'high',
+      status: 'running',
+      cache: [],
+      turn: {
+        id: 'sub-demo-empty',
+        userText: '审查本次改动的所有边界条件',
+        attachments: [],
+        status: 'understanding',
+        statusText: '正在理解问题',
+        steps: [],
+        answer: '',
+        subagents: [],
+        startedAt: nowTs - 6_000,
+      },
+    },
+    job: {
+      toolUseId: 'demo-empty',
+      conversationId: 'conv-demo-empty',
+      description: '正在初始化代码审查任务',
+      background: true,
+      state: 'running',
+      startedAt: nowTs - 6_000,
+      pending: 1,
+      tail: '',
+    },
+  },
+};
 const devSubagentTypes: SubagentTypeInfo[] = [
   { name: 'Explore', description: 'Fast agent specialized for exploring codebases.', source: 'builtin', readOnly: true, model: 'haiku' },
   { name: 'Plan', description: 'Software architect agent for designing implementation plans.', source: 'builtin', readOnly: true },
@@ -79,46 +251,67 @@ const devSubagentTypes: SubagentTypeInfo[] = [
 ];
 
 function initialSubagents(): SubagentState {
-  const allOk: SubagentState['available'] = {
-    native: { ok: true },
-    claude: { ok: true },
-    agy: { ok: true },
-  };
+  const accounts: SubagentState['accounts'] = [
+    { backend: 'claude', id: 'default', label: 'cosyeey', group: 'claude' },
+    { backend: 'claude', id: 'api-1', label: '官方 API', group: 'api' },
+    { backend: 'claude', id: 'kiro-1', label: 'Kiro 代理', group: 'kiro' },
+    { backend: 'agy', id: 'agy-1', label: 'alex.chen@example.com', group: 'agy' },
+    { backend: 'codex', id: 'default', label: 'dev@openai.com', group: 'codex' },
+  ];
   const baseConfig: SubagentConfig = {
     ...DEFAULT_SUBAGENTS,
     native: { ...DEFAULT_SUBAGENTS.native, agents: { Explore: { model: 'haiku', effort: 'low' } } },
-    claude: { ...DEFAULT_SUBAGENTS.claude, agents: { 'code-reviewer': { model: 'opus', effort: 'high' } } },
-    agy: { ...DEFAULT_SUBAGENTS.agy, agents: { Explore: { model: 'gemini-4-neon', effort: 'low' } } },
+    delegate: {
+      default: { backend: 'claude', accountId: 'default', model: null, effort: null },
+      agents: {
+        Explore: { backend: 'agy', accountId: 'agy-1', model: 'gemini-4-neon', effort: 'low' },
+        'code-reviewer': { backend: 'claude', accountId: 'api-1', model: 'opus', effort: 'high' },
+      },
+    },
   };
-  const common = { agents: devSubagentTypes, disabledAgents: ['security-audit'] };
-  if (subMode === 'claude') {
-    return { config: { ...baseConfig, kind: 'claude' }, available: allOk, effective: 'claude', ...common };
+  const common = { accounts, routeFallbacks: {}, agents: devSubagentTypes, disabledAgents: ['security-audit'] };
+  if (subMode === 'delegate' || subMode === 'claude') {
+    return { config: { ...baseConfig, mode: 'delegate' }, effective: 'delegate', ...common };
   }
   if (subMode === 'agy') {
     return {
-      config: { ...baseConfig, kind: 'agy', agy: { ...baseConfig.agy, model: 'gemini-4-neon', effort: 'high' } },
-      available: allOk,
-      effective: 'agy',
+      config: {
+        ...baseConfig,
+        mode: 'delegate',
+        delegate: {
+          ...baseConfig.delegate,
+          default: { backend: 'agy', accountId: 'agy-1', model: 'gemini-4-neon', effort: 'high' },
+        },
+      },
+      effective: 'delegate',
       ...common,
     };
   }
-  if (subMode === 'unavail') {
+  if (subMode === 'codex') {
     return {
-      config: baseConfig,
-      available: { native: { ok: true }, claude: { ok: true }, agy: { ok: false, reason: '未安装 Antigravity CLI' } },
-      effective: 'native',
+      config: {
+        ...baseConfig,
+        mode: 'delegate',
+        delegate: {
+          ...baseConfig.delegate,
+          default: { backend: 'codex', accountId: 'default', model: 'gpt-5.3-codex', effort: 'high' },
+        },
+      },
+      effective: 'delegate',
       ...common,
     };
   }
   if (subMode === 'fallback') {
     return {
-      config: { ...baseConfig, kind: 'agy', agy: { ...baseConfig.agy, model: 'gemini-4-neon', effort: 'high' } },
-      available: { native: { ok: true }, claude: { ok: true }, agy: { ok: false, reason: '未安装 Antigravity CLI' } },
+      config: { ...baseConfig, mode: 'delegate' },
       effective: 'native',
       ...common,
+      accounts: [],
+      routeFallbacks: { Explore: 'Antigravity 账号未登录' },
+      fallbackReason: '默认委派账号未登录',
     };
   }
-  return { config: baseConfig, available: allOk, effective: 'native', ...common };
+  return { config: baseConfig, effective: 'native', ...common };
 }
 const devUsage: ContextUsage = stress
   ? {
@@ -171,6 +364,9 @@ export default function ShellDev() {
 
   const [usage, setUsage] = useState<ContextUsage | null>(devUsage);
   const [loading, setLoading] = useState(false);
+  const [overlayDemo, setOverlayDemo] = useState<OverlayDemoKind | null>(
+    overlayParam && overlayParam in OVERLAY_DEMOS ? overlayParam : null,
+  );
 
   const sessions = sessionsByWs[currentWs] ?? mockSessionsFor(currentWs);
   // 侧栏按工作空间分组，所以给它所有工作空间的会话
@@ -333,7 +529,17 @@ export default function ShellDev() {
             currentSessionId={currentId}
             onSelectSession={selectSession}
           />
-          <ChartRail open={ctxCollapsed && !narrow} usage={usage} cache={devCache} turns={devTurns} pricing={BUILTIN_PRICES} />
+          <ChartRail
+            open={ctxCollapsed && !narrow}
+            usage={usage}
+            cache={devCache}
+            turns={devTurns}
+            subCosts={devSubCosts}
+            subagents={subagents.config}
+            subagentAccounts={subagents.accounts}
+            billing={devQuery.get('billing') === 'subscription' ? 'subscription' : 'api'}
+            pricing={BUILTIN_PRICES}
+          />
           <div style={{ textAlign: 'center', lineHeight: 2 }}>
             <div>会话流 + 输入框 占位</div>
             <div>点账户栏可切换「已登录 / 未登录」</div>
@@ -356,6 +562,18 @@ export default function ShellDev() {
             >
               切换上下文：{usage ? '有数据 → 空态' : '空态 → 有数据'}
             </button>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginTop: 10 }}>
+              {(Object.keys(OVERLAY_DEMOS) as OverlayDemoKind[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setOverlayDemo(k)}
+                  style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', padding: '4px 10px', cursor: 'pointer', color: 'var(--text-2)' }}
+                >
+                  子代理浮层：{OVERLAY_DEMOS[k].label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       }
@@ -381,13 +599,25 @@ export default function ShellDev() {
           toolStats={stress ? { counts: { Bash: 123_456, Read: 8_921 }, skills: { impeccable: 1_234 }, sessions: 88, at: 0 } : null}
           cache={devCache}
           turns={devTurns}
+          subCosts={devSubCosts}
+          billing={devQuery.get('billing') === 'subscription' ? 'subscription' : 'api'}
+          onOpenSubagent={(_turnId, toolUseId) => {
+            const k = (Object.keys(OVERLAY_DEMOS) as OverlayDemoKind[]).find((x) => OVERLAY_DEMOS[x].run.toolUseId === toolUseId);
+            if (k) setOverlayDemo(k);
+          }}
           subagents={{
             state: subagents,
             onChange: (c: SubagentConfig) =>
-              setSubagents((prev) => ({ ...prev, config: c, effective: prev.available[c.kind]?.ok ? c.kind : 'native' })),
-            delegate: devDelegate,
-            onLoadDelegate: () => undefined,
-            accounts: { claude: 'cosyeey', agy: 'alex.chen@example.com' },
+              setSubagents((prev) => {
+                const def = c.delegate.default;
+                const defOk = !!def && prev.accounts.some((a) => a.backend === def.backend && a.id === def.accountId);
+                return { ...prev, config: c, effective: c.mode === 'delegate' && defOk ? 'delegate' : 'native' };
+              }),
+            delegateModels: {
+              'agy:agy-1': { list: devDelegate, error: null, loading: false },
+              'codex:default': { list: devCodexDelegate, error: null, loading: false },
+            },
+            onLoadDelegateModels: () => undefined,
             sessionAgents: ['Explore', 'Plan', 'general-purpose', 'statusline-setup', 'fork'],
             onToggleAgent: (name, enabled) =>
               setSubagents((prev) => ({ ...prev, disabledAgents: flip(prev.disabledAgents, name, enabled) })),
@@ -395,6 +625,25 @@ export default function ShellDev() {
           }}
         />
       }
+    />
+    <SubagentOverlay
+      run={overlayDemo ? OVERLAY_DEMOS[overlayDemo].run : null}
+      onClose={() => setOverlayDemo(null)}
+      subagents={{
+        ...subagents.config,
+        delegate: {
+          ...subagents.config.delegate,
+          agents: {
+            ...subagents.config.delegate.agents,
+            'general-purpose': { backend: 'codex', accountId: 'default', model: 'gpt-5.3-codex', effort: 'high' },
+          },
+        },
+      }}
+      subagentAccounts={subagents.accounts}
+      sessionBilling="subscription"
+      pricing={BUILTIN_PRICES}
+      delegates={overlayDemo && OVERLAY_DEMOS[overlayDemo].job ? [OVERLAY_DEMOS[overlayDemo].job!] : []}
+      onDelegateStop={(id) => console.info('[dev] stop delegate', id)}
     />
     </FilesContext.Provider>
     </SessionDetailContext.Provider>

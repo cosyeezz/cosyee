@@ -90,25 +90,29 @@ describe('REST', () => {
     const get = async () => (await fetch(url, { headers: auth })).json() as Promise<any>;
     const init = await get();
     expect(init.config).toEqual({
-      kind: 'native',
+      mode: 'native',
       native: { model: 'sonnet', effort: 'medium' },
-      claude: { model: null, effort: null },
-      agy: { model: null, effort: null },
+      delegate: { default: null },
     });
-    expect(init.available.native).toEqual({ ok: true });
+    expect(Array.isArray(init.accounts)).toBe(true);
+    expect(init.routeFallbacks).toEqual({});
     expect(init.effective).toBe('native');
     const next = {
-      kind: 'claude',
+      mode: 'delegate',
       native: { model: 'opus', effort: 'high' },
-      claude: { model: 'haiku', effort: 'low' },
-      agy: { model: 'gemini-4-neon', effort: 'low' },
+      delegate: {
+        default: { backend: 'claude', accountId: 'default', model: 'haiku', effort: 'low' },
+        agents: {
+          Explore: { backend: 'agy', accountId: 'agy1', model: 'gemini-4-neon', effort: 'low' },
+        },
+      },
     };
     const r = await (await post(next)).json() as any;
     expect(r.ok).toBe(true);
     expect(r.state.config).toEqual(next);
     expect((await get()).config).toEqual(next);
     expect((await post({ ...next, native: { model: 'x', effort: 'high' } })).status).toBe(400);
-    expect((await post({ ...next, kind: 'bad' })).status).toBe(400);
+    expect((await post({ ...next, mode: 'bad' })).status).toBe(400);
     expect((await get()).config).toEqual(next);
     expect((await fetch(`${base}/api/agent-models`, { headers: auth })).status).toBe(404);
     expect((await fetch(`${base}/api/agent-models`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).status).toBe(404);
@@ -118,33 +122,43 @@ describe('REST', () => {
     expect((await fetch(url, { method: 'DELETE', headers: auth })).status).toBe(404);
     expect((await fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{bad json' })).status).toBe(400);
     expect((await fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '' })).status).toBe(400);
-    for (const bad of [null, [], 'claude', 123, { kind: 'native' }, { ...next, native: null }, { ...next, claude: [] }, { ...next, agy: { model: 123, effort: null } }]) {
+    for (const bad of [
+      null,
+      [],
+      'claude',
+      123,
+      { mode: 'native' },
+      { ...next, native: null },
+      { ...next, delegate: [] },
+      { ...next, delegate: { default: { backend: 'bad', accountId: 'default', model: null, effort: null } } },
+    ]) {
       expect((await post(bad)).status).toBe(400);
     }
     expect(
       (await fetch(url, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ ...next, agy: { model: 'x'.repeat(1024 * 1024 + 10), effort: null } }),
+        body: JSON.stringify({ ...next, delegate: { default: { backend: 'agy', accountId: 'agy1', model: 'x'.repeat(1024 * 1024 + 10), effort: null } } }),
       })).status,
     ).toBe(413);
     // 返回结构与 SubagentState 协议一致，且确实落盘到 state.json
     const after = await get();
     expect(after.config).toEqual(next);
-    expect(typeof after.available.native.ok).toBe('boolean');
-    expect(typeof after.available.claude.ok).toBe('boolean');
-    expect(typeof after.available.agy.ok).toBe('boolean');
-    expect(['native', 'claude', 'agy']).toContain(after.effective);
+    expect(Array.isArray(after.accounts)).toBe(true);
+    expect(typeof after.routeFallbacks).toBe('object');
+    expect(['native', 'delegate']).toContain(after.effective);
     await srv.store.idle();
     const persisted = JSON.parse(fs.readFileSync(path.join(tmp, 'state.json'), 'utf8')) as { subagents: unknown };
     expect(persisted.subagents).toEqual(next);
   });
   it('subagents 端到端：老 state.json 自动迁移 + 并发快速切换保持磁盘与内存一致', async () => {
     const sf = path.join(tmp, 'state-subagents-e2e.json');
+    const agyDir = path.join(tmp, 'agy-e2e');
     fs.writeFileSync(
       sf,
       JSON.stringify({
         nativeAgents: false,
+        agyAccounts: { list: [{ id: 'agy1', label: 'A', dir: agyDir, createdAt: 1 }], active: 'agy1' },
         agentModels: {
           claude: { model: 'opus', effort: 'high' },
           agy: { model: 'gemini-4-neon', effort: 'low' },
@@ -156,18 +170,21 @@ describe('REST', () => {
       const url = `http://127.0.0.1:${s.port}/api/subagents`;
       const init = (await (await fetch(url)).json()) as any;
       expect(init.config).toEqual({
-        kind: 'agy',
+        mode: 'delegate',
         native: { model: 'opus', effort: 'high' },
-        claude: { model: null, effort: null },
-        agy: { model: 'gemini-4-neon', effort: 'low' },
+        delegate: { default: { backend: 'agy', accountId: 'agy1', model: 'gemini-4-neon', effort: 'low' } },
       });
       // 并发连续切换，验证不损坏 state.json 且 GET 与磁盘一致
-      const mk = (kind: 'native' | 'claude' | 'agy') => ({ ...init.config, kind });
+      const mk = (mode: 'native' | 'delegate', backend: 'claude' | 'agy' = 'claude') => ({
+        ...init.config,
+        mode,
+        delegate: { default: { backend, accountId: backend === 'agy' ? 'agy1' : 'default', model: null, effort: null } },
+      });
       const resps = await Promise.all([
-        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('claude')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('delegate', 'claude')) }),
         fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('native')) }),
-        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('agy')) }),
-        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('claude')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('delegate', 'agy')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('delegate', 'claude')) }),
       ]);
       expect(resps.every((r) => r.status === 200)).toBe(true);
       await s.store.idle();

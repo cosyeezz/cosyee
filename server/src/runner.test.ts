@@ -827,12 +827,14 @@ describe('delegate（cosyee MCP）', () => {
     const { anyR } = make();
     const okBackend = (id: string) => ({ id, label: id, available: () => true });
     const badBackend = (id: string) => ({ id, label: id, available: () => false });
-    const mkCfg = (kind: 'native' | 'claude' | 'agy') => ({
-      kind,
-      native: { model: 'sonnet', effort: 'medium' },
-      claude: { model: null, effort: null },
-      agy: { model: null, effort: null },
-    });
+    const mkCfg = (kind: 'native' | 'claude' | 'agy') =>
+      kind === 'native'
+        ? { mode: 'native' as const, native: { model: 'sonnet' as const, effort: 'medium' as const }, delegate: { default: null } }
+        : {
+            mode: 'delegate' as const,
+            native: { model: 'sonnet' as const, effort: 'medium' as const },
+            delegate: { default: { backend: kind, accountId: 'default', model: null, effort: null } },
+          };
     const allDelegate = [
       'mcp__cosyee__delegate',
       'mcp__cosyee__delegate_send',

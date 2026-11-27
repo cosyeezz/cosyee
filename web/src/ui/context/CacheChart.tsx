@@ -17,7 +17,16 @@ const R = 4; // 标记点半径 4 → 直径 8px
 const pctText = (n: number) => `${Math.round(n)}%`;
 
 /** intro：面板的数据唤醒期间为 true，最新值从 0 滚上来，折线从左往右描出（样式见 ContextPanel.css 的 is-waking） */
-export function CacheChart({ points, intro = false }: { points: CachePoint[] | undefined; intro?: boolean }) {
+export function CacheChart({
+  points,
+  intro = false,
+  singleTurn = false,
+}: {
+  points: CachePoint[] | undefined;
+  intro?: boolean;
+  /** 单轮模式（子代理）：悬停提示省略「第 1 轮」 */
+  singleTurn?: boolean;
+}) {
   const list = points ?? [];
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -103,12 +112,13 @@ export function CacheChart({ points, intro = false }: { points: CachePoint[] | u
         {hover !== null && (
           <ChartTip at={tipAt} testId="cache-tip">
             <div className="cz-ctx__cache-tip-title">
-              第 {cur.turn + 1} 轮 · 第 {active + 1} 次请求 · 命中 {cur.rate.toFixed(1)}%
+              {singleTurn ? `第 ${active + 1} 次请求 · 命中 ${cur.rate.toFixed(1)}%` : `第 ${cur.turn + 1} 轮 · 第 ${active + 1} 次请求 · 命中 ${cur.rate.toFixed(1)}%`}
             </div>
             <div className="cz-ctx__cache-tip-row">读缓存 {formatTokens(cur.read)}</div>
             <div className="cz-ctx__cache-tip-row">写缓存 {formatTokens(cur.create)}</div>
             <div className="cz-ctx__cache-tip-row">未缓存 {formatTokens(cur.input)}</div>
             <div className="cz-ctx__cache-tip-row is-total">输入合计 {formatTokens(total)}</div>
+            {cur.estimated && <div className="cz-ctx__cache-tip-row is-total">拆分按本轮合计估算</div>}
           </ChartTip>
         )}
       </div>

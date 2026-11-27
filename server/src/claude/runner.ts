@@ -8,6 +8,7 @@ import {
   type AppliedSettings,
   type AskQuestion,
   type CosyeeUserEvent,
+  type DelegateBackendId,
   type PendingPrompt,
   type PermissionMode,
   type PromptReply,
@@ -17,7 +18,7 @@ import {
   type SessionConfig,
   type StopKind,
   type SubagentConfig,
-  type SubagentKind,
+  type SubagentMode,
 } from '@cosyee/shared';
 import { DEFAULT_ID } from '../accounts/index.js';
 import { LineSplitter, parseLine } from '../transcript.js';
@@ -27,6 +28,7 @@ import { DelegateJobs } from '../delegate/jobs.js';
 import { sharedAgyBackend } from '../delegate/acp.js';
 import { findDiskAgent } from '../delegate/agents.js';
 import type { DelegateBackend } from '../delegate/backend.js';
+import { delegateAvailability, resolveRoute, routeAvailability, routeBackendIds, routeDefaults } from '../delegate/routes.js';
 import { baseClaudeHome } from '../paths.js';
 import { apiFlagEnv, claudeEnv, killTree, killTreeSync, removePrivateSettings, resolveClaude, spawnSpec, writePrivateSettings } from './bin.js';
 import { ControlTracker } from './control.js';
@@ -97,12 +99,14 @@ export interface RunnerInit {
   flagSettings?: () => Record<string, unknown>;
   /** Cosyee 生成的插件目录（--plugin-dir），每次启动时读取；null 不带 */
   pluginDir?: () => string | null;
+  /** 每次启动 claude 进程时额外注入的环境变量（如 COSYEE_API_URL / COSYEE_AGENT_TOKEN） */
+  extraEnv?: () => Record<string, string>;
   /** 用户消息写给 CLI 前的改写（附上句中引用的 skill 正文）；界面与排队列表仍用原文 */
   expandText?: (text: string) => string;
   /** 用哪个账号启动（多账号）：dir 为 null = 默认账号；不传 = 当前账号 */
   account?: { id: string; dir: string | null };
   /** 委派后端集合（按类型动态选用）；不传则只挂默认 agy 单例 */
-  delegateBackends?: Partial<Record<'claude' | 'agy', DelegateBackend | null>>;
+  delegateBackends?: Partial<Record<DelegateBackendId, DelegateBackend | null>>;
   /** 已关闭的智能体名，每次调用时读取 */
   disabledAgents?: () => readonly string[];
   /** 子代理配置，每次调用时读取（改设置立即生效）；不传 = 默认（native） */
@@ -311,6 +315,7 @@ export class Runner {
     this.subagents = init.subagents;
     this.control = new ControlTracker((o) => this.writeLine(o), `cosyee-${this.sessionId.slice(0, 8)}`, this.timings.requestTimeoutMs);
     this.initArgs = { isNew: init.isNew, flagSettings: init.flagSettings, pluginDir: init.pluginDir };
+    this.extraEnv = init.extraEnv;
     this.expandText = init.expandText;
     this.agentDefaults = init.agentDefaults;
     this.delegateJobs = init.delegateJobs;
@@ -328,13 +333,14 @@ export class Runner {
 
   /** delegate 的进程内 MCP 服务（只要有任意可用委派后端且 delegate 未被停用就在启动时注册，以便运行中切换立即生效） */
   private mcp: CosyeeMcp | null = null;
-  /** 当前被 hold 住热进程的委派后端（目前仅 agy 实现 hold） */
-  private delegateBackendInUse: DelegateBackend | null = null;
-  private releaseDelegateHold: (() => void) | null = null;
-  private readonly backends: Partial<Record<'claude' | 'agy', DelegateBackend | null>>;
+  /** 当前被 hold 住热进程的委派后端 id（逗号连接；目前仅 agy 实现 hold）与对应的释放函数 */
+  private delegateHoldKey = '';
+  private releaseDelegateHolds: (() => void)[] = [];
+  private readonly backends: Partial<Record<DelegateBackendId, DelegateBackend | null>>;
   private readonly disabledAgents?: () => readonly string[];
   private readonly subagents?: () => SubagentConfig;
   private readonly expandText?: (text: string) => string;
+  private readonly extraEnv?: () => Record<string, string>;
   private initArgs: { isNew: boolean; flagSettings?: () => Record<string, unknown>; pluginDir?: () => string | null };
   /** API / Kiro 账号这次启动用的私有 settings 文件（含密钥），进程退出后删掉 */
   private settingsFile: string | null = null;
@@ -357,8 +363,8 @@ export class Runner {
     return this.mcp !== null;
   }
 
-  /** 本进程实际生效的子代理类型：未注册 cosyee MCP 时恒为 native */
-  runningSubagent(baseDeny?: readonly string[]): SubagentKind {
+  /** 本进程实际生效的子代理模式：未注册 cosyee MCP 时恒为 native */
+  runningSubagent(baseDeny?: readonly string[]): SubagentMode {
     return this.mcp ? this.effectiveSubagent(baseDeny) : 'native';
   }
 
@@ -370,29 +376,40 @@ export class Runner {
   private backendFor(kind: string): DelegateBackend | null {
     if (kind === 'claude') return this.backends.claude ?? null;
     if (kind === 'agy') return this.backends.agy ?? null;
+    if (kind === 'codex') return this.backends.codex ?? null;
     return null;
   }
 
+  private readonly routeDeps = { backendFor: (id: string) => this.backendFor(id) };
+
+  /** 注册 cosyee MCP 用的后端：默认路线可用时用它，否则任意一个可用的后端（运行中切到委派时 ctx() 再按路线取） */
   private anyAvailableBackend(): DelegateBackend | null {
+    const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
+    const def = cfg.delegate.default;
+    if (def && routeAvailability(def, this.routeDeps).ok) {
+      const b = this.backendFor(def.backend);
+      if (b) return b;
+    }
     if (this.backends.claude?.available()) return this.backends.claude;
     if (this.backends.agy?.available()) return this.backends.agy;
+    if (this.backends.codex?.available()) return this.backends.codex;
     return null;
   }
 
-  /** 按当前子代理配置与后端可用性算实际生效的类型；delegate 被手动停用或选中后端不可用时退回 native */
-  effectiveSubagent(baseDeny?: readonly string[]): SubagentKind {
+  /** 按当前子代理配置与路线可用性算实际生效的模式；delegate 被手动停用或默认路线不可用时退回 native */
+  effectiveSubagent(baseDeny?: readonly string[]): SubagentMode {
     const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
-    if (cfg.kind === 'native') return 'native';
+    if (cfg.mode === 'native') return 'native';
     const deny = baseDeny ?? (this.initArgs.flagSettings?.()?.permissions as { deny?: readonly string[] } | undefined)?.deny;
     if (deny?.includes(DELEGATE_TOOL_NAME)) return 'native';
-    return this.backendFor(cfg.kind)?.available() ? cfg.kind : 'native';
+    return delegateAvailability(cfg, this.routeDeps).ok ? 'delegate' : 'native';
   }
 
   /**
-   * 按当前子代理类型补齐 permissions.deny（三种类型互斥）：
+   * 按当前子代理模式补齐 permissions.deny（两种模式互斥）：
    * - 本进程没注册 cosyee MCP（无可用委派后端或启动时 delegate 已停用）：不动 base；
    * - effective === 'native'：放行原生子代理工具，把 delegate 系列工具（mcp__cosyee__*）全部加进 deny；
-   * - effective === 'claude' / 'agy'：放行 delegate 系列工具，把原生子代理相关工具（NATIVE_SUBAGENT_TOOLS）全部加进 deny（CLI 会自动恢复 WebFetch）。
+   * - effective === 'delegate'：放行 delegate 系列工具，把原生子代理相关工具（NATIVE_SUBAGENT_TOOLS）全部加进 deny（CLI 会自动恢复 WebFetch）。
    * 不修改 base，用户自己在工具面板停用的项在任意模式下都会保留、且去重不重复添加。
    */
   withSubagentDeny(base: readonly string[]): string[] {
@@ -407,15 +424,37 @@ export class Runner {
     return out;
   }
 
-  /** 按当前生效的委派后端同步热进程保活（切到 agy 时 hold，切走时释放） */
+  /** 委派模式下路线用到的后端（去重） */
+  private routeBackends(): DelegateBackend[] {
+    const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
+    return routeBackendIds(cfg)
+      .map((id) => this.backendFor(id))
+      .filter((b): b is DelegateBackend => !!b);
+  }
+
+  /** 按当前生效的委派路线同步热进程保活（路线用到 agy 时 hold，切走时释放） */
   syncDelegateHold(baseDeny?: readonly string[]): void {
     const eff = this.runningSubagent(baseDeny);
-    const want = eff === 'native' ? null : this.backendFor(eff);
-    if (want === this.delegateBackendInUse) return;
-    this.releaseDelegateHold?.();
-    this.releaseDelegateHold = null;
-    this.delegateBackendInUse = want;
-    if (want?.hold) this.releaseDelegateHold = want.hold(this.cwd);
+    const want = eff === 'native' ? [] : this.routeBackends().filter((b) => b.hold);
+    const key = want.map((b) => b.id).join(',');
+    if (key === this.delegateHoldKey) return;
+    for (const release of this.releaseDelegateHolds) release();
+    this.releaseDelegateHolds = want.map((b) => b.hold!(this.cwd));
+    this.delegateHoldKey = key;
+  }
+
+  /** 后台预热委派路线用到的后端与账号（不阻塞；已热则无操作） */
+  private prewarmRoutes(): void {
+    const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
+    const seen = new Set<string>();
+    for (const r of [cfg.delegate.default, ...Object.values(cfg.delegate.agents ?? {})]) {
+      if (!r) continue;
+      const k = `${r.backend}\0${r.accountId}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (!routeAvailability(r, this.routeDeps).ok) continue;
+      this.backendFor(r.backend)?.prewarm?.(this.cwd, r.accountId);
+    }
   }
 
   // ───────────── 启动 ─────────────
@@ -431,9 +470,10 @@ export class Runner {
 
     // 先构造环境变量（Kiro 账号会在这里检查总开关并确保代理启动），若抛错避免泄漏 mcp / delegate hold
     const env = claudeEnv(this.accountDir);
+    if (this.extraEnv) Object.assign(env, this.extraEnv());
     const flags = this.initArgs.flagSettings?.() ?? {};
     // 只要有任何可用的委派后端、且用户没在工具面板停用 delegate，就注册 cosyee MCP，
-    // 这样运行中在 native / claude / agy 之间切换时，经 permissions.deny 与 ctx() 即可立即生效。
+    // 这样运行中在 native / delegate 之间切换时，经 permissions.deny 与 ctx() 即可立即生效。
     const anyBackend = isDenied(flags, DELEGATE_TOOL_NAME) ? null : this.anyAvailableBackend();
     let mcp: CosyeeMcp | null = null;
     if (anyBackend) {
@@ -445,27 +485,18 @@ export class Runner {
         jobs,
         ctx: () => {
           const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
-          const eff = this.effectiveSubagent();
-          const backend = (eff !== 'native' ? this.backendFor(eff) : null) ?? this.anyAvailableBackend() ?? anyBackend;
-          const defaults =
-            backend.id === 'claude'
-              ? {
-                  model: cfg.claude.model,
-                  effort: cfg.claude.effort,
-                  parentModel: this.applied.model,
-                  parentEffort: this.applied.effort,
-                  ...(cfg.claude.agents ? { agents: cfg.claude.agents } : {}),
-                }
-              : {
-                  model: cfg.agy.model,
-                  effort: cfg.agy.effort,
-                  ...(cfg.agy.agents ? { agents: cfg.agy.agents } : {}),
-                };
+          const parent = { model: this.applied.model, effort: this.applied.effort };
+          const def = resolveRoute(cfg, '', this.routeDeps);
+          const backend = def?.backend ?? this.anyAvailableBackend() ?? anyBackend;
           return {
             cwd: this.cwd,
             backend,
             backendFor: (id) => this.backendFor(id),
-            defaults,
+            defaults: def ? routeDefaults(def, '', parent) : null,
+            route: (agentName) => {
+              const r = resolveRoute(cfg, agentName, this.routeDeps);
+              return r ? { backend: r.backend, accountId: r.route.accountId, defaults: routeDefaults(r, agentName, parent) } : null;
+            },
             account: { id: this.accountId ?? DEFAULT_ID, dir: this.accountDir ?? null },
             agents: scope(),
             readOnly: (this.applied.permissionMode ?? 'auto') === 'plan',
@@ -581,7 +612,7 @@ export class Runner {
     }
     // 用户发消息时后台预热当前生效的委派后端（不阻塞；已热则无操作），模型派任务时不用等冷启动
     const eff = this.mcp ? this.effectiveSubagent() : 'native';
-    if (eff !== 'native') this.backendFor(eff)?.prewarm?.(this.cwd);
+    if (eff !== 'native') this.prewarmRoutes();
     const uuid = id || randomUUID();
 
     if (this._status === 'idle' && !fresh) {
@@ -1371,8 +1402,9 @@ export class Runner {
     if (this.closed) return;
     this.closed = true;
     this.mcp?.abortAll();
-    this.releaseDelegateHold?.();
-    this.releaseDelegateHold = null;
+    for (const release of this.releaseDelegateHolds) release();
+    this.releaseDelegateHolds = [];
+    this.delegateHoldKey = '';
     for (const line of this.splitter.flush()) this.onLine(line);
     this.control.rejectAll('claude 进程已退出');
     this.setQueue([]); // 进程没了，排队的消息也没了

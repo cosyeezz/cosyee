@@ -3,7 +3,14 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DelegateJobState, DelegateNotification } from '@cosyee/shared';
+import {
+  type CachePoint,
+  COSYEE_USAGE_SUBTYPE,
+  type DelegateJobState,
+  type DelegateNotification,
+  isCosyeeUsageEvent,
+  pushCachePoint,
+} from '@cosyee/shared';
 import { isSafeId } from '../paths.js';
 import { parseLine, type Json } from '../transcript.js';
 import { ACCOUNT_ID_RE } from '../workspaces.js';
@@ -33,6 +40,36 @@ export interface PersistedJob {
 export interface PersistedJobs {
   jobs: PersistedJob[];
   pendingNotifications: DelegateNotification[];
+}
+
+export type DelegateUsageSource = 'claude' | 'codex' | 'agy';
+
+export interface DelegateUsageRecord {
+  /** 委派任务 conversationId；没有 jobs.json 元信息时回退为 toolUseId */
+  agentId: string;
+  /** 委派工具调用 id */
+  toolUseId: string;
+  /** 子代理类型（来自 jobs.json 或 ids/<convId>.json）；没有时省略 */
+  agentType?: string;
+  /** 委派后端来源；未知时省略 */
+  source?: DelegateUsageSource;
+  /** 按 point.id 去重合并后的逐次请求用量 */
+  points: CachePoint[];
+}
+
+const DELEGATE_SOURCES = new Set<DelegateUsageSource>(['claude', 'codex', 'agy']);
+
+function asDelegateSource(v: unknown): DelegateUsageSource | undefined {
+  return typeof v === 'string' && DELEGATE_SOURCES.has(v as DelegateUsageSource) ? (v as DelegateUsageSource) : undefined;
+}
+
+function inferSourceFromPoints(points: readonly CachePoint[]): DelegateUsageSource | undefined {
+  for (const p of points) {
+    if (p.id.startsWith('codex:')) return 'codex';
+    if (p.id.startsWith('agy:')) return 'agy';
+    if (p.id.startsWith('msg_')) return 'claude';
+  }
+  return undefined;
 }
 
 export interface DelegateRecorderOptions {
@@ -78,7 +115,15 @@ export class DelegateRecorder {
       }
       const r = this.rec(sessionId, e?.parent_tool_use_id);
       if (!r) continue;
-      if (e.type === 'stream_event') this.stream(r, e);
+      if (e.type === 'system' && e.subtype === COSYEE_USAGE_SUBTYPE) {
+        this.append(r, {
+          type: e.type,
+          subtype: e.subtype,
+          parent_tool_use_id: e.parent_tool_use_id,
+          point: e.point,
+          ...(e.window !== undefined ? { window: e.window } : {}),
+        });
+      } else if (e.type === 'stream_event') this.stream(r, e);
       else if (e.type === 'assistant' || e.type === 'user') {
         this.closeBlock(r);
         r.msg = null;
@@ -102,6 +147,69 @@ export class DelegateRecorder {
     const out = raw.split('\n').map((l) => (l ? parseLine(l) : null)).filter((x): x is Json => !!x);
     if (rec?.open?.text) out.push(this.blockEntry(rec, rec.open));
     return out.length ? out : null;
+  }
+
+  /** 读取一个会话下所有委派落盘文件里的 cosyee_usage，按 point.id 去重合并后返回 */
+  async listUsage(sessionId: string): Promise<DelegateUsageRecord[]> {
+    if (!isSafeId(sessionId)) return [];
+    const sessionDir = path.join(this.dir, sessionId);
+    const prefix = sessionDir + path.sep;
+    // 先等内存中该会话尚未落盘的写链完成
+    const waits: Promise<void>[] = [];
+    for (const [file, r] of this.recs) {
+      if (file.startsWith(prefix)) waits.push(r.chain.catch(() => {}));
+    }
+    if (waits.length) await Promise.all(waits);
+
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(sessionDir);
+    } catch {
+      return [];
+    }
+    const toolUseIds = names
+      .filter((n) => n.endsWith('.jsonl'))
+      .map((n) => n.slice(0, -'.jsonl'.length))
+      .filter((id) => isSafeId(id))
+      .sort();
+    if (toolUseIds.length === 0) return [];
+
+    const persisted = this.readJobs(sessionId);
+    const jobByTool = new Map<string, PersistedJob>();
+    if (persisted) {
+      for (const j of persisted.jobs) jobByTool.set(j.toolUseId, j);
+    }
+
+    const out: DelegateUsageRecord[] = [];
+    for (const toolUseId of toolUseIds) {
+      let raw: string;
+      try {
+        raw = await fs.promises.readFile(path.join(sessionDir, `${toolUseId}.jsonl`), 'utf8');
+      } catch {
+        continue;
+      }
+      const points: CachePoint[] = [];
+      for (const line of raw.split('\n')) {
+        if (!line || !line.includes(COSYEE_USAGE_SUBTYPE)) continue;
+        const e = parseLine(line);
+        if (isCosyeeUsageEvent(e)) pushCachePoint(points, e.point);
+      }
+      if (points.length === 0) continue;
+
+      const job = jobByTool.get(toolUseId);
+      const idRec = job ? await this.readId(job.conversationId) : null;
+      const agentId = job?.conversationId ?? toolUseId;
+      const agentType = job?.agent || idRec?.agent || undefined;
+      const source = asDelegateSource(idRec?.backend) ?? inferSourceFromPoints(points);
+      out.push({
+        agentId,
+        toolUseId,
+        ...(agentType ? { agentType } : {}),
+        ...(source ? { source } : {}),
+        points,
+      });
+    }
+    return out;
   }
 
   /** 存一份任务结果。放在各会话之外：分支会话也能凭 id 取到来源会话里的结果 */

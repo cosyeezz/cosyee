@@ -1,6 +1,6 @@
 // agy 的模型 id 是「基础模型-强度」拼起来的（gemini-4-neon-high），个别模型不分强度。
 // 这里负责拆分、归组成界面用的列表，以及把「基础模型 + 强度」解析回 agy 认的完整 id。
-import type { DelegateModel, DelegateModelList, Effort } from '@cosyee/shared';
+import { DELEGATE_EFFORTS, type DelegateEffort, type DelegateModel, type DelegateModelList } from '@cosyee/shared';
 import type { Json } from '../transcript.js';
 
 export interface AvailableModel {
@@ -8,12 +8,11 @@ export interface AvailableModel {
   name: string;
 }
 
-const EFFORT_ORDER: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const SUFFIX_RE = /^(.+)-(low|medium|high|xhigh|max)$/;
 
 export interface SplitModel {
   model: string;
-  effort: Effort | null;
+  effort: DelegateEffort | null;
 }
 
 /** ACP session/new、session/load 结果里的 models.availableModels */
@@ -27,7 +26,7 @@ export function parseAvailable(models: Json | undefined): AvailableModel[] {
 /** 完整 id → 基础模型 + 强度 */
 export function splitModelId(id: string): SplitModel {
   const m = SUFFIX_RE.exec(id);
-  return m ? { model: m[1]!, effort: m[2] as Effort } : { model: id, effort: null };
+  return m ? { model: m[1]!, effort: m[2] as DelegateEffort } : { model: id, effort: null };
 }
 
 /** 按基础模型归组，保持 agy 给的顺序；强度按低到高排 */
@@ -43,7 +42,7 @@ export function groupModels(available: AvailableModel[]): DelegateModel[] {
     }
     if (effort && !g.efforts.includes(effort)) g.efforts.push(effort);
   }
-  for (const g of map.values()) g.efforts.sort((x, y) => EFFORT_ORDER.indexOf(x) - EFFORT_ORDER.indexOf(y));
+  for (const g of map.values()) g.efforts.sort((x, y) => DELEGATE_EFFORTS.indexOf(x) - DELEGATE_EFFORTS.indexOf(y));
   return [...map.values()];
 }
 
@@ -52,15 +51,15 @@ export function toModelList(available: AvailableModel[], current: string | null,
 }
 
 /** 离 want 最近的档位（一样近取低的） */
-function nearest(efforts: Effort[], want: Effort): Effort {
-  const dist = (e: Effort) => Math.abs(EFFORT_ORDER.indexOf(e) - EFFORT_ORDER.indexOf(want));
+function nearest(efforts: DelegateEffort[], want: DelegateEffort): DelegateEffort {
+  const dist = (e: DelegateEffort) => Math.abs(DELEGATE_EFFORTS.indexOf(e) - DELEGATE_EFFORTS.indexOf(want));
   return efforts.reduce((best, e) => (dist(e) < dist(best) ? e : best));
 }
 
 export interface ResolveOptions {
   /** 基础模型或完整 id；不传 = 沿用 current 的基础模型 */
   model?: string;
-  effort?: Effort;
+  effort?: DelegateEffort;
   /** 强度是调用时点名的：模型没有这一档就报错。否则（来自默认设置）落到最近的一档，且让位给完整 id 自带的强度 */
   strictEffort: boolean;
   /** 会话当前的完整 id */

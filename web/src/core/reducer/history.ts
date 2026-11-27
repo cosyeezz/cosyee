@@ -3,7 +3,7 @@
 //   实时：cosyee_user 开轮、result 收尾；历史：真实用户消息开轮，system/turn_duration 收尾（没有就在下一轮开始或文件结束时收尾）。
 // 历史里每条条目只含一个 content block（同 message.id 分多行），与流式 index 一致，直接复用 applyAssistantMessage。
 
-import { parseDelegateNotification, type SessionMeta, type Turn } from '@cosyee/shared';
+import { isCosyeeUsageEvent, parseDelegateNotification, type CachePoint, type SessionMeta, type Turn } from '@cosyee/shared';
 import {
   addUserSkill,
   applyAssistantMessage,
@@ -38,6 +38,8 @@ interface Ctx {
   sub: boolean;
   /** 当前轮由斜杠命令开启时的命令名 / 参数；紧随其后的技能正文条目据此建 user 来源的技能加载 */
   cmd: { name: string; args: string } | null;
+  /** 子代理模式下 cosyee_usage 报告的上下文窗口 */
+  contextWindow?: number;
 }
 
 /** user 条目的文字：字符串，或 text 块拼接；含 tool_result 的返回 null */
@@ -285,13 +287,17 @@ function processEntries(entries: unknown[], sub: boolean, running: boolean): Ctx
         if (!ctx.cur) break;
         touch(ctx.cur, '');
         applyAssistantMessage(ctx.cur, '', raw.message);
-        if (!sub) {
-          const p = cachePointOf(raw.message, ctx.turns.length);
-          if (p) pushCachePoint((ctx.meta.cache ??= []), p);
-        }
+        const p = cachePointOf(raw.message, sub ? 0 : ctx.turns.length);
+        if (p) pushCachePoint((ctx.meta.cache ??= []), p);
         break;
       }
       case 'system': {
+        if (sub && isCosyeeUsageEvent(raw)) {
+          const pt: CachePoint = raw.point.turn === 0 ? raw.point : { ...raw.point, turn: 0 };
+          pushCachePoint((ctx.meta.cache ??= []), pt);
+          if (raw.window !== undefined) ctx.contextWindow = raw.window;
+          break;
+        }
         if (raw.subtype === 'compact_boundary') {
           if (sub) break;
           const cache = ctx.meta.cache;
@@ -322,9 +328,25 @@ export function buildFromHistory(entries: unknown[], opts: { running?: boolean }
   return { turns: ctx.turns, meta: ctx.meta, book: ctx.last?.book ?? null };
 }
 
-/** 子代理 jsonl 条目 → 一轮。首条 user（prompt）作为 userText；没有则用标题 */
-export function buildSubagentTurn(entries: unknown[], opts: { title: string; toolUseId: string; running?: boolean }): Turn {
+export interface SubagentHistory {
+  turn: Turn;
+  cache?: CachePoint[];
+  contextWindow?: number;
+}
+
+/** 子代理 jsonl 条目 → 轮次 + 用量（含 assistant usage 与 cosyee_usage） */
+export function buildSubagentHistory(entries: unknown[], opts: { title: string; toolUseId: string; running?: boolean }): SubagentHistory {
   const ctx = processEntries(entries, true, opts.running === true);
   const t = ctx.turns[0] ?? makeTurn(0, '', 0);
-  return { ...t, id: `sub-${opts.toolUseId}`, userText: t.userText || opts.title };
+  const turn: Turn = { ...t, id: `sub-${opts.toolUseId}`, userText: t.userText || opts.title };
+  return {
+    turn,
+    ...(ctx.meta.cache?.length ? { cache: ctx.meta.cache } : {}),
+    ...(ctx.contextWindow !== undefined ? { contextWindow: ctx.contextWindow } : {}),
+  };
+}
+
+/** 子代理 jsonl 条目 → 一轮。首条 user（prompt）作为 userText；没有则用标题 */
+export function buildSubagentTurn(entries: unknown[], opts: { title: string; toolUseId: string; running?: boolean }): Turn {
+  return buildSubagentHistory(entries, opts).turn;
 }

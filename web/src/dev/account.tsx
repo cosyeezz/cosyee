@@ -1,11 +1,9 @@
 // 账号菜单 + API 账号对话框（模型映射）+ Antigravity 多账号调试页：http://127.0.0.1:5173/?dev=account&w=240
 // 不连后端：替换 api 里账号相关的方法，返回假数据。
-// w = 侧栏宽度；dlg=api|edit|agy 直接打开对话框；agy=open|none|missing 控制 Antigravity 组状态；
-// tab=main|sub 初始分段；eff=native|claude|agy 子代理生效类型；suberr=1 模拟 claudeError；legacy=1 模拟老服务端（无 subagent 字段）。
+// w = 侧栏宽度；dlg=api|edit|agy|kiro|codex 直接打开对话框；agy/codex=open|none|missing 控制分组状态；remote=1 模拟远程访问。
 import { useState } from 'react';
 import {
-  DEFAULT_SUBAGENTS,
-  type AccountEntry, type AccountList, type AccountLogin, type AccountMode, type AgyAccountEntry, type AgyAccountList, type ComponentList, type KiroBalance, type KiroStatus, type SubagentKind, type SubagentState, type UsageInfo,
+  type AccountEntry, type AccountList, type AccountLogin, type AccountMode, type AgyAccountEntry, type AgyAccountList, type CodexAccountEntry, type CodexAccountList, type CodexLoginMethod, type ComponentList, type KiroBalance, type KiroStatus, type UsageInfo,
 } from '@cosyee/shared';
 import '../styles/tokens.css';
 import '../styles/motion.css';
@@ -16,20 +14,13 @@ import { AccountMenu } from '../ui/sidebar/AccountMenu';
 import { AddTargetSeg } from '../ui/sidebar/AddTargetSeg';
 import { AgyAccountDialog } from '../ui/sidebar/AgyAccountDialog';
 import { ApiAccountDialog } from '../ui/sidebar/ApiAccountDialog';
+import { CodexAccountDialog } from '../ui/sidebar/CodexAccountDialog';
 import { KiroAccountDialog } from '../ui/sidebar/KiroAccountDialog';
 
 const params = new URLSearchParams(location.search);
 const agyParam = params.get('agy');
-const tabParam = params.get('tab');
-if (tabParam === 'main' || tabParam === 'sub') {
-  try {
-    localStorage.setItem('cz-acct-tab', tabParam);
-  } catch { /* ignore */ }
-}
-const legacyMode = params.get('legacy') === '1';
-const subErrParam = params.get('suberr') === '1';
-const effRaw = params.get('eff');
-const effKind: SubagentKind = effRaw === 'native' || effRaw === 'agy' || effRaw === 'claude' ? effRaw : 'claude';
+const codexParam = params.get('codex');
+const remoteParam = params.get('remote') === '1';
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -119,26 +110,13 @@ const delay = <T,>(v: T, ms = 150) => new Promise<T>((r) => setTimeout(() => r(v
 const a = api as unknown as Record<string, unknown>;
 // dup=N：模拟 N 个被隐藏的重复账号（清理入口）
 let dupCount = Number(params.get('dup') ?? 0);
-let subClaudeId = 'a1';
-let subClaudeError: string | undefined = subErrParam ? '同步子代理登录态失败：凭据文件无写入权限' : undefined;
 const buildAccountList = (): AccountList => ({
   mode,
   list: list.map((e) => ({ ...e })),
   login: null,
   duplicates: dupCount,
-  ...(legacyMode ? {} : { subagent: { claude: subClaudeId, ...(subClaudeError ? { claudeError: subClaudeError } : {}) } }),
 });
 a.accounts = () => delay<AccountList>(buildAccountList());
-a.setSubagentAccount = (id: string) => {
-  subClaudeId = id;
-  subClaudeError = undefined;
-  return delay<AccountList>(buildAccountList(), 120);
-};
-a.subagents = () => delay<SubagentState>({
-  config: { ...DEFAULT_SUBAGENTS, kind: effKind },
-  available: { native: { ok: true }, claude: { ok: true }, agy: { ok: agyInstalled } },
-  effective: effKind,
-}, 80);
 a.dedupeAccounts = () => {
   const r = { removed: Math.max(0, dupCount - 1), skipped: dupCount > 0 ? 1 : 0 };
   dupCount = r.skipped;
@@ -235,6 +213,105 @@ a.setAgyLabel = (id: string, label: string) => {
   return delay({ ok: true });
 };
 
+const codexInstalled = codexParam !== 'missing';
+const codexList: CodexAccountEntry[] = codexParam === 'none' || codexParam === 'missing' ? [] : [
+  {
+    id: 'default', label: '', email: 'dev@openai.com', plan: 'plus', planType: 'plus', authMode: 'chatgpt',
+    loggedIn: true, active: true, isDefault: true, running: 0,
+    quota: {
+      fetchedAt: now,
+      planType: 'plus',
+      groups: [{
+        limitId: 'codex',
+        primary: { usedPercent: 42, windowMins: 300, resetsAt: now + 2.4 * H },
+        secondary: { usedPercent: 18, windowMins: 10080, resetsAt: now + 4 * D },
+      }],
+    },
+  },
+  {
+    id: 'codex-pro', label: '主力 Pro', email: 'pro@studio.dev', plan: 'pro', planType: 'pro', authMode: 'chatgpt',
+    loggedIn: true, active: false, isDefault: false, running: 1,
+    quota: {
+      fetchedAt: now,
+      planType: 'pro',
+      groups: [{
+        limitId: 'codex',
+        primary: { usedPercent: 86, windowMins: 300, resetsAt: now + 55 * 60_000 },
+        secondary: { usedPercent: 92, windowMins: 10080, resetsAt: now + 2.5 * D },
+      }],
+    },
+  },
+  {
+    id: 'codex-api', label: 'API 备用', email: null, plan: null, planType: null, authMode: 'apiKey',
+    loggedIn: true, active: false, isDefault: false, running: 0, quota: null,
+  },
+  {
+    id: 'codex-off', label: '过期账号', email: 'old@example.com', plan: 'free', planType: 'free', authMode: 'chatgpt',
+    loggedIn: false, active: false, isDefault: false, running: 0, quota: null,
+  },
+];
+let codexLoginState: AccountLogin | null = null;
+let codexLoginSeq = 0;
+
+a.codexAccounts = () => delay<CodexAccountList>({
+  installed: codexInstalled,
+  list: codexList.map((e) => ({ ...e })),
+  login: codexLoginState && (codexLoginState.status === 'starting' || codexLoginState.status === 'waiting') ? { ...codexLoginState } : null,
+});
+a.switchCodexAccount = (id: string) => {
+  for (const e of codexList) e.active = e.id === id;
+  return delay({ ok: true });
+};
+a.startCodexLogin = (o: { method: CodexLoginMethod; label?: string; accountId?: string; apiKey?: string }) => {
+  codexLoginSeq += 1;
+  if (o.method === 'apiKey') {
+    const id = o.accountId ?? `codex-api-${codexLoginSeq}`;
+    if (!o.accountId) {
+      codexList.push({
+        id, label: o.label || `API ${codexLoginSeq}`, email: null, plan: null, planType: null, authMode: 'apiKey',
+        loggedIn: true, active: false, isDefault: false, running: 0, quota: null,
+      });
+    }
+    codexLoginState = { loginId: `codex-L${codexLoginSeq}`, method: 'apiKey', status: 'done', url: null, accountId: id, error: null };
+    return delay({ ...codexLoginState });
+  }
+  codexLoginState = o.method === 'deviceAuth'
+    ? {
+        loginId: `codex-L${codexLoginSeq}`,
+        method: 'deviceAuth',
+        status: 'waiting',
+        url: 'https://auth.openai.com/codex/device',
+        userCode: 'WXYZ-9876',
+        accountId: o.accountId ?? null,
+        error: null,
+      }
+    : {
+        loginId: `codex-L${codexLoginSeq}`,
+        method: 'chatgpt',
+        status: 'waiting',
+        url: `https://auth.openai.com/oauth/authorize?state=${codexLoginSeq}`,
+        accountId: o.accountId ?? null,
+        error: null,
+      };
+  return delay({ ...codexLoginState });
+};
+a.codexLogin = () => delay(codexLoginState ? { ...codexLoginState } : { loginId: 'none', status: 'failed', url: null, accountId: null, error: '登录不存在' });
+a.cancelCodexLogin = () => {
+  codexLoginState = null;
+  return delay({ ok: true });
+};
+a.removeCodexAccount = (id: string) => {
+  const i = codexList.findIndex((e) => e.id === id);
+  if (i >= 0) codexList.splice(i, 1);
+  return delay({ ok: true });
+};
+a.dedupeCodexAccounts = () => delay({ removed: 0, skipped: 0 });
+a.setCodexLabel = (id: string, label: string) => {
+  const hit = codexList.find((e) => e.id === id);
+  if (hit) hit.label = label;
+  return delay({ ok: true });
+};
+
 export default function AccountDev() {
   const w = Number(params.get('w')) || 240;
   const dlg = params.get('dlg');
@@ -246,7 +323,7 @@ export default function AccountDev() {
         <div className="cz-sidebar">
           <div style={{ flex: 1 }} />
           <div className="cz-sidebar__account">
-            <AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} />
+            <AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} remote={remoteParam} />
           </div>
         </div>
       </aside>
@@ -255,7 +332,16 @@ export default function AccountDev() {
           onClose={() => setOpen(false)}
           onDone={() => {}}
           onSwitch={() => {}}
-          targetSeg={<AddTargetSeg target="agy" agyDisabled={!agyInstalled} onChange={() => {}} />}
+          targetSeg={<AddTargetSeg target="agy" agyDisabled={!agyInstalled} codexDisabled={!codexInstalled} onChange={() => {}} />}
+        />
+      )}
+      {open && dlg === 'codex' && (
+        <CodexAccountDialog
+          remote={remoteParam}
+          onClose={() => setOpen(false)}
+          onDone={() => {}}
+          onSwitch={() => {}}
+          targetSeg={<AddTargetSeg target="codex" agyDisabled={!agyInstalled} codexDisabled={!codexInstalled} onChange={() => {}} />}
         />
       )}
       {open && dlg === 'kiro' && (
@@ -266,7 +352,7 @@ export default function AccountDev() {
           onChangeKind={() => {}}
         />
       )}
-      {open && dlg !== 'agy' && dlg !== 'kiro' && (
+      {open && dlg !== 'agy' && dlg !== 'kiro' && dlg !== 'codex' && (
         <ApiAccountDialog
           edit={dlg === 'edit' ? { id: rs.id, label: rs.label, title: 'RS', api: rs.api! } : undefined}
           onClose={() => setOpen(false)}

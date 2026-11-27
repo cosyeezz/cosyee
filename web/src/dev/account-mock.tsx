@@ -12,6 +12,7 @@ import { GooeyIndicator } from '../ui/motion/GooeyIndicator';
 import { ThemeSwitch } from '../ui/sidebar/ThemeSwitch';
 import { avatarColor, avatarInitial } from '../ui/sidebar/avatar';
 import { planChip } from '../ui/sidebar/AccountMenu';
+import { codexWindows, nearestWindow } from '../ui/sidebar/AccountQuota';
 import { limitShortTitle, loginExpiry, resetShort, subscriptionEstimate } from '../ui/usage/format';
 import { ACCOUNTS, GROUPS, NOW, usable, type MockAccount } from './account-mock-data';
 
@@ -50,6 +51,10 @@ function nearest(a: MockAccount): Nearest | null {
     const { g, b } = all.sort((x, y) => (x.b.resetsAt ?? Infinity) - (y.b.resetsAt ?? Infinity))[0]!;
     const label = b.window === '5h' ? '5h' : '本周';
     return { label, percent: b.percent, severity: b.severity, tip: `${g} ${label} ${b.percent}% · ${resetShort(b.resetsAt, NOW)}` };
+  }
+  if (a.codexQuota) {
+    const w = nearestWindow(codexWindows(a.codexQuota));
+    if (w) return { label: w.label, percent: w.percent, severity: w.severity, tip: `${w.label} ${w.percent}% · ${resetShort(w.resetsAt, NOW)}` };
   }
   if (a.kiro) {
     const p = a.kiro.limit > 0 ? Math.min(100, Math.round((a.kiro.used / a.kiro.limit) * 100)) : 0;
@@ -157,6 +162,18 @@ function FullQuota({ a }: { a: MockAccount }) {
         ))}
       </div>
     );
+  }
+  if (a.codexQuota) {
+    const ws = codexWindows(a.codexQuota);
+    if (ws.length) {
+      return (
+        <div className="mk-q">
+          {ws.map((w) => (
+            <QLine key={w.key} label={w.label} percent={w.percent} severity={w.severity} reset={resetShort(w.resetsAt, NOW)} />
+          ))}
+        </div>
+      );
+    }
   }
   if (a.kiro) {
     const p = a.kiro.limit > 0 ? Math.round((a.kiro.used / a.kiro.limit) * 100) : 0;

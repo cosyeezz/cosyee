@@ -4,6 +4,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
+  type CachePoint,
+  cosyeeUsageEvent,
   DELEGATE_BG_MARKER,
   type DelegateJobInfo,
   type DelegateJobState,
@@ -26,7 +28,7 @@ import { type BackendDefaults, BackendError, type BackendResult, type BackendRun
 import { READ_ONLY_DISALLOWED_TOOLS } from './claudeBackend.js';
 import { type GitRunner, taskContext } from './context.js';
 import { agentParamsEvent, type RunFn } from './mcp.js';
-import { AcpProgress } from './progress.js';
+import { AcpProgress, delegateToolId } from './progress.js';
 import type { DelegateIdRecord, PersistedJob, PersistedJobs } from './record.js';
 
 export interface DelegateCtx {
@@ -35,6 +37,11 @@ export interface DelegateCtx {
   /** 续接历史会话时按原后端 id 取回对应后端（切换子代理类型后继续已有对话） */
   backendFor?: (id: string) => DelegateBackend | null;
   defaults?: BackendDefaults | null;
+  /**
+   * 委派路线：按代理类型名取新会话用的后端、账号与默认值（SubagentConfig.delegate）；
+   * 返回 null 或不传 = 用上面的 backend / defaults
+   */
+  route?: (agentName: string) => { backend: DelegateBackend; accountId: string; defaults: BackendDefaults } | null;
   /** 主会话当前的 Claude 账号（Claude 委派新会话沿用） */
   account?: { id: string; dir: string | null };
   agents: AgentScope;
@@ -589,7 +596,7 @@ export class DelegateJobs {
       if (ctx.readOnly && !isReadOnly(chosen)) return toolError(PLAN_MODE_ERR);
       const id = newConversationId();
       this.saveIdRecord(id, {
-        backend: ctx.backend.id,
+        backend: ctx.route?.(chosen.name)?.backend.id ?? ctx.backend.id,
         agent: chosen.name,
         cwd: ctx.cwd,
         createdAt: this.now(),
@@ -916,7 +923,10 @@ export class DelegateJobs {
       const emit = (evs: Json[]) => {
         if (evs.length) this.o.onEvents?.(evs);
       };
-      const defaults = ctx.defaults;
+      // 新会话按代理类型走委派路线（后端 / 账号 / 模型）；续接沿用记录里的后端与账号
+      const routed = isNewSession ? (ctx.route?.(job.agent.name) ?? null) : null;
+      const baseBackend = routed?.backend ?? ctx.backend;
+      const defaults = routed ? routed.defaults : ctx.defaults;
       const agentDisallowed: string[] = [];
       if (isReadOnly(job.agent)) agentDisallowed.push(...READ_ONLY_DISALLOWED_TOOLS);
       if (job.agent.disallowedTools?.length) {
@@ -924,10 +934,10 @@ export class DelegateJobs {
           if (!agentDisallowed.includes(t)) agentDisallowed.push(t);
         }
       }
-      let activeBackendId = ctx.backend.id;
+      let activeBackendId = baseBackend.id;
       try {
-        let runner = ctx.backend;
-        if (!this.o.run && rec?.sessionId && rec.backend && rec.backend !== ctx.backend.id) {
+        let runner = baseBackend;
+        if (!this.o.run && rec?.sessionId && rec.backend && rec.backend !== baseBackend.id) {
           const orig = ctx.backendFor?.(rec.backend);
           if (!orig?.available()) {
             throw new BackendError(`创建该委派会话的后端（${rec.backend}）当前不可用，请新建委派`, rec.sessionId, rec.accountId);
@@ -955,8 +965,10 @@ export class DelegateJobs {
           cwd: ctx.cwd,
           prompt: backendPrompt,
           ...(rec?.sessionId ? { sessionId: rec.sessionId, accountId: rec.accountId ?? 'default' } : {}),
+          ...(routed ? { routeAccountId: routed.accountId } : {}),
           ...(ctx.account ? { account: ctx.account } : {}),
           ...(ctx.readOnly ? { readOnly: true } : {}),
+          ...(isReadOnly(job.agent) ? { agentReadOnly: true } : {}),
           ...(job.agent.tools !== undefined ? { tools: job.agent.tools } : {}),
           ...(agentDisallowed.length ? { disallowedTools: agentDisallowed } : {}),
           ...(isNewSession ? { systemPrompt: agentSystemPrompt(job.agent) } : {}),
@@ -1006,6 +1018,13 @@ export class DelegateJobs {
                   if (!this.live(job, gen)) return;
                   progress.model = m.model;
                   emit([agentParamsEvent(toolUseId, m.model, m.effort)]);
+                },
+                onUsage: (point: CachePoint, win: number | null) => {
+                  if (!this.live(job, gen)) return;
+                  const mapped: CachePoint = point.tools?.length
+                    ? { ...point, tools: point.tools.map((id) => delegateToolId(toolUseId, id)) }
+                    : point;
+                  emit([cosyeeUsageEvent(toolUseId, mapped, win ?? undefined)]);
                 },
               }
             : {}),

@@ -258,10 +258,9 @@ process.stdin.on('end', () => {
       config: { model: 'haiku', effort: 'low' },
       delegateBackends: { agy: agyBackend },
       subagents: () => ({
-        kind: 'agy',
+        mode: 'delegate',
         native: { model: 'sonnet', effort: 'medium' },
-        claude: { model: null, effort: null },
-        agy: { model: null, effort: null },
+        delegate: { default: { backend: 'agy', accountId: 'default', model: null, effort: null } },
       }),
       flagSettings: () => (denied.length ? { permissions: { deny: denied } } : {}),
       hooks: {
@@ -272,7 +271,7 @@ process.stdin.on('end', () => {
         onExit: () => {},
       },
     });
-    expect(r.effectiveSubagent()).toBe('agy');
+    expect(r.effectiveSubagent()).toBe('delegate');
     denied = [DELEGATE_TOOL_NAME];
     expect(r.effectiveSubagent()).toBe('native');
   });
@@ -311,18 +310,24 @@ process.stdin.on('end', () => {
     };
     (m as any).runners.set(r.sessionId, r);
 
+    const delegateCfg = (backend: 'claude' | 'agy'): SubagentConfig => ({
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend, accountId: 'default', model: null, effort: null } },
+    });
+
     // 1. 切到 claude：补齐全部原生子代理工具，SendMessage 不重复，保留用户停用的 Glob
-    await m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' });
+    await m.setSubagents(delegateCfg('claude'));
     expect(pushedDenies.at(-1)).toEqual(['SendMessage', 'Glob', 'Agent', 'ListAgents', 'TeamCreate', 'TeamDelete']);
     expect(pushedDenies.at(-1)).not.toContain('TaskStop');
     expect(pushedDenies.at(-1)).not.toContain('Monitor');
 
     // 2. 切到 agy：同样全量停用原生子代理工具
-    await m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'agy' });
+    await m.setSubagents(delegateCfg('agy'));
     expect(pushedDenies.at(-1)).toEqual(['SendMessage', 'Glob', 'Agent', 'ListAgents', 'TeamCreate', 'TeamDelete']);
 
     // 3. 切回 native：移除我们加的 Agent/ListAgents/TeamCreate/TeamDelete，但保留用户停用的 SendMessage 与 Glob，并停用 delegate 系列
-    await m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'native' });
+    await m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), mode: 'native' });
     expect(pushedDenies.at(-1)).toEqual(['SendMessage', 'Glob', ...DELEGATE_TOOL_NAMES]);
 
     // 4. 确认 NATIVE_SUBAGENT_TOOLS 导出值
@@ -342,7 +347,11 @@ process.stdin.on('end', () => {
   });
 
   it('Bug 9: 启动时未注册 cosyee MCP 的会话，后续切到 claude/agy 时 fetchContext 应按该 runner 实际状态上报 nativeAgents: true', async () => {
-    let subCfg: SubagentConfig = { ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' };
+    let subCfg: SubagentConfig = {
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend: 'claude', accountId: 'default', model: null, effort: null } },
+    };
     const okBackend = (id: string): DelegateBackend => ({
       id,
       label: id,
@@ -433,13 +442,17 @@ process.stdin.on('end', () => {
       nativeAgents: true,
     });
 
-    // 先发起第一次切换（claude）并等待它进入在途的 apply_flag_settings
-    const p1 = m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' });
+    // 先发起第一次切换（delegate）并等待它进入在途的 apply_flag_settings
+    const p1 = m.setSubagents({
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend: 'claude', accountId: 'default', model: null, effort: null } },
+    });
     await new Promise((r) => setTimeout(r, 10));
     expect(resolvers).toHaveLength(1);
 
     // p1 仍在 await 期间并发发起第二次切换（native）：串行链应让 p2 排队，不并发发出第二个 request
-    const p2 = m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'native' });
+    const p2 = m.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), mode: 'native' });
     await new Promise((r) => setTimeout(r, 10));
     expect(resolvers).toHaveLength(1);
     resolvers.shift()!();

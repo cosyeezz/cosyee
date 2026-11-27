@@ -140,7 +140,11 @@ describe('POST /api/tools', () => {
     }
 
     // 模拟历史 state.json 中残留了单独停用的 delegate_result
-    await post('/api/subagents', { ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' });
+    await post('/api/subagents', {
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend: 'claude', accountId: 'default', model: null, effort: null } },
+    });
     srv.store.state.disabledTools = ['mcp__cosyee__delegate_result', 'Glob'];
     const r = await post('/api/tools', { name: 'Glob', enabled: true });
     expect(r.status).toBe(200);
@@ -154,7 +158,7 @@ describe('POST /api/tools', () => {
     // 重新启用 delegate 时顺手清理残留的辅助工具停用项
     const cleaned = (await (await post('/api/tools', { name: 'mcp__cosyee__delegate', enabled: true })).json()) as { disabledTools: string[] };
     expect(cleaned.disabledTools).toEqual([]);
-    await post('/api/subagents', { ...structuredClone(DEFAULT_SUBAGENTS), kind: 'native' });
+    await post('/api/subagents', structuredClone(DEFAULT_SUBAGENTS));
   }, 30_000);
 
   it('探测进程收不到 init：上下文带上落盘的 knownTools', async () => {
@@ -204,26 +208,35 @@ describe('POST /api/agents', () => {
 describe('POST /api/subagents', () => {
   const lastDeny = () =>
     (JSON.parse(log().filter((l) => l.startsWith('CTRL apply_flag_settings ')).pop()!.slice('CTRL apply_flag_settings '.length)) as { permissions: { deny: string[] } }).permissions.deny;
-  const savedKind = (want: SubagentConfig['kind']) =>
-    vi.waitFor(() => expect((JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { subagents?: SubagentConfig }).subagents?.kind).toBe(want));
+  const savedSub = (wantMode: SubagentConfig['mode'], wantBackend?: 'claude' | 'agy') =>
+    vi.waitFor(() => {
+      const sub = (JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { subagents?: SubagentConfig }).subagents;
+      expect(sub?.mode).toBe(wantMode);
+      if (wantBackend) expect(sub?.delegate.default?.backend).toBe(wantBackend);
+    });
   type Ctx = { nativeAgents?: boolean; disabledTools?: string[]; disabledAgents?: string[] };
   const refresh = async (sid: string) => (await (await post(`/api/context/${sid}/refresh`, { cwd, draft: true })).json()) as Ctx;
-  const cfgOf = (kind: SubagentConfig['kind']): SubagentConfig => ({ ...structuredClone(DEFAULT_SUBAGENTS), kind });
+  const nativeCfg = (): SubagentConfig => structuredClone(DEFAULT_SUBAGENTS);
+  const delegateCfg = (backend: 'claude' | 'agy', accountId = backend === 'agy' ? 'abcd1234' : 'default'): SubagentConfig => ({
+    ...structuredClone(DEFAULT_SUBAGENTS),
+    mode: 'delegate',
+    delegate: { default: { backend, accountId, model: null, effort: null } },
+  });
 
   it('非法配置返回 400；默认 native，deny 含 delegate 系列', async () => {
-    expect((await post('/api/subagents', { kind: 'bad' })).status).toBe(400);
+    expect((await post('/api/subagents', { mode: 'bad' })).status).toBe(400);
     expect((await post('/api/subagents', {})).status).toBe(400);
     expect((await refresh('0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a14')).nativeAgents).toBe(true);
   }, 30_000);
 
   it('切到 claude / agy 后落盘并立即停用整个 Agent、放行 delegate；新进程启动就带上；切回 native 后恢复', async () => {
-    const r = await post('/api/subagents', cfgOf('claude'));
+    const r = await post('/api/subagents', delegateCfg('claude'));
     expect(r.status).toBe(200);
     const body = (await r.json()) as { ok: boolean; state: SubagentState };
     expect(body.ok).toBe(true);
-    expect(body.state.effective).toBe('claude');
+    expect(body.state.effective).toBe('delegate');
     expect(lastDeny()).toEqual([...NATIVE_SUBAGENT_TOOLS]);
-    await savedKind('claude');
+    await savedSub('delegate', 'claude');
 
     const ctx = await refresh('0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a15');
     expect(ctx.nativeAgents).toBe(false);
@@ -233,24 +246,24 @@ describe('POST /api/subagents', () => {
     const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]!) as { permissions?: { deny?: string[] } };
     expect(settings.permissions?.deny).toEqual([...NATIVE_SUBAGENT_TOOLS]);
 
-    await post('/api/subagents', cfgOf('agy'));
+    await post('/api/subagents', delegateCfg('agy'));
     expect(lastDeny()).toEqual([...NATIVE_SUBAGENT_TOOLS]);
-    await savedKind('agy');
+    await savedSub('delegate', 'agy');
 
-    await post('/api/subagents', cfgOf('native'));
+    await post('/api/subagents', nativeCfg());
     expect(lastDeny()).toEqual([...DELEGATE_TOOL_NAMES]);
-    await savedKind('native');
+    await savedSub('native');
   }, 30_000);
 
   it('委派模式下手动停用 delegate：立即退回 native（放行 Agent）；重新启用后又停用 Agent', async () => {
-    await post('/api/subagents', cfgOf('claude'));
+    await post('/api/subagents', delegateCfg('claude'));
     srv.store.state.disabledTools = ['mcp__cosyee__delegate'];
     await post('/api/tools', { name: 'Glob', enabled: false });
     expect(lastDeny()).toEqual(['mcp__cosyee__delegate', 'Glob', ...DELEGATE_TOOL_NAMES.slice(1)]);
     srv.store.state.disabledTools = ['Glob'];
     await post('/api/tools', { name: 'Glob', enabled: true });
     expect(lastDeny()).toEqual([...NATIVE_SUBAGENT_TOOLS]);
-    await post('/api/subagents', cfgOf('native'));
+    await post('/api/subagents', nativeCfg());
   }, 30_000);
 
   it('不修改用户级 / 项目级 settings.json（含用户自定义 deny、注释、损坏 JSON），且多工作区运行中会话同时生效、无重复项', async () => {
@@ -271,7 +284,7 @@ describe('POST /api/subagents', () => {
     await post(`/api/context/${sid2}/refresh`, { cwd: cwd2, draft: true });
 
     const beforeApplies = log().filter((l) => l.startsWith('CTRL apply_flag_settings ')).length;
-    await post('/api/subagents', cfgOf('claude'));
+    await post('/api/subagents', delegateCfg('claude'));
     const afterClaude = log()
       .filter((l) => l.startsWith('CTRL apply_flag_settings '))
       .slice(beforeApplies)
@@ -286,7 +299,7 @@ describe('POST /api/subagents', () => {
 
     // 切回 native：所有运行中进程立即放行 Agent、停用全部 delegate，无重复
     const beforeNative = log().filter((l) => l.startsWith('CTRL apply_flag_settings ')).length;
-    await post('/api/subagents', cfgOf('native'));
+    await post('/api/subagents', nativeCfg());
     const afterNative = log()
       .filter((l) => l.startsWith('CTRL apply_flag_settings '))
       .slice(beforeNative)
@@ -335,13 +348,13 @@ describe('POST /api/subagents', () => {
         });
       // 拉起运行中进程
       await post2('/api/context/0b7f5d0e-1c1e-4e0a-9d49-6b1f3a0c9a21/refresh', { cwd: ws, draft: true });
-      // 尝试切到不可用的 agy -> 服务端保存 kind='agy'，但 effective 退回 'native'
-      const r = await post2('/api/subagents', cfgOf('agy'));
+      // 尝试切到不可用的 agy -> 服务端保存 mode='delegate'，但 effective 退回 'native'
+      const r = await post2('/api/subagents', delegateCfg('agy', 'abcd1234'));
       expect(r.status).toBe(200);
       const body = (await r.json()) as { ok: boolean; state: SubagentState };
-      expect(body.state.config.kind).toBe('agy');
-      expect(body.state.available.agy.ok).toBe(false);
+      expect(body.state.config.mode).toBe('delegate');
       expect(body.state.effective).toBe('native');
+      expect(body.state.fallbackReason).toBeTruthy();
       // 运行中进程收到的 deny 仍保持原生模式（放行 Agent、停用 delegate）
       const lines = fs.readFileSync(log2, 'utf8').split('\n').filter((l) => l.startsWith('CTRL apply_flag_settings '));
       const last = (JSON.parse(lines.pop()!.slice('CTRL apply_flag_settings '.length)) as { permissions: { deny: string[] } }).permissions.deny;

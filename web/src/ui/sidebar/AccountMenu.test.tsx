@@ -63,14 +63,10 @@ const openMenu = async () => {
 };
 /** 账号弹层 */
 const menu = () => document.querySelector<HTMLElement>('.cz-acct-menu');
-const tabBtn = (label: string) =>
-  [...(menu()?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])].find((b) => b.textContent === label)!;
-const switchTab = async (label: string) => {
-  click(tabBtn(label));
-  await flush();
-};
-const picks = () => [...document.querySelectorAll<HTMLButtonElement>('.cz-acct-pick')];
+const picks = () => [...document.querySelectorAll<HTMLButtonElement>('button.cz-acct-pick')];
 const pickOf = (name: string) => picks().find((b) => b.querySelector('.cz-acct-pick__name b')?.textContent === name);
+const agyRows = () => [...(menu()?.querySelectorAll<HTMLElement>('.cz-acct-pick--readonly') ?? [])];
+const agyRowOf = (name: string) => agyRows().find((r) => r.querySelector('.cz-acct-pick__name b')?.textContent === name);
 /** 管理账号面板 */
 const manager = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="管理账号"]');
 const openManager = async () => {
@@ -625,7 +621,7 @@ describe('Antigravity 多账号', () => {
     expect(agySubtitle(agyEntry({ id: 'a2', label: '备用', plan: null, loggedIn: false }))).toBe('需要登录');
   });
 
-  it('弹层子代理分段只列出已登录的 Antigravity 账号（没登录的不出现）；agy 请求失败不影响 Claude', async () => {
+  it('弹层只列出已登录的 Antigravity 账号（没登录的不出现）；agy 请求失败不影响 Claude', async () => {
     routes = { 'GET /api/accounts': () => ({ body: list([entry({})]) }) };
     await openMenu();
     expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
@@ -641,23 +637,22 @@ describe('Antigravity 多账号', () => {
       ]) }),
     };
     await openMenu();
-    await switchTab('子代理');
-    const sec = menu()!.querySelector('section[aria-label="Antigravity"]')!;
+    const sec = menu()!.querySelector('[role="group"][aria-label="Antigravity"]')!;
+    expect(sec).not.toBeNull();
+    expect(sec.querySelector('.cz-acct-pick-grp')?.textContent).toContain('仅展示');
     expect([...sec.querySelectorAll('.cz-acct-pick__name b')].map((b) => b.textContent)).toEqual(['main@example.com', '工作']);
+    expect(sec.querySelectorAll('button').length).toBe(0);
     expect(sec.textContent).not.toContain('委派任务');
   });
 
-  it('没有 Antigravity 账号：弹层子代理卡和管理面板下面都留空，不提示去登录', async () => {
+  it('没有 Antigravity 账号：弹层不显示 Antigravity 分组；管理面板下面留空但保留登录入口', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
       'GET /api/agy-accounts': () => ({ body: agyList([]) }),
     };
     await openMenu();
-    await switchTab('子代理');
-    const sec = menu()!.querySelector('section[aria-label="Antigravity"]')!;
-    expect(sec.querySelector('.cz-acct-sub-note')).toBeNull();
-    expect(sec.querySelectorAll('.cz-acct-pick').length).toBe(0);
-    expect(sec.textContent).not.toContain('登录');
+    expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
+    expect(menu()!.querySelector('.cz-sidebar__menu-list .cz-sidebar__menu-sep')).toBeNull();
 
     click(button('管理账号')!);
     await flush();
@@ -668,7 +663,7 @@ describe('Antigravity 多账号', () => {
     expect(btnIn(mgr, '登录 Antigravity')).toBeDefined();
   });
 
-  it('agy 额度：弹层取最先重置的窗口，管理面板按模型组列出全部窗口；没登录的不显示额度；打开时带 refresh', async () => {
+  it('agy 额度：弹层取最先重置的窗口，管理面板按模型组列出全部窗口；没登录的不显示额度', async () => {
     const t = Date.now();
     const quota = {
       at: 1,
@@ -688,9 +683,8 @@ describe('Antigravity 多账号', () => {
       ]) }),
     };
     await openMenu();
-    await switchTab('子代理');
     expect(calls.some((c) => c.url === '/api/agy-accounts')).toBe(true);
-    const row = pickOf('me@example.com')!;
+    const row = agyRowOf('me@example.com')!;
     const chip = row.querySelector('.cz-acct-chip');
     expect(chip?.textContent).toBe('Pro');
     const brief = row.querySelector('.cz-acctq-brief')!;
@@ -715,7 +709,7 @@ describe('Antigravity 多账号', () => {
     expect(btnIn(off, '重新登录')).toBeDefined();
   });
 
-  it('未安装 Antigravity CLI：弹层子代理卡提示未安装且无选项；管理面板里说明没安装，不给添加按钮', async () => {
+  it('未安装 Antigravity CLI：弹层不显示 Antigravity 分组；管理面板里说明没安装，不给添加按钮', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
       'GET /api/agy-accounts': () => ({ body: agyList([], false) }),
@@ -728,32 +722,25 @@ describe('Antigravity 多账号', () => {
     await flush();
     click(document.querySelector('[aria-label="账户菜单"]')!);
     await flush();
-    await switchTab('子代理');
-    const agySec = menu()!.querySelector('section[aria-label="Antigravity"]')!;
-    expect(agySec.textContent).toContain('未安装 Antigravity CLI');
-    expect(agySec.querySelectorAll('.cz-acct-pick').length).toBe(0);
+    expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
   });
 
-  it('弹层子代理分段里切换 agy 账号不刷新页面、不关弹层', async () => {
-    let agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', plan: 'Ultra', active: false, isDefault: false })];
+  it('弹层里的 Antigravity 分组只展示：点击不调用任何切换接口、不关闭弹层、不标选中', async () => {
+    const agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', plan: 'Ultra', active: false, isDefault: false })];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
       'GET /api/agy-accounts': () => ({ body: agyList(agys) }),
-      'POST /api/agy-accounts/switch': (b) => {
-        const id = (b as { id: string }).id;
-        agys = agys.map((x) => ({ ...x, active: x.id === id }));
-        return { body: { ok: true } };
-      },
     };
     await openMenu();
-    await switchTab('子代理');
-    click(pickOf('工作')!);
+    const row = agyRowOf('工作')!;
+    expect(row.tagName).toBe('DIV');
+    expect(row.classList.contains('is-active')).toBe(false);
+    expect(agyRowOf('main@example.com')!.classList.contains('is-active')).toBe(false);
+    click(row);
     await flush();
-    expect(calls.find((c) => c.url === '/api/agy-accounts/switch')?.body).toEqual({ id: 'w' });
+    expect(calls.some((c) => c.url.includes('switch'))).toBe(false);
     expect(reload).not.toHaveBeenCalled();
     expect(menu()).not.toBeNull();
-    expect(pickOf('工作')!.classList.contains('is-active')).toBe(true);
-    expect(pickOf('main@example.com')!.classList.contains('is-active')).toBe(false);
   });
 
   it('管理面板 agy 卡片：当前账号也能改名 / 移除；执行中不能移除；切换后面板不关', async () => {
@@ -1217,208 +1204,71 @@ describe('账号悬浮详情卡', () => {
   });
 });
 
-describe('主代理 / 子代理分段与子代理账号', () => {
-  const withSub = (l: AccountEntry[], subagent?: AccountList['subagent']): AccountList => ({
-    mode: 'parallel',
-    list: l,
-    login: null,
-    ...(subagent ? { subagent } : {}),
+describe('账号弹层分组与边界', () => {
+  const agyItem = (over: Partial<AgyAccountEntry>): AgyAccountEntry => ({
+    id: 'g1', label: '', email: 'agy@example.com', plan: 'Google AI Pro', loggedIn: true, active: true, isDefault: false, running: 0, ...over,
   });
 
-  it('顶部两段切换（role=tablist）：点击和方向键切换、记忆到 localStorage', async () => {
-    routes = { 'GET /api/accounts': () => ({ body: withSub([entry({})], { claude: 'default' }) }) };
-    await openMenu();
-    const tablist = menu()!.querySelector('[role="tablist"]')!;
-    expect(tablist).not.toBeNull();
-    expect(tabBtn('主代理').getAttribute('aria-selected')).toBe('true');
-    expect(tabBtn('子代理').getAttribute('aria-selected')).toBe('false');
-
-    // 方向键切到子代理
-    press(tablist, 'ArrowRight');
-    await flush();
-    expect(tabBtn('子代理').getAttribute('aria-selected')).toBe('true');
-    expect(localStorage.getItem('cz-acct-tab')).toBe('sub');
-    expect(menu()!.querySelector('section[aria-label="原生"]')).not.toBeNull();
-    expect(menu()!.querySelector('section[aria-label="Claude"]')).not.toBeNull();
-    expect(menu()!.querySelector('section[aria-label="Antigravity"]')).not.toBeNull();
-
-    // 重新挂载仍记住子代理分段
-    act(() => root?.unmount());
-    await openMenu();
-    expect(tabBtn('子代理').getAttribute('aria-selected')).toBe('true');
-
-    // Home 回到主代理
-    press(menu()!.querySelector('[role="tablist"]')!, 'Home');
-    await flush();
-    expect(tabBtn('主代理').getAttribute('aria-selected')).toBe('true');
-    expect(localStorage.getItem('cz-acct-tab')).toBe('main');
-  });
-
-  it('子代理 Claude 账号单选：调用 POST /api/accounts/subagent，未登录与已失效项置灰禁用并说明原因', async () => {
-    const accounts = [
-      entry({ id: 'default', name: 'cosyeey', active: true }),
-      entry({ id: 'a1', name: 'Bob', active: false, isDefault: false }),
-      entry({ id: 'a2', label: '没登录', name: null, plan: null, loggedIn: false, active: false, isDefault: false }),
-      entry({ id: 'a3', name: 'Expired', active: false, isDefault: false, loginExpiresAt: Date.now() - 1000 }),
-    ];
-    let subId = 'default';
+  it('无分页，按「Claude 订阅 / API / Kiro → 分隔线 → Antigravity」顺序展示；点 Claude 账号切换主账号', async () => {
     routes = {
-      'GET /api/accounts': () => ({ body: withSub(accounts, { claude: subId }) }),
-      'POST /api/accounts/subagent': (b) => {
-        subId = (b as { id: string }).id;
-        return { body: withSub(accounts, { claude: subId }) };
-      },
+      'GET /api/accounts': () => ({ body: mixedList() }),
+      'GET /api/agy-accounts': () => ({ body: { installed: true, list: [agyItem({})], login: null } satisfies AgyAccountList }),
+      'POST /api/accounts/switch': () => ({ body: { ok: true } }),
     };
     await openMenu();
-    await switchTab('子代理');
-    const claudeSec = menu()!.querySelector('section[aria-label="Claude"]')!;
-    const radios = [...claudeSec.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-    expect(radios.map((r) => r.querySelector('.cz-acct-pick__name b')?.textContent)).toEqual(['cosyeey', 'Bob', '没登录', 'Expired']);
-    expect(radios[0].getAttribute('aria-checked')).toBe('true');
-    expect(radios[2].disabled).toBe(true);
-    expect(radios[2].textContent).toContain('未登录');
-    expect(radios[3].disabled).toBe(true);
-    expect(radios[3].textContent).toContain('登录已失效');
+    expect(menu()!.querySelector('[role="tablist"]')).toBeNull();
+    expect(calls.some((c) => c.url === '/api/subagents')).toBe(false);
 
-    // 点未登录项不发请求
-    click(radios[2]);
-    await flush();
-    expect(calls.some((c) => c.url === '/api/accounts/subagent')).toBe(false);
+    const listEl = menu()!.querySelector('.cz-sidebar__menu-list')!;
+    const groups = [...listEl.querySelectorAll('.cz-acct-pick-sec')];
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Claude 订阅', 'API', 'Kiro', 'Antigravity']);
+    // Antigravity 分组前有分隔线
+    const agySec = groups[3];
+    expect(agySec.previousElementSibling?.classList.contains('cz-sidebar__menu-sep')).toBe(true);
+    expect(agySec.querySelector('.cz-acct-pick-grp')?.textContent).toContain('仅展示');
 
-    // 点已选中项不发请求
-    click(radios[0]);
+    // 点击 Claude 账号切换主账号
+    click(pickOf('Bob')!);
     await flush();
-    expect(calls.some((c) => c.url === '/api/accounts/subagent')).toBe(false);
-
-    // 切换到 Bob
-    click(radios[1]);
-    await flush();
-    expect(calls.find((c) => c.url === '/api/accounts/subagent')?.body).toEqual({ id: 'a1' });
-    expect(radios[1].getAttribute('aria-checked')).toBe('true');
-    expect(radios[0].getAttribute('aria-checked')).toBe('false');
-    expect(reload).not.toHaveBeenCalled();
-    expect(menu()).not.toBeNull();
+    expect(calls.find((c) => c.url === '/api/accounts/switch')?.body).toEqual({ id: 'a1', force: false });
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it('subagent.claudeError 有值时显示错误提示', async () => {
+  it('Antigravity 行支持悬停详情卡，点击不触发任何切换', async () => {
+    vi.useFakeTimers();
+    const pointer = (el: Element, type: 'pointerover' | 'pointerout') => act(() => {
+      const ev = new MouseEvent(type, { bubbles: true });
+      Object.defineProperty(ev, 'pointerType', { value: 'mouse' });
+      el.dispatchEvent(ev);
+    });
     routes = {
-      'GET /api/accounts': () => ({ body: withSub([entry({})], { claude: 'default', claudeError: '同步凭据失败：无权限' }) }),
+      'GET /api/accounts': () => ({ body: list([entry({})]) }),
+      'GET /api/agy-accounts': () => ({ body: { installed: true, list: [agyItem({ id: 'g1', label: '工作', email: 'w@example.com' })], login: null } satisfies AgyAccountList }),
     };
-    await openMenu();
-    await switchTab('子代理');
-    const err = menu()!.querySelector('section[aria-label="Claude"] [role="alert"]')!;
-    expect(err.textContent).toContain('同步凭据失败：无权限');
+    try {
+      await openMenu();
+      const row = agyRowOf('工作')!;
+      pointer(row, 'pointerover');
+      await act(async () => { vi.advanceTimersByTime(450); });
+      const hoverCard = document.querySelector<HTMLElement>('.cz-acard');
+      expect(hoverCard).not.toBeNull();
+      expect(hoverCard!.textContent).toContain('w@example.com');
+
+      click(row);
+      await flush();
+      expect(calls.some((c) => c.url.includes('switch'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('老服务端（无 subagent 字段）降级：Claude 卡片不显示选择器，其余照常', async () => {
-    routes = {
-      'GET /api/accounts': () => ({ body: withSub([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })]) }),
-    };
-    await openMenu();
-    await switchTab('子代理');
-    const claudeSec = menu()!.querySelector('section[aria-label="Claude"]')!;
-    expect(claudeSec.querySelectorAll('[role="radio"]').length).toBe(0);
-    expect(claudeSec.textContent).toContain('不支持单独设置子代理账号');
-    expect(menu()!.querySelector('section[aria-label="原生"]')).not.toBeNull();
-  });
-
-  it('按 GET /api/subagents 的 effective 在对应卡片显示「正在使用」并弱化其余卡片', async () => {
-    routes = {
-      'GET /api/accounts': () => ({ body: withSub([entry({})], { claude: 'default' }) }),
-      'GET /api/subagents': () => ({
-        body: {
-          config: { kind: 'claude', native: { model: 'sonnet', effort: 'medium' }, claude: { model: null, effort: null }, agy: { model: null, effort: null } },
-          available: { native: { ok: true }, claude: { ok: true }, agy: { ok: true } },
-          effective: 'claude',
-        },
-      }),
-    };
-    await openMenu();
-    await switchTab('子代理');
-    const nativeSec = menu()!.querySelector('section[aria-label="原生"]')!;
-    const claudeSec = menu()!.querySelector('section[aria-label="Claude"]')!;
-    const agySec = menu()!.querySelector('section[aria-label="Antigravity"]')!;
-    expect(claudeSec.classList.contains('is-used')).toBe(true);
-    expect(claudeSec.querySelector('.cz-acct-sub-badge')?.textContent).toBe('正在使用');
-    expect(nativeSec.classList.contains('is-dim')).toBe(true);
-    expect(nativeSec.querySelector('.cz-acct-sub-badge')).toBeNull();
-    expect(agySec.classList.contains('is-dim')).toBe(true);
-    expect(agySec.querySelector('.cz-acct-sub-badge')).toBeNull();
-  });
-
-  it('子代理分段：主代理的模式切换控件不出现；Antigravity 加载中显示「正在读取…」，失败才显示读取失败', async () => {
-    let resolveAgy!: (v: Response) => void;
-    vi.stubGlobal('fetch', vi.fn((url: string) => {
-      if (url === '/api/accounts') return Promise.resolve(new Response(JSON.stringify(withSub([entry({})], { claude: 'default' })), { status: 200 }));
-      if (url.startsWith('/api/agy-accounts')) return new Promise<Response>((r) => { resolveAgy = r; });
-      return Promise.resolve(new Response(JSON.stringify({ error: 'not found' }), { status: 404 }));
-    }));
-    await openMenu();
-    await switchTab('子代理');
-    expect(menu()!.querySelector('[aria-label="账号模式"]')).toBeNull();
-    const agySec = menu()!.querySelector('section[aria-label="Antigravity"]')!;
-    expect(agySec.textContent).toContain('正在读取…');
-    expect(agySec.textContent).not.toContain('未能读取 Antigravity 账号');
-
-    resolveAgy(new Response(JSON.stringify({ error: 'boom' }), { status: 500 }));
-    await flush();
-    expect(menu()!.querySelector('section[aria-label="Antigravity"]')!.textContent).toContain('未能读取 Antigravity 账号');
-  });
-
-  it('子代理 Claude 卡片：空账号列表显示空态提示；选中账号已失效或被删时可正常改选其他可用账号', async () => {
-    routes = { 'GET /api/accounts': () => ({ body: withSub([], { claude: 'default' }) }) };
-    await openMenu();
-    await switchTab('子代理');
-    const emptySec = menu()!.querySelector('section[aria-label="Claude"]')!;
-    expect(emptySec.textContent).toContain('没有可用的账号');
-    act(() => root?.unmount());
-
-    // 选中账号已被删（subagent.claude 指向不存在的 id）+ 超长账号名 + 多个账号
-    const longName = 'very-long-account-display-name-for-overflow-check-0123456789';
-    const many = [
-      entry({ id: 'a1', name: longName, active: true, isDefault: true }),
-      entry({ id: 'a2', name: 'ExpiredSub', active: false, isDefault: false, loginExpiresAt: Date.now() - 1000 }),
-      ...Array.from({ length: 12 }, (_, i) => entry({ id: `u${i}`, name: `用户 ${i}`, active: false, isDefault: false })),
-    ];
-    let subId = 'deleted-id';
-    routes = {
-      'GET /api/accounts': () => ({ body: withSub(many, { claude: subId }) }),
-      'POST /api/accounts/subagent': (b) => {
-        subId = (b as { id: string }).id;
-        return { body: withSub(many, { claude: subId }) };
-      },
-    };
-    await openMenu();
-    await switchTab('子代理');
-    const claudeSec = menu()!.querySelector('section[aria-label="Claude"]')!;
-    const radios = [...claudeSec.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-    expect(radios.length).toBe(14);
-    expect(radios.every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
-    expect(radios[0].querySelector('.cz-acct-pick__name b')?.textContent).toBe(longName);
-    click(radios[0]);
-    await flush();
-    expect(calls.find((c) => c.url === '/api/accounts/subagent')?.body).toEqual({ id: 'a1' });
-    expect(claudeSec.querySelectorAll<HTMLButtonElement>('[role="radio"]')[0].getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('子代理 Claude 单选组与主代理模式切换均支持键盘方向键和 roving tabindex', async () => {
-    const accounts = [
-      entry({ id: 'default', name: 'cosyeey', active: true }),
-      entry({ id: 'a2', label: '没登录', name: null, loggedIn: false, active: false, isDefault: false }),
-      entry({ id: 'a1', name: 'Bob', active: false, isDefault: false }),
-    ];
-    let subId = 'default';
+  it('模式切换支持键盘方向键和 roving tabindex', async () => {
     let mode: AccountMode = 'switch';
     routes = {
-      'GET /api/accounts': () => ({ body: { mode, list: accounts, login: null, subagent: { claude: subId } } }),
+      'GET /api/accounts': () => ({ body: list([entry({})], mode) }),
       'POST /api/accounts/mode': (b) => { mode = (b as { mode: AccountMode }).mode; return { body: { ok: true } }; },
-      'POST /api/accounts/subagent': (b) => {
-        subId = (b as { id: string }).id;
-        return { body: { mode, list: accounts, login: null, subagent: { claude: subId } } };
-      },
     };
     await openMenu();
-    // 主代理模式切换键盘导航
     const modeGroup = menu()!.querySelector<HTMLElement>('[role="radiogroup"][aria-label="账号模式"]')!;
     const modeBtns = [...modeGroup.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
     expect(modeBtns[0].tabIndex).toBe(0);
@@ -1426,39 +1276,15 @@ describe('主代理 / 子代理分段与子代理账号', () => {
     press(modeGroup, 'ArrowRight');
     await flush();
     expect(calls.find((c) => c.url === '/api/accounts/mode')?.body).toEqual({ mode: 'parallel', force: false });
-
-    // 子代理 Claude 单选组键盘导航（跳过未登录项）
-    await switchTab('子代理');
-    const claudeGroup = menu()!.querySelector<HTMLElement>('[role="radiogroup"][aria-label="Claude 委派账号"]')!;
-    const radios = [...claudeGroup.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-    expect(radios[0].tabIndex).toBe(0);
-    expect(radios[1].tabIndex).toBe(-1);
-    expect(radios[2].tabIndex).toBe(-1);
-    press(claudeGroup, 'ArrowDown');
-    await flush();
-    expect(calls.find((c) => c.url === '/api/accounts/subagent')?.body).toEqual({ id: 'a1' });
   });
 
-  it('竞态与异常结构：旧 GET /api/accounts 后返回不覆盖 POST /api/accounts/subagent 结果；非法 effective 不误暗全部卡片；重试成功清除旧错误', async () => {
-    const accounts = [
-      entry({ id: 'default', name: 'cosyeey', active: true }),
-      entry({ id: 'a1', name: 'Bob', active: false, isDefault: false }),
-    ];
-    let accountsAttempt = 0;
-    let resolveSlowGet!: (r: Response) => void;
-    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-      const method = init?.method ?? 'GET';
-      if (method === 'GET' && url === '/api/accounts') {
-        accountsAttempt += 1;
-        if (accountsAttempt === 1) return Promise.resolve(new Response(JSON.stringify({ error: '临时网络故障' }), { status: 500 }));
-        if (accountsAttempt === 2) return Promise.resolve(new Response(JSON.stringify(withSub(accounts, { claude: 'default' })), { status: 200 }));
-        return new Promise<Response>((r) => { resolveSlowGet = r; });
-      }
-      if (method === 'POST' && url === '/api/accounts/subagent') {
-        return Promise.resolve(new Response(JSON.stringify(withSub(accounts, { claude: 'a1' })), { status: 200 }));
-      }
-      if (method === 'GET' && url === '/api/subagents') {
-        return Promise.resolve(new Response(JSON.stringify({ effective: 'unknown-kind' }), { status: 200 }));
+  it('请求失败后 version 递增重读成功会清除旧错误', async () => {
+    let attempt = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url === '/api/accounts') {
+        attempt += 1;
+        if (attempt === 1) return Promise.resolve(new Response(JSON.stringify({ error: '临时网络故障' }), { status: 500 }));
+        return Promise.resolve(new Response(JSON.stringify(list([entry({})])), { status: 200 }));
       }
       return Promise.resolve(new Response(JSON.stringify({ error: 'not found' }), { status: 404 }));
     }));
@@ -1468,55 +1294,12 @@ describe('主代理 / 子代理分段与子代理账号', () => {
     await flush();
     expect(menu()!.textContent).toContain('临时网络故障');
 
-    // version 递增触发重读成功：应清除旧错误
     act(() => root!.render(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={1} />));
     await flush();
     expect(menu()!.textContent).not.toContain('临时网络故障');
-
-    await switchTab('子代理');
-    // 非法 effective 不应把三张卡片都置暗
-    expect(menu()!.querySelectorAll('.cz-acct-sub-card.is-dim').length).toBe(0);
-
-    // 触发一次慢 GET /api/accounts，期间用户切换子代理账号到 Bob
-    act(() => root!.render(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={2} />));
-    await flush();
-    const radios = [...menu()!.querySelectorAll<HTMLButtonElement>('section[aria-label="Claude"] [role="radio"]')];
-    click(radios[1]);
-    await flush();
-    expect(radios[1].getAttribute('aria-checked')).toBe('true');
-
-    // 旧 GET 返回旧数据（claude: 'default'），不应覆盖 Bob
-    resolveSlowGet(new Response(JSON.stringify(withSub(accounts, { claude: 'default' })), { status: 200 }));
-    await flush();
-    const radiosAfter = [...menu()!.querySelectorAll<HTMLButtonElement>('section[aria-label="Claude"] [role="radio"]')];
-    expect(radiosAfter[1].getAttribute('aria-checked')).toBe('true');
   });
 
-  it('主代理弹出的切换确认条在切到「子代理」时隐藏，切回「主代理」时重新显示', async () => {
-    routes = {
-      'GET /api/accounts': () => ({ body: { ...withSub([entry({}), entry({ id: 'a1', name: 'Bob', active: false, isDefault: false })], { claude: 'default' }), mode: 'switch' } }),
-      'POST /api/accounts/switch': (b) => ((b as { force?: boolean }).force
-        ? { body: { ok: true } }
-        : { status: 409, body: { error: '有会话正在执行', running: 3 } }),
-    };
-    await openMenu();
-    click(pickOf('Bob')!);
-    await flush();
-    expect(menu()!.querySelector('.cz-sidebar__acct-confirm')?.textContent).toContain('有 3 个会话正在执行');
-
-    // 切到子代理分段：确认条隐藏
-    await switchTab('子代理');
-    expect(menu()!.querySelector('.cz-sidebar__acct-confirm')).toBeNull();
-
-    // 切回主代理分段：确认条仍在，可点强制切换
-    await switchTab('主代理');
-    expect(menu()!.querySelector('.cz-sidebar__acct-confirm')?.textContent).toContain('有 3 个会话正在执行');
-    click(button('强制切换')!);
-    await flush();
-    expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it('主代理分段无可用账号时显示空态提示与「添加账号」入口，点击打开管理账号面板', async () => {
+  it('无可用主账号时显示空态提示与「添加账号」入口，点击打开管理账号面板', async () => {
     routes = { 'GET /api/accounts': () => ({ body: list([]) }) };
     await openMenu();
     const empty = menu()!.querySelector('.cz-acct-pick-empty--action')!;
@@ -1527,31 +1310,5 @@ describe('主代理 / 子代理分段与子代理账号', () => {
     await flush();
     expect(menu()).toBeNull();
     expect(manager()).not.toBeNull();
-  });
-
-  it('version 递增（subagents.changed）时重新拉取 GET /api/subagents 并更新「正在使用」徽章', async () => {
-    let eff = 'native';
-    routes = {
-      'GET /api/accounts': () => ({ body: withSub([entry({})], { claude: 'default' }) }),
-      'GET /api/subagents': () => ({
-        body: {
-          config: { kind: eff, native: { model: 'sonnet', effort: 'medium' }, claude: { model: null, effort: null }, agy: { model: null, effort: null } },
-          available: { native: { ok: true }, claude: { ok: true }, agy: { ok: true } },
-          effective: eff,
-        },
-      }),
-    };
-    mount(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={0} />);
-    click(document.querySelector('[aria-label="账户菜单"]')!);
-    await flush();
-    await switchTab('子代理');
-    expect(menu()!.querySelector('section[aria-label="原生"] .cz-acct-sub-badge')?.textContent).toBe('正在使用');
-    expect(menu()!.querySelector('section[aria-label="Claude"] .cz-acct-sub-badge')).toBeNull();
-
-    eff = 'claude';
-    act(() => root!.render(<AccountMenu account={{ name: 'cosyeey', plan: 'Pro' }} version={1} />));
-    await flush();
-    expect(menu()!.querySelector('section[aria-label="Claude"] .cz-acct-sub-badge')?.textContent).toBe('正在使用');
-    expect(menu()!.querySelector('section[aria-label="原生"] .cz-acct-sub-badge')).toBeNull();
   });
 });

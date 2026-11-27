@@ -5,7 +5,7 @@
 // 颜色阈值沿用输入框里的额度面板（severity：normal / warning / critical → 主题色 / 警告色 / 危险色）。
 // 进度条第一次出现时从 0 长到目标值（transform: scaleX + @starting-style），数据刷新时从当前值平滑过渡，减少动态效果时不动。
 import type { CSSProperties, ReactNode } from 'react';
-import type { AgyQuota, KiroBalance, UsageInfo, UsageSeverity } from '@cosyee/shared';
+import type { AgyQuota, CodexQuota, KiroBalance, UsageInfo, UsageSeverity } from '@cosyee/shared';
 import { limitShortTitle, resetBrief, resetShort } from '../usage/format';
 
 /** loading：还没有结果；ok：info 有数据；none：服务端没有额度信息；fail：读取失败 */
@@ -53,6 +53,58 @@ export function agyWindows(q: AgyQuota): QuotaWindow[] {
       group: g.name,
     })),
   );
+}
+
+const codexSeverity = (usedPercent: number): UsageSeverity =>
+  usedPercent >= 90 ? 'critical' : usedPercent >= 75 ? 'warning' : 'normal';
+
+/** Codex 窗口时长 → 友好名称：300 →「5 小时」、10080 →「每周」、其余按分钟 / 小时 / 天 */
+export function codexWindowLabel(windowMins: number | null, slot: 'primary' | 'secondary'): string {
+  if (windowMins == null || !Number.isFinite(windowMins) || windowMins <= 0) {
+    return slot === 'primary' ? '5 小时' : '每周';
+  }
+  if (windowMins === 300) return '5 小时';
+  if (windowMins === 10080) return '每周';
+  if (windowMins < 60) return `${Math.round(windowMins)} 分钟`;
+  if (windowMins < 1440) {
+    const h = windowMins / 60;
+    return `${Number.isInteger(h) ? h : Number(h.toFixed(1))} 小时`;
+  }
+  const d = windowMins / 1440;
+  return `${Number.isInteger(d) ? d : Number(d.toFixed(1))} 天`;
+}
+
+/** Codex 各限额分组的 primary / secondary 窗口 */
+export function codexWindows(q: CodexQuota): QuotaWindow[] {
+  const multi = q.groups.length > 1;
+  return q.groups.flatMap((g) => {
+    const rawGroup = g.limitName?.trim() || g.limitId;
+    const group = multi || (g.limitName && g.limitName.trim().toLowerCase() !== 'codex') ? rawGroup : undefined;
+    const out: QuotaWindow[] = [];
+    if (g.primary) {
+      const p = Math.max(0, Math.min(100, Math.round(g.primary.usedPercent)));
+      out.push({
+        key: `${g.limitId}:primary`,
+        label: codexWindowLabel(g.primary.windowMins, 'primary'),
+        percent: p,
+        severity: codexSeverity(p),
+        resetsAt: g.primary.resetsAt,
+        group,
+      });
+    }
+    if (g.secondary) {
+      const p = Math.max(0, Math.min(100, Math.round(g.secondary.usedPercent)));
+      out.push({
+        key: `${g.limitId}:secondary`,
+        label: codexWindowLabel(g.secondary.windowMins, 'secondary'),
+        percent: p,
+        severity: codexSeverity(p),
+        resetsAt: g.secondary.resetsAt,
+        group,
+      });
+    }
+    return out;
+  });
 }
 
 const fmtNum = (n: number) => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(1))));
@@ -165,6 +217,13 @@ export function AccountQuota({ state, now }: { state: QuotaState; now?: number }
 /** Antigravity 账号的全部额度（管理面板） */
 export function AgyQuotaView({ quota, now }: { quota: AgyQuota; now?: number }) {
   return <QuotaLines windows={agyWindows(quota)} now={now} />;
+}
+
+/** Codex 账号的全部额度（管理面板 / 悬浮卡） */
+export function CodexQuotaView({ quota, now }: { quota: CodexQuota; now?: number }) {
+  const ws = codexWindows(quota);
+  if (!ws.length) return <span className="cz-acctq__hint">暂无额度信息</span>;
+  return <QuotaLines windows={ws} now={now} />;
 }
 
 /** Kiro 账号的额度（管理面板）；失败时显示「额度读取失败」 */

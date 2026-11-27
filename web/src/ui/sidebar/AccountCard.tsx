@@ -6,14 +6,14 @@ import {
   type CSSProperties, type FocusEvent, type PointerEvent, type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import type { AccountEntry, AgyAccountEntry, ApiModelMap, ApiModelTarget } from '@cosyee/shared';
+import type { AccountEntry, AgyAccountEntry, ApiModelMap, ApiModelTarget, CodexAccountEntry } from '@cosyee/shared';
 import { BrandIcon, type BrandKind } from '../icons/BrandIcon';
 import { viewportBounds } from '../layout/viewport';
 import { reducedMotion } from '../motion/reduced';
 import { leavingProps, usePresence } from '../motion/usePresence';
 import { loginExpiry, subscriptionEstimate } from '../usage/format';
-import { AccountQuota, AgyQuotaView, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
-import { agyTitle, claudeKind, entryTitle, PlanChip, planChip } from './accountParts';
+import { AccountQuota, AgyQuotaView, CodexQuotaView, codexWindows, KiroQuotaView, type KiroBalanceState, type QuotaState } from './AccountQuota';
+import { agyTitle, claudeKind, codexPlan, codexTitle, entryTitle, PlanChip, planChip } from './accountParts';
 import { formatFullTime } from './formatTime';
 import {
   COLD_DELAY_MS, computePosition, ensureModalityListeners, isKeyboardFocus, LEAVE_GRACE_MS, WARM_DELAY_MS, WARM_WINDOW_MS,
@@ -340,6 +340,34 @@ export function AgyCardBody({ a, now }: { a: AgyAccountEntry; now: number }) {
       quota={a.quota && a.quota.groups.length > 0
         ? <AgyQuotaView quota={a.quota} now={now} />
         : <span className="cz-acctq__hint">暂无额度信息</span>}
+      facts={facts}
+    />
+  );
+}
+
+export function CodexCardBody({ a, now }: { a: CodexAccountEntry; now: number }) {
+  const title = codexTitle(a);
+  const plan = codexPlan(a);
+  const facts: Fact[] = [];
+  if (a.email && a.email !== title) facts.push({ label: '邮箱', value: a.email });
+  if (a.authMode) facts.push({ label: '登录方式', value: a.authMode === 'apiKey' ? 'API Key' : 'ChatGPT 账号' });
+  if (plan && plan !== 'API Key') facts.push({ label: '套餐', value: plan });
+  facts.push({ label: '委派任务', value: a.running > 0 ? `${a.running} 个执行中` : '没有执行中的' });
+  if (a.quota) facts.push({ label: '额度更新', value: formatFullTime(a.quota.fetchedAt, now) });
+  const quota = a.authMode === 'apiKey'
+    ? <span className="cz-acctq__hint">按量计费（API Key）</span>
+    : a.quota && codexWindows(a.quota).length > 0
+      ? <CodexQuotaView quota={a.quota} now={now} />
+      : <span className="cz-acctq__hint">暂无额度信息</span>;
+  return (
+    <Body
+      brand="codex"
+      group="Codex"
+      title={title}
+      plan={plan}
+      active={a.active}
+      status={a.active ? '新委派使用' : '可切换'}
+      quota={quota}
       facts={facts}
     />
   );

@@ -18,17 +18,24 @@ export function CostChart({
   flow,
   compactions,
   intro = false,
+  mode = 'turn',
+  estimated,
   onJump,
 }: {
-  /** sessionCost().turns */
+  /** sessionCost().turns（turn 模式）或 requestCostRows().rows（request 模式） */
   turns: readonly TurnCost[];
-  /** 会话流（悬停时显示这一轮的用户消息） */
+  /** 会话流（turn 模式悬停时显示这一轮的用户消息） */
   flow?: readonly Turn[];
   compactions?: readonly CompactMark[];
   intro?: boolean;
-  /** 点柱子跳到这一轮；不传则只能看 */
+  /** turn = 一轮一根柱（主会话）；request = 每次请求一根柱（子代理） */
+  mode?: 'turn' | 'request';
+  /** 与 rows 等长，标记哪些点的拆分是按本轮合计估算的 */
+  estimated?: readonly boolean[];
+  /** 点柱子跳到这一轮 / 这一步；不传则只能看 */
   onJump?: (turn: number) => void;
 }) {
+  const isReq = mode === 'request';
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const n = rows.length;
@@ -57,7 +64,7 @@ export function CostChart({
   }, [compactions, n]);
 
   if (n === 0 || geo.vals.every((v) => v <= 0)) {
-    return <div className="cz-ctx__cache-empty">发送消息后，这里显示每轮的花费</div>;
+    return <div className="cz-ctx__cache-empty">{isReq ? '暂无请求花费数据' : '发送消息后，这里显示每轮的花费'}</div>;
   }
 
   const last = n - 1;
@@ -83,14 +90,17 @@ export function CostChart({
     e.preventDefault();
   };
 
-  const label =
-    `每轮花费，共 ${n} 轮，最近一轮 ${formatUsd(geo.vals[last]!)}，最贵的是第 ${top + 1} 轮 ${formatUsd(geo.vals[top]!)}` +
-    (marks.size > 0 ? `，压缩过 ${[...marks.values()].reduce((s, l) => s + l.length, 0)} 次` : '') +
-    (onJump ? '。左右键选择，回车跳到这一轮' : '');
+  const label = isReq
+    ? `每次请求花费，共 ${n} 次请求，最近一次 ${formatUsd(geo.vals[last]!)}，最贵的是第 ${top + 1} 次请求 ${formatUsd(geo.vals[top]!)}` +
+      (onJump ? '。左右键选择，回车跳到这一步' : '')
+    : `每轮花费，共 ${n} 轮，最近一轮 ${formatUsd(geo.vals[last]!)}，最贵的是第 ${top + 1} 轮 ${formatUsd(geo.vals[top]!)}` +
+      (marks.size > 0 ? `，压缩过 ${[...marks.values()].reduce((s, l) => s + l.length, 0)} 次` : '') +
+      (onJump ? '。左右键选择，回车跳到这一轮' : '');
   const tipAt = hover === null ? 0 : geo.cx[hover]! / W;
   const row = hover !== null ? rows[hover]! : null;
-  const userText = hover !== null ? flow?.[hover]?.userText : undefined;
-  const hoverMarks = hover !== null ? marks.get(hover) : undefined;
+  const userText = !isReq && hover !== null ? flow?.[hover]?.userText : undefined;
+  const hoverMarks = !isReq && hover !== null ? marks.get(hover) : undefined;
+  const isEst = hover !== null && estimated?.[hover] === true;
 
   return (
     <div className="cz-ctx__cache">
@@ -144,13 +154,15 @@ export function CostChart({
         {row && hover !== null && (
           <ChartTip at={tipAt} testId="cost-tip">
             <div className="cz-ctx__cache-tip-title">
-              第 {hover + 1} 轮 · {formatUsd(geo.vals[hover]!)}
+              {isReq ? `第 ${hover + 1} 次请求 · ${formatUsd(geo.vals[hover]!)}` : `第 ${hover + 1} 轮 · ${formatUsd(geo.vals[hover]!)}`}
             </div>
             {userText !== undefined && userText.trim() && <div className="cz-ctx__cache-tip-row is-quote">「{clip(userText.trim(), 22)}」</div>}
-            <div className="cz-ctx__cache-tip-row">
-              主线程 {formatUsd(geo.main[hover]!)}（{row.requests} 次请求）
-            </div>
-            {row.subRuns > 0 && (
+            {!isReq && (
+              <div className="cz-ctx__cache-tip-row">
+                主线程 {formatUsd(geo.main[hover]!)}（{row.requests} 次请求）
+              </div>
+            )}
+            {!isReq && row.subRuns > 0 && (
               <div className="cz-ctx__cache-tip-row">
                 子代理 {formatUsd(geo.sub[hover]!)}（{row.subRuns} 个）
               </div>
@@ -163,12 +175,13 @@ export function CostChart({
                 </div>
               ) : null;
             })}
+            {isEst && <div className="cz-ctx__cache-tip-row is-total">拆分按本轮合计估算</div>}
             {hoverMarks && (
               <div className="cz-ctx__cache-tip-row">
                 本轮压缩了会话{hoverMarks.length > 1 ? ` ${hoverMarks.length} 次` : ''}（{hoverMarks.some((m) => m.trigger === 'manual') ? '手动' : '自动'}）
               </div>
             )}
-            {onJump && <div className="cz-ctx__cache-tip-row is-total">点击跳到这一轮</div>}
+            {onJump && <div className="cz-ctx__cache-tip-row is-total">{isReq ? '点击跳到这一步' : '点击跳到这一轮'}</div>}
           </ChartTip>
         )}
       </div>

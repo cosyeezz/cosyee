@@ -2,10 +2,15 @@
 // 后端只监听 127.0.0.1:7878；前端开发时通过 Vite 代理访问 /api 与 /ws。
 // 鉴权：每个请求带 token（REST 用请求头 `x-cosyee-token`，WS 用 `/ws?token=`），并校验 Origin。
 import type { CostParts } from './pricing.ts';
+import type { CachePoint } from './view.ts';
 
 // ───────────── 基础数据 ─────────────
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** 委派后端（Antigravity / Codex）的思考强度，按强弱排序；Claude 原生仍只用 Effort */
+export type DelegateEffort = Effort | 'none' | 'minimal' | 'ultra';
+export const DELEGATE_EFFORTS: readonly DelegateEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 export interface Workspace {
   /** 绝对路径，作为唯一 ID */
@@ -175,51 +180,68 @@ export interface CliModelList {
 }
 
 /**
- * 子代理类型（全局，同一时间只用一种）：
- * - native：Claude 自带的 Agent 工具；停用 cosyee 的 delegate 系列工具。
- * - claude：自定义委派工具（delegate 系列），后端是 Claude CLI（无头 claude -p，用主会话的账号）；停用 Agent 工具。
- * - agy：自定义委派工具，后端是 Antigravity（agy acp）；停用 Agent 工具。
- * 选中的委派后端不可用（未安装 / 未登录）时服务端退回原生，免得两头都没有。
+ * 子代理模式（全局）：
+ * - native：Claude 自带的 Agent 工具（在主进程里运行，跟随主会话账号）；停用 cosyee 的 delegate 系列工具。
+ * - delegate：自定义委派工具（delegate 系列）；停用 Agent 工具。每个代理类型按自己的路线（SubagentRoute）
+ *   选后端、账号与模型，例如 Explore 走 Antigravity 的 Gemini、Plan 走某个 Claude 账号的 Opus。
+ * 默认路线不可用（后端未安装 / 账号未登录 / 没选）时服务端退回原生，免得两头都没有。
  */
-export type SubagentKind = 'native' | 'claude' | 'agy';
-export const SUBAGENT_KINDS: readonly SubagentKind[] = ['native', 'claude', 'agy'];
+export type SubagentMode = 'native' | 'delegate';
+export const SUBAGENT_MODES: readonly SubagentMode[] = ['native', 'delegate'];
+
+/** 委派后端：claude = Claude CLI（无头 claude -p）；agy = Antigravity（agy acp）；codex = OpenAI Codex（codex app-server） */
+export type DelegateBackendId = 'claude' | 'agy' | 'codex';
+export const DELEGATE_BACKEND_IDS: readonly DelegateBackendId[] = ['claude', 'agy', 'codex'];
 
 /**
- * 子代理配置（全局，上下文栏「子代理」里设置）。子代理面板直接显示这里的值，不再显示「继承主会话」。
+ * 委派路线：某个代理类型由哪个后端的哪个账号、用什么模型执行。
+ * - claude：accountId 是 AccountEntry.id（claude.ai 登录 / API / Kiro 都行）；model 是别名或模型 id，null = 跟随主会话当前的模型；
+ *   effort null = 跟随主会话（仅允许 Effort）。
+ * - agy：accountId 是 AgyAccountEntry.id；model 是基础模型（DelegateModel.value），null = 用 agy 自己的默认；effort null = 默认。
+ * - codex：accountId 是 CodexAccountEntry.id；model 是模型 id，null = 用该账号的默认模型；effort null = 默认（支持 DelegateEffort）。
+ * 生效优先级：类型自己的路线 > 智能体定义里的 model / effort > 默认路线。
+ */
+export interface SubagentRoute {
+  backend: DelegateBackendId;
+  accountId: string;
+  model: string | null;
+  effort: DelegateEffort | null;
+}
+
+/**
+ * 子代理配置（全局，上下文栏「子代理」里设置）。
  * GET /api/subagents 取 SubagentState；POST /api/subagents 整体提交 SubagentConfig，返回 { ok, state: SubagentState }。
  * 改动对运行中的会话立即生效（工具开关经 permissions.deny 推送；新启动的会话按启动时的配置注册）。
  */
 export interface SubagentConfig {
-  kind: SubagentKind;
+  mode: SubagentMode;
   /**
    * 原生子代理（Agent 工具）：服务端用 PreToolUse hook 给没写 model / effort 的调用补上这里的值，
    * 因此优先于智能体定义里的 model / effort（CLI 里调用参数 > 定义 > 环境变量）；调用时点名的值不动。
    * model 只能是别名：Agent 工具的 model 参数是枚举。
    */
   native: { model: ModelAlias; effort: Effort; agents?: SubagentTypeOverrides<ModelAlias> };
-  /** Claude 委派：model 是别名，null = 跟随主会话当前的模型；effort null = 跟随主会话 */
-  claude: { model: ModelAlias | null; effort: Effort | null; agents?: SubagentTypeOverrides<ModelAlias> };
-  /** Antigravity 委派：model 是基础模型（DelegateModel.value），null = 用 agy 自己的默认 */
-  agy: { model: string | null; effort: Effort | null; agents?: SubagentTypeOverrides<string> };
+  /** 委派：default = 默认路线（null = 还没选）；agents = 代理类型名 → 自己的路线，不含某类型 = 跟随默认 */
+  delegate: { default: SubagentRoute | null; agents?: Record<string, SubagentRoute> };
 }
 
 /**
- * 某个代理类型（智能体，如 Explore / Plan / general-purpose / 自定义）在某种子代理后端下的单独配置。
- * null = 不单独设置。生效优先级：调用时点名的值 > 这里的值 > 智能体定义里的 model / effort > 该后端的默认值（上面的 model / effort）。
+ * 某个代理类型（智能体，如 Explore / Plan / general-purpose / 自定义）在原生模式下的单独配置。
+ * null = 不单独设置。生效优先级：调用时点名的值 > 这里的值 > 智能体定义里的 model / effort > 原生默认值。
  */
-export interface SubagentTypeOverride<M extends string = string> {
+export interface SubagentTypeOverride<M extends string = string, E extends string = Effort> {
   model: M | null;
-  effort: Effort | null;
+  effort: E | null;
 }
 
-/** 代理类型名 → 单独配置；缺省 / 不含某类型 = 该类型全部跟随默认。三种后端各存一份（模型取值范围不同） */
-export type SubagentTypeOverrides<M extends string = string> = Record<string, SubagentTypeOverride<M>>;
+/** 代理类型名 → 单独配置；缺省 / 不含某类型 = 该类型全部跟随默认 */
+export type SubagentTypeOverrides<M extends string = string, E extends string = Effort> = Record<string, SubagentTypeOverride<M, E>>;
 
 /**
  * 可配置的代理类型（GET /api/subagents 的 SubagentState.agents）：委派后端可用的智能体
  * （内置 Explore / Plan / general-purpose + 项目 / 用户 / 插件里的自定义智能体）。
  * 原生模式下 CLI 还会报告它自带的其它类型（SessionMeta.agents），前端合并显示。
- * 开关沿用全局的已关闭名单（POST /api/agents，SubagentState.disabledAgents），对三种后端同时生效。
+ * 开关沿用全局的已关闭名单（POST /api/agents，SubagentState.disabledAgents），两种模式同时生效。
  */
 export interface SubagentTypeInfo {
   name: string;
@@ -233,10 +255,9 @@ export interface SubagentTypeInfo {
 }
 
 export const DEFAULT_SUBAGENTS: SubagentConfig = {
-  kind: 'native',
+  mode: 'native',
   native: { model: 'sonnet', effort: 'medium' },
-  claude: { model: null, effort: null },
-  agy: { model: null, effort: null },
+  delegate: { default: null },
 };
 
 /** 某种子代理在本机能不能用；reason = 不能用的原因（给界面显示，如「未安装 Antigravity CLI」） */
@@ -245,37 +266,48 @@ export interface SubagentAvailability {
   reason?: string;
 }
 
+/** 委派路线可选的账号（只列现在能用的：后端已安装、账号已登录） */
+export interface SubagentAccountOption {
+  backend: DelegateBackendId;
+  /** AccountEntry.id、AgyAccountEntry.id 或 CodexAccountEntry.id */
+  id: string;
+  /** 显示名（备注名 > 登录名） */
+  label: string;
+  /** 分组：Claude 订阅 / API / Kiro / Antigravity / Codex */
+  group: 'claude' | 'api' | 'kiro' | 'agy' | 'codex';
+}
+
 export interface SubagentState {
   config: SubagentConfig;
-  available: Record<SubagentKind, SubagentAvailability>;
-  /** 实际生效的类型：选中的委派后端不可用时为 'native' */
-  effective: SubagentKind;
+  /** 实际生效的模式：委派的默认路线不可用（或委派工具被停用）时为 'native' */
+  effective: SubagentMode;
+  /** 委派路线可选的账号（只含能用的） */
+  accounts: SubagentAccountOption[];
+  /** 自己的路线不可用、改用默认路线的代理类型 → 原因；没有为空对象 */
+  routeFallbacks: Record<string, string>;
   /** 可配置的代理类型（按当前工作区解析项目级智能体；GET /api/subagents?cwd=...）；老服务端不给 */
   agents?: SubagentTypeInfo[];
   /** 已关闭的代理类型名（全局，与 usage.disabledAgents 同源）；老服务端不给 */
   disabledAgents?: string[];
-  /**
-   * effective 与 config.kind 不同（退回原生）时的原因，给界面直接显示，如「Claude 子代理账号未登录」「委派工具已在工具面板停用」；
-   * 没有退回时不给。老服务端不给，前端自己推断。
-   */
+  /** effective 与 config.mode 不同（退回原生）时的原因，给界面直接显示，如「默认账号未登录」「委派工具已在工具面板停用」 */
   fallbackReason?: string;
 }
 
-/** Antigravity 的一个基础模型；efforts 为空 = 不分思考强度 */
+/** 委派后端的一个基础模型；efforts 为空 = 不分思考强度 */
 export interface DelegateModel {
   value: string;
   displayName: string;
-  efforts: Effort[];
+  efforts: DelegateEffort[];
 }
 
 /**
- * GET /api/delegate/models（?refresh=1 强制重新拉取）：agy 报告的可用模型。
- * agy 未安装 / 未登录时返回 503 + 错误信息。
+ * GET /api/delegate/models?backend=claude|agy|codex&account=<账号 id>&cwd=（?refresh=1 强制重新拉取）：该委派账号可用的模型。
+ * 不传 backend = agy；不传 account = 该后端的当前账号。后端未安装 / 账号未登录时返回 503 + 错误信息。
  */
 export interface DelegateModelList {
   models: DelegateModel[];
-  /** agy 自己的默认（新会话的 currentModelId 拆出来的） */
-  current: { model: string; effort: Effort | null } | null;
+  /** 后端自己的默认模型与思考强度 */
+  current: { model: string; effort: DelegateEffort | null } | null;
   at: number;
 }
 
@@ -405,9 +437,28 @@ export interface AgyCliStatus {
   job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
 }
 
-/** 本机组件：Claude CLI、kiro.rs 引擎、Antigravity CLI、内置浏览器（agent-browser）、cosyee 服务端 */
-export type ComponentId = 'claude' | 'kiro' | 'agy' | 'browser' | 'server';
-export const COMPONENT_IDS: readonly ComponentId[] = ['claude', 'kiro', 'agy', 'browser', 'server'];
+/** OpenAI Codex CLI 本体的版本与运行情况；字段语义同 AgyCliStatus */
+export interface CodexCliStatus {
+  installed: boolean;
+  /** COSYEE_CODEX 指定的程序：只显示，不安装 / 升级 */
+  custom: boolean;
+  /** 安装方式：npm 全局包 / 官方独立安装包 / 自定义路径；没装为 undefined */
+  installKind?: 'npm' | 'standalone' | 'custom';
+  version: string | null;
+  /** 官方最新版；没查过或查不到 = null */
+  latest: string | null;
+  updateAvailable: boolean;
+  checkedAt: number | null;
+  checkError: string | null;
+  /** Cosyee 持有的 codex app-server 常驻进程数，其中正在执行任务的数量 */
+  processes: number;
+  busy: number;
+  job: { kind: 'install' | 'update'; state: 'running' | 'failed'; error: string | null } | null;
+}
+
+/** 本机组件：Claude CLI、kiro.rs 引擎、Antigravity CLI、Codex CLI、内置浏览器（agent-browser）、cosyee 服务端 */
+export type ComponentId = 'claude' | 'kiro' | 'agy' | 'codex' | 'browser' | 'server';
+export const COMPONENT_IDS: readonly ComponentId[] = ['claude', 'kiro', 'agy', 'codex', 'browser', 'server'];
 
 /** 本机组件的版本与自动更新状态（GET /api/components） */
 export interface ComponentStatus {
@@ -537,6 +588,8 @@ export interface KiroStatus {
 export interface AccountLogin {
   /** 设备码登录（Kiro）时要在网页上核对的验证码 */
   userCode?: string | null;
+  /** Codex 登录方式（其它后端不给） */
+  method?: CodexLoginMethod;
   loginId: string;
   status: 'starting' | 'waiting' | 'done' | 'failed';
   /** 浏览器没自动打开时手动打开的登录页 */
@@ -594,6 +647,70 @@ export interface AgyAccountList {
   /** 本机装了 agy；没装时 list 为空，不能添加 */
   installed: boolean;
   list: AgyAccountEntry[];
+  /** 当前正在进行的登录，没有为 null */
+  login: AccountLogin | null;
+  /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
+  duplicates?: number;
+}
+
+/** Codex 登录方式：chatgpt = 浏览器 OAuth；deviceAuth = 设备码（无浏览器 / 远程）；apiKey = OpenAI API Key */
+export type CodexLoginMethod = 'chatgpt' | 'deviceAuth' | 'apiKey';
+
+/** Codex 一个限额窗口（primary = 短窗口如 5h，secondary = 长窗口如每周） */
+export interface CodexQuotaWindow {
+  /** 已用百分比 0–100 */
+  usedPercent: number;
+  /** 窗口时长（分钟）；未知为 null */
+  windowMins: number | null;
+  /** 重置时间，毫秒时间戳；未知为 null */
+  resetsAt: number | null;
+}
+
+/** 一个限额分组（limitId 如 'codex'，limitName 为显示名，没有时用 limitId） */
+export interface CodexQuotaGroup {
+  limitId: string;
+  limitName?: string | null;
+  primary: CodexQuotaWindow | null;
+  secondary: CodexQuotaWindow | null;
+}
+
+export interface CodexQuota {
+  groups: CodexQuotaGroup[];
+  /** 套餐类型（如 'plus' / 'pro'）；未知为 null */
+  planType?: string | null;
+  /** 采集时间，毫秒时间戳 */
+  fetchedAt: number;
+}
+
+/** Codex 账号列表里的一项；委派任务用。不含令牌；邮箱只用来显示。 */
+export interface CodexAccountEntry {
+  /** 'default' = 本机 codex 自己的登录（~/.codex 或 CODEX_HOME）；其它 = 在 Cosyee 里添加的账号（各自独立的 CODEX_HOME） */
+  id: string;
+  /** 用户起的备注名；没填时服务端自动起「账号 2」这样的名字；默认账号为空 */
+  label: string;
+  /** 套餐名（如 'plus'）；还没读到为 null */
+  plan: string | null;
+  /** null = 正在检测 */
+  loggedIn: boolean | null;
+  /** 新的委派任务用这个账号 */
+  active: boolean;
+  isDefault: boolean;
+  /** 正在用该账号执行的委派任务数 */
+  running: number;
+  /** 登录的邮箱；还没读到为 null。没起备注名时用它当标题 */
+  email?: string | null;
+  /** 登录方式：ChatGPT 账号 / API Key；未登录或未知为 null */
+  authMode?: 'chatgpt' | 'apiKey' | null;
+  /** 套餐类型原始值（同 quota.planType）；还没读到为 null */
+  planType?: string | null;
+  /** 限额；还没读到 / 读取失败 / API Key 账号为 null */
+  quota?: CodexQuota | null;
+}
+
+export interface CodexAccountList {
+  /** 本机装了 codex；没装时 list 为空，不能添加 */
+  installed: boolean;
+  list: CodexAccountEntry[];
   /** 当前正在进行的登录，没有为 null */
   login: AccountLogin | null;
   /** list() 去重时隐藏的重复条目数（同一个真实账号添加了多次）；没有时省略或为 0 */
@@ -703,6 +820,8 @@ export interface SubagentCost {
   toolUseId: string | null;
   /** meta 里的 agentType，如 general-purpose / web-fetch；压缩等内部任务可能没有 */
   agentType?: string;
+  /** 来源后端：native = 原生 Claude 子代理；其余为委派后端 */
+  source?: 'native' | 'claude' | 'codex' | 'agy';
   /** 有 usage 的请求数 */
   requests: number;
   /** 能定价的请求的花费 */
@@ -713,6 +832,8 @@ export interface SubagentCost {
   unpriced: number;
   /** 出现过的模型 id（原样） */
   models: string[];
+  /** 逐次 API 请求的用量记录（turn 一律为 0；同 id 已合并 tools 与最大 output） */
+  points?: CachePoint[];
 }
 
 export type ToolLoadClass = 'resident' | 'deferred' | 'unknown';
@@ -1297,6 +1418,7 @@ export type ServerMsg =
   | { t: 'account.changed'; reload: boolean }
   /** Antigravity 账号列表 / 当前账号 / 登录状态变了：前端重取列表，并丢掉缓存的委派模型列表 */
   | { t: 'agy.changed' }
+  | { t: 'codex.changed' }
   /** 子代理配置或可用性变了（任一窗口改了设置、开关了代理类型、后端装上 / 卸载 / 登录状态变化）：前端重新 GET /api/subagents */
   | { t: 'subagents.changed' }
   | { t: 'context'; sessionId: string; usage: ContextUsage }

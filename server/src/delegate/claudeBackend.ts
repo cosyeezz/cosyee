@@ -9,6 +9,7 @@ import { apiFlagEnv, claudeEnv, findClaude, killTree, removePrivateSettings, spa
 import { type Json, LineSplitter, parseLine } from '../transcript.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
 import { NATIVE_SUBAGENT_TOOLS } from './mcp.js';
+import { ClaudeUsageAdapter } from './usage/claudeUsage.js';
 
 const isWin = process.platform === 'win32';
 const STDERR_TAIL_BYTES = 4 * 1024;
@@ -239,6 +240,9 @@ export class ClaudeStreamTranslator {
   }
 }
 
+const CLAUDE_EFFORTS = new Set<string>(EFFORTS.map((e) => e.id));
+const asClaudeEffort = (e: string | null | undefined): Effort | null => (e && CLAUDE_EFFORTS.has(e) ? (e as Effort) : null);
+
 /** 计算本次 Claude 委派新会话实际采用的模型与强度 */
 export function resolveClaudeDelegateParams(o: Pick<BackendRunOptions, 'sessionId' | 'defaults' | 'effort'>): {
   model: string | null;
@@ -246,7 +250,7 @@ export function resolveClaudeDelegateParams(o: Pick<BackendRunOptions, 'sessionI
 } {
   if (o.sessionId) return { model: null, effort: null };
   const model = o.defaults?.model ?? o.defaults?.parentModel ?? null;
-  const effort = o.defaults?.effort ?? o.effort ?? o.defaults?.parentEffort ?? null;
+  const effort = asClaudeEffort(o.defaults?.effort) ?? asClaudeEffort(o.effort) ?? o.defaults?.parentEffort ?? null;
   return { model, effort };
 }
 
@@ -312,6 +316,8 @@ export interface ClaudeBackendOptions {
   subagentAccountId?: () => string;
   /** 当前选中的 Claude 子代理账号是否已登录（便宜的本地检查，不启进程不联网）；不传默认为 true */
   isLoggedIn?: () => boolean;
+  /** 指定账号是否已登录（便宜的本地检查）：true / false；null = 账号不存在；不传 = 视为已登录 */
+  isAccountLoggedIn?: (accountId: string) => boolean | null;
   /** 启动子代理进程前准备其配置空间（建共享链接、同步 .claude.json、主→子同步凭据）；账号不存在返回 null */
   prepareAccount?: (accountId: string) => SubagentAccountContext | null;
   /** 子代理进程退出后回写凭据（子→主，较新者胜） */
@@ -334,6 +340,7 @@ export class ClaudeBackend implements DelegateBackend {
   private readonly resolveFn: () => string | null;
   private readonly subagentAccountIdFn?: () => string;
   private readonly isLoggedInFn?: () => boolean;
+  private readonly isAccountLoggedInFn?: (accountId: string) => boolean | null;
   private readonly prepareAccountFn?: ClaudeBackendOptions['prepareAccount'];
   private readonly finishAccountFn?: ClaudeBackendOptions['finishAccount'];
   private readonly resolveAccountFn?: ClaudeBackendOptions['resolveAccount'];
@@ -348,6 +355,7 @@ export class ClaudeBackend implements DelegateBackend {
     this.resolveFn = opts.resolve ?? findClaude;
     this.subagentAccountIdFn = opts.subagentAccountId;
     this.isLoggedInFn = opts.isLoggedIn;
+    this.isAccountLoggedInFn = opts.isAccountLoggedIn;
     this.prepareAccountFn = opts.prepareAccount;
     this.finishAccountFn = opts.finishAccount;
     this.resolveAccountFn = opts.resolveAccount;
@@ -363,7 +371,7 @@ export class ClaudeBackend implements DelegateBackend {
 
   private pickAccount(o: BackendRunOptions): SubagentAccountContext {
     const isResume = !!(o.sessionId && o.accountId);
-    const targetId = isResume ? o.accountId! : (this.subagentAccountIdFn?.() ?? o.account?.id ?? DEFAULT_ID);
+    const targetId = isResume ? o.accountId! : (o.routeAccountId ?? this.subagentAccountIdFn?.() ?? o.account?.id ?? DEFAULT_ID);
 
     if (this.prepareAccountFn) {
       let prepared: SubagentAccountContext | null;
@@ -374,7 +382,7 @@ export class ClaudeBackend implements DelegateBackend {
       }
       if (!prepared) {
         throw new BackendError(
-          isResume ? '创建这个委派会话的账号已移除，请新建委派' : '子代理账号不存在，请在账号管理里重新选择',
+          isResume ? '创建这个委派会话的账号已移除，请新建委派' : '子代理账号不存在，请在子代理设置里重新选择',
           o.sessionId,
           targetId,
         );
@@ -392,8 +400,21 @@ export class ClaudeBackend implements DelegateBackend {
       if (targetId === DEFAULT_ID) return { id: DEFAULT_ID, dir: null, mainDir: null };
       throw new BackendError('创建这个委派会话的账号已移除，请新建委派', o.sessionId, targetId);
     }
+    if (o.routeAccountId !== undefined && o.routeAccountId !== o.account?.id) {
+      const found = this.resolveAccountFn?.(o.routeAccountId) ?? (o.routeAccountId === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null);
+      if (!found) throw new BackendError('子代理账号不存在，请在子代理设置里重新选择', undefined, o.routeAccountId);
+      return { id: found.id, dir: found.dir, mainDir: found.dir };
+    }
     const base = o.account ?? { id: DEFAULT_ID, dir: null };
     return { id: base.id, dir: base.dir, mainDir: base.dir };
+  }
+
+  accountAvailability(accountId: string): SubagentAvailability {
+    if (this.getPath() === null) return { ok: false, reason: '未安装 Claude CLI' };
+    const logged = this.isAccountLoggedInFn?.(accountId);
+    if (logged === null) return { ok: false, reason: 'Claude 账号已移除' };
+    if (logged === false) return { ok: false, reason: 'Claude 账号未登录' };
+    return { ok: true };
   }
 
   availability(): SubagentAvailability {
@@ -458,6 +479,7 @@ export class ClaudeBackend implements DelegateBackend {
       let resultGraceTimer: ReturnType<typeof setTimeout> | null = null;
       let proc: ReturnType<typeof nodeSpawn> | null = null;
       const translator = new ClaudeStreamTranslator();
+      const usage = o.onUsage ? new ClaudeUsageAdapter() : null;
       const splitter = new LineSplitter();
 
       const decActiveOnce = () => {
@@ -606,6 +628,13 @@ export class ClaudeBackend implements DelegateBackend {
           try {
             o.onUpdate?.(u);
           } catch { /* 展示出错不影响执行 */ }
+        }
+        if (usage) {
+          for (const pt of usage.push(msg)) {
+            try {
+              o.onUsage?.(pt, usage.window());
+            } catch { /* 展示出错不影响执行 */ }
+          }
         }
         if (step.result) armResultGrace('输出结束后进程未退出');
       };

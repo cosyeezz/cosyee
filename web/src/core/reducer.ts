@@ -4,7 +4,7 @@
 
 import type { RunStatus, Turn } from '@cosyee/shared';
 import { batch, cloneTurn, finishTurn, isActive, type ConvState } from './reducer/core';
-import { buildFromHistory, buildSubagentTurn } from './reducer/history';
+import { buildFromHistory, buildSubagentHistory, buildSubagentTurn, type SubagentHistory } from './reducer/history';
 import { applyLive } from './reducer/live';
 import { trimCache } from './reducer/cacheHit';
 import { isObj, str, toolSummary } from './reducer/util';
@@ -101,6 +101,13 @@ export function rewindTo(s: ConvState, userId: string): ConvState {
 export function subagentTurnFromHistory(entries: unknown[], opts: { title: string; toolUseId: string }): Turn {
   return buildSubagentTurn(entries, opts);
 }
+
+/** 子代理 jsonl 条目 → 轮次 + 用量（cache / contextWindow） */
+export function subagentHistoryFromHistory(entries: unknown[], opts: { title: string; toolUseId: string; running?: boolean }): SubagentHistory {
+  return buildSubagentHistory(entries, opts);
+}
+
+export type { SubagentHistory };
 
 export { recordFuller, withRecord } from './reducer/delegate';
 

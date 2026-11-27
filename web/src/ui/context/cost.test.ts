@@ -112,10 +112,10 @@ describe('sessionCost', () => {
     const r = sessionCost({
       table: BUILTIN_PRICES,
       points: [],
-      subs: [sub({ agentId: 'x', requests: 2, unpriced: 2, models: ['gpt-5'] })],
+      subs: [sub({ agentId: 'x', requests: 2, unpriced: 2, models: ['glm-4.6'] })],
     });
     expect(r.unpriced).toBe(2);
-    expect(r.unpricedModels).toEqual(['gpt-5']);
+    expect(r.unpricedModels).toEqual(['glm-4.6']);
     expect(r.total).toBe(0);
     expect(r.requests).toBe(0);
   });
@@ -123,6 +123,81 @@ describe('sessionCost', () => {
   it('没有请求的轮也占一格', () => {
     const r = sessionCost({ table: BUILTIN_PRICES, turns: [turn('t0'), turn('t1'), turn('t2')], points: [pt({ id: 'a', turn: 1, input: 1 })] });
     expect(r.turns.map((t) => t.requests)).toEqual([0, 1, 0]);
+  });
+
+  it('合计去重：subCosts 与 run.cache 重叠按 toolUseId 去重，未覆盖的运行中子代理用 run.cache 补齐，并按来源/类型拆分', () => {
+    const t0: Turn = {
+      id: 't0',
+      userText: '派任务',
+      attachments: [],
+      status: 'running',
+      statusText: '',
+      steps: [],
+      answer: '',
+      startedAt: 0,
+      subagents: [
+        {
+          toolUseId: 'tu_done',
+          title: '已完成原生',
+          subagentType: 'Explore',
+          status: 'done',
+          model: S45,
+          // 即使 run.cache 也有数据，subCosts 已覆盖 tu_done，不能重复计
+          cache: [pt({ id: 'dup', turn: 0, input: 1_000_000 })],
+          turn: {} as Turn,
+        },
+        {
+          toolUseId: 'tu_live',
+          title: '运行中 Codex',
+          subagentType: 'general-purpose',
+          delegate: true,
+          status: 'running',
+          model: 'gpt-5.3-codex',
+          cache: [pt({ id: 'live1', turn: 0, input: 100_000, create: 0, read: 0, output: 1000, model: 'gpt-5.3-codex' })],
+          turn: {} as Turn,
+        },
+        {
+          toolUseId: 'tu_agy',
+          title: '已完成 Agy',
+          subagentType: 'Explore',
+          delegate: true,
+          status: 'done',
+          model: 'gemini-4-neon',
+          turn: {} as Turn,
+        },
+      ],
+    };
+
+    const r = sessionCost({
+      table: BUILTIN_PRICES,
+      turns: [t0],
+      points: [pt({ id: 'm1', turn: 0, input: 100_000, output: 0 })], // $0.30
+      subs: [
+        sub({ agentId: 'ag1', toolUseId: 'tu_done', agentType: 'Explore', source: 'native', cost: { input: 0, write: 0, read: 0, output: 0.2 } }),
+        sub({ agentId: 'ag2', toolUseId: 'tu_agy', agentType: 'Explore', source: 'agy', cost: { input: 0.1, write: 0, read: 0, output: 0.05 } }),
+      ],
+      billing: 'api',
+    });
+
+    // codex 实时：100k * 1.75 / 1M + 1000 * 14 / 1M = 0.175 + 0.014 = 0.189
+    expect(r.bySource.main).toBeCloseTo(0.3, 6);
+    expect(r.bySource.native).toBeCloseTo(0.2, 6);
+    expect(r.bySource.agy).toBeCloseTo(0.15, 6);
+    expect(r.bySource.codex).toBeCloseTo(0.189, 6);
+    expect(r.bySource.claude).toBe(0);
+    expect(r.total).toBeCloseTo(0.3 + 0.2 + 0.15 + 0.189, 6);
+    expect(r.turns[0]!.subRuns).toBe(3);
+
+    // 按类型明细
+    expect(r.byType.map((x) => [x.source, x.agentType, x.count, x.toolUseIds])).toEqual([
+      ['native', 'Explore', 1, ['tu_done']],
+      ['codex', 'general-purpose', 1, ['tu_live']],
+      ['agy', 'Explore', 1, ['tu_agy']],
+    ]);
+
+    // 混合计费：主线程与原生是 api，codex 与 agy 是订阅
+    expect(r.mixedBilling).toBe(true);
+    expect(r.subscriptionSources).toEqual(['codex', 'agy']);
   });
 });
 

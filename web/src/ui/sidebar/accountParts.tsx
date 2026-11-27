@@ -1,6 +1,6 @@
 // 账号弹层（AccountMenu）和管理面板（AccountManager）共用的小工具与小组件。
 import { useState, type CSSProperties } from 'react';
-import type { AccountApiInfo, AccountDedupeResult, AccountEntry, AccountLogin, AgyAccountEntry } from '@cosyee/shared';
+import type { AccountApiInfo, AccountDedupeResult, AccountEntry, AccountLogin, AgyAccountEntry, CodexAccountEntry } from '@cosyee/shared';
 import { Icon } from '../icons/Icon';
 import { avatarColor, avatarInitial } from './avatar';
 
@@ -57,10 +57,39 @@ export function agyRemoveBlock(a: AgyAccountEntry): string | null {
   return null;
 }
 
-/** 名字后面的套餐小标签：「Google AI Pro」→「Pro」；没有套餐返回 null */
+/** Codex 账号不能移除的原因（和服务端一致）；能移除返回 null */
+export function codexRemoveBlock(a: CodexAccountEntry): string | null {
+  if (a.isDefault) return '默认账号不能移除';
+  if (a.running > 0) return `有 ${a.running} 个委派任务正在执行，结束后才能移除`;
+  return null;
+}
+
+const PLAN_LABELS: Record<string, string> = {
+  plus: 'Plus',
+  pro: 'Pro',
+  team: 'Team',
+  business: 'Business',
+  enterprise: 'Enterprise',
+  edu: 'Edu',
+  free: 'Free',
+  apikey: 'API Key',
+  'api key': 'API Key',
+  api_key: 'API Key',
+};
+
+/** 名字后面的套餐小标签：「Google AI Pro」→「Pro」，Codex 原始套餐名映射为标准写法；没有套餐返回 null */
 export function planChip(plan: string | null | undefined): string | null {
   const s = (plan ?? '').replace(/^google\s+ai\s+/i, '').trim();
-  return s || null;
+  if (!s) return null;
+  return PLAN_LABELS[s.toLowerCase()] ?? s;
+}
+
+/** Codex 套餐标签：优先 planType / plan，API Key 账号无套餐时显示「API Key」 */
+export function codexPlan(a: Pick<CodexAccountEntry, 'plan' | 'planType' | 'authMode'>): string | null {
+  const chip = planChip(a.planType ?? a.plan);
+  if (chip) return chip;
+  if (a.authMode === 'apiKey') return 'API Key';
+  return null;
 }
 
 /** Antigravity 标题：备注名 → 登录邮箱 → 「Antigravity 账号」 */
@@ -74,6 +103,22 @@ export function agySubtitle(a: AgyAccountEntry): string {
   if (a.running > 0) parts.push(`${a.running} 个执行中`);
   if (a.email && a.email !== agyTitle(a)) parts.push(a.email);
   if (a.loggedIn === false) parts.push('需要登录');
+  return parts.join(' · ');
+}
+
+/** Codex 标题：备注名 → 登录邮箱 → 默认账号「本机 Codex」 → 「Codex 账号」 */
+export function codexTitle(a: CodexAccountEntry): string {
+  return a.label || a.email || (a.isDefault ? '本机 Codex' : 'Codex 账号');
+}
+
+/** Codex 副标题：N 个执行中 · 邮箱（标题是备注名时）· API Key · 需要登录 / 正在检测 */
+export function codexSubtitle(a: CodexAccountEntry): string {
+  const parts: string[] = [];
+  if (a.running > 0) parts.push(`${a.running} 个执行中`);
+  if (a.email && a.email !== codexTitle(a)) parts.push(a.email);
+  if (a.authMode === 'apiKey') parts.push('API Key');
+  if (a.loggedIn === false) parts.push('需要登录');
+  else if (a.loggedIn === null) parts.push('正在检测…');
   return parts.join(' · ');
 }
 

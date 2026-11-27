@@ -66,21 +66,18 @@ describe('配置校验与落盘（agents 类型覆写）', () => {
           'not-obj': 'opus',
         },
       },
-      claude: {
-        ...base.claude,
+      delegate: {
+        default: { backend: 'claude', accountId: 'default', model: 'sonnet', effort: 'medium' },
         agents: {
-          'my-agent': { model: 'opus', effort: null },
-          'plugin:review': { model: 'sonnet', effort: 'max' },
-          'drop-null': { model: null, effort: null },
-        },
-      },
-      agy: {
-        ...base.agy,
-        agents: {
-          Explore: { model: 'gemini-3-flash', effort: 'low' },
-          'too-long': { model: 'a'.repeat(121), effort: null },
-          'max-len': { model: 'a'.repeat(120), effort: null },
-          'with-space': { model: 'bad model', effort: 'high' },
+          'my-agent': { backend: 'claude', accountId: 'default', model: 'opus', effort: null },
+          'plugin:review': { backend: 'claude', accountId: 'acc1', model: 'sonnet', effort: 'max' },
+          Explore: { backend: 'agy', accountId: 'agy1', model: 'gemini-3-flash', effort: 'low' },
+          'too-long': { backend: 'agy', accountId: 'agy1', model: 'a'.repeat(121), effort: null },
+          'max-len': { backend: 'agy', accountId: 'agy1', model: 'a'.repeat(120), effort: null },
+          'with-space': { backend: 'agy', accountId: 'agy1', model: 'bad model', effort: 'high' },
+          'bad-backend': { backend: 'unknown', accountId: 'x', model: null, effort: null },
+          'bad-account': { backend: 'claude', accountId: 'bad id!', model: null, effort: null },
+          'bad name': { backend: 'claude', accountId: 'default', model: 'opus', effort: null },
         },
       },
     };
@@ -90,20 +87,20 @@ describe('配置校验与落盘（agents 类型覆写）', () => {
       Explore: { model: 'haiku', effort: 'low' },
       Plan: { model: null, effort: 'high' },
     });
-    expect(parsed!.claude.agents).toEqual({
-      'my-agent': { model: 'opus', effort: null },
-      'plugin:review': { model: 'sonnet', effort: 'max' },
-    });
-    expect(parsed!.agy.agents).toEqual({
-      Explore: { model: 'gemini-3-flash', effort: 'low' },
-      'max-len': { model: 'a'.repeat(120), effort: null },
+    expect(parsed!.delegate.agents).toEqual({
+      'my-agent': { backend: 'claude', accountId: 'default', model: 'opus', effort: null },
+      'plugin:review': { backend: 'claude', accountId: 'acc1', model: 'sonnet', effort: 'max' },
+      Explore: { backend: 'agy', accountId: 'agy1', model: 'gemini-3-flash', effort: 'low' },
+      'too-long': { backend: 'agy', accountId: 'agy1', model: null, effort: null },
+      'max-len': { backend: 'agy', accountId: 'agy1', model: 'a'.repeat(120), effort: null },
+      'with-space': { backend: 'agy', accountId: 'agy1', model: null, effort: 'high' },
     });
   });
 
   it('顶层 agents 非对象（数组 / null / 原始值）返回 null（400）', () => {
     expect(parseSubagents({ ...base, native: { ...base.native, agents: [] } })).toBeNull();
-    expect(parseSubagents({ ...base, claude: { ...base.claude, agents: null } })).toBeNull();
-    expect(parseSubagents({ ...base, agy: { ...base.agy, agents: 'bad' } })).toBeNull();
+    expect(parseSubagents({ ...base, delegate: { ...base.delegate, agents: null } })).toBeNull();
+    expect(parseSubagents({ ...base, delegate: { ...base.delegate, agents: 'bad' } })).toBeNull();
   });
 
   it('最多保留 200 项；全丢弃时不保留空 agents 字段；老配置无 agents 照常可用', async () => {
@@ -261,13 +258,12 @@ describe('GET / POST /api/subagents?cwd= 与代理类型列表', () => {
       // 3. POST /api/subagents?cwd=... 带覆写保存并在返回的 state 中包含 agents 与 disabledAgents
       const nextCfg: SubagentConfig = {
         ...structuredClone(DEFAULT_SUBAGENTS),
-        kind: 'claude',
-        claude: {
-          model: 'sonnet',
-          effort: 'medium',
+        mode: 'delegate',
+        delegate: {
+          default: { backend: 'claude', accountId: 'default', model: 'sonnet', effort: 'medium' },
           agents: {
-            Explore: { model: 'haiku', effort: 'low' },
-            'bad name': { model: 'opus', effort: 'high' } as any,
+            Explore: { backend: 'claude', accountId: 'default', model: 'haiku', effort: 'low' },
+            'bad name': { backend: 'claude', accountId: 'default', model: 'opus', effort: 'high' } as any,
           },
         },
       };
@@ -279,7 +275,9 @@ describe('GET / POST /api/subagents?cwd= 与代理类型列表', () => {
       expect(postRes.status).toBe(200);
       const body = (await postRes.json()) as { ok: boolean; state: SubagentState };
       expect(body.ok).toBe(true);
-      expect(body.state.config.claude.agents).toEqual({ Explore: { model: 'haiku', effort: 'low' } });
+      expect(body.state.config.delegate.agents).toEqual({
+        Explore: { backend: 'claude', accountId: 'default', model: 'haiku', effort: 'low' },
+      });
       expect(body.state.agents?.some((a) => a.name === 'reviewer')).toBe(true);
       expect(body.state.disabledAgents).toEqual(['Explore', 'reviewer']);
 
@@ -642,7 +640,11 @@ describe('多窗口同步（subagents.changed 广播）', () => {
     const countSub = () => msgs.filter((m) => m.t === 'subagents.changed').length;
 
     // 1. setSubagents 广播一次
-    await manager.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' });
+    await manager.setSubagents({
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend: 'claude', accountId: 'default', model: null, effort: null } },
+    });
     expect(countSub()).toBe(1);
 
     // 2. setAgentEnabled 实际变化广播一次，重复设置相同值不再广播
@@ -787,6 +789,7 @@ describe('登录检测（防抖动）与 fallbackReason', () => {
     const claudeBackend = new ClaudeBackend({
       resolve: () => claudeBin,
       isLoggedIn: () => claudeLoggedIn,
+      isAccountLoggedIn: () => claudeLoggedIn,
     });
     const agyBackend = new AgyBackend({
       resolve: () => agyBin,
@@ -794,6 +797,7 @@ describe('登录检测（防抖动）与 fallbackReason', () => {
         activeAccount: () => ({ id: 'default', dir: null }),
         accountFor: () => ({ id: 'default', dir: null }),
         isLoggedIn: () => agyLoggedIn,
+        isAccountLoggedIn: () => agyLoggedIn,
       },
     });
 
@@ -813,17 +817,24 @@ describe('登录检测（防抖动）与 fallbackReason', () => {
       },
     });
 
+    const delegateCfg = (backend: 'claude' | 'agy'): SubagentConfig => ({
+      ...structuredClone(DEFAULT_SUBAGENTS),
+      mode: 'delegate',
+      delegate: { default: { backend, accountId: 'default', model: null, effort: null } },
+    });
+
     // 1. 选 claude 但未登录 -> 退回 native，带 fallbackReason
-    const s1 = await manager.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'claude' });
-    expect(s1.available.claude).toEqual({ ok: false, reason: 'Claude 子代理账号未登录' });
+    const s1 = await manager.setSubagents(delegateCfg('claude'));
+    expect(claudeBackend.availability()).toEqual({ ok: false, reason: 'Claude 子代理账号未登录' });
+    expect(claudeBackend.accountAvailability('default')).toEqual({ ok: false, reason: 'Claude 账号未登录' });
     expect(s1.effective).toBe('native');
-    expect(s1.fallbackReason).toBe('Claude 子代理账号未登录');
+    expect(s1.fallbackReason).toBe('Claude 账号未登录');
 
     // 2. Claude 登录后 -> 不再退回，无 fallbackReason
     claudeLoggedIn = true;
     const s2 = manager.subagentState();
-    expect(s2.available.claude).toEqual({ ok: true });
-    expect(s2.effective).toBe('claude');
+    expect(claudeBackend.accountAvailability('default')).toEqual({ ok: true });
+    expect(s2.effective).toBe('delegate');
     expect(s2.fallbackReason).toBeUndefined();
 
     // 3. 工具面板停用 delegate -> 退回 native，fallbackReason 为停用原因
@@ -834,8 +845,8 @@ describe('登录检测（防抖动）与 fallbackReason', () => {
     await manager.setToolEnabled(DELEGATE_TOOL_NAME, true);
 
     // 4. 选 agy 但未安装 -> 退回 native
-    const s4 = await manager.setSubagents({ ...structuredClone(DEFAULT_SUBAGENTS), kind: 'agy' });
-    expect(s4.available.agy).toEqual({ ok: false, reason: '未安装 Antigravity CLI' });
+    const s4 = await manager.setSubagents(delegateCfg('agy'));
+    expect(agyBackend.accountAvailability('default')).toEqual({ ok: false, reason: '未安装 Antigravity CLI' });
     expect(s4.effective).toBe('native');
     expect(s4.fallbackReason).toBe('未安装 Antigravity CLI');
 
@@ -843,19 +854,20 @@ describe('登录检测（防抖动）与 fallbackReason', () => {
     agyBin = 'fake-agy';
     agyLoggedIn = false;
     const s5 = manager.subagentState();
-    expect(s5.available.agy).toEqual({ ok: false, reason: 'Antigravity 账号未登录' });
+    expect(agyBackend.accountAvailability('default')).toEqual({ ok: false, reason: 'Antigravity 账号未登录' });
     expect(s5.effective).toBe('native');
     expect(s5.fallbackReason).toBe('Antigravity 账号未登录');
 
     // 6. agy 未知（null，后台探测中）不误判为未登录
     agyLoggedIn = null;
     const s6 = manager.subagentState();
-    expect(s6.available.agy).toEqual({ ok: true });
-    expect(s6.effective).toBe('agy');
+    expect(agyBackend.accountAvailability('default')).toEqual({ ok: true });
+    expect(s6.effective).toBe('delegate');
     expect(s6.fallbackReason).toBeUndefined();
 
     // 7. claude 未安装时优先报未安装
     claudeBin = null;
     expect(claudeBackend.availability()).toEqual({ ok: false, reason: '未安装 Claude CLI' });
+    expect(claudeBackend.accountAvailability('default')).toEqual({ ok: false, reason: '未安装 Claude CLI' });
   });
 });

@@ -17,6 +17,8 @@ export interface AppShellProps {
   /** 右侧上下文栏收起（收起按钮在面板里，展开按钮在顶部右侧） */
   contextCollapsed?: boolean;
   onToggleContext?: () => void;
+  /** 顶栏右侧额外按钮（例如无客户端标题栏时的两步验证入口） */
+  topActions?: ReactNode;
   /** 窄屏：两侧栏改为浮层抽屉（collapsed=false 表示抽屉打开） */
   narrow?: boolean;
   /** 窄屏下点遮罩：关掉打开的抽屉 */
@@ -27,7 +29,7 @@ export interface AppShellProps {
 
 export function AppShell({
   sidebar, header, main, context, sidebarCollapsed, onToggleSidebar, onNewSession, contextCollapsed = false, onToggleContext,
-  narrow = false, onDismiss, bottom,
+  topActions, narrow = false, onDismiss, bottom,
 }: AppShellProps) {
   const centerRef = useRef<HTMLDivElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -72,16 +74,21 @@ export function AppShell({
             </div>
           )}
           <div className="cz-shell__header">{header}</div>
-          {contextCollapsed && onToggleContext && (
-            <button
-              type="button"
-              className="cz-shell__expand cz-shell__expand--right"
-              onClick={onToggleContext}
-              title="展开上下文栏"
-              aria-label="展开上下文栏"
-            >
-              <Icon name="panel-expand" size={18} />
-            </button>
+          {(topActions || (contextCollapsed && onToggleContext)) && (
+            <div className="cz-shell__trail">
+              {topActions}
+              {contextCollapsed && onToggleContext && (
+                <button
+                  type="button"
+                  className="cz-shell__expand cz-shell__expand--right"
+                  onClick={onToggleContext}
+                  title="展开上下文栏"
+                  aria-label="展开上下文栏"
+                >
+                  <Icon name="panel-expand" size={18} />
+                </button>
+              )}
+            </div>
           )}
         </div>
         <div className="cz-shell__main">{main}</div>

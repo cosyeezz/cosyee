@@ -75,6 +75,16 @@ export function agyAccountsRoot(): string {
   return process.env.COSYEE_AGY_ACCOUNTS_DIR || path.join(cosyeeHome(), 'agy-accounts');
 }
 
+/** Codex 额外账号的 CODEX_HOME 根目录（每个账号一个子目录）。可用 COSYEE_CODEX_ACCOUNTS_DIR 覆盖（测试用）。 */
+export function codexAccountsRoot(): string {
+  return process.env.COSYEE_CODEX_ACCOUNTS_DIR || path.join(cosyeeHome(), 'codex-accounts');
+}
+
+/** 本机 codex 自己的数据目录（默认账号）：CODEX_HOME 或 ~/.codex */
+export function baseCodexHome(): string {
+  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
 /**
  * cwd -> ~/.claude/projects 下的目录名：每个非 ASCII 字母数字字符各换成一个 `-`。
  * 有损且不可逆（见 spike/FINDINGS2.md B2 §1）。

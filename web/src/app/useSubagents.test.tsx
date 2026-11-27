@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { DEFAULT_SUBAGENTS, type SubagentConfig, type SubagentState } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS, type SubagentAccountOption, type SubagentConfig, type SubagentMode, type SubagentRoute, type SubagentState } from '@cosyee/shared';
 import { api } from '../core/api';
 import { isSubagentState, useSubagents } from './useSubagents';
 
@@ -11,16 +11,25 @@ import { isSubagentState, useSubagents } from './useSubagents';
 let root: Root | null = null;
 let host: HTMLElement;
 
-const allOk: SubagentState['available'] = {
-  native: { ok: true },
-  claude: { ok: true },
-  agy: { ok: true },
-};
+const sampleAccounts: SubagentAccountOption[] = [
+  { backend: 'claude', id: 'default', label: 'cosyeey', group: 'claude' },
+  { backend: 'agy', id: 'agy-1', label: 'alex@example.com', group: 'agy' },
+];
 
-const mkState = (kind: SubagentConfig['kind'] = 'native', over: Partial<SubagentState> = {}): SubagentState => ({
-  config: { ...DEFAULT_SUBAGENTS, kind },
-  available: allOk,
-  effective: kind,
+const claudeRoute: SubagentRoute = { backend: 'claude', accountId: 'default', model: null, effort: null };
+const agyRoute: SubagentRoute = { backend: 'agy', accountId: 'agy-1', model: 'neon', effort: 'high' };
+
+const mkCfg = (mode: SubagentMode = 'native', def: SubagentRoute | null = mode === 'delegate' ? claudeRoute : null): SubagentConfig => ({
+  ...DEFAULT_SUBAGENTS,
+  mode,
+  delegate: { default: def },
+});
+
+const mkState = (mode: SubagentMode = 'native', over: Partial<SubagentState> = {}): SubagentState => ({
+  config: mkCfg(mode),
+  effective: mode,
+  accounts: sampleAccounts,
+  routeFallbacks: {},
   ...over,
 });
 
@@ -63,11 +72,13 @@ function mountHook(flash = vi.fn(), initialCwd?: string | null) {
 
 describe('isSubagentState', () => {
   it('校验合法与非预期结构', () => {
-    expect(isSubagentState(mkState('claude'))).toBe(true);
+    expect(isSubagentState(mkState('delegate'))).toBe(true);
+    expect(isSubagentState(mkState('native'))).toBe(true);
     expect(isSubagentState(null)).toBe(false);
     expect(isSubagentState({})).toBe(false);
-    expect(isSubagentState({ config: DEFAULT_SUBAGENTS, available: allOk, effective: 'bad' })).toBe(false);
-    expect(isSubagentState({ config: { kind: 'native' }, available: allOk, effective: 'native' })).toBe(false);
+    expect(isSubagentState({ config: DEFAULT_SUBAGENTS, effective: 'bad', accounts: [], routeFallbacks: {} })).toBe(false);
+    expect(isSubagentState({ config: { mode: 'native' }, effective: 'native', accounts: [], routeFallbacks: {} })).toBe(false);
+    expect(isSubagentState({ config: DEFAULT_SUBAGENTS, effective: 'native', accounts: 'not-array', routeFallbacks: {} })).toBe(false);
   });
 });
 
@@ -85,33 +96,34 @@ describe('useSubagents', () => {
     expect(h.get().subagents).toBeNull();
   });
 
-  it('快速连续点击切换（竞态）：先发请求慢、后发请求快，旧响应不覆盖新状态', async () => {
+  it('快速连续切换（竞态）：先发请求慢、后发请求快，旧响应不覆盖新状态', async () => {
     vi.spyOn(api, 'subagents').mockResolvedValueOnce(mkState('native'));
-    const slowClaude = deferred<{ ok: true; state: SubagentState }>();
-    const fastAgy = deferred<{ ok: true; state: SubagentState }>();
+    const slowFirst = deferred<{ ok: true; state: SubagentState }>();
+    const fastSecond = deferred<{ ok: true; state: SubagentState }>();
     vi.spyOn(api, 'saveSubagents')
-      .mockReturnValueOnce(slowClaude.promise)
-      .mockReturnValueOnce(fastAgy.promise);
+      .mockReturnValueOnce(slowFirst.promise)
+      .mockReturnValueOnce(fastSecond.promise);
 
     const h = mountHook();
     await flush();
-    expect(h.get().subagents?.config.kind).toBe('native');
+    expect(h.get().subagents?.config.mode).toBe('native');
 
-    // 先切 claude（慢），立刻再切 agy（快）
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'claude' }));
-    expect(h.get().subagents?.config.kind).toBe('claude');
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'agy' }));
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    const cfg1 = mkCfg('delegate', claudeRoute);
+    const cfg2 = mkCfg('delegate', agyRoute);
+    act(() => h.get().changeSubagents(cfg1));
+    expect(h.get().subagents?.config.delegate.default).toEqual(claudeRoute);
+    act(() => h.get().changeSubagents(cfg2));
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
 
-    // 后发的 agy 先返回
-    fastAgy.resolve({ ok: true, state: mkState('agy') });
+    // 后发的先返回
+    fastSecond.resolve({ ok: true, state: mkState('delegate', { config: cfg2 }) });
     await flush();
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
 
-    // 先发的 claude 后返回，必须被忽略
-    slowClaude.resolve({ ok: true, state: mkState('claude') });
+    // 先发的后返回，必须被忽略
+    slowFirst.resolve({ ok: true, state: mkState('delegate', { config: cfg1 }) });
     await flush();
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
   });
 
   it('保存失败时提示并回滚；若回滚请求也失败（断网），退回上一次服务端确认状态', async () => {
@@ -122,14 +134,12 @@ describe('useSubagents', () => {
 
     const h = mountHook();
     await flush();
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'claude' }));
-    // 乐观更新生效
-    expect(h.get().subagents?.config.kind).toBe('claude');
+    act(() => h.get().changeSubagents(mkCfg('delegate', claudeRoute)));
+    expect(h.get().subagents?.config.mode).toBe('delegate');
     await flush();
 
     expect(h.flash).toHaveBeenCalledWith('保存子代理设置失败：save failed');
-    // 虽然回滚 GET 也失败，仍应恢复到上次确认的 native
-    expect(h.get().subagents?.config.kind).toBe('native');
+    expect(h.get().subagents?.config.mode).toBe('native');
   });
 
   it('先发请求失败不打扰也不回滚后续已发出的新切换请求', async () => {
@@ -143,28 +153,32 @@ describe('useSubagents', () => {
     const h = mountHook();
     await flush();
 
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'claude' }));
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'agy' }));
+    const cfg1 = mkCfg('delegate', claudeRoute);
+    const cfg2 = mkCfg('delegate', agyRoute);
+    act(() => h.get().changeSubagents(cfg1));
+    act(() => h.get().changeSubagents(cfg2));
 
     failFirst.reject(new Error('old error'));
     await flush();
     expect(h.flash).not.toHaveBeenCalled();
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
 
-    okSecond.resolve({ ok: true, state: mkState('agy') });
+    okSecond.resolve({ ok: true, state: mkState('delegate', { config: cfg2 }) });
     await flush();
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
   });
 
   it('重连刷新可从退回原生恢复到可用状态；组件卸载后异步响应不触发报错', async () => {
-    const initial = mkState('agy', {
-      available: { native: { ok: true }, claude: { ok: true }, agy: { ok: false, reason: '未登录' } },
+    const initial = mkState('delegate', {
+      config: mkCfg('delegate', agyRoute),
       effective: 'native',
+      accounts: [],
+      fallbackReason: '默认账号未登录',
     });
     const pending = deferred<SubagentState>();
     vi.spyOn(api, 'subagents')
       .mockResolvedValueOnce(initial)
-      .mockResolvedValueOnce(mkState('agy'))
+      .mockResolvedValueOnce(mkState('delegate', { config: mkCfg('delegate', agyRoute) }))
       .mockReturnValueOnce(pending.promise);
 
     const h = mountHook();
@@ -173,28 +187,27 @@ describe('useSubagents', () => {
 
     act(() => h.get().refreshSubagents());
     await flush();
-    expect(h.get().subagents?.effective).toBe('agy');
+    expect(h.get().subagents?.effective).toBe('delegate');
 
-    // 触发请求后立即卸载，再 resolve 不应抛出异常
     act(() => h.get().refreshSubagents());
     act(() => root!.unmount());
-    pending.resolve(mkState('claude'));
+    pending.resolve(mkState('native'));
     await flush();
   });
 
   it('带 cwd 请求并在切换工作区时重新拉取；保存设置也带 cwd', async () => {
     const getSpy = vi.spyOn(api, 'subagents').mockResolvedValue(mkState('native'));
-    const saveSpy = vi.spyOn(api, 'saveSubagents').mockResolvedValue({ ok: true, state: mkState('claude') });
+    const nextCfg = mkCfg('delegate', claudeRoute);
+    const saveSpy = vi.spyOn(api, 'saveSubagents').mockResolvedValue({ ok: true, state: mkState('delegate', { config: nextCfg }) });
 
     const h = mountHook(vi.fn(), 'F:\\proj-a');
     await flush();
     expect(getSpy).toHaveBeenLastCalledWith('F:\\proj-a');
 
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'claude' }));
+    act(() => h.get().changeSubagents(nextCfg));
     await flush();
-    expect(saveSpy).toHaveBeenLastCalledWith({ ...DEFAULT_SUBAGENTS, kind: 'claude' }, 'F:\\proj-a');
+    expect(saveSpy).toHaveBeenLastCalledWith(nextCfg, 'F:\\proj-a');
 
-    // 切换工作区：自动用新 cwd 重新拉取
     h.setCwd('F:\\proj-b');
     await flush();
     expect(getSpy).toHaveBeenLastCalledWith('F:\\proj-b');
@@ -215,7 +228,6 @@ describe('useSubagents', () => {
     await flush();
     expect(h.get().subagents?.disabledAgents).toEqual(['Plan']);
 
-    // 关闭 Explore：立即乐观更新
     let p1!: Promise<boolean>;
     act(() => { p1 = h.get().toggleAgent('Explore', false); });
     expect(h.get().subagents?.disabledAgents).toEqual(['Plan', 'Explore']);
@@ -225,7 +237,6 @@ describe('useSubagents', () => {
     expect(getSpy).toHaveBeenCalledTimes(2);
     expect(h.get().subagents?.disabledAgents).toEqual(['Plan', 'Explore']);
 
-    // 再尝试开启 Plan 但请求失败（且回滚 GET 也失败）：应提示并回滚到上次确认态
     let p2!: Promise<boolean>;
     act(() => { p2 = h.get().toggleAgent('Plan', true); });
     expect(h.get().subagents?.disabledAgents).toEqual(['Explore']);
@@ -236,9 +247,11 @@ describe('useSubagents', () => {
   });
 
   it('有未完成的保存请求时，外部广播触发的 refreshSubagents 不发请求、不覆盖乐观更新、不废掉在途保存', async () => {
+    const nextCfg = mkCfg('delegate', claudeRoute);
+    const agyCfg = mkCfg('delegate', agyRoute);
     const getSpy = vi.spyOn(api, 'subagents')
       .mockResolvedValueOnce(mkState('native'))
-      .mockResolvedValueOnce(mkState('agy'));
+      .mockResolvedValueOnce(mkState('delegate', { config: agyCfg }));
     const pendingSave = deferred<{ ok: true; state: SubagentState }>();
     vi.spyOn(api, 'saveSubagents').mockReturnValueOnce(pendingSave.promise);
 
@@ -246,25 +259,21 @@ describe('useSubagents', () => {
     await flush();
     expect(getSpy).toHaveBeenCalledTimes(1);
 
-    // 发起保存请求（尚未返回）
-    act(() => h.get().changeSubagents({ ...DEFAULT_SUBAGENTS, kind: 'claude' }));
-    expect(h.get().subagents?.config.kind).toBe('claude');
+    act(() => h.get().changeSubagents(nextCfg));
+    expect(h.get().subagents?.config.mode).toBe('delegate');
 
-    // 保存途中收到 subagents.changed 触发 refreshSubagents：应跳过
     act(() => h.get().refreshSubagents());
     await flush();
     expect(getSpy).toHaveBeenCalledTimes(1);
-    expect(h.get().subagents?.config.kind).toBe('claude');
+    expect(h.get().subagents?.config.delegate.default).toEqual(claudeRoute);
 
-    // 在途保存返回：状态正常应用
-    pendingSave.resolve({ ok: true, state: mkState('claude') });
+    pendingSave.resolve({ ok: true, state: mkState('delegate', { config: nextCfg }) });
     await flush();
-    expect(h.get().subagents?.config.kind).toBe('claude');
+    expect(h.get().subagents?.config.delegate.default).toEqual(claudeRoute);
 
-    // 保存完成后，再次收到 subagents.changed 触发 refreshSubagents：正常拉取新状态
     act(() => h.get().refreshSubagents());
     await flush();
     expect(getSpy).toHaveBeenCalledTimes(2);
-    expect(h.get().subagents?.config.kind).toBe('agy');
+    expect(h.get().subagents?.config.delegate.default).toEqual(agyRoute);
   });
 });

@@ -1,0 +1,80 @@
+/* 统一用量统计看板的底部网格布局（layout="dock"，用于子代理浮层底部统计区）。
+ * 容器查询根据自身宽度自动在 4 列 / 2×2 / 1 列之间切换；配色变量沿用 ContextPanel.css。 */
+.cz-ub-dock {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.cz-ub-dock__card {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-elev);
+}
+.cz-ub-dock__card:is(:hover, :focus-within) { z-index: 2; }
+.cz-ub-dock__card > .cz-ctx__sub { margin: 0; }
+.cz-ub-dock__card > .cz-ctx__overview {
+  gap: 2px var(--sp-2);
+  align-items: baseline;
+}
+
+.cz-ub-dock__percent {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.cz-ub-dock__used {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cz-ub-dock__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cz-ub-dock__leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+  transition: color var(--dur-fast) var(--ease);
+}
+.cz-ub-dock__leg.is-hot { color: var(--text); }
+.cz-ub-dock__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+.cz-ub-dock__leg-val {
+  color: var(--text-2);
+}
+
+/* 窄浮层退化为 2×2；极窄手机屏单列 */
+@container cz-subdock (max-width: 639.9px) {
+  .cz-ub-dock {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container cz-subdock (max-width: 339.9px) {
+  .cz-ub-dock {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -5,22 +5,27 @@ import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ClientMsg, PriceTable, ServerMsg } from '@cosyee/shared';
+import type { ClientMsg, PriceTable, ServerMsg, SubagentAccountOption } from '@cosyee/shared';
 import { WebSocket, WebSocketServer } from 'ws';
 import { AccountProvider } from './account.js';
 import { AgyAccounts } from './accounts/agy.js';
+import { CodexAccounts } from './accounts/codex.js';
 import { Accounts, DEFAULT_ID } from './accounts/index.js';
 import { setBeforeClaudeEnv } from './claude/bin.js';
 import { Manager } from './claude/manager.js';
 import type { RunnerTimings } from './claude/runner.js';
 import { AcpPool, AgyBackend } from './delegate/acp.js';
 import { ClaudeBackend } from './delegate/claudeBackend.js';
+import { resolveCodexInfo } from './delegate/codex.js';
+import { CodexBackend, CodexPool } from './delegate/codexAppServer.js';
+import { CodexCli } from './delegate/codexCli.js';
 import { BrowserInstall } from './browser/install.js';
 import { BrowserManager } from './browser/manager.js';
 import { ensureBrowserPlugin } from './browser/skill.js';
 import { createAgyAdapter } from './components/agy.js';
 import { createBrowserAdapter } from './components/browser.js';
 import { createClaudeAdapter } from './components/claude.js';
+import { createCodexAdapter } from './components/codex.js';
 import { createKiroAdapter } from './components/kiro.js';
 import { createServerAdapter } from './components/server.js';
 import { ComponentUpdater } from './components/updater.js';
@@ -140,8 +145,19 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // 多账号：manager / sessions 与 accounts 互相需要，同样用闭包延后取
   let accounts: Accounts | null = null;
   let agyAccounts: AgyAccounts | null = null;
+  let codexAccounts: CodexAccounts | null = null;
   let kiro: KiroService | null = null;
-  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? '' });
+  // 保活委派路线里用到的 agy / codex 账号（子代理模式为 delegate 时）
+  const heldAccountsFor = (backend: 'agy' | 'codex'): string[] => {
+    const cfg = store.state.subagents;
+    if (cfg.mode !== 'delegate') return [];
+    const ids: string[] = [];
+    for (const r of [cfg.delegate.default, ...Object.values(cfg.delegate.agents ?? {})]) {
+      if (r?.backend === backend && !ids.includes(r.accountId)) ids.push(r.accountId);
+    }
+    return ids;
+  };
+  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? '', heldAccountIds: () => heldAccountsFor('agy') });
   const onExitPool = () => acpPool.dispose(true);
   process.once('exit', onExitPool);
   const agyCli = new AgyCli({ pool: acpPool });
@@ -151,12 +167,44 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       activeAccount: () => agyAccounts?.activeAccount() ?? null,
       accountFor: (id) => agyAccounts?.accountFor(id) ?? null,
       isLoggedIn: () => agyAccounts?.activeLoggedIn() ?? null,
+      isAccountLoggedIn: (id) => agyAccounts?.loggedIn(id) ?? null,
     },
   });
+  let notifyCodexChanged: () => void = () => {};
+  const codexPool = new CodexPool({
+    activeAccountId: () => codexAccounts?.activeId() ?? DEFAULT_ID,
+    heldAccountIds: () => heldAccountsFor('codex'),
+    onRateLimits: (id, raw) => codexAccounts?.noteRateLimits(id, raw),
+  });
+  const onExitCodexPool = () => codexPool.dispose(true);
+  process.once('exit', onExitCodexPool);
+  let codexBackend!: CodexBackend;
+  const codexCli = new CodexCli({
+    pool: codexPool,
+    onUpdated: () => {
+      codexBackend.clearIncompatible();
+      notifyCodexChanged();
+    },
+    onChanged: () => notifyCodexChanged(),
+  });
+  codexBackend = new CodexBackend({
+    pool: codexPool,
+    resolve: resolveCodexInfo,
+    version: () => codexCli.cachedVersion(),
+    accounts: {
+      active: () => codexAccounts?.active() ?? { id: DEFAULT_ID, dir: null },
+      accountFor: (id) => codexAccounts?.accountFor(id) ?? (id === DEFAULT_ID ? { id: DEFAULT_ID, dir: null } : null),
+      activeLoggedIn: () => codexAccounts?.activeLoggedIn() ?? 'unknown',
+      loggedIn: (id) => codexAccounts?.loggedIn(id) ?? (id === DEFAULT_ID ? 'unknown' : null),
+    },
+    onChanged: () => notifyCodexChanged(),
+  });
+  codexCli.prefetchVersion();
   const claudeBackend = new ClaudeBackend({
     claudePath: opts.claudePath,
     subagentAccountId: () => accounts?.subagentClaudeId() ?? DEFAULT_ID,
     isLoggedIn: () => accounts?.subagentClaudeLoggedIn() ?? true,
+    isAccountLoggedIn: (id) => (accounts ? accounts.claudeLoggedIn(id) : id === DEFAULT_ID ? true : null),
     prepareAccount: (id) => accounts?.prepareSubagent(id) ?? null,
     finishAccount: (id) => accounts?.syncSubagentBack(id),
   });
@@ -166,6 +214,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     configOf: (id) => store.state.sessionConfigs[id] ?? null,
     forkSrcOf: (id) => store.state.forks[id]?.src ?? null,
     delegateEntries: (id, toolUseId) => delegateRecord.read(id, toolUseId),
+    delegateUsages: (id) => delegateRecord.listUsage(id),
     // 并行模式下会话列表标出账号：正在运行的进程用的账号优先，否则看绑定
     accountOf: (id) => {
       if (!accounts || accounts.mode() !== 'parallel') return null;
@@ -181,6 +230,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     void browserInstall.ensureSkills();
     return ensureBrowserPlugin({ pluginDir: path.join(dataHome(), 'claude-plugin'), dataDir: path.join(dataHome(), 'browser'), install: browserInstall });
   };
+  let actualPort = wantPort;
   const manager = new Manager({
     pluginDir: browserPlugin,
     dots,
@@ -188,7 +238,24 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     pins,
     stops,
     delegateRecord,
-    delegateBackends: { claude: claudeBackend, agy: agyBackend },
+    delegateBackends: { claude: claudeBackend, agy: agyBackend, codex: codexBackend },
+    delegateAccounts: () => {
+      const out: SubagentAccountOption[] = [];
+      for (const a of accounts?.list().list ?? [{ id: DEFAULT_ID, label: '默认账号', name: null, loggedIn: true, isDefault: true }]) {
+        if (!a.loggedIn) continue;
+        const e = a as { api?: unknown; kiro?: unknown };
+        out.push({ backend: 'claude', id: a.id, label: a.label || a.name || (a.isDefault ? '默认账号' : a.id), group: e.kiro ? 'kiro' : e.api ? 'api' : 'claude' });
+      }
+      for (const a of agyAccounts?.list().list ?? []) {
+        if (a.loggedIn === false) continue;
+        out.push({ backend: 'agy', id: a.id, label: a.label || a.email || a.id, group: 'agy' });
+      }
+      for (const a of codexAccounts?.list().list ?? []) {
+        if (a.loggedIn === false) continue;
+        out.push({ backend: 'codex', id: a.id, label: a.label || a.email || (a.isDefault ? '默认账号' : a.id), group: 'codex' });
+      }
+      return out;
+    },
     timings: opts.timings,
     claudePath: opts.claudePath,
     configs: {
@@ -278,6 +345,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     },
   });
   notifySidebar = () => manager.notifySidebar();
+  notifyCodexChanged = () => {
+    manager.notifyCodex();
+    manager.notifySubagents();
+  };
   // 账号信息与额度按账号分开缓存（并行模式下每个会话看它自己账号的）
   const accountInfos = new Map<string, AccountProvider>();
   const usages = new Map<string, UsageProvider>();
@@ -392,6 +463,16 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     },
   });
   agyAccounts.init();
+  codexAccounts = new CodexAccounts({
+    store,
+    running: (id) => codexPool.runningCount(id),
+    stopAccount: (id) => codexPool.stopAccount(id),
+    resetAccount: (id) => codexPool.resetAccount(id),
+    readAccount: (o) => codexPool.readAccount(o),
+    readRateLimits: (o) => codexPool.readRateLimitsRaw(o),
+    onChanged: () => notifyCodexChanged(),
+  });
+  codexAccounts.init();
   const previews = new Previews();
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
@@ -402,12 +483,19 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const components = new ComponentUpdater({
     home: () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome()),
     onUpdated: (id) => {
+      if (id === 'codex') {
+        codexPool.retireAll();
+        codexBackend.clearIncompatible();
+        notifyCodexChanged();
+        return;
+      }
       if (id === 'claude' || id === 'agy') manager.notifySubagents();
     },
     adapters: [
       createClaudeAdapter({ claudePath: opts.claudePath, running: () => manager.runningCount() }),
       createKiroAdapter(kiro),
       createAgyAdapter(agyCli),
+      createCodexAdapter(codexCli),
       createBrowserAdapter(browserInstall, browser),
       createServerAdapter({
         version: opts.version ?? readVersion(),
@@ -418,11 +506,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   });
   components.start();
 
-  let actualPort = wantPort;
   const speech = new Speech();
   const terminals = new TerminalManager({ workspaces, dataDir: dataHome });
   const handler = createHandler({
-    delegateModels: (cwd, refresh) => agyBackend.models({ cwd, refresh }),
+    delegateModels: (cwd, refresh, backend, account) =>
+      (backend === 'claude' ? claudeBackend : backend === 'codex' ? codexBackend : agyBackend).models({ cwd, refresh, ...(account ? { accountId: account } : {}) }),
     port: () => actualPort,
     version: opts.version ?? readVersion(),
     webDist,
@@ -432,6 +520,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     account,
     accounts,
     agyAccounts,
+    codexAccounts,
     components,
     browser,
     kiro,
@@ -557,6 +646,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       accounts?.dispose();
       agyAccounts?.dispose();
       agyCli.dispose();
+      codexAccounts?.dispose();
+      codexCli.dispose();
       components.stop();
       browser.dispose();
       browserWss.close();
@@ -568,6 +659,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       await kiro?.dispose();
       process.off('exit', onExitPool);
       acpPool.dispose();
+      process.off('exit', onExitCodexPool);
+      codexPool.dispose();
       pricing.stop?.();
       for (const ws of wss.clients) ws.terminate();
       wss.close();

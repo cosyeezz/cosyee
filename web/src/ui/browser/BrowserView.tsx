@@ -173,6 +173,7 @@ export function BrowserView({ profile, canvasRef, stream, capture, onCancelCaptu
         <canvas
           ref={canvasRef}
           className="cz-br__canvas"
+          data-cosyee-browser-canvas=""
           aria-label="网页画面"
           onPointerDown={onPointerDown}
           onPointerUp={onPointerUp}

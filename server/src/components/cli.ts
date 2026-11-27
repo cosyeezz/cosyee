@@ -7,12 +7,14 @@
 import path from 'node:path';
 import { BrowserInstall } from '../browser/install.js';
 import { AgyCli } from '../delegate/agyCli.js';
+import { CodexCli } from '../delegate/codexCli.js';
 import { KiroEngine } from '../kiro/engine.js';
 import { cosyeeHome } from '../paths.js';
 import { HttpError } from '../workspaces.js';
 import { createAgyAdapter } from './agy.js';
 import { createBrowserAdapter } from './browser.js';
 import { createClaudeAdapter } from './claude.js';
+import { createCodexAdapter } from './codex.js';
 import { type ComponentAdapter, errText } from './common.js';
 import { createKiroEngineAdapter } from './kiro.js';
 import { ComponentUpdater } from './updater.js';
@@ -25,6 +27,7 @@ export function standaloneAdapters(home: () => string = cosyeeHome): ComponentAd
     createClaudeAdapter({ running: () => 0 }),
     createKiroEngineAdapter(new KiroEngine({ rootDir: () => path.join(home(), 'kiro-rs') })),
     createAgyAdapter(new AgyCli({})),
+    createCodexAdapter(new CodexCli({})),
     createBrowserAdapter(new BrowserInstall({ rootDir: () => path.join(home(), 'agent-browser') }), {
       busy: () => 0,
       close: async () => {},

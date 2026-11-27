@@ -42,15 +42,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const setValue = (el: HTMLInputElement, v: string) => {
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-  act(() => {
-    set.call(el, v);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-};
 const q = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel);
-const submit = () => act(() => { q<HTMLFormElement>('.cz-flow__append')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
 
 describe('SubagentOverlay：委派的执行过程', () => {
   const done = run({ status: 'done', turn: turn({ status: 'done', answer: '最终结果', endedAt: 2 }) });
@@ -118,40 +110,62 @@ describe('SubagentOverlay：Esc 分层关闭', () => {
   });
 });
 
-describe('SubagentOverlay：委派任务的停止与追加消息', () => {
-  const props = () => ({ onClose: () => {}, delegates: [job()], onDelegateStop: vi.fn(), onDelegateSend: vi.fn() });
+describe('SubagentOverlay：委派停止与底部统计区', () => {
+  const props = () => ({ onClose: () => {}, delegates: [job()], onDelegateStop: vi.fn() });
 
-  it('运行中且有任务快照：头部有「停止」，底部有输入框', () => {
+  it('运行中且有任务快照：头部保留「停止」，不再渲染追加输入框，统计区标题行含后台 / 排队信息', () => {
     const p = props();
-    mount(<SubagentOverlay run={run()} {...p} />);
+    mount(<SubagentOverlay run={run({ model: 'gpt-5.3-codex', effort: 'high' })} {...p} delegates={[job({ pending: 2 })]} />);
     const stop = [...document.querySelectorAll<HTMLElement>('.cz-flow__head-btn')].find((b) => b.textContent?.includes('停止'))!;
     act(() => stop.click());
     expect(p.onDelegateStop).toHaveBeenCalledWith('D');
-    expect(q('.cz-flow__append-input')).not.toBeNull();
-    expect(q('.cz-flow__panel-meta')!.textContent).toContain('后台');
+    expect(q('.cz-flow__append')).toBeNull();
+    expect(q('.cz-flow__append-input')).toBeNull();
+    // 顶栏不再有 meta 行
+    expect(q('.cz-flow__panel-meta')).toBeNull();
+    const meta = q('.cz-subdock__meta')!.textContent!;
+    expect(meta).toContain('后台');
+    expect(meta).toContain('排队 2 条');
+    expect(meta).toContain('0 次请求');
+    expect(meta).toContain('执行中');
   });
 
-  it('提交（Enter）= steer；「排队」= queue；发送后清空，空消息不发', () => {
-    const p = props();
-    mount(<SubagentOverlay run={run()} {...p} />);
-    const input = q<HTMLInputElement>('.cz-flow__append-input')!;
-    submit();
-    expect(p.onDelegateSend).not.toHaveBeenCalled();
-    setValue(input, '  再加个单测 ');
-    submit();
-    expect(p.onDelegateSend).toHaveBeenLastCalledWith('D', '再加个单测', 'steer');
-    expect(input.value).toBe('');
-    setValue(input, '之后再说');
-    act(() => q<HTMLButtonElement>('.cz-flow__append-btn')!.click());
-    expect(p.onDelegateSend).toHaveBeenLastCalledWith('D', '之后再说', 'queue');
+  it('底部统计区默认展开，点击标题行可收起再展开，有数据时展示四块卡片', () => {
+    const withStats = run({
+      status: 'done',
+      model: 'claude-sonnet-4-5-20250929',
+      effort: 'medium',
+      contextWindow: 200_000,
+      cache: [
+        { id: 'p1', turn: 0, input: 1000, create: 4000, read: 15_000, rate: 75, output: 300, model: 'claude-sonnet-4-5-20250929' },
+      ],
+      turn: turn({ status: 'done', startedAt: 1000, endedAt: 13_000 }),
+    });
+    mount(<SubagentOverlay run={withStats} onClose={() => {}} sessionBilling="subscription" />);
+
+    const head = q<HTMLButtonElement>('.cz-subdock__head')!;
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    expect(q('.cz-subdock__wrap')!.classList.contains('is-open')).toBe(true);
+    expect(q('.cz-subdock__meta')!.textContent).toContain('1 次请求');
+    expect(q('.cz-subdock__meta')!.textContent).toContain('12 秒');
+    expect(q('.cz-subdock__meta')!.textContent).toContain('已完成');
+    expect(document.querySelectorAll('.cz-ub-dock__card')).toHaveLength(4);
+    expect(q('[data-testid="dock-percent"]')!.textContent).toBe('10%');
+    expect(q('[data-testid="dock-cost"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('花费（等价 API 价格）');
+
+    // 点击标题行收起
+    act(() => head.click());
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(q('.cz-subdock__wrap')!.classList.contains('is-open')).toBe(false);
+
+    // 再次点击展开
+    act(() => head.click());
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    expect(q('.cz-subdock__wrap')!.classList.contains('is-open')).toBe(true);
   });
 
-  it('显示排队中的条数', () => {
-    mount(<SubagentOverlay run={run()} {...props()} delegates={[job({ pending: 2 })]} />);
-    expect(q('.cz-flow__panel-meta')!.textContent).toContain('排队 2 条');
-  });
-
-  it('已结束 / 没有任务快照 / 普通子代理：不显示停止与输入框', () => {
+  it('已结束 / 没有任务快照 / 普通子代理：不显示停止按钮，不渲染追加输入框', () => {
     mount(<SubagentOverlay run={run({ status: 'done' })} {...props()} />);
     expect(q('.cz-flow__head-btn')).toBeNull();
     expect(q('.cz-flow__append')).toBeNull();
@@ -160,6 +174,7 @@ describe('SubagentOverlay：委派任务的停止与追加消息', () => {
     expect(q('.cz-flow__append')).toBeNull();
     mount(<SubagentOverlay run={run({ delegate: undefined, subagentType: 'general-purpose' })} {...props()} />);
     expect(q('.cz-flow__append')).toBeNull();
+    expect(q('.cz-subdock__meta')!.textContent).toContain('主会话账号');
   });
 });
 

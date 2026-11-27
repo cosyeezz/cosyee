@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   DEFAULT_SUBAGENTS,
+  type DelegateBackendId,
   type DelegateNotification,
   type ModelAlias,
-  type SubagentAvailability,
+  type SubagentAccountOption,
   type SubagentConfig,
-  type SubagentKind,
+  type SubagentMode,
   type SubagentState,
   formatDelegateNotification,
   hasModelMapping,
@@ -22,6 +23,7 @@ import { listAllAgents, toSubagentTypeInfo } from '../delegate/agents.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { DelegateJobs } from '../delegate/jobs.js';
 import { DELEGATE_AUX_TOOL_NAMES, DELEGATE_TOOL_NAME } from '../delegate/mcp.js';
+import { delegateAvailability, routeAvailability, routeFallbacks } from '../delegate/routes.js';
 import type { DelegateRecorder } from '../delegate/record.js';
 import { baseClaudeHome, claudeJsonPath, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
 import type { Pins } from '../pins.js';
@@ -68,10 +70,14 @@ export interface ManagerOptions {
   forks?: ForkStore;
   /** 委派执行过程的落盘；不传则不记（旧测试） */
   delegateRecord?: DelegateRecorder;
-  /** 委派后端集合（claude / agy）；不传则由 runner 用默认单例（旧测试） */
-  delegateBackends?: Partial<Record<'claude' | 'agy', DelegateBackend>>;
+  /** 委派后端集合（claude / agy / codex）；不传则由 runner 用默认单例（旧测试） */
+  delegateBackends?: Partial<Record<DelegateBackendId, DelegateBackend>>;
+  /** 委派路线的候选账号（Claude 账号列表 + Antigravity 账号列表）；manager 只返回其中现在能用的。不传 = 没有可选账号（旧测试） */
+  delegateAccounts?: () => SubagentAccountOption[];
   /** Cosyee 生成的 Claude 插件目录（内置浏览器的 skill），每次启动时读取；返回 null 不带（旧测试） */
   pluginDir?: () => string | null;
+  /** 注入给 claude 子进程的额外环境变量（如 2FA agent 接口地址与令牌） */
+  extraEnv?: () => Record<string, string>;
 }
 
 export interface ForkStore {
@@ -259,8 +265,10 @@ export class Manager {
   private readonly autoTitle: AutoTitle;
 
   private readonly delegateRecord: DelegateRecorder | undefined;
-  private readonly delegateBackends: Partial<Record<'claude' | 'agy', DelegateBackend>> | undefined;
+  private readonly delegateBackends: Partial<Record<DelegateBackendId, DelegateBackend>> | undefined;
+  private readonly delegateAccounts?: () => SubagentAccountOption[];
   private readonly pluginDir: (() => string | null) | undefined;
+  private readonly extraEnv: (() => Record<string, string>) | undefined;
 
   constructor(opts: ManagerOptions) {
     this.dots = opts.dots;
@@ -280,7 +288,9 @@ export class Manager {
     this.forks = opts.forks;
     this.delegateRecord = opts.delegateRecord;
     this.delegateBackends = opts.delegateBackends;
+    this.delegateAccounts = opts.delegateAccounts;
     this.pluginDir = opts.pluginDir;
+    this.extraEnv = opts.extraEnv;
     this.autoTitle = new AutoTitle({
       hasTitle: async (id, cwd) => {
         const s = await this.sessions.scan(id, cwd);
@@ -805,6 +815,7 @@ export class Manager {
       expandText: (text) => appendSkills(text, (name) => this.manualSkill(id, cwd, name)),
       flagSettings: () => ({ ...this.skillFlagSettings(id, cwd), ...this.toolFlagSettings(), ...this.compactFlagSettings() }),
       ...(this.pluginDir ? { pluginDir: this.pluginDir } : {}),
+      ...(this.extraEnv ? { extraEnv: this.extraEnv } : {}),
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
@@ -1250,38 +1261,29 @@ export class Manager {
     return list;
   }
 
-  /** 当前子代理状态：配置、各类型可用性、实际生效类型（不可用或手动停用 delegate 时退回 native）、退回原因、代理类型列表与已关闭名单 */
+  /** 当前子代理状态：配置、实际生效模式（默认路线不可用或手动停用 delegate 时退回 native）、退回原因、可选账号、代理类型列表与已关闭名单 */
   subagentState(cwd?: string | null): SubagentState {
     const config = this.subagents?.get() ?? DEFAULT_SUBAGENTS;
-    const claudeBackend = this.delegateBackends?.claude;
-    const agyBackend = this.delegateBackends?.agy;
-    const claudeAvail: SubagentAvailability = claudeBackend?.availability
-      ? claudeBackend.availability()
-      : claudeBackend?.available()
-        ? { ok: true }
-        : { ok: false, reason: '未安装 Claude CLI' };
-    const agyAvail: SubagentAvailability = agyBackend?.availability
-      ? agyBackend.availability()
-      : agyBackend?.available()
-        ? { ok: true }
-        : { ok: false, reason: '未安装 Antigravity CLI' };
-    const available: Record<SubagentKind, SubagentAvailability> = {
-      native: { ok: true },
-      claude: claudeAvail,
-      agy: agyAvail,
+    const deps = {
+      backendFor: (id: string) =>
+        id === 'claude' || id === 'agy' || id === 'codex' ? (this.delegateBackends?.[id] ?? null) : null,
     };
     const delegateDisabled = this.tools?.get().includes(DELEGATE_TOOL_NAME) ?? false;
-    let effective: SubagentKind = config.kind;
+    let effective: SubagentMode = config.mode;
     let fallbackReason: string | undefined;
-    if (config.kind !== 'native') {
+    if (config.mode === 'delegate') {
+      const avail = delegateAvailability(config, deps);
       if (delegateDisabled) {
         effective = 'native';
         fallbackReason = '委派工具已在工具面板停用';
-      } else if (!available[config.kind].ok) {
+      } else if (!avail.ok) {
         effective = 'native';
-        fallbackReason = available[config.kind].reason ?? '委派后端不可用';
+        fallbackReason = avail.reason ?? '默认委派账号不可用';
       }
     }
+    const accounts = (this.delegateAccounts?.() ?? []).filter((a) =>
+      routeAvailability({ backend: a.backend, accountId: a.id, model: null, effort: null }, deps).ok,
+    );
     let validCwd = '';
     if (typeof cwd === 'string' && cwd.trim()) {
       try {
@@ -1294,8 +1296,9 @@ export class Manager {
     const disabledAgents = [...(this.tools?.agents?.() ?? [])];
     return {
       config: structuredClone(config),
-      available,
       effective,
+      accounts,
+      routeFallbacks: config.mode === 'delegate' ? routeFallbacks(config, deps) : {},
       ...(fallbackReason ? { fallbackReason } : {}),
       agents,
       disabledAgents,
@@ -1747,6 +1750,11 @@ export class Manager {
   /** 通知所有前端：Antigravity 账号列表 / 当前账号 / 登录状态变了 */
   notifyAgy(): void {
     this.broadcast({ t: 'agy.changed' });
+  }
+
+  /** 通知所有前端：Codex 账号列表 / 当前账号 / 登录状态 / 额度 / 组件变了 */
+  notifyCodex(): void {
+    this.broadcast({ t: 'codex.changed' });
   }
 
   /** 通知所有前端：子代理配置 / 代理类型开关 / 后端可用性变了 */

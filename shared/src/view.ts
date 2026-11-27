@@ -65,6 +65,10 @@ export interface SubagentRun {
   afterStep?: number;
   /** 子代理自己的会话流（只有一轮；不会再有 subagents） */
   turn: Turn;
+  /** 子代理每次 API 请求的用量（turn 一律为 0） */
+  cache?: CachePoint[];
+  /** 子代理模型的上下文窗口（后端报告或推算） */
+  contextWindow?: number;
 }
 
 /**
@@ -173,6 +177,11 @@ export interface CachePoint {
   fast?: true;
   /** usage.inference_geo === 'us'（价格 ×1.1） */
   usGeo?: true;
+  /**
+   * 未缓存 / 写缓存 / 读缓存 / 输出的拆分是估算值：后端只报每次请求的总量与整轮合计（如 agy），
+   * 按各次请求总量占比分摊整轮合计得到；总量本身是准的。UI 悬停时注明「按本轮合计估算」
+   */
+  estimated?: true;
 }
 
 /** 一次会话压缩（compact_boundary）：只含主线程 */

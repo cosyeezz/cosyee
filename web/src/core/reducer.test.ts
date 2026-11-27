@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { CachePoint, Turn } from '@cosyee/shared';
-import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentEffortFromHistory, subagentTurnFromHistory, toolSummary, type ConvState } from './reducer';
+import { cosyeeUsageEvent, type CachePoint, type Turn } from '@cosyee/shared';
+import { applyEvent, applyEvents, applyReplay, applyStatus, fromHistory, initState, rewindTo, subagentEffortFromHistory, subagentHistoryFromHistory, subagentTurnFromHistory, toolSummary, withRecord, type ConvState } from './reducer';
 import { isCosyeeTool, toolLabel } from './reducer/util';
 import { MAX_CACHE_POINTS, cachePointOf, pushCachePoint } from './reducer/cacheHit';
 import { cliCostOf } from './reducer/live';
@@ -726,6 +726,105 @@ describe('缓存命中率走势', () => {
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ output: 80, model: 'claude-sonnet-4-5' });
   });
+  it('实时：子代理 assistant 与 message_delta 写入 run.cache，且不混入主线程 meta.cache', () => {
+    let s = applyEvent(initState(), user('派子代理'), 100);
+    s = applyEvent(
+      s,
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          id: 'main1',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu_sub1', name: 'Agent', input: { description: '探索', prompt: '找文件' } }],
+          usage: usage(100, 0, 900),
+        },
+      },
+      200,
+    );
+    s = applyEvent(s, asst('sub_m1', usage(500, 0, 0), { parent_tool_use_id: 'tu_sub1' }), 300);
+    s = applyEvent(
+      s,
+      {
+        type: 'stream_event',
+        parent_tool_use_id: 'tu_sub1',
+        api_message_id: 'sub_m1',
+        event: { type: 'message_delta', usage: { input_tokens: 500, cache_creation_input_tokens: 200, cache_read_input_tokens: 1300, output_tokens: 60 } },
+      },
+      350,
+    );
+    // 主线程只含 main1，不混入 sub_m1
+    expect(s.meta.cache?.map((p) => p.id)).toEqual(['main1']);
+    const run = s.turns[0]!.subagents[0]!;
+    expect(run.cache).toHaveLength(1);
+    expect(run.cache![0]).toMatchObject({ id: 'sub_m1', turn: 0, input: 500, create: 200, read: 1300, output: 60 });
+    expect(Math.round(run.cache![0]!.rate)).toBe(65);
+  });
+  it('实时：cosyee_usage 写入对应子代理 run.cache 与 contextWindow，同 id 覆盖更新', () => {
+    let s = applyEvent(initState(), user('委派'), 100);
+    s = applyEvent(
+      s,
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          id: 'main1',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu_del1', name: 'mcp__cosyee__delegate', input: { description: '委派任务', prompt: '执行' } }],
+          usage: usage(10, 0, 90),
+        },
+      },
+      200,
+    );
+    const p1: CachePoint = { id: 'req1', turn: 0, input: 1000, create: 0, read: 0, rate: 0, output: 20, model: 'gemini-4-neon', estimated: true };
+    const p1Updated: CachePoint = { ...p1, input: 800, read: 200, rate: 20, output: 90 };
+    s = applyEvent(s, cosyeeUsageEvent('tu_del1', p1, 1_000_000), 300);
+    s = applyEvent(s, cosyeeUsageEvent('tu_del1', p1Updated, 1_000_000), 350);
+    expect(s.meta.cache?.map((p) => p.id)).toEqual(['main1']);
+    const run = s.turns[0]!.subagents[0]!;
+    expect(run.contextWindow).toBe(1_000_000);
+    expect(run.cache).toHaveLength(1);
+    expect(run.cache![0]).toMatchObject({ id: 'req1', input: 800, read: 200, output: 90, estimated: true });
+    // 不产生多余步骤
+    expect(run.turn.steps).toHaveLength(0);
+  });
+  it('历史：subagentHistoryFromHistory 收集 assistant 跨行合并点与 cosyee_usage，withRecord 合并去重', () => {
+    const entries = [
+      { type: 'user', timestamp: t, message: { role: 'user', content: '查代码' } },
+      {
+        type: 'assistant',
+        timestamp: t,
+        message: { id: 'sm1', model: 'claude-sonnet-4-5', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.ts' } }], usage: usage(100, 400, 500) },
+      },
+      {
+        type: 'assistant',
+        timestamp: t,
+        message: { id: 'sm1', model: 'claude-sonnet-4-5', role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Grep', input: { pattern: 'foo' } }], usage: { ...usage(100, 400, 500), output_tokens: 80 } },
+      },
+      cosyeeUsageEvent('tu_x', { id: 'cu1', turn: 0, input: 200, create: 0, read: 800, rate: 80, output: 40 }, 400_000),
+    ];
+    const hist = subagentHistoryFromHistory(entries, { title: '探索', toolUseId: 'tu_x' });
+    expect(hist.contextWindow).toBe(400_000);
+    expect(hist.cache?.map((p) => [p.id, p.turn, p.tools, p.output])).toEqual([
+      ['sm1', 0, ['t1', 't2'], 80],
+      ['cu1', 0, undefined, 40],
+    ]);
+
+    const liveRun = {
+      toolUseId: 'tu_x',
+      title: '探索',
+      delegate: true as const,
+      status: 'done' as const,
+      cache: [{ id: 'cu1', turn: 0, input: 200, create: 0, read: 800, rate: 80, output: 120 }],
+      turn: { id: 'sub-tu_x', userText: '查代码', attachments: [], status: 'done' as const, statusText: '', steps: [], answer: '', subagents: [], startedAt: 1 },
+    };
+    const merged = withRecord(liveRun, hist.turn, { cache: hist.cache, contextWindow: hist.contextWindow });
+    expect(merged.contextWindow).toBe(400_000);
+    expect(merged.cache?.map((p) => [p.id, p.output])).toEqual([
+      ['sm1', 80],
+      ['cu1', 120],
+    ]);
+  });
 });
 
 describe('cliCostOf（result.modelUsage）', () => {
@@ -746,10 +845,10 @@ describe('cliCostOf（result.modelUsage）', () => {
     expect(cliCostOf({})).toBeNull();
     expect(cliCostOf({ x: { costUSD: '1' } })).toBeNull();
   });
-  it('result 事件把它记进 meta.cliCost', () => {
+  it('result 事件把它记进 meta.cliCost，并保留 contextWindow', () => {
     let s = applyEvent(initState(), user('问'), 1);
-    s = applyEvent(s, { type: 'result', subtype: 'success', modelUsage: { 'claude-sonnet-4-5': { inputTokens: 1, outputTokens: 1, costUSD: 0.002 } } }, 2);
-    expect(s.meta.cliCost?.[0]).toMatchObject({ model: 'claude-sonnet-4-5', costUSD: 0.002 });
+    s = applyEvent(s, { type: 'result', subtype: 'success', modelUsage: { 'claude-sonnet-4-5': { inputTokens: 1, outputTokens: 1, costUSD: 0.002, contextWindow: 200_000 } } }, 2);
+    expect(s.meta.cliCost?.[0]).toMatchObject({ model: 'claude-sonnet-4-5', costUSD: 0.002, contextWindow: 200_000 });
   });
 });
 

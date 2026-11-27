@@ -1,9 +1,34 @@
-// 会话花费：主线程每次请求（SessionMeta.cache 的点）按价格表算，子代理的由服务端算好（SubagentCost）后按轮归入。
+// 会话花费：主线程每次请求（SessionMeta.cache 的点）按价格表算，
+// 子代理优先取服务端算好的 SubagentCost，运行中或尚未落盘的用 run.cache 实时补齐（按 toolUseId 去重）。
 // 纯函数，面板与测试共用。金额单位：美元。
 import {
   ZERO_COST, addCost, costTotal, effectivePrices, findPrice, requestCost, uncachedCost,
-  type CachePoint, type CompactMark, type CostParts, type PriceTable, type SubagentCost, type Turn,
+  type AccountEntry, type CachePoint, type CompactMark, type CostParts, type PriceTable,
+  type SubagentAccountOption, type SubagentConfig, type SubagentCost, type SubagentRun, type Turn, type UsageBilling,
 } from '@cosyee/shared';
+
+export type CostSource = 'main' | 'native' | 'claude' | 'codex' | 'agy';
+export type SubagentCostSource = Exclude<CostSource, 'main'>;
+
+/** 单个子代理运行的花费摘要（用于点击打开浮层） */
+export interface SubagentRunCostItem {
+  toolUseId: string | null;
+  turnId?: string;
+  title: string;
+  agentType: string;
+  source: SubagentCostSource;
+  cost: number;
+}
+
+/** 按（来源 + 子代理类型）聚合的花费明细 */
+export interface SubagentTypeCost {
+  agentType: string;
+  source: SubagentCostSource;
+  count: number;
+  cost: number;
+  toolUseIds: string[];
+  runs: SubagentRunCostItem[];
+}
 
 export interface TurnCost {
   /** 第几轮（= turns 的下标，同 CachePoint.turn） */
@@ -36,6 +61,14 @@ export interface SessionCost {
   parts: CostParts;
   main: number;
   sub: number;
+  /** 按来源拆分的花费合计 */
+  bySource: Record<CostSource, number>;
+  /** 按子代理类型（含来源归属）聚合的明细，按金额降序 */
+  byType: SubagentTypeCost[];
+  /** 有花费且按订阅计费（等价 API 价）的来源列表 */
+  subscriptionSources: CostSource[];
+  /** 是否同时包含订阅计费与 API/第三方计费的有花费来源 */
+  mixedBilling: boolean;
   /** 不用缓存（所有输入按未命中价）要花多少：只算能定价的请求 */
   uncached: number;
   /** 缓存省下的钱 = uncached − total（不会小于 0） */
@@ -64,6 +97,14 @@ export interface CostInput {
   fallbackModel?: string;
   /** 当前上下文里消息历史的 token（/context 的 Messages 分类）；不知道为 null */
   historyTokens?: number | null;
+  /** 子代理配置：用于推断实时委派 run 的后端来源与计费方式 */
+  subagents?: SubagentConfig | null;
+  /** 委派可选账号列表（用于判断 Claude 委派账号是否为 API） */
+  subagentAccounts?: readonly SubagentAccountOption[];
+  /** 主会话账号列表（用于判断 Claude 委派账号的计费方式） */
+  accounts?: readonly AccountEntry[];
+  /** 主会话计费方式（用于判断是否混合计费以及哪些来源标「等价」） */
+  billing?: UsageBilling;
 }
 
 const M = 1_000_000;
@@ -81,6 +122,46 @@ const usageOf = (p: CachePoint, fallbackModel?: string) => ({
 
 const emptyTurn = (turn: number): TurnCost => ({ turn, main: ZERO_COST, sub: ZERO_COST, requests: 0, subRuns: 0 });
 
+const emptyBySource = (): Record<CostSource, number> => ({ main: 0, native: 0, claude: 0, codex: 0, agy: 0 });
+
+/** 推断一个 SubagentRun 的来源后端 */
+function inferRunSource(run: SubagentRun, cfg?: SubagentConfig | null): SubagentCostSource {
+  if (run.delegate !== true) return 'native';
+  const route = (run.subagentType ? cfg?.delegate.agents?.[run.subagentType] : undefined) ?? cfg?.delegate.default;
+  if (route) return route.backend;
+  const m = (run.cache?.length ? run.cache[run.cache.length - 1]!.model : undefined) ?? run.model ?? '';
+  if (/gemini/i.test(m)) return 'agy';
+  if (/gpt|codex|^o[34]/i.test(m)) return 'codex';
+  return 'claude';
+}
+
+function accountBilling(acc: AccountEntry | undefined): UsageBilling {
+  if (!acc?.api) return 'subscription';
+  const base = acc.api.baseUrl.trim();
+  return !base || /^https?:\/\/api\.anthropic\.com(\/|$)/i.test(base) ? 'api' : 'thirdParty';
+}
+
+/** 判断某子代理来源是否按订阅计费 */
+function isSubSourceSubscription(
+  src: SubagentCostSource,
+  agentType: string | undefined,
+  inp: Pick<CostInput, 'billing' | 'subagents' | 'accounts' | 'subagentAccounts'>,
+): boolean {
+  if (src === 'agy' || src === 'codex') return true;
+  if (src === 'native') return inp.billing === 'subscription';
+  // claude 委派：查对应路线或默认路线
+  const route =
+    (agentType ? inp.subagents?.delegate.agents?.[agentType] : undefined) ??
+    inp.subagents?.delegate.default;
+  if (route && route.backend === 'claude') {
+    const acc = inp.accounts?.find((a) => a.id === route.accountId);
+    if (acc) return accountBilling(acc) === 'subscription';
+    const opt = inp.subagentAccounts?.find((a) => a.backend === 'claude' && a.id === route.accountId);
+    if (opt) return opt.group !== 'api';
+  }
+  return inp.billing === 'subscription';
+}
+
 export function sessionCost(inp: CostInput): SessionCost {
   const points = inp.points ?? [];
   const turnList = inp.turns ?? [];
@@ -91,6 +172,7 @@ export function sessionCost(inp: CostInput): SessionCost {
   let requests = 0;
   let unpriced = 0;
   const unpricedModels = new Set<string>();
+  const bySource = emptyBySource();
   const maxTurn = Math.max(turnList.length - 1, ...points.map((p) => p.turn));
   const turns: TurnCost[] = Array.from({ length: Math.max(0, maxTurn + 1) }, (_, i) => emptyTurn(i));
 
@@ -104,7 +186,8 @@ export function sessionCost(inp: CostInput): SessionCost {
     }
     requests++;
     parts = addCost(parts, c);
-    main += costTotal(c);
+    const v = costTotal(c);
+    main += v;
     uncached += uncachedCost(inp.table, u) ?? 0;
     const t = turns[p.turn];
     if (t) {
@@ -112,33 +195,156 @@ export function sessionCost(inp: CostInput): SessionCost {
       t.requests++;
     }
   }
+  bySource.main = main;
 
-  // 子代理 → 所属轮：先按 Agent 调用的 tool_use id，再按 agent id（= SubagentRun.taskId）
-  const byTool = new Map<string, number>();
-  const byTask = new Map<string, number>();
+  // 子代理 → 所属轮（同一 toolUseId 跨轮复制时以最新一轮为准，其 cache 最全）
+  interface RunLoc {
+    turnIdx: number;
+    turnId: string;
+    run: SubagentRun;
+  }
+  const byTool = new Map<string, RunLoc>();
+  const byTask = new Map<string, RunLoc>();
   turnList.forEach((t, i) => {
     for (const r of t.subagents) {
-      byTool.set(r.toolUseId, i);
-      if (r.taskId) byTask.set(r.taskId, i);
+      const loc: RunLoc = { turnIdx: i, turnId: t.id, run: r };
+      byTool.set(r.toolUseId, loc);
+      if (r.taskId) byTask.set(r.taskId, loc);
     }
   });
+
+  const typeMap = new Map<string, SubagentTypeCost>();
+  const subBillBySource: Partial<Record<SubagentCostSource, { sub: boolean; nonSub: boolean }>> = {};
+
+  const recordType = (item: SubagentRunCostItem) => {
+    const k = `${item.source}:${item.agentType}`;
+    let g = typeMap.get(k);
+    if (!g) {
+      g = { agentType: item.agentType, source: item.source, count: 0, cost: 0, toolUseIds: [], runs: [] };
+      typeMap.set(k, g);
+    }
+    g.count++;
+    g.cost += item.cost;
+    if (item.toolUseId && !g.toolUseIds.includes(item.toolUseId)) g.toolUseIds.push(item.toolUseId);
+    g.runs.push(item);
+
+    const isSub = isSubSourceSubscription(item.source, item.agentType, inp);
+    const flag = (subBillBySource[item.source] ??= { sub: false, nonSub: false });
+    if (isSub) flag.sub = true;
+    else flag.nonSub = true;
+  };
+
   let other: CostParts = ZERO_COST;
+  const seenToolIds = new Set<string>();
+  const seenTaskIds = new Set<string>();
+
+  // 1) 服务端已落盘的子代理花费（含原生与委派）
   for (const s of inp.subs ?? []) {
+    if (s.toolUseId) seenToolIds.add(s.toolUseId);
+    if (s.agentId) seenTaskIds.add(s.agentId);
     unpriced += s.unpriced;
     if (s.unpriced > 0) for (const m of s.models) if (!findPrice(inp.table, m)) unpricedModels.add(m);
     const priced = s.requests - s.unpriced;
     if (priced <= 0) continue;
     requests += priced;
     parts = addCost(parts, s.cost);
-    sub += costTotal(s.cost);
+    const sc = costTotal(s.cost);
+    sub += sc;
     uncached += s.uncached;
-    const at = (s.toolUseId !== null ? byTool.get(s.toolUseId) : undefined) ?? byTask.get(s.agentId);
-    const t = at !== undefined ? turns[at] : undefined;
+    const hit = (s.toolUseId !== null ? byTool.get(s.toolUseId) : undefined) ?? byTask.get(s.agentId);
+    const src: SubagentCostSource = s.source ?? (hit ? inferRunSource(hit.run, inp.subagents) : 'native');
+    bySource[src] += sc;
+    const t = hit !== undefined ? turns[hit.turnIdx] : undefined;
     if (t) {
       t.sub = addCost(t.sub, s.cost);
       t.subRuns++;
     } else {
       other = addCost(other, s.cost);
+    }
+    const agentType = s.agentType || hit?.run.subagentType || '其它';
+    recordType({
+      toolUseId: s.toolUseId ?? hit?.run.toolUseId ?? null,
+      turnId: hit?.turnId,
+      title: hit?.run.title || agentType,
+      agentType,
+      source: src,
+      cost: sc,
+    });
+  }
+
+  // 2) 运行中或 subCosts 尚未覆盖的子代理：用实时 run.cache 补算，按 toolUseId 去重
+  for (const [toolUseId, loc] of byTool) {
+    if (seenToolIds.has(toolUseId)) continue;
+    if (loc.run.taskId && seenTaskIds.has(loc.run.taskId)) continue;
+    const runPts = loc.run.cache;
+    if (!runPts?.length) continue;
+    seenToolIds.add(toolUseId);
+    if (loc.run.taskId) seenTaskIds.add(loc.run.taskId);
+
+    let runParts: CostParts = ZERO_COST;
+    let runUncached = 0;
+    let runPriced = 0;
+    for (const p of runPts) {
+      const u = usageOf(p, loc.run.model ?? inp.fallbackModel);
+      const c = requestCost(inp.table, u);
+      if (!c) {
+        unpriced++;
+        unpricedModels.add(u.model ?? '未知模型');
+        continue;
+      }
+      runPriced++;
+      runParts = addCost(runParts, c);
+      runUncached += uncachedCost(inp.table, u) ?? 0;
+    }
+    if (runPriced <= 0) continue;
+    requests += runPriced;
+    parts = addCost(parts, runParts);
+    const sc = costTotal(runParts);
+    sub += sc;
+    uncached += runUncached;
+    const src = inferRunSource(loc.run, inp.subagents);
+    bySource[src] += sc;
+    const t = turns[loc.turnIdx];
+    if (t) {
+      t.sub = addCost(t.sub, runParts);
+      t.subRuns++;
+    } else {
+      other = addCost(other, runParts);
+    }
+    const agentType = loc.run.subagentType || '其它';
+    recordType({
+      toolUseId,
+      turnId: loc.turnId,
+      title: loc.run.title || agentType,
+      agentType,
+      source: src,
+      cost: sc,
+    });
+  }
+
+  const byType = [...typeMap.values()].sort((a, b) => b.cost - a.cost);
+
+  // 统计各来源的订阅 / 非订阅分布，判断是否混合计费
+  const subscriptionSources: CostSource[] = [];
+  let hasSubBilling = false;
+  let hasNonSubBilling = false;
+  if (inp.billing) {
+    if (bySource.main > 0) {
+      if (inp.billing === 'subscription') {
+        subscriptionSources.push('main');
+        hasSubBilling = true;
+      } else {
+        hasNonSubBilling = true;
+      }
+    }
+    for (const src of ['native', 'claude', 'codex', 'agy'] as const) {
+      if (bySource[src] <= 0) continue;
+      const flag = subBillBySource[src];
+      if (flag?.sub) {
+        subscriptionSources.push(src);
+        hasSubBilling = true;
+      }
+      if (flag?.nonSub) hasNonSubBilling = true;
     }
   }
 
@@ -148,6 +354,10 @@ export function sessionCost(inp: CostInput): SessionCost {
     parts,
     main,
     sub,
+    bySource,
+    byType,
+    subscriptionSources,
+    mixedBilling: hasSubBilling && hasNonSubBilling,
     uncached,
     saved: Math.max(0, uncached - total),
     requests,
@@ -198,4 +408,13 @@ export const COST_KINDS: { key: keyof CostParts; label: string; hint: string }[]
   { key: 'write', label: '写缓存', hint: '写入缓存的输入（比普通输入贵）' },
   { key: 'output', label: '输出', hint: '模型生成的文字、思考与工具调用' },
   { key: 'input', label: '未缓存输入', hint: '没命中也没写入缓存的输入' },
+];
+
+/** 花费的五个来源（分段条与图例共用；颜色复用 ContextPanel.css 变量） */
+export const COST_SOURCES: { key: CostSource; label: string; color: string }[] = [
+  { key: 'main', label: '主线程', color: 'var(--cz-ctx-messages)' },
+  { key: 'native', label: '原生子代理', color: 'var(--cz-ctx-sys-tools)' },
+  { key: 'claude', label: 'Claude 委派', color: 'var(--cz-ctx-sys-prompt)' },
+  { key: 'codex', label: 'Codex', color: 'var(--cz-ctx-skills)' },
+  { key: 'agy', label: 'Antigravity', color: 'var(--cz-ctx-agents)' },
 ];

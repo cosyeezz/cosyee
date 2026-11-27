@@ -45,7 +45,7 @@ describe('parsePricingMarkdown', () => {
   });
 
   it('内置价格表与官方页面（fixture）一致', () => {
-    for (const b of BUILTIN_PRICES.models) {
+    for (const b of BUILTIN_PRICES.models.filter((m) => m.id.startsWith('claude-'))) {
       expect(get(models, b.id), b.id).toEqual(b);
     }
   });

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BUILTIN_PRICES, hasModelMapping,
-  type Account, type AccountList, type AgyAccountList, type Attachment, type Bootstrap, type BrowserPickResult, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
+  type Account, type AccountList, type Attachment, type Bootstrap, type BrowserPickResult, type CachePoint, type CliModelList, type DelegateBackendId, type DelegateJobInfo, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
   type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace, type Turn,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
@@ -15,15 +15,15 @@ import { uuid } from '../core/browser';
 import { readLayout, saveLayout } from '../core/layoutPrefs';
 import { readTerminalPrefs, saveTerminalPrefs } from '../core/terminalPrefs';
 import { expandLabels } from '../core/composer';
-import { recordFuller, rewindTo, subagentEffortFromHistory, subagentModelFromHistory, subagentTurnFromHistory, withRecord } from '../core/reducer';
+import { recordFuller, rewindTo, subagentEffortFromHistory, subagentHistoryFromHistory, subagentModelFromHistory, withRecord } from '../core/reducer';
 import { AppShell } from '../ui/layout/AppShell';
 import { PinnedRail } from '../ui/sidebar/PinnedRail';
 import { Sidebar } from '../ui/sidebar/Sidebar';
 import { excludePinned, samePath } from '../ui/sidebar/sidebarUtil';
-import { agyTitle, entryTitle } from '../ui/sidebar/accountParts';
 import { WorkspaceMenu } from '../ui/sidebar/WorkspaceMenu';
 import { SessionHeader } from '../ui/header/SessionHeader';
 import { ContextPanel } from '../ui/context/ContextPanel';
+import type { ClaudeAccountModels, DelegateModelsEntry } from '../ui/context/Subagents';
 import { ChartRail } from '../ui/context/ChartRail';
 import type { Billing } from '../ui/context/CostSection';
 import { isHiddenTurn } from '../ui/flow/format';
@@ -351,11 +351,11 @@ export function MainApp() {
         refreshSubagents();
         refreshSidebar();
       }
-    } else if (m.t === 'agy.changed') {
-      // Antigravity 账号变化：让开着的账号菜单重读列表，并清空已缓存的委派模型列表（不整页刷新）
+    } else if (m.t === 'agy.changed' || m.t === 'codex.changed') {
+      // Antigravity / Codex 账号变化：让开着的账号菜单重读列表，并清空已缓存的委派模型列表（不整页刷新）
       setAccountVersion((v) => v + 1);
-      delegateSeq.current += 1;
-      setDelegate({ list: null, error: null, loading: false });
+      delegateEpoch.current += 1;
+      setDelegateModels({});
       refreshSubagents();
     } else if (m.t === 'subagents.changed') {
       // 多窗口同步：任一窗口改了子代理设置 / 代理类型开关 / 后端可用性变化时刷新子代理和账号菜单
@@ -593,13 +593,10 @@ export function MainApp() {
     if (sel) socket.send({ t: 'retry.cancel', sessionId: sel.id });
   }, [sel]);
 
-  // 委派任务：停止 / 追加消息（子代理行与浮层里的按钮）
+  // 委派任务：停止（子代理行与浮层里的按钮）
   const selId0 = sel?.id ?? null;
   const onDelegateStop = useCallback((toolUseId: string) => {
     if (selId0) socket.send({ t: 'delegate.stop', sessionId: selId0, toolUseId });
-  }, [selId0]);
-  const onDelegateSend = useCallback((toolUseId: string, text: string, mode: DelegateSendMode) => {
-    if (selId0) socket.send({ t: 'delegate.send', sessionId: selId0, toolUseId, text, mode });
   }, [selId0]);
   const delegateActions = useMemo<DelegateActions>(() => ({ stop: onDelegateStop }), [onDelegateStop]);
 
@@ -774,27 +771,13 @@ export function MainApp() {
   }, [selKey, subCostCwd, running]);
   // 计费方式：会话用的账号是 API 账号（官方 / 第三方地址）还是订阅账号
   const [accounts, setAccounts] = useState<AccountList | null>(null);
-  const [agyAccounts, setAgyAccounts] = useState<AgyAccountList | null>(null);
   useEffect(() => {
     let alive = true;
     api.accounts()
       .then((r) => { if (alive) setAccounts(r && Array.isArray(r.list) ? r : null); })
       .catch(() => { if (alive) setAccounts(null); });
-    api.agyAccounts()
-      .then((r) => { if (alive) setAgyAccounts(r && typeof r.installed === 'boolean' && Array.isArray(r.list) ? r : null); })
-      .catch(() => { if (alive) setAgyAccounts(null); });
     return () => { alive = false; };
   }, [accountVersion]);
-  /** 上下文栏「子代理」卡片里只读展示的账号名（拿不到时不显示） */
-  const subagentAccounts = useMemo(() => {
-    const subClaudeId = accounts?.subagent?.claude;
-    const claudeEntry = subClaudeId ? accounts?.list.find((a) => a.id === subClaudeId) : undefined;
-    const agyEntry = agyAccounts?.installed ? agyAccounts.list.find((a) => a.active) : undefined;
-    return {
-      claude: claudeEntry ? entryTitle(claudeEntry) : null,
-      agy: agyEntry ? agyTitle(agyEntry) : null,
-    };
-  }, [accounts, agyAccounts]);
   /** 会话用的账号：并行模式下是绑定的那个，否则是当前账号 */
   const sessionAccount = useMemo(() => {
     const list = accounts?.list ?? [];
@@ -838,15 +821,64 @@ export function MainApp() {
     if (!modelAccount) return;
     storeModels(modelAccount, await api.cliModels({ account: modelAccount, refresh: true }));
   }, [modelAccount, storeModels]);
-  // agy 的模型列表要启动 agy 才能拿到，打开菜单时才拉
-  const delegateSeq = useRef(0);
-  const [delegate, setDelegate] = useState<{ list: DelegateModelList | null; error: string | null; loading: boolean }>({ list: null, error: null, loading: false });
-  const loadDelegate = useCallback((refresh: boolean) => {
-    const seq = ++delegateSeq.current;
-    setDelegate((d) => ({ ...d, loading: true, error: null }));
-    api.delegateModels(refresh)
-      .then((list) => { if (seq === delegateSeq.current) setDelegate({ list, error: null, loading: false }); })
-      .catch((e) => { if (seq === delegateSeq.current) setDelegate((d) => ({ ...d, error: errText(e), loading: false })); });
+  // 子代理委派：Claude 账号按账号复用 modelLists 缓存；agy / codex 按 backend+account 打开菜单时才拉
+  const [claudeLoading, setClaudeLoading] = useState<Record<string, boolean>>({});
+  const claudeSeqs = useRef(new Map<string, number>());
+  const loadClaudeModels = useCallback((accountId: string, refresh: boolean) => {
+    if (!refresh && modelLists.current.has(accountId)) return;
+    const seq = (claudeSeqs.current.get(accountId) ?? 0) + 1;
+    claudeSeqs.current.set(accountId, seq);
+    setClaudeLoading((m) => ({ ...m, [accountId]: true }));
+    api.cliModels({ account: accountId, refresh })
+      .then((r) => {
+        if (claudeSeqs.current.get(accountId) === seq) storeModels(accountId, r);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (claudeSeqs.current.get(accountId) === seq) {
+          setClaudeLoading((m) => (m[accountId] ? { ...m, [accountId]: false } : m));
+        }
+      });
+  }, [storeModels]);
+  const claudeSubagentModels = useMemo(() => {
+    const out: Record<string, ClaudeAccountModels> = {};
+    for (const acc of accounts?.list ?? []) {
+      const m = acc.api?.models ?? acc.kiro?.models;
+      out[acc.id] = {
+        list: modelLists.current.get(acc.id)?.models ?? null,
+        map: hasModelMapping(m) ? m! : null,
+        loading: !!claudeLoading[acc.id],
+      };
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, modelListTick, claudeLoading]);
+  const delegateEpoch = useRef(0);
+  const delegateSeqs = useRef(new Map<string, number>());
+  const [delegateModels, setDelegateModels] = useState<Record<string, DelegateModelsEntry>>({});
+  const loadDelegateModels = useCallback((backend: DelegateBackendId, accountId: string, refresh: boolean) => {
+    const key = `${backend}:${accountId}`;
+    const epoch = delegateEpoch.current;
+    const seq = (delegateSeqs.current.get(key) ?? 0) + 1;
+    delegateSeqs.current.set(key, seq);
+    setDelegateModels((prev) => ({
+      ...prev,
+      [key]: { list: prev[key]?.list ?? null, error: null, loading: true },
+    }));
+    api.delegateModels({ backend, account: accountId, refresh })
+      .then((list) => {
+        if (delegateEpoch.current === epoch && delegateSeqs.current.get(key) === seq) {
+          setDelegateModels((prev) => ({ ...prev, [key]: { list, error: null, loading: false } }));
+        }
+      })
+      .catch((e) => {
+        if (delegateEpoch.current === epoch && delegateSeqs.current.get(key) === seq) {
+          setDelegateModels((prev) => ({
+            ...prev,
+            [key]: { list: prev[key]?.list ?? null, error: errText(e), loading: false },
+          }));
+        }
+      });
   }, []);
   // 点花费图的柱子：滚到会话流里的这一轮，并短暂高亮
   const jumpToTurn = useCallback((index: number) => {
@@ -1104,10 +1136,17 @@ export function MainApp() {
     api.subagent(sel.id, liveRun.toolUseId, sel.cwd)
       .then(({ entries }) => {
         if (!alive) return;
-        const turn = subagentTurnFromHistory(entries, { title: liveRun.title, toolUseId: liveRun.toolUseId });
+        const hist = subagentHistoryFromHistory(entries, { title: liveRun.title, toolUseId: liveRun.toolUseId });
         const model = subagentModelFromHistory(entries) ?? liveRun.model;
         const effort = subagentEffortFromHistory(entries) ?? liveRun.effort;
-        setLoadedSub({ ...liveRun, turn, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+        setLoadedSub({
+          ...liveRun,
+          turn: hist.turn,
+          ...(hist.cache ? { cache: hist.cache } : {}),
+          ...(hist.contextWindow !== undefined ? { contextWindow: hist.contextWindow } : {}),
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        });
       })
       .catch(() => { /* 没有子代理记录就显示空 */ });
     return () => { alive = false; };
@@ -1116,7 +1155,14 @@ export function MainApp() {
 
   // 委派的过程：会话记录里没有，刷新 / 重启后从服务端的过程记录补。
   // 运行中且页面上的不全（中途刷新过）就轮询；从头看着的只查一次，之后用实时推送
-  const [delegateRec, setDelegateRec] = useState<{ id: string; turn: Turn; model?: string; effort?: string } | null>(null);
+  const [delegateRec, setDelegateRec] = useState<{
+    id: string;
+    turn: Turn;
+    cache?: CachePoint[];
+    contextWindow?: number;
+    model?: string;
+    effort?: string;
+  } | null>(null);
   const liveRunRef = useRef(liveRun);
   liveRunRef.current = liveRun;
   const recId = liveRun?.delegate === true ? liveRun.toolUseId : null;
@@ -1129,9 +1175,16 @@ export function MainApp() {
         .then(({ entries }) => {
           const run = liveRunRef.current;
           if (!alive || run?.toolUseId !== recId) return;
-          const turn = subagentTurnFromHistory(entries, { title: run.title, toolUseId: recId });
-          setDelegateRec({ id: recId, turn, model: subagentModelFromHistory(entries), effort: subagentEffortFromHistory(entries) });
-          if (run.status === 'running' && recordFuller(run, turn)) timer = setTimeout(load, 1500);
+          const hist = subagentHistoryFromHistory(entries, { title: run.title, toolUseId: recId });
+          setDelegateRec({
+            id: recId,
+            turn: hist.turn,
+            cache: hist.cache,
+            contextWindow: hist.contextWindow,
+            model: subagentModelFromHistory(entries),
+            effort: subagentEffortFromHistory(entries),
+          });
+          if (run.status === 'running' && recordFuller(run, hist.turn)) timer = setTimeout(load, 1500);
         })
         .catch(() => { /* 没有过程记录（旧的委派）就只显示结果 */ });
     };
@@ -1142,7 +1195,7 @@ export function MainApp() {
   const overlayRun = useMemo(() => {
     if (loadedSub && liveRun && loadedSub.toolUseId === liveRun.toolUseId) return loadedSub;
     if (!liveRun || delegateRec?.id !== liveRun.toolUseId) return liveRun;
-    const run = withRecord(liveRun, delegateRec.turn);
+    const run = withRecord(liveRun, delegateRec.turn, { cache: delegateRec.cache, contextWindow: delegateRec.contextWindow });
     const model = run.model ?? delegateRec.model;
     const effort = run.effort ?? delegateRec.effort;
     return model === run.model && effort === run.effort ? run : { ...run, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
@@ -1281,6 +1334,9 @@ export function MainApp() {
         turns={sel && view?.id === sel.id ? view.conv.turns : undefined}
         compactions={sel && view?.id === sel.id ? view.conv.meta.compactions : undefined}
         subCosts={sel && subCosts?.id === sel.id ? subCosts.items : null}
+        subagents={subagents?.config ?? null}
+        subagentAccounts={subagents?.accounts}
+        accounts={accounts?.list}
         pricing={pricing}
         model={sel && view?.id === sel.id ? view.conv.meta.model : undefined}
         billing={billing}
@@ -1387,6 +1443,7 @@ export function MainApp() {
             currentSessionId={sel?.id ?? null}
             account={account}
             accountVersion={accountVersion}
+            remote={boot?.remote ?? false}
             onNewSession={narrow ? () => { closeDrawer(); newSession(); } : newSession}
             onCollapse={narrow ? closeDrawer : () => setCollapsed(true)}
             onSelectSession={narrow ? (id: string) => { closeDrawer(); selectSession(id); } : selectSession}
@@ -1447,17 +1504,18 @@ export function MainApp() {
             subCosts={sel && subCosts?.id === sel.id ? subCosts.items : null}
             pricing={pricing}
             billing={billing}
+            accounts={accounts?.list}
             onJumpTurn={jumpToTurn}
+            onOpenSubagent={onOpenSubagent}
             subagents={subagents && {
               state: subagents,
               onChange: changeSubagents,
               modelList,
               modelMap,
-              delegate: delegate.list,
-              delegateError: delegate.error,
-              delegateLoading: delegate.loading,
-              onLoadDelegate: loadDelegate,
-              accounts: subagentAccounts,
+              claudeModels: claudeSubagentModels,
+              onLoadClaudeModels: loadClaudeModels,
+              delegateModels,
+              onLoadDelegateModels: loadDelegateModels,
               sessionAgents: sel && view?.id === sel.id ? view.conv.meta.agents : undefined,
               onToggleAgent: toggleAgent,
             }}
@@ -1469,9 +1527,14 @@ export function MainApp() {
         run={overlayRun}
         onClose={closeSub}
         subagents={subagents?.config ?? null}
+        subagentAccounts={subagents?.accounts}
+        accounts={accounts?.list}
+        sessionBilling={billing}
+        pricing={pricing}
+        cliCost={sel && view?.id === sel.id ? view.conv.meta.cliCost : undefined}
+        modelMap={modelMap}
         delegates={view?.delegates ?? NO_JOBS}
         onDelegateStop={onDelegateStop}
-        onDelegateSend={onDelegateSend}
       />
       {preview && selId && selDir && (
         <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />

@@ -7,3 +7,4 @@ export * from './pricing.ts';
 export * from './runnable.ts';
 export * from './browserRef.ts';
 export * from './terminal.ts';
+export * from './usage.ts';
