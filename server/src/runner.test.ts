@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_AGENTS } from './delegate/agents.js';
 import type { DelegateBackend } from './delegate/backend.js';
-import { CosyeeMcp, DELEGATE_TOOL_NAMES } from './delegate/mcp.js';
+import { CosyeeMcp, DELEGATE_TOOL_NAMES, NATIVE_SUBAGENT_TOOLS } from './delegate/mcp.js';
 import { DelegateJobs } from './delegate/jobs.js';
 import { removePrivateSettings, writePrivateSettings } from './claude/bin.js';
 import { DELEGATE_PROMPT, PATH_PROMPT, Runner, buildArgs, cliPermissionMode, isDenied, validateConfig } from './claude/runner.js';
@@ -763,6 +763,7 @@ describe('子代理默认模型 / 强度（PreToolUse hook）', () => {
   });
   const run = (tool_input: Json, d: Json | null = { native: { model: 'sonnet', effort: 'medium' } }) => {
     const { r, anyR, writes, log } = make();
+    anyR.accountDir = path.join(os.tmpdir(), 'cosyee-runner-test-no-agents');
     anyR.agentDefaults = () => d;
     r.handleMessage(hook(tool_input));
     expect(writes[0]).toMatchObject({ type: 'control_response', response: { subtype: 'success', request_id: 'h1' } });
@@ -844,16 +845,21 @@ describe('delegate（cosyee MCP）', () => {
     anyR.subagents = () => mkCfg('claude');
     expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob']);
 
-    // 注册了 MCP：claude / agy 可用时停用 Agent，不额外停用 delegate
+    // 注册了 MCP：claude / agy 可用时停用全部原生子代理相关工具（不含 TaskStop / Monitor），不额外停用 delegate
     anyR.mcp = {};
-    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', 'Agent']);
-    expect(anyR.withSubagentDeny(['Agent'])).toEqual(['Agent']);
+    expect(NATIVE_SUBAGENT_TOOLS).toEqual(['Agent', 'SendMessage', 'ListAgents', 'TeamCreate', 'TeamDelete']);
+    expect(NATIVE_SUBAGENT_TOOLS).not.toContain('TaskStop');
+    expect(NATIVE_SUBAGENT_TOOLS).not.toContain('Monitor');
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...NATIVE_SUBAGENT_TOOLS]);
+    // 用户自己停用了其中某些项时去重不重复
+    expect(anyR.withSubagentDeny(['Agent', 'SendMessage'])).toEqual(['Agent', 'SendMessage', 'ListAgents', 'TeamCreate', 'TeamDelete']);
     anyR.subagents = () => mkCfg('agy');
-    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', 'Agent']);
+    expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...NATIVE_SUBAGENT_TOOLS]);
 
-    // native：放行 Agent，停用全部 delegate 系列工具
+    // native：放行原生子代理工具，停用全部 delegate 系列工具；用户自己停用的 SendMessage / Agent 仍保留不误放
     anyR.subagents = () => mkCfg('native');
     expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...allDelegate]);
+    expect(anyR.withSubagentDeny(['SendMessage', 'Glob'])).toEqual(['SendMessage', 'Glob', ...allDelegate]);
     expect(anyR.withSubagentDeny(['mcp__cosyee__delegate'])).toEqual(allDelegate);
 
     // 选中的后端不可用：退回 native 行为
@@ -861,7 +867,7 @@ describe('delegate（cosyee MCP）', () => {
     anyR.subagents = () => mkCfg('agy');
     expect(anyR.withSubagentDeny(['Glob'])).toEqual(['Glob', ...allDelegate]);
 
-    // 用户手动停用了 delegate：退回 native 行为（不加 Agent）
+    // 用户手动停用了 delegate：退回 native 行为（不加原生子代理工具）
     anyR.subagents = () => mkCfg('claude');
     expect(anyR.withSubagentDeny(['mcp__cosyee__delegate'])).toEqual(allDelegate);
   });

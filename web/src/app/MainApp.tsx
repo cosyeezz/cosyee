@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import {
   BUILTIN_PRICES, hasModelMapping,
   type Account, type AccountList, type AgyAccountList, type Attachment, type Bootstrap, type BrowserPickResult, type CliModelList, type DelegateModelList, type DelegateJobInfo, type DelegateSendMode, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
-  type SessionConfig, type SessionSummary, type SkillMode, type SubagentConfig, type SubagentCost, type SubagentRun, type SubagentState, type ToolStats, type Workspace, type Turn,
+  type SessionConfig, type SessionSummary, type SkillMode, type SubagentCost, type SubagentRun, type ToolStats, type Workspace, type Turn,
 } from '@cosyee/shared';
 import { api, socket } from '../core/api';
 import { upgradeToHttps } from '../core/speech/https';
@@ -40,6 +40,7 @@ import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
 import { useSessionStream } from './useSessionStream';
+import { useSubagents } from './useSubagents';
 import { motionOK } from '../ui/motion/reduced';
 import { useCssHeight } from '../ui/layout/useCssHeight';
 import { NARROW_QUERY, useMediaQuery } from '../ui/layout/useMediaQuery';
@@ -211,6 +212,9 @@ export function MainApp() {
     window.setTimeout(() => setNotice((n) => (n === msg ? null : n)), 4000);
   }, []);
 
+  // 子代理（全局 + 按当前工作区读取项目级代理类型）：老服务端没有这个接口时不显示这一节
+  const { subagents, changeSubagents, refreshSubagents, toggleAgent: toggleSubagent } = useSubagents(flash, selCwd);
+
   // ───────────── 启动 ─────────────
 
   useEffect(() => {
@@ -309,6 +313,7 @@ export function MainApp() {
         // 并行模式：各会话仍用各自的账号，只重读账号相关的数据（账户栏、额度、会话行上的账号名）
         api.account().then(setAccount).catch(() => setAccount(null));
         setAccountVersion((v) => v + 1);
+        refreshSubagents();
         refreshSidebar();
       }
     } else if (m.t === 'agy.changed') {
@@ -316,11 +321,19 @@ export function MainApp() {
       setAccountVersion((v) => v + 1);
       delegateSeq.current += 1;
       setDelegate({ list: null, error: null, loading: false });
+      refreshSubagents();
+    } else if (m.t === 'subagents.changed') {
+      // 多窗口同步：任一窗口改了子代理设置 / 代理类型开关 / 后端可用性变化时刷新子代理和账号菜单
+      refreshSubagents();
+      setAccountVersion((v) => v + 1);
     } else if (m.t === 'error') flash(m.message);
-  }), [cwd, loadSessions, loadPins, refreshSidebar, flash]);
+  }), [cwd, loadSessions, loadPins, refreshSidebar, refreshSubagents, flash]);
 
-  // 断线重连（后端重启、电脑休眠唤醒等）：断线期间错过的列表变化全部重读
-  useEffect(() => socket.onReconnect(refreshSidebar), [refreshSidebar]);
+  // 断线重连（后端重启、电脑休眠唤醒等）：断线期间错过的列表变化与子代理可用性全部重读
+  useEffect(() => socket.onReconnect(() => {
+    refreshSidebar();
+    refreshSubagents();
+  }), [refreshSidebar, refreshSubagents]);
 
   // WebSocket 连接状态（断线时在界面上提示，避免消息默默排队、用户以为发不了）
   useEffect(() => socket.onConnChange(setWsConnected), []);
@@ -695,8 +708,14 @@ export function MainApp() {
   const [accounts, setAccounts] = useState<AccountList | null>(null);
   const [agyAccounts, setAgyAccounts] = useState<AgyAccountList | null>(null);
   useEffect(() => {
-    api.accounts().then(setAccounts).catch(() => setAccounts(null));
-    api.agyAccounts(false).then(setAgyAccounts).catch(() => setAgyAccounts(null));
+    let alive = true;
+    api.accounts()
+      .then((r) => { if (alive) setAccounts(r && Array.isArray(r.list) ? r : null); })
+      .catch(() => { if (alive) setAccounts(null); });
+    api.agyAccounts(false)
+      .then((r) => { if (alive) setAgyAccounts(r && typeof r.installed === 'boolean' && Array.isArray(r.list) ? r : null); })
+      .catch(() => { if (alive) setAgyAccounts(null); });
+    return () => { alive = false; };
   }, [accountVersion]);
   /** 上下文栏「子代理」卡片里只读展示的账号名（拿不到时不显示） */
   const subagentAccounts = useMemo(() => {
@@ -751,20 +770,6 @@ export function MainApp() {
     if (!modelAccount) return;
     storeModels(modelAccount, await api.cliModels({ account: modelAccount, refresh: true }));
   }, [modelAccount, storeModels]);
-  // 子代理（全局）：老服务端没有这个接口时不显示这一节
-  const [subagents, setSubagents] = useState<SubagentState | null>(null);
-  useEffect(() => {
-    api.subagents().then(setSubagents).catch(() => {});
-  }, []);
-  const changeSubagents = useCallback((c: SubagentConfig) => {
-    setSubagents((prev) => (prev ? { ...prev, config: c, effective: prev.available[c.kind]?.ok ? c.kind : 'native' } : prev));
-    api.saveSubagents(c)
-      .then((r) => setSubagents(r.state))
-      .catch((e) => {
-        flash(`保存子代理设置失败：${errText(e)}`);
-        api.subagents().then(setSubagents).catch(() => {});
-      });
-  }, [flash]);
   // agy 的模型列表要启动 agy 才能拿到，打开菜单时才拉
   const delegateSeq = useRef(0);
   const [delegate, setDelegate] = useState<{ list: DelegateModelList | null; error: string | null; loading: boolean }>({ list: null, error: null, loading: false });
@@ -876,13 +881,15 @@ export function MainApp() {
         v.context = { ...v.context, disabledTools: enabled ? rest : [...rest, name] };
       });
     }
-    api.setTool(name, enabled).catch((e) => {
-      flash(`${enabled ? '启用' : '停用'}工具失败：${errText(e)}`);
-      refreshContext();
-    });
-  }, [sel, patch, flash, refreshContext]);
+    api.setTool(name, enabled)
+      .then(() => { if (name === 'mcp__cosyee__delegate') refreshSubagents(); })
+      .catch((e) => {
+        flash(`${enabled ? '启用' : '停用'}工具失败：${errText(e)}`);
+        refreshContext();
+      });
+  }, [sel, patch, flash, refreshContext, refreshSubagents]);
 
-  // 智能体开关：同工具开关，乐观更新；失败则提示并重新采集
+  // 智能体开关：乐观更新上下文与子代理状态，走 POST /api/agents，成功后刷新子代理，失败回滚
   const toggleAgent = useCallback((name: string, enabled: boolean) => {
     const id = sel?.id;
     if (id) {
@@ -892,11 +899,10 @@ export function MainApp() {
         v.context = { ...v.context, disabledAgents: enabled ? rest : [...rest, name] };
       });
     }
-    api.setAgent(name, enabled).catch((e) => {
-      flash(`${enabled ? '开启' : '关闭'}智能体失败：${errText(e)}`);
-      refreshContext();
+    void toggleSubagent(name, enabled).then((ok) => {
+      if (!ok) refreshContext();
     });
-  }, [sel, patch, flash, refreshContext]);
+  }, [sel, patch, toggleSubagent, refreshContext]);
 
   // MCP 开关：切换期间禁用该开关，等后端返回切换后的上下文
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
@@ -1327,8 +1333,6 @@ export function MainApp() {
             onSkillReveal={remote ? undefined : revealSkill}
             tools={sel && view?.id === sel.id ? view.conv.meta.tools : undefined}
             onToolToggle={toggleTool}
-            agents={sel && view?.id === sel.id ? view.conv.meta.agents : undefined}
-            onAgentToggle={toggleAgent}
             onMcpToggle={toggleMcp}
             mcpBusy={mcpBusy}
             compactions={sel && view?.id === sel.id ? view.conv.meta.compactions : undefined}
@@ -1348,6 +1352,8 @@ export function MainApp() {
               delegateLoading: delegate.loading,
               onLoadDelegate: loadDelegate,
               accounts: subagentAccounts,
+              sessionAgents: sel && view?.id === sel.id ? view.conv.meta.agents : undefined,
+              onToggleAgent: toggleAgent,
             }}
           />
         }

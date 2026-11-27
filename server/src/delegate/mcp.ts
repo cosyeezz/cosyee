@@ -2,7 +2,7 @@
 // claude CLI 经 control_request(mcp_message) 把 JSON-RPC 转给我们，runner 负责收发，这里只管协议层；
 // 工具逻辑与任务状态在 DelegateJobs（jobs.ts，由 Manager 持有，比 runner / CLI 进程活得久）。
 import type { Json } from '../transcript.js';
-import { agentNamesLine, BUILTIN_AGENTS, type DelegateAgent } from './agents.js';
+import { agentNamesLine, BUILTIN_AGENTS, type DelegateAgent, listAgents } from './agents.js';
 import type { BackendResult, BackendRunOptions } from './backend.js';
 import type { DelegateCtx, DelegateJobs } from './jobs.js';
 
@@ -16,7 +16,7 @@ const READ_ONLY = { readOnlyHint: true };
 export function delegateTool(agents: DelegateAgent[]) {
   const others = agentNamesLine(agents);
   const agentBullet =
-    '- agent: which agent runs it, by name; default general-purpose. Explore: read-only search that reports evidence. Plan: read-only design. general-purpose: research and implementation.' +
+    '- agent: which agent runs it, by name; default general-purpose. Choose by whether the task changes anything: Explore for read-only investigation (finding, reading, tracing and explaining code); Plan for read-only design; general-purpose only when it must edit files or run commands to verify.' +
     (others ? ` Others: ${others}.` : '') +
     ' Call delegate_agents to see what each one is for.';
   return {
@@ -128,6 +128,23 @@ export const DELEGATE_AGENTS_TOOL = {
 export const DELEGATE_TOOLS = [DELEGATE_TOOL, DELEGATE_SEND_TOOL, DELEGATE_STOP_TOOL, DELEGATE_RESULT_TOOL, DELEGATE_AGENTS_TOOL];
 /** 带 mcp__cosyee__ 前缀的完整工具名（放行权限用） */
 export const DELEGATE_TOOL_NAMES = DELEGATE_TOOLS.map((t) => `mcp__${MCP_SERVER}__${t.name}`);
+/** 跟随 delegate 一起启停的辅助工具（不允许单独停用） */
+export const DELEGATE_AUX_TOOL_NAMES: readonly string[] = DELEGATE_TOOL_NAMES.filter((n) => n !== DELEGATE_TOOL_NAME);
+
+/**
+ * 仅与 Claude 原生子代理 / Agent Teams 相关的内置工具：
+ * - Agent（别名 Task）：启动原生子代理（整条停用后 CLI 会恢复内置 WebFetch）
+ * - SendMessage / ListAgents（别名 ListPeers）：给原生子代理 / teammates 发消息、列出它们
+ * - TeamCreate / TeamDelete：旧版 CLI 的 Agent Teams 工具（保留兼容）
+ * 注意：TaskStop、Monitor 等后台 Bash 也会用到的工具不能加入。
+ */
+export const NATIVE_SUBAGENT_TOOLS: readonly string[] = [
+  'Agent',
+  'SendMessage',
+  'ListAgents',
+  'TeamCreate',
+  'TeamDelete',
+];
 
 /** 告诉前端某次子代理调用实际用的模型 / 强度（调用参数里看不到补上的默认值） */
 export function agentParamsEvent(toolUseId: string, model: string | null | undefined, effort: string | null | undefined): Json {
@@ -141,15 +158,21 @@ const toolError = (text: string): Json => ({ content: [{ type: 'text', text }], 
 export class CosyeeMcp {
   private readonly jobs: DelegateJobs;
   private readonly ctx: () => DelegateCtx;
-  private readonly tools: readonly Json[];
+  private readonly getAgents: () => DelegateAgent[];
   /** 进行中的 tools/call（前台调用）：JSON-RPC id -> 取消器 */
   private inflight = new Map<string, AbortController>();
 
-  /** jobs：任务状态机（共享、长寿）；ctx：每次调用时读取工作目录 / 后端 / 默认模型 / 智能体范围 */
-  constructor(o: { jobs: DelegateJobs; ctx: () => DelegateCtx; agents: DelegateAgent[] }) {
+  /** jobs：任务状态机（共享、长寿）；ctx：每次调用时读取工作目录 / 后端 / 默认模型 / 智能体范围；agents 缺省时每次 tools/list 按 ctx().agents 动态扫描 */
+  constructor(o: { jobs: DelegateJobs; ctx: () => DelegateCtx; agents?: DelegateAgent[] | (() => DelegateAgent[]) }) {
     this.jobs = o.jobs;
     this.ctx = o.ctx;
-    this.tools = [delegateTool(o.agents), DELEGATE_SEND_TOOL, DELEGATE_STOP_TOOL, DELEGATE_RESULT_TOOL, DELEGATE_AGENTS_TOOL];
+    const raw = o.agents;
+    this.getAgents =
+      typeof raw === 'function'
+        ? raw
+        : Array.isArray(raw)
+          ? () => raw
+          : () => listAgents(this.ctx().agents);
   }
 
   async handle(msg: Json): Promise<Json> {
@@ -170,7 +193,9 @@ export class CosyeeMcp {
           serverInfo: { name: MCP_SERVER, version: '1' },
         });
       case 'tools/list':
-        return ok({ tools: this.tools });
+        return ok({
+          tools: [delegateTool(this.getAgents()), DELEGATE_SEND_TOOL, DELEGATE_STOP_TOOL, DELEGATE_RESULT_TOOL, DELEGATE_AGENTS_TOOL],
+        });
       case 'tools/call':
         return ok(await this.call(id, params));
       default:
@@ -185,7 +210,7 @@ export class CosyeeMcp {
 
   private async call(id: string | number, params: Json): Promise<Json> {
     const name = String(params.name);
-    if (!this.tools.some((t) => t.name === name)) return toolError(`未知工具: ${name}`);
+    if (!DELEGATE_TOOLS.some((t) => t.name === name)) return toolError(`未知工具: ${name}`);
     const a: Json = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
     const meta: Json = params._meta && typeof params._meta === 'object' ? params._meta : {};
     const toolUseId = typeof meta['claudecode/toolUseId'] === 'string' ? meta['claudecode/toolUseId'] : '';

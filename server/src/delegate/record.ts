@@ -50,8 +50,10 @@ interface Rec {
   file: string;
   /** 已写入（含排队中）的字节数；null = 还没看过文件现有大小 */
   size: number | null;
-  /** 还在流式输出、没写盘的文字段 */
-  open: { id: string; model?: string; text: string; at: string } | null;
+  /** 当前流式消息的元信息（跨同消息内多个内容块保持，遇到新消息或完整 assistant/user 条目时重置） */
+  msg: { id: string; model?: string } | null;
+  /** 还在流式输出、没写盘的内容块（文字或思考） */
+  open: { id: string; model?: string; kind: 'text' | 'thinking'; text: string; at: string } | null;
   effort?: string;
   chain: Promise<void>;
 }
@@ -78,13 +80,14 @@ export class DelegateRecorder {
       if (!r) continue;
       if (e.type === 'stream_event') this.stream(r, e);
       else if (e.type === 'assistant' || e.type === 'user') {
-        this.closeText(r);
+        this.closeBlock(r);
+        r.msg = null;
         this.append(r, { type: e.type, message: e.message, ...(e.type === 'assistant' && r.effort ? { effort: r.effort } : {}) });
       }
     }
   }
 
-  /** 一个委派至今的过程（含正在输出的文字）；没有记录返回 null */
+  /** 一个委派至今的过程（含正在输出的文字或思考）；没有记录返回 null */
   async read(sessionId: string, toolUseId: string): Promise<Json[] | null> {
     const file = this.fileOf(sessionId, toolUseId);
     if (!file) return null;
@@ -97,7 +100,7 @@ export class DelegateRecorder {
       if (!rec?.open) return null;
     }
     const out = raw.split('\n').map((l) => (l ? parseLine(l) : null)).filter((x): x is Json => !!x);
-    if (rec?.open?.text) out.push(this.textEntry(rec, rec.open));
+    if (rec?.open?.text) out.push(this.blockEntry(rec, rec.open));
     return out.length ? out : null;
   }
 
@@ -301,36 +304,58 @@ export class DelegateRecorder {
     const file = this.fileOf(sessionId, toolUseId);
     if (!file) return null;
     let r = this.recs.get(file);
-    if (!r) this.recs.set(file, (r = { file, size: null, open: null, chain: Promise.resolve() }));
+    if (!r) this.recs.set(file, (r = { file, size: null, msg: null, open: null, chain: Promise.resolve() }));
     return r;
+  }
+
+  private openBlock(r: Rec, kind: 'text' | 'thinking', fallbackId: string, init = ''): void {
+    const msg = r.msg ?? { id: fallbackId };
+    r.open = { id: msg.id, ...(msg.model ? { model: msg.model } : {}), kind, text: init, at: new Date().toISOString() };
   }
 
   private stream(r: Rec, e: Json): void {
     const ev = e.event;
     if (ev?.type === 'message_start') {
-      this.closeText(r);
+      this.closeBlock(r);
       const model = typeof ev.message?.model === 'string' ? ev.message.model : undefined;
-      r.open = { id: String(ev.message?.id ?? e.api_message_id ?? ''), ...(model ? { model } : {}), text: '', at: new Date().toISOString() };
-    } else if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && r.open) {
-      r.open.text += String(ev.delta.text ?? '');
+      r.msg = { id: String(ev.message?.id ?? e.api_message_id ?? ''), ...(model ? { model } : {}) };
+    } else if (ev?.type === 'content_block_start') {
+      const t = ev.content_block?.type;
+      if (t === 'text' || t === 'thinking') {
+        this.closeBlock(r);
+        const init = t === 'thinking'
+          ? (typeof ev.content_block?.thinking === 'string' ? ev.content_block.thinking : '')
+          : (typeof ev.content_block?.text === 'string' ? ev.content_block.text : '');
+        this.openBlock(r, t, String(e.api_message_id ?? ''), init);
+      }
+    } else if (ev?.type === 'content_block_delta') {
+      const d = ev.delta;
+      if (d?.type === 'text_delta') {
+        if (!r.open && r.msg) this.openBlock(r, 'text', r.msg.id);
+        if (r.open?.kind === 'text') r.open.text += String(d.text ?? '');
+      } else if (d?.type === 'thinking_delta') {
+        if (!r.open && r.msg) this.openBlock(r, 'thinking', r.msg.id);
+        if (r.open?.kind === 'thinking') r.open.text += String(d.thinking ?? '');
+      }
     } else if (ev?.type === 'content_block_stop') {
-      this.closeText(r);
+      this.closeBlock(r);
     }
   }
 
-  private textEntry(r: Rec, o: NonNullable<Rec['open']>): Json {
+  private blockEntry(r: Rec, o: NonNullable<Rec['open']>): Json {
+    const block = o.kind === 'thinking' ? { type: 'thinking', thinking: o.text } : { type: 'text', text: o.text };
     return {
       type: 'assistant',
       timestamp: o.at,
       ...(r.effort ? { effort: r.effort } : {}),
-      message: { id: o.id, role: 'assistant', ...(o.model ? { model: o.model } : {}), content: [{ type: 'text', text: o.text }] },
+      message: { id: o.id, role: 'assistant', ...(o.model ? { model: o.model } : {}), content: [block] },
     };
   }
 
-  private closeText(r: Rec): void {
+  private closeBlock(r: Rec): void {
     const o = r.open;
     r.open = null;
-    if (o?.text) this.append(r, this.textEntry(r, o));
+    if (o?.text) this.append(r, this.blockEntry(r, o));
   }
 
   private append(r: Rec, entry: Json): void {

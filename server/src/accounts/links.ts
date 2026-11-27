@@ -51,6 +51,17 @@ function stamp(): string {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '');
 }
 
+/** 生成不与现有文件/目录冲突的带时间戳备份路径（避免同一秒内两次重命名撞名失败） */
+function uniqueStampedPath(basePath: string, suffix: string): string {
+  const first = `${basePath}.${suffix}-${stamp()}`;
+  if (!lstat(first)) return first;
+  for (let i = 1; i < 1000; i++) {
+    const cand = `${first}-${i}`;
+    if (!lstat(cand)) return cand;
+  }
+  return `${first}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function lstat(p: string): fs.Stats | null {
   try {
     return fs.lstatSync(p);
@@ -145,9 +156,9 @@ function ensureDirLink(base: string, dir: string, name: string): void {
     // 链接被换成了真实目录（比如在别处被复制 / 重建）：内容并进基础目录，剩下的改名留存
     const all = mergeInto(at, master);
     if (all) fs.rmdirSync(at);
-    else fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    else fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   } else if (st) {
-    fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   }
   linkDir(master, at);
 }
@@ -169,15 +180,15 @@ function ensureFileLink(base: string, dir: string, name: string): void {
     } else if (sameContent(at, master)) {
       fs.rmSync(at, { force: true });
     } else if (st.mtimeMs > ms.mtimeMs) {
-      fs.copyFileSync(master, `${master}.cosyee-bak-${stamp()}`);
+      fs.copyFileSync(master, uniqueStampedPath(master, 'cosyee-bak'));
       fs.copyFileSync(at, master);
       fs.rmSync(at, { force: true });
     } else {
-      fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+      fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
     }
     ms = lstat(master);
   } else if (st) {
-    fs.renameSync(at, `${at}.cosyee-orphan-${stamp()}`);
+    fs.renameSync(at, uniqueStampedPath(at, 'cosyee-orphan'));
   }
   if (!ms) {
     const init = CREATE_IF_MISSING[name];

@@ -52,8 +52,11 @@ export class AcpProgress {
   private readonly parent: string;
   /** 展示用的模型名；实际模型确定后会改写 */
   model: string;
-  /** 当前开着的文字块（ACP 的文字片段没有消息 id，遇到工具调用就切成新的一段） */
-  private textOpen: string | null = null;
+  /** 当前开着的流式消息（ACP 的思考 / 文字片段没有消息 id，遇到工具调用就切成新的一段） */
+  private msgOpen: string | null = null;
+  /** 当前开着的内容块类型与 index（同一消息内思考 / 文字切换时先关旧块、index 递增） */
+  private blockOpen: { kind: 'text' | 'thinking'; index: number } | null = null;
+  private blockSeq = 0;
   private seq = 0;
   /** 已发出 tool_use 的 toolCallId → 是否已发出 tool_result */
   private tools = new Map<string, boolean>();
@@ -68,7 +71,9 @@ export class AcpProgress {
     if (!u || typeof u !== 'object') return [];
     switch (u.sessionUpdate) {
       case 'agent_message_chunk':
-        return this.text(u);
+        return this.chunk('text', u);
+      case 'agent_thought_chunk':
+        return this.chunk('thinking', u);
       case 'tool_call':
       case 'tool_call_update':
         return this.tool(u);
@@ -77,9 +82,9 @@ export class AcpProgress {
     }
   }
 
-  /** 收尾：还开着的文字块关掉，没收到结果的工具调用补一个「已中断」结果（prompt 返回、出错、被转向 / 停止时调用） */
+  /** 收尾：还开着的文字 / 思考块关掉，没收到结果的工具调用补一个「已中断」结果（prompt 返回、出错、被转向 / 停止时调用） */
   finish(): Json[] {
-    const out = this.closeText();
+    const out = this.closeMessage();
     for (const [callId, done] of this.tools) {
       if (done) continue;
       this.tools.set(callId, true);
@@ -103,25 +108,41 @@ export class AcpProgress {
     return { type: 'stream_event', parent_tool_use_id: this.parent, api_message_id: this.msgId(key), event };
   }
 
-  private closeText(): Json[] {
-    if (!this.textOpen) return [];
-    const key = this.textOpen;
-    this.textOpen = null;
-    return [this.stream(key, { type: 'content_block_stop', index: 0 })];
+  private closeBlock(): Json[] {
+    if (!this.msgOpen || !this.blockOpen) return [];
+    const { index } = this.blockOpen;
+    this.blockOpen = null;
+    return [this.stream(this.msgOpen, { type: 'content_block_stop', index })];
   }
 
-  private text(u: Json): Json[] {
+  private closeMessage(): Json[] {
+    const out = this.closeBlock();
+    this.msgOpen = null;
+    this.blockSeq = 0;
+    return out;
+  }
+
+  private chunk(kind: 'text' | 'thinking', u: Json): Json[] {
     const c = u.content;
     const delta = c?.type === 'text' && typeof c.text === 'string' ? c.text : '';
     if (!delta) return [];
     const out: Json[] = [];
-    if (!this.textOpen) {
+    if (!this.msgOpen) {
       const key = `t${this.seq++}`;
-      this.textOpen = key;
+      this.msgOpen = key;
+      this.blockSeq = 0;
       out.push(this.stream(key, { type: 'message_start', message: { id: this.msgId(key), ...(this.model ? { model: this.model } : {}) } }));
-      out.push(this.stream(key, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }));
     }
-    out.push(this.stream(this.textOpen, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta } }));
+    if (this.blockOpen?.kind !== kind) {
+      out.push(...this.closeBlock());
+      const index = this.blockSeq++;
+      this.blockOpen = { kind, index };
+      const block = kind === 'thinking' ? { type: 'thinking', thinking: '' } : { type: 'text', text: '' };
+      out.push(this.stream(this.msgOpen, { type: 'content_block_start', index, content_block: block }));
+    }
+    const { index } = this.blockOpen;
+    const evDelta = kind === 'thinking' ? { type: 'thinking_delta', thinking: delta } : { type: 'text_delta', text: delta };
+    out.push(this.stream(this.msgOpen, { type: 'content_block_delta', index, delta: evDelta }));
     return out;
   }
 
@@ -130,8 +151,8 @@ export class AcpProgress {
     const id = `agy_${this.parent}_${callId}`;
     const out: Json[] = [];
     if (!this.tools.has(callId)) {
-      // 工具调用打断文字：先把前面的文字块关掉，之后的文字另起一段
-      out.push(...this.closeText());
+      // 工具调用打断文字 / 思考：先把前面的流式块关掉，之后另起一段
+      out.push(...this.closeMessage());
       this.tools.set(callId, false);
       const name = (typeof u.name === 'string' && u.name) || (typeof u.title === 'string' && u.title) || (typeof u.kind === 'string' && u.kind) || 'tool';
       out.push({

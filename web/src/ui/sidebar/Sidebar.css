@@ -544,7 +544,6 @@
 .cz-sidebar__seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cz-sidebar__mode .cz-sidebar__acct-confirm { margin-top: var(--sp-2); font-size: var(--fs-xs); }
 .cz-sidebar__mode .cz-sidebar__acct-note { margin-top: var(--sp-1); }
-.cz-sidebar__mode-note { margin-top: 3px; padding: 0 4px; font-size: 10.5px; line-height: 1.3; color: var(--text-3); }
 .cz-sidebar__theme { padding-top: var(--sp-1); padding-bottom: var(--sp-1); }
 .cz-sidebar__theme-label { padding: 0 2px var(--sp-1); font-size: var(--fs-xs); color: var(--text-3); }
 /* 菜单里一行「外观 [跟随系统|浅色|深色]」；侧栏太窄放不下 160px 的分段时整段换到第二行 */
@@ -1135,6 +1134,21 @@
 .cz-acct-menu .cz-sidebar__acct-confirm { font-size: 11.5px; }
 .cz-acct-menu .cz-sidebar__menu-list { max-height: min(460px, calc(var(--center-h, 100dvh) - 320px)); }
 .cz-acct-pick-empty { padding: 6px 7px; font-size: 11px; color: var(--text-3); }
+.cz-acct-pick-empty--action { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; line-height: 1.45; }
+.cz-acct-empty-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.cz-acct-empty-btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+.cz-acct-empty-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cz-acct-pick-sec { display: flex; flex-direction: column; }
 .cz-acct-pick-grp { display: flex; align-items: center; gap: 6px; padding: 6px 7px 1px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--text-3); cursor: default; }
 .cz-acct-pick-sec:first-child > .cz-acct-pick-grp { padding-top: 3px; }
@@ -1167,8 +1181,6 @@
   font-size: 11.5px;
   line-height: 1.3;
 }
-.cz-acct-sub-card__head > svg { flex: none; color: var(--text-2); }
-.cz-acct-sub-card.is-used .cz-acct-sub-card__head > svg { color: var(--accent); }
 .cz-acct-sub-card__head > b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cz-acct-sub-badge {
   flex: none;
@@ -1181,13 +1193,6 @@
   white-space: nowrap;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.cz-acct-sub-card__desc {
-  margin: 0;
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--text-3);
-  overflow-wrap: anywhere;
 }
 .cz-acct-sub-note { font-size: 10.5px; line-height: 1.4; color: var(--text-3); padding: 2px 0; }
 .cz-acct-sub-err {
@@ -1246,9 +1251,10 @@
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   box-shadow: none;
 }
-/* 最近额度一行「5h ━━━ 94%」：名称、进度条、百分比三列，和名字左端对齐 */
+/* 最近额度一行「5h ━━━ 94% 2小时14分后」：名称、进度条、百分比、重置时间四列，和名字左端对齐 */
 .cz-acctq-brief { grid-column: 1 / -1; min-width: 0; font-size: 10.5px; line-height: 1.25; color: var(--text-3); }
-.cz-acctq-brief.cz-acctq__line { grid-template-columns: 2.2em minmax(16px, 1fr) 2.8em; column-gap: 6px; }
+.cz-acctq-brief.cz-acctq__line { grid-template-columns: 2.2em minmax(16px, 1fr) 2.8em 6.4em; column-gap: 6px; }
+.cz-acctq-brief__reset { grid-column: 4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-3); }
 .cz-acctq-brief--loading {
   display: block;
   height: 6px;

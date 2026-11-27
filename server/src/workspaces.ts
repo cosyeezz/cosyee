@@ -1,7 +1,7 @@
 // 工作空间列表与持久化：~/.cosyee/state.json = { workspaces, current, unread }，原子写。
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_SUBAGENTS, MODEL_ALIASES, SKILL_MODES, SUBAGENT_KINDS, type AccountMode, type Effort, type ModelAlias, type SessionConfig, type SkillMode, type StopInfo, type StopKind, type StopState, type SubagentConfig, type SubagentKind, type Workspace } from '@cosyee/shared';
+import { DEFAULT_SUBAGENTS, MODEL_ALIASES, SKILL_MODES, SUBAGENT_KINDS, type AccountMode, type Effort, type ModelAlias, type SessionConfig, type SkillMode, type StopInfo, type StopKind, type StopState, type SubagentConfig, type SubagentKind, type SubagentTypeOverrides, type Workspace } from '@cosyee/shared';
 import { cosyeeHome, isSafeId, normalizeDir, pathKey } from './paths.js';
 
 export interface PersistedState {
@@ -29,6 +29,8 @@ export interface PersistedState {
   disabledTools: string[];
   /** 最近一次 system/init 报告的内置工具名：探测进程收不到 init，服务重启后也要能列出工具 */
   knownTools: string[];
+  /** 最近一次从会话记录观测到的懒加载工具名：新会话尚未产生记录或已停用工具的分类兜底 */
+  knownDeferredTools: string[];
   /** 被关闭的智能体名（全局）：以 Agent(名字) 并入 permissions.deny 下发 */
   disabledAgents: string[];
   /**
@@ -98,13 +100,46 @@ export function sanitizeCompactWindow(v: unknown): number | null {
 }
 
 const DELEGATE_MODEL_RE = /^[A-Za-z0-9._:/@+-]{1,120}$/;
+const MAX_SUBAGENT_OVERRIDES = 200;
 
-/** 接口提交的子代理配置：任何字段不合法都返回 null */
+function sanitizeAgentOverrides<M extends string>(
+  raw: unknown,
+  checkModel: (m: unknown) => M | null,
+): SubagentTypeOverrides<M> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: SubagentTypeOverrides<M> = {};
+  let count = 0;
+  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (count >= MAX_SUBAGENT_OVERRIDES) break;
+    if (!AGENT_NAME_RE.test(name)) continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    const item = v as Record<string, unknown>;
+    let model: M | null = null;
+    if (item.model !== null && item.model !== undefined) {
+      model = checkModel(item.model);
+      if (model === null) continue;
+    }
+    let effort: Effort | null = null;
+    if (item.effort !== null && item.effort !== undefined) {
+      if (!EFFORT_IDS.includes(item.effort as Effort)) continue;
+      effort = item.effort as Effort;
+    }
+    if (model === null && effort === null) continue;
+    out[name] = { model, effort };
+    count++;
+  }
+  return count > 0 ? out : undefined;
+}
+
+/** 接口提交的子代理配置：顶层结构不合法返回 null；agents 内的非法项静默丢弃 */
 export function parseSubagents(v: unknown): SubagentConfig | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
   if (!isObj(o.native) || !isObj(o.claude) || !isObj(o.agy)) return null;
+  if (o.native.agents !== undefined && !isObj(o.native.agents)) return null;
+  if (o.claude.agents !== undefined && !isObj(o.claude.agents)) return null;
+  if (o.agy.agents !== undefined && !isObj(o.agy.agents)) return null;
   const c = sanitizeSubagents(v);
   const same =
     o.kind === c.kind &&
@@ -117,7 +152,7 @@ export function parseSubagents(v: unknown): SubagentConfig | null {
   return same ? c : null;
 }
 
-/** 子代理配置：非法的字段落回默认值 */
+/** 子代理配置：非法的字段落回默认值；agents 内的非法项或全 null 项直接丢弃 */
 export function sanitizeSubagents(v: unknown): SubagentConfig {
   const obj = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : {});
   const root = obj(v);
@@ -125,19 +160,27 @@ export function sanitizeSubagents(v: unknown): SubagentConfig {
   const claude = obj(root.claude);
   const agy = obj(root.agy);
   const d = DEFAULT_SUBAGENTS;
+  const checkAlias = (m: unknown): ModelAlias | null => (MODEL_ALIASES.includes(m as ModelAlias) ? (m as ModelAlias) : null);
+  const checkAgyModel = (m: unknown): string | null => (typeof m === 'string' && DELEGATE_MODEL_RE.test(m) ? m : null);
+  const nativeAgents = sanitizeAgentOverrides(native.agents, checkAlias);
+  const claudeAgents = sanitizeAgentOverrides(claude.agents, checkAlias);
+  const agyAgents = sanitizeAgentOverrides(agy.agents, checkAgyModel);
   return {
     kind: SUBAGENT_KINDS.includes(root.kind as SubagentKind) ? (root.kind as SubagentKind) : d.kind,
     native: {
       model: MODEL_ALIASES.includes(native.model as ModelAlias) ? (native.model as ModelAlias) : d.native.model,
       effort: EFFORT_IDS.includes(native.effort as Effort) ? (native.effort as Effort) : d.native.effort,
+      ...(nativeAgents ? { agents: nativeAgents } : {}),
     },
     claude: {
       model: MODEL_ALIASES.includes(claude.model as ModelAlias) ? (claude.model as ModelAlias) : d.claude.model,
       effort: EFFORT_IDS.includes(claude.effort as Effort) ? (claude.effort as Effort) : d.claude.effort,
+      ...(claudeAgents ? { agents: claudeAgents } : {}),
     },
     agy: {
       model: typeof agy.model === 'string' && DELEGATE_MODEL_RE.test(agy.model) ? agy.model : d.agy.model,
       effort: EFFORT_IDS.includes(agy.effort as Effort) ? (agy.effort as Effort) : d.agy.effort,
+      ...(agyAgents ? { agents: agyAgents } : {}),
     },
   };
 }
@@ -163,7 +206,7 @@ const MODEL_ID_RE = /^[A-Za-z0-9._\[\]-]{1,100}$/;
 const IDENTITY_HASH_RE = /^[0-9a-f]{64}$/;
 
 function emptyState(): PersistedState {
-  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], disabledAgents: [], compactWindow: null, subagents: structuredClone(DEFAULT_SUBAGENTS), accounts: { list: [], active: null, mode: 'switch', sessions: {}, subagent: { claude: 'default' } }, agyAccounts: { list: [], active: null }, stops: {}, inflight: {} };
+  return { workspaces: [], current: null, unread: {}, defaults: null, pinned: {}, autoPinned: {}, deleted: {}, skillOverrides: {}, sessionConfigs: {}, forks: {}, disabledTools: [], knownTools: [], knownDeferredTools: [], disabledAgents: [], compactWindow: null, subagents: structuredClone(DEFAULT_SUBAGENTS), accounts: { list: [], active: null, mode: 'switch', sessions: {}, subagent: { claude: 'default' } }, agyAccounts: { list: [], active: null }, stops: {}, inflight: {} };
 }
 
 function entries(v: unknown): [string, Record<string, unknown>][] {
@@ -179,7 +222,7 @@ const num = (v: unknown, fallback: number): number => (typeof v === 'number' && 
 
 function sanitize(raw: unknown): PersistedState {
   const s = emptyState();
-  if (!raw || typeof raw !== 'object') return s;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return s;
   const o = raw as Record<string, unknown>;
   if (Array.isArray(o.workspaces)) {
     for (const w of o.workspaces) {
@@ -237,6 +280,11 @@ function sanitize(raw: unknown): PersistedState {
   if (Array.isArray(o.knownTools)) {
     for (const t of o.knownTools) {
       if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.knownTools.includes(t)) s.knownTools.push(t);
+    }
+  }
+  if (Array.isArray(o.knownDeferredTools)) {
+    for (const t of o.knownDeferredTools) {
+      if (typeof t === 'string' && TOOL_NAME_RE.test(t) && !s.knownDeferredTools.includes(t)) s.knownDeferredTools.push(t);
     }
   }
   s.compactWindow = sanitizeCompactWindow(o.compactWindow);
@@ -340,6 +388,7 @@ export class StateStore {
   private data: PersistedState;
   private writing: Promise<void> = Promise.resolve();
   private dirty = false;
+  private tmpSeq = 0;
 
   constructor(private readonly file: string = path.join(cosyeeHome(), 'state.json')) {
     this.data = this.load();
@@ -374,7 +423,7 @@ export class StateStore {
     const json = JSON.stringify(this.data, null, 2);
     const dir = path.dirname(this.file);
     await fs.promises.mkdir(dir, { recursive: true });
-    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${this.file}.${process.pid}.${Date.now()}.${++this.tmpSeq}.tmp`;
     await fs.promises.writeFile(tmp, json, 'utf8');
     // Windows 上目标被占用时 rename 偶发 EPERM/EBUSY，重试几次
     for (let i = 0; ; i++) {

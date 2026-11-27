@@ -11,6 +11,7 @@ afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 const SID = '11111111-1111-4111-8111-111111111111';
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+const thought = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } });
 
 describe('DelegateRecorder', () => {
   it('文字段合并成一条、工具调用与结果原样，顺序不变；正在输出的文字读得到', async () => {
@@ -33,6 +34,89 @@ describe('DelegateRecorder', () => {
     rec.write(SID, p.finish());
     await rec.read(SID, 'toolu_1');
     expect(await new DelegateRecorder(dir).read(SID, 'toolu_1')).toEqual(await rec.read(SID, 'toolu_1'));
+  });
+
+  it('先思考后文字：同一消息内 thinking 块关闭后不丢失后续文字，顺序与元信息完整保留', async () => {
+    const rec = new DelegateRecorder(dir);
+    const p = new AcpProgress('toolu_t1', 'claude-sonnet-5-5');
+    rec.write(SID, [{ type: 'system', subtype: 'cosyee_agent_params', tool_use_id: 'toolu_t1', model: 'claude-sonnet-5-5', effort: 'medium' }]);
+    for (const u of [thought('先想'), thought('清楚'), chunk('再回答'), chunk('完整')]) {
+      rec.write(SID, p.push(u));
+    }
+    // 未 finish 前：思考块已落盘，文字块在内存中可读
+    const mid = (await rec.read(SID, 'toolu_t1'))!;
+    expect(mid).toHaveLength(2);
+    expect(mid[0]).toMatchObject({
+      type: 'assistant',
+      effort: 'medium',
+      message: { id: 'agy-toolu_t1-t0', model: 'claude-sonnet-5-5', content: [{ type: 'thinking', thinking: '先想清楚' }] },
+    });
+    expect(mid[1]).toMatchObject({
+      type: 'assistant',
+      effort: 'medium',
+      message: { id: 'agy-toolu_t1-t0', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: '再回答完整' }] },
+    });
+
+    // finish 后全部落盘，新实例重读一致
+    rec.write(SID, p.finish());
+    await rec.read(SID, 'toolu_t1');
+    expect(await new DelegateRecorder(dir).read(SID, 'toolu_t1')).toEqual(mid);
+  });
+
+  it('文字 / 思考 / 工具交替与只有思考的 finish 收尾落盘', async () => {
+    const rec = new DelegateRecorder(dir);
+    const p = new AcpProgress('toolu_t2', 'gemini-4');
+    for (const u of [
+      chunk('第一段'),
+      thought('中途思考'),
+      { sessionUpdate: 'tool_call', toolCallId: 'c1', name: 'Read', rawInput: { file_path: 'a.ts' } },
+      { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', rawOutput: 'ok' },
+      thought('工具后思考'),
+      chunk('最终结论'),
+    ]) {
+      rec.write(SID, p.push(u));
+    }
+    rec.write(SID, p.finish());
+    await rec.read(SID, 'toolu_t2');
+    const disk = (await new DelegateRecorder(dir).read(SID, 'toolu_t2'))!;
+    expect(disk.map((e) => [e.type, e.message.content[0].type, e.message.content[0].thinking ?? e.message.content[0].text ?? e.message.content[0].name ?? e.message.content[0].content])).toEqual([
+      ['assistant', 'text', '第一段'],
+      ['assistant', 'thinking', '中途思考'],
+      ['assistant', 'tool_use', 'Read'],
+      ['user', 'tool_result', 'ok'],
+      ['assistant', 'thinking', '工具后思考'],
+      ['assistant', 'text', '最终结论'],
+    ]);
+
+    // 只有思考：finish 关闭未闭合思考块并落盘
+    const pOnly = new AcpProgress('toolu_t3', 'gemini-4');
+    rec.write(SID, pOnly.push(thought('仅思考未输出文字')));
+    expect((await rec.read(SID, 'toolu_t3'))![0]!.message.content[0]).toEqual({ type: 'thinking', thinking: '仅思考未输出文字' });
+    expect(await new DelegateRecorder(dir).read(SID, 'toolu_t3')).toBeNull();
+    rec.write(SID, pOnly.finish());
+    await rec.read(SID, 'toolu_t3');
+    const diskOnly = (await new DelegateRecorder(dir).read(SID, 'toolu_t3'))!;
+    expect(diskOnly).toHaveLength(1);
+    expect(diskOnly[0]).toMatchObject({
+      type: 'assistant',
+      message: { id: 'agy-toolu_t3-t0', model: 'gemini-4', content: [{ type: 'thinking', thinking: '仅思考未输出文字' }] },
+    });
+  });
+
+  it('兼容旧流：仅有 message_start + text_delta + content_block_stop（无 content_block_start）照常落盘', async () => {
+    const rec = new DelegateRecorder(dir);
+    rec.write(SID, [
+      { type: 'stream_event', parent_tool_use_id: 'toolu_old', api_message_id: 'm-old', event: { type: 'message_start', message: { id: 'm-old', model: 'legacy' } } },
+      { type: 'stream_event', parent_tool_use_id: 'toolu_old', api_message_id: 'm-old', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '旧格式文字' } } },
+      { type: 'stream_event', parent_tool_use_id: 'toolu_old', api_message_id: 'm-old', event: { type: 'content_block_stop', index: 0 } },
+    ]);
+    await rec.read(SID, 'toolu_old');
+    const disk = (await new DelegateRecorder(dir).read(SID, 'toolu_old'))!;
+    expect(disk).toHaveLength(1);
+    expect(disk[0]).toMatchObject({
+      type: 'assistant',
+      message: { id: 'm-old', model: 'legacy', content: [{ type: 'text', text: '旧格式文字' }] },
+    });
   });
 
   it('结果存取：重启后仍可读；不合法的 id 不碰磁盘', async () => {

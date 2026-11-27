@@ -18,10 +18,12 @@ import {
   BUILTIN_AGENTS,
   type DelegateAgent,
   formatAgentList,
+  isReadOnlyAgent,
   listAgents,
   resolveAgent,
 } from './agents.js';
 import { type BackendDefaults, BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
+import { READ_ONLY_DISALLOWED_TOOLS } from './claudeBackend.js';
 import { type GitRunner, taskContext } from './context.js';
 import { agentParamsEvent, type RunFn } from './mcp.js';
 import { AcpProgress } from './progress.js';
@@ -240,8 +242,8 @@ interface Job {
 
 type WaitResult = Outcome | 'abort';
 
-/** 内置的只读智能体（提示词禁止改文件）；同名磁盘定义视为可写 */
-const isReadOnly = (a: DelegateAgent): boolean => a.source === 'builtin' && (a.name === 'Explore' || a.name === 'Plan');
+/** 内置的只读智能体（Explore / Plan）；同名磁盘定义视为可写 */
+const isReadOnly = isReadOnlyAgent;
 
 const DEFAULT_AGENT = BUILTIN_AGENTS.find((a) => a.name === 'general-purpose') ?? BUILTIN_AGENTS[0]!;
 
@@ -565,16 +567,22 @@ export class DelegateJobs {
         }
       }
       if (job) {
-        // 空闲任务续聊：界面上的那次调用换成这次
+        // 空闲任务续聊：界面上的那次调用换成这次；显式传了 agent 就切换，没传沿用原 agent
         job.toolUseId = toolUseId;
         job.description = description;
-        if (job.restored) {
-          job.agent = agent ?? this.resolveRecordedAgent(ctx, rec.agent);
+        if (agent) {
+          job.agent = agent;
+          job.restored = false;
+        } else if (job.restored) {
+          job.agent = this.resolveRecordedAgent(ctx, rec.agent);
           job.restored = false;
         }
         job.progress = this.mkProgress(toolUseId, '');
       } else {
         job = this.create(ctx, toolUseId, description, cid, agent ?? this.resolveRecordedAgent(ctx, rec.agent));
+      }
+      if (agent && rec.agent !== agent.name) {
+        this.saveIdRecord(cid, { ...rec, agent: agent.name });
       }
     } else {
       const chosen = agent ?? DEFAULT_AGENT;
@@ -720,18 +728,20 @@ export class DelegateJobs {
     return null;
   }
 
-  private recordBackendSession(job: Job, backendSessionId: string, accountId?: string): void {
+  private recordBackendSession(job: Job, backendSessionId: string, accountId?: string, backendId?: string): void {
     if (!backendSessionId) return;
     const cur = this.idMap.get(job.conversationId) ?? {
-      backend: job.ctx?.backend.id ?? 'agy',
+      backend: backendId ?? job.ctx?.backend.id ?? 'agy',
       agent: job.agent.name,
       cwd: job.ctx?.cwd ?? '',
       createdAt: job.startedAt,
     };
     const nextAcc = accountId && cur.accountId !== accountId ? accountId : undefined;
-    if (cur.sessionId !== backendSessionId || nextAcc) {
+    const nextBackend = !cur.sessionId && backendId && cur.backend !== backendId ? backendId : undefined;
+    if (cur.sessionId !== backendSessionId || nextAcc || nextBackend) {
       cur.sessionId = backendSessionId;
       if (nextAcc) cur.accountId = nextAcc;
+      if (nextBackend) cur.backend = nextBackend;
       this.saveIdRecord(job.conversationId, cur);
     }
   }
@@ -907,64 +917,14 @@ export class DelegateJobs {
         if (evs.length) this.o.onEvents?.(evs);
       };
       const defaults = ctx.defaults;
-      const hasDefaults = !!defaults && (!!defaults.model || !!defaults.effort || !!defaults.parentModel || !!defaults.parentEffort);
-      const opts: BackendRunOptions = {
-        cwd: ctx.cwd,
-        prompt: backendPrompt,
-        ...(rec?.sessionId ? { sessionId: rec.sessionId, accountId: rec.accountId ?? 'default' } : {}),
-        ...(ctx.account ? { account: ctx.account } : {}),
-        ...(ctx.readOnly ? { readOnly: true } : {}),
-        ...(isNewSession ? { systemPrompt: agentSystemPrompt(job.agent) } : {}),
-        ...(isNewSession && hasDefaults ? { defaults } : {}),
-        ...(isNewSession && job.agent.effort ? { effort: job.agent.effort } : {}),
-        signal: ctl.signal,
-        onSession: (backendSessionId, accountId) => {
-          if (job.gen !== gen) return;
-          this.recordBackendSession(job, backendSessionId, accountId);
-        },
-        onUpdate: (u: Json) => {
-          if (!this.live(job, gen)) return;
-          if (progress) emit(progress.push(u));
-          const su = u?.sessionUpdate;
-          if (su === 'tool_call' || su === 'tool_call_update') {
-            const callId = u.toolCallId != null ? String(u.toolCallId) : '';
-            if (callId && typeof u.kind === 'string') job.toolKinds.set(callId, u.kind);
-            const kind = typeof u.kind === 'string' ? u.kind : (callId ? job.toolKinds.get(callId) : undefined);
-            // 仅收集工具结构化上报的文件变更（kind 为 edit/delete/move 的 locations[].path）；shell 命令改的文件无法覆盖
-            if (kind && FILE_CHANGE_KINDS.has(kind) && Array.isArray(u.locations)) {
-              for (const loc of u.locations) {
-                const rawPath = typeof loc?.path === 'string' ? loc.path.trim() : '';
-                if (!rawPath) continue;
-                job.filesChanged.add(normFilePath(rawPath, ctx.cwd));
-              }
-            }
-            if (callId) {
-              if (u.status === 'completed' || u.status === 'failed') {
-                job.inProgressTools.delete(callId);
-                if (job.pendingSteer && job.inProgressTools.size === 0) this.fireSteer(job);
-              } else {
-                job.inProgressTools.add(callId);
-              }
-            }
-          }
-          const t = u?.content?.type === 'text' && typeof u.content.text === 'string' ? u.content.text : '';
-          if (su === 'agent_message_chunk' && t) {
-            job.turnText += t;
-            if (job.turnText.length > TURN_TEXT_MAX) job.turnText = job.turnText.slice(-TURN_TEXT_MAX);
-            job.tail = job.turnText.slice(-TAIL_MAX);
-            this.tailChanged(job);
-          }
-        },
-        ...(progress
-          ? {
-              onModel: (m: { model: string; effort?: string | null }) => {
-                if (!this.live(job, gen)) return;
-                progress.model = m.model;
-                emit([agentParamsEvent(toolUseId, m.model, m.effort)]);
-              },
-            }
-          : {}),
-      };
+      const agentDisallowed: string[] = [];
+      if (isReadOnly(job.agent)) agentDisallowed.push(...READ_ONLY_DISALLOWED_TOOLS);
+      if (job.agent.disallowedTools?.length) {
+        for (const t of job.agent.disallowedTools) {
+          if (!agentDisallowed.includes(t)) agentDisallowed.push(t);
+        }
+      }
+      let activeBackendId = ctx.backend.id;
       try {
         let runner = ctx.backend;
         if (!this.o.run && rec?.sessionId && rec.backend && rec.backend !== ctx.backend.id) {
@@ -974,9 +934,85 @@ export class DelegateJobs {
           }
           runner = orig;
         }
+        activeBackendId = runner.id;
+        let resolvedDefaults: BackendDefaults | undefined;
+        let fallbackEffort: BackendRunOptions['effort'];
+        if (isNewSession) {
+          const ov = defaults?.agents?.[job.agent.name];
+          if (activeBackendId === 'claude') {
+            const fmModel = job.agent.model === 'inherit' ? (defaults?.parentModel ?? null) : (job.agent.model ?? null);
+            const model = ov?.model ?? fmModel ?? defaults?.model ?? defaults?.parentModel ?? null;
+            const effort = ov?.effort ?? job.agent.effort ?? defaults?.effort ?? defaults?.parentEffort ?? null;
+            if (model || effort) resolvedDefaults = { model, effort };
+          } else {
+            const model = ov?.model ?? defaults?.model ?? null;
+            const effort = ov?.effort ?? defaults?.effort ?? null;
+            if (model || effort) resolvedDefaults = { model, effort };
+            if (job.agent.effort) fallbackEffort = job.agent.effort;
+          }
+        }
+        const opts: BackendRunOptions = {
+          cwd: ctx.cwd,
+          prompt: backendPrompt,
+          ...(rec?.sessionId ? { sessionId: rec.sessionId, accountId: rec.accountId ?? 'default' } : {}),
+          ...(ctx.account ? { account: ctx.account } : {}),
+          ...(ctx.readOnly ? { readOnly: true } : {}),
+          ...(job.agent.tools !== undefined ? { tools: job.agent.tools } : {}),
+          ...(agentDisallowed.length ? { disallowedTools: agentDisallowed } : {}),
+          ...(isNewSession ? { systemPrompt: agentSystemPrompt(job.agent) } : {}),
+          ...(resolvedDefaults ? { defaults: resolvedDefaults } : {}),
+          ...(fallbackEffort ? { effort: fallbackEffort } : {}),
+          signal: ctl.signal,
+          onSession: (backendSessionId, accountId) => {
+            if (job.gen !== gen) return;
+            this.recordBackendSession(job, backendSessionId, accountId, activeBackendId);
+          },
+          onUpdate: (u: Json) => {
+            if (!this.live(job, gen)) return;
+            if (progress) emit(progress.push(u));
+            const su = u?.sessionUpdate;
+            if (su === 'tool_call' || su === 'tool_call_update') {
+              const callId = u.toolCallId != null ? String(u.toolCallId) : '';
+              if (callId && typeof u.kind === 'string') job.toolKinds.set(callId, u.kind);
+              const kind = typeof u.kind === 'string' ? u.kind : (callId ? job.toolKinds.get(callId) : undefined);
+              // 仅收集工具结构化上报的文件变更（kind 为 edit/delete/move 的 locations[].path）；shell 命令改的文件无法覆盖
+              if (kind && FILE_CHANGE_KINDS.has(kind) && Array.isArray(u.locations)) {
+                for (const loc of u.locations) {
+                  const rawPath = typeof loc?.path === 'string' ? loc.path.trim() : '';
+                  if (!rawPath) continue;
+                  job.filesChanged.add(normFilePath(rawPath, ctx.cwd));
+                }
+              }
+              if (callId) {
+                if (u.status === 'completed' || u.status === 'failed') {
+                  job.inProgressTools.delete(callId);
+                  if (job.pendingSteer && job.inProgressTools.size === 0) this.fireSteer(job);
+                } else {
+                  job.inProgressTools.add(callId);
+                }
+              }
+            }
+            const t = u?.content?.type === 'text' && typeof u.content.text === 'string' ? u.content.text : '';
+            if (su === 'agent_message_chunk' && t) {
+              job.turnText += t;
+              if (job.turnText.length > TURN_TEXT_MAX) job.turnText = job.turnText.slice(-TURN_TEXT_MAX);
+              job.tail = job.turnText.slice(-TAIL_MAX);
+              this.tailChanged(job);
+            }
+          },
+          ...(progress
+            ? {
+                onModel: (m: { model: string; effort?: string | null }) => {
+                  if (!this.live(job, gen)) return;
+                  progress.model = m.model;
+                  emit([agentParamsEvent(toolUseId, m.model, m.effort)]);
+                },
+              }
+            : {}),
+        };
         const r: BackendResult = await (this.o.run ? this.o.run(opts) : runner.run(opts));
         if (!this.live(job, gen)) return;
-        this.recordBackendSession(job, r.sessionId, r.accountId);
+        this.recordBackendSession(job, r.sessionId, r.accountId, activeBackendId);
         job.toolCalls += r.toolCalls;
         const tok = extractTotalTokens(r.usage);
         if (tok !== undefined) job.totalTokens = (job.totalTokens ?? 0) + tok;
@@ -1007,7 +1043,7 @@ export class DelegateJobs {
           }
           continue;
         }
-        if (e instanceof BackendError && e.sessionId) this.recordBackendSession(job, e.sessionId, e.accountId);
+        if (e instanceof BackendError && e.sessionId) this.recordBackendSession(job, e.sessionId, e.accountId, activeBackendId);
         const hasSession = !!this.idMap.get(job.conversationId)?.sessionId;
         const conv = e instanceof BackendError ? (e.sessionId ? job.conversationId : null) : hasSession ? job.conversationId : null;
         this.endGen(job, gen, { state: 'error', response: '', error: msg, conv });

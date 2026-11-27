@@ -111,7 +111,74 @@ describe('REST', () => {
     expect((await post({ ...next, kind: 'bad' })).status).toBe(400);
     expect((await get()).config).toEqual(next);
     expect((await fetch(`${base}/api/agent-models`, { headers: auth })).status).toBe(404);
+    expect((await fetch(`${base}/api/agent-models`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).status).toBe(404);
     expect((await fetch(`${base}/api/native-agents`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{"enabled":false}' })).status).toBe(404);
+    // 非法方法（PUT / DELETE）、非法 JSON、非对象 JSON、缺字段、错误类型、超大 body
+    expect((await fetch(url, { method: 'PUT', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify(next) })).status).toBe(404);
+    expect((await fetch(url, { method: 'DELETE', headers: auth })).status).toBe(404);
+    expect((await fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{bad json' })).status).toBe(400);
+    expect((await fetch(url, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '' })).status).toBe(400);
+    for (const bad of [null, [], 'claude', 123, { kind: 'native' }, { ...next, native: null }, { ...next, claude: [] }, { ...next, agy: { model: 123, effort: null } }]) {
+      expect((await post(bad)).status).toBe(400);
+    }
+    expect(
+      (await fetch(url, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ ...next, agy: { model: 'x'.repeat(1024 * 1024 + 10), effort: null } }),
+      })).status,
+    ).toBe(413);
+    // 返回结构与 SubagentState 协议一致，且确实落盘到 state.json
+    const after = await get();
+    expect(after.config).toEqual(next);
+    expect(typeof after.available.native.ok).toBe('boolean');
+    expect(typeof after.available.claude.ok).toBe('boolean');
+    expect(typeof after.available.agy.ok).toBe('boolean');
+    expect(['native', 'claude', 'agy']).toContain(after.effective);
+    await srv.store.idle();
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmp, 'state.json'), 'utf8')) as { subagents: unknown };
+    expect(persisted.subagents).toEqual(next);
+  });
+  it('subagents 端到端：老 state.json 自动迁移 + 并发快速切换保持磁盘与内存一致', async () => {
+    const sf = path.join(tmp, 'state-subagents-e2e.json');
+    fs.writeFileSync(
+      sf,
+      JSON.stringify({
+        nativeAgents: false,
+        agentModels: {
+          claude: { model: 'opus', effort: 'high' },
+          agy: { model: 'gemini-4-neon', effort: 'low' },
+        },
+      }),
+    );
+    const s = await startServer({ port: 0, webDist: null, stateFile: sf });
+    try {
+      const url = `http://127.0.0.1:${s.port}/api/subagents`;
+      const init = (await (await fetch(url)).json()) as any;
+      expect(init.config).toEqual({
+        kind: 'agy',
+        native: { model: 'opus', effort: 'high' },
+        claude: { model: null, effort: null },
+        agy: { model: 'gemini-4-neon', effort: 'low' },
+      });
+      // 并发连续切换，验证不损坏 state.json 且 GET 与磁盘一致
+      const mk = (kind: 'native' | 'claude' | 'agy') => ({ ...init.config, kind });
+      const resps = await Promise.all([
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('claude')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('native')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('agy')) }),
+        fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(mk('claude')) }),
+      ]);
+      expect(resps.every((r) => r.status === 200)).toBe(true);
+      await s.store.idle();
+      const got = (await (await fetch(url)).json()) as any;
+      const onDisk = JSON.parse(fs.readFileSync(sf, 'utf8')) as { subagents: unknown; agentModels?: unknown; nativeAgents?: unknown };
+      expect(onDisk.subagents).toEqual(got.config);
+      expect(onDisk.agentModels).toBeUndefined();
+      expect(onDisk.nativeAgents).toBeUndefined();
+    } finally {
+      await s.stop();
+    }
   });
   it('bootstrap', async () => {
     const j = (await (await fetch(`${base}/api/bootstrap`, { headers: auth })).json()) as any;

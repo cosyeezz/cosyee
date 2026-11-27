@@ -16,13 +16,14 @@ import { claudeEnv, resolveClaude, spawnSpec } from '../claude/bin.js';
 import { accountsRoot, baseClaudeHome, claudeJsonPath, pathKey, setActiveConfigDir } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
 import { type ApiConfig, apiHost, apiInfo, isLegacyKiro, normalizeApiKey, normalizeBaseUrl, normalizeModelMap, readApiConfig, writeApiConfig } from './api-config.js';
-import { ensureLinks, unlinkShared } from './links.js';
+import { ensureLinks, removeLink, unlinkShared } from './links.js';
 import { fetchModelList } from './model-list.js';
 import { SNAPSHOT_FILE, syncMcp } from './mcp-sync.js';
 import {
   prepareSubagentSpace,
   removeSubagentSpace,
   syncSubagentToMain,
+  writeFileAtomic,
   type SubagentSpaceOptions,
 } from './subagent-space.js';
 
@@ -122,14 +123,6 @@ function kiroIdentity(k: NonNullable<ApiConfig['kiro']>): string | null {
   return e || null;
 }
 
-/** 原子写回文件（临时文件 + rename） */
-function writeFileAtomic(file: string, data: string | Buffer, mode?: number): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, data, mode !== undefined ? { mode } : undefined);
-  fs.renameSync(tmp, file);
-}
-
 /** 重新登录前备份原目录的登录凭据（.credentials.json 原文 + .claude.json 的 oauthAccount） */
 function captureLoginBackup(dir: string | null): LoginBackup {
   const realDir = dir ?? baseClaudeHome();
@@ -181,6 +174,80 @@ function parseIsoMs(raw: unknown): number | null {
 
 function parseEpochMs(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+}
+
+/** 读取 JSON 文件并区分「文件明确不存在」与「存在但读取/解析失败（瞬时改写/占用）」 */
+function readJsonSafe(file: string): { kind: 'ok'; data: Record<string, unknown> } | { kind: 'missing' } | { kind: 'transient' } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { kind: 'missing' } : { kind: 'transient' };
+  }
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === 'object' && !Array.isArray(j)) return { kind: 'ok', data: j as Record<string, unknown> };
+    return { kind: 'transient' };
+  } catch {
+    return { kind: 'transient' };
+  }
+}
+
+/**
+ * 检查某个 Claude 账号目录（null = 默认账号）当前是否已登录（只读文件，不起进程不联网）：
+ * - API / Kiro 账号：有有效 cosyee-api.json 即已登录；
+ * - 订阅账号：.credentials.json 里有非空 claudeAiOauth.refreshToken 或 accessToken；macOS 凭据在钥匙串里，文件不存在时看 .claude.json 的 oauthAccount。
+ * - 防抖动：凭据刷新瞬间文件可能被短暂截断或占用，读/解析失败时若有 prev 则沿用上次结果，不误判为未登录。
+ */
+export function checkClaudeLoggedIn(dir: string | null, prev?: boolean, platform: NodeJS.Platform = process.platform): boolean {
+  const realDir = dir ?? baseClaudeHome();
+  const apiFile = path.join(realDir, 'cosyee-api.json');
+  const apiRead = readJsonSafe(apiFile);
+  if (apiRead.kind === 'ok') {
+    if (readApiConfig(dir)) return true;
+  } else if (apiRead.kind === 'transient' && prev !== undefined) {
+    return prev;
+  }
+
+  const credsFile = path.join(realDir, '.credentials.json');
+  const credsRead = readJsonSafe(credsFile);
+  if (credsRead.kind === 'ok') {
+    const ai = credsRead.data.claudeAiOauth as Record<string, unknown> | undefined;
+    const hasRefresh = typeof ai?.refreshToken === 'string' && ai.refreshToken.trim().length > 0;
+    const hasAccess = typeof ai?.accessToken === 'string' && ai.accessToken.trim().length > 0;
+    if (hasRefresh || hasAccess) return true;
+  } else if (credsRead.kind === 'transient') {
+    // 拿不准（凭据正被改写）时宁可当已登录：误判未登录会把子代理无故退回原生，真没登录派任务时自然会报错
+    return prev ?? true;
+  } else if (platform === 'darwin') {
+    // .credentials.json 明确不存在：macOS 凭据在钥匙串，改看 .claude.json 的 oauthAccount
+    const cjRead = readJsonSafe(claudeJsonPath(dir));
+    if (cjRead.kind === 'transient') return prev ?? true;
+    if (cjRead.kind === 'ok' && cjRead.data.oauthAccount && typeof cjRead.data.oauthAccount === 'object') return true;
+  }
+  return hasEnvAuth(realDir);
+}
+
+/** 不走凭据文件的登录方式：环境变量里的 API key / OAuth token / 第三方云，或共享 settings.json 的 env / apiKeyHelper */
+const AUTH_ENV_KEYS = [
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+];
+function hasEnvAuth(realDir: string): boolean {
+  const set = (env: Record<string, unknown> | undefined) => AUTH_ENV_KEYS.some((k) => {
+    const v = env?.[k];
+    return typeof v === 'string' && v.trim() !== '' && v.trim() !== '0';
+  });
+  if (set(process.env)) return true;
+  for (const dir of new Set([realDir, baseClaudeHome()])) {
+    const r = readJsonSafe(path.join(dir, 'settings.json'));
+    if (r.kind !== 'ok') continue;
+    if (typeof r.data.apiKeyHelper === 'string' && r.data.apiKeyHelper.trim()) return true;
+    const env = r.data.env;
+    if (env && typeof env === 'object' && !Array.isArray(env) && set(env as Record<string, unknown>)) return true;
+  }
+  return false;
 }
 
 /** 某个配置目录（null = 默认账号）的本地登录信息：只读文件，不起进程。API / Kiro 账号有配置就算已登录 */
@@ -307,6 +374,31 @@ export class Accounts {
     return this.has(id) ? id : DEFAULT_ID;
   }
 
+  private loginCache = new Map<string, { loggedIn: boolean; at: number }>();
+
+  /** 标记登录状态缓存过期（保留上次值作为瞬时读取失败时的防抖兜底） */
+  invalidateLoginCache(id?: string): void {
+    if (id !== undefined) {
+      const c = this.loginCache.get(id);
+      if (c) c.at = 0;
+    } else {
+      for (const c of this.loginCache.values()) c.at = 0;
+    }
+  }
+
+  /** 当前选中的 Claude 子代理账号是否已登录（带 2s 内存缓存与防抖动） */
+  subagentClaudeLoggedIn(ttlMs = 2000): boolean {
+    const id = this.subagentClaudeId();
+    const dir = this.dirFor(id);
+    if (dir === undefined) return false;
+    const now = Date.now();
+    const cached = this.loginCache.get(id);
+    if (cached && now - cached.at < ttlMs) return cached.loggedIn;
+    const loggedIn = checkClaudeLoggedIn(dir, cached?.loggedIn);
+    this.loginCache.set(id, { loggedIn, at: now });
+    return loggedIn;
+  }
+
   /** 指定账号的主代理空间是否正在进行重新登录（登录期间不得往主空间回写凭据） */
   isLoggingIn(accountId: string): boolean {
     return !!(this.login && this.busy() && this.login.target === accountId);
@@ -408,6 +500,9 @@ export class Accounts {
     const mainDir = this.dirFor(accountId);
     if (mainDir === undefined) return null;
     try {
+      if (mainDir !== null && !fs.existsSync(mainDir)) {
+        throw new Error('账号的配置目录不存在了，请移除后重新添加');
+      }
       const dir = prepareSubagentSpace(accountId, mainDir, this.deps.subagentSpace);
       if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
         this.subagentClaudeError = null;
@@ -840,8 +935,8 @@ export class Accounts {
     if (running > 0) throw new HttpError(409, `该账号有 ${running} 个会话正在执行，请等它们结束后再移除`);
     if ((this.deps.processes?.(id) ?? 0) > 0) await this.deps.stop((x) => x === id);
     if (readApiConfig(a.dir)?.kiro) await this.deps.removeKiroAccount?.(id, a.dir);
-    this.removeDir(a.dir);
     removeSubagentSpace(id, this.deps.subagentSpace);
+    this.removeDir(a.dir);
     this.s.list = this.s.list.filter((x) => x.id !== id);
     for (const [sid, acc] of Object.entries(this.s.sessions)) if (acc === id) delete this.s.sessions[sid];
     if (this.s.subagent.claude === id) {
@@ -896,12 +991,21 @@ export class Accounts {
     const abs = path.resolve(dir);
     const rel = path.relative(root, abs);
     // 不在 accountsRoot 下的目录（不是 Cosyee 建的）只从列表移除，不删文件
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(path.sep)) return;
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(path.sep) || rel.includes('/')) return;
     if (pathKey(abs) === pathKey(baseClaudeHome())) return;
-    if (!fs.existsSync(abs)) return;
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(abs);
+    } catch {
+      return;
+    }
+    if (st.isSymbolicLink()) {
+      removeLink(abs);
+      return;
+    }
     const left = unlinkShared(abs);
     if (left.length) throw new HttpError(500, `解除共享链接失败：${left.join(', ')}`);
-    fs.rmSync(abs, { recursive: true, force: true });
+    fs.rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 
   // ───────────── 登录 ─────────────

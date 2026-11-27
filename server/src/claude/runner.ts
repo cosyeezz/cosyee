@@ -22,10 +22,10 @@ import {
 import { DEFAULT_ID } from '../accounts/index.js';
 import { LineSplitter, parseLine } from '../transcript.js';
 import { classifyStop, type RateLimitHint } from '../stops.js';
-import { agentParamsEvent, CosyeeMcp, DELEGATE_TOOL_NAME, DELEGATE_TOOL_NAMES, MCP_SERVER } from '../delegate/mcp.js';
+import { agentParamsEvent, CosyeeMcp, DELEGATE_TOOL_NAME, DELEGATE_TOOL_NAMES, MCP_SERVER, NATIVE_SUBAGENT_TOOLS } from '../delegate/mcp.js';
 import { DelegateJobs } from '../delegate/jobs.js';
 import { sharedAgyBackend } from '../delegate/acp.js';
-import { listAgents } from '../delegate/agents.js';
+import { findDiskAgent } from '../delegate/agents.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { baseClaudeHome } from '../paths.js';
 import { apiFlagEnv, claudeEnv, killTree, killTreeSync, removePrivateSettings, resolveClaude, spawnSpec, writePrivateSettings } from './bin.js';
@@ -112,8 +112,12 @@ export interface RunnerInit {
 }
 
 export interface AgentDefaults {
-  /** 原生 Agent 工具：没给的字段不补 */
-  native: { model?: string; effort?: string };
+  /** 原生 Agent 工具：没给的字段不补；agents 为按类型名单独配置 */
+  native: {
+    model?: string;
+    effort?: string;
+    agents?: Record<string, { model?: string; effort?: string }>;
+  };
 }
 
 /** 注册给 CLI 的 PreToolUse hook 的回调 id */
@@ -169,9 +173,6 @@ export const PATH_PROMPT =
   '(e.g. [runner.ts](F:/repo/src/runner.ts)); append :line for a specific line ([runner.ts](F:/repo/src/runner.ts:42)); ' +
   'wrap the target in <> when the path contains spaces ([a b.md](<F:/repo/a b.md>)). Do not put file links inside backticks.';
 
-/** Claude 自带的子代理工具；整条停用后 CLI 会恢复内置 WebFetch */
-const NATIVE_AGENT_TOOL = 'Agent';
-
 /** flag settings 的 permissions.deny 里是否整条停用了某个工具（不含 Agent(x) 这类带参数的规则） */
 export function isDenied(settings: Record<string, unknown>, tool: string): boolean {
   const deny = (settings.permissions as { deny?: unknown } | undefined)?.deny;
@@ -187,7 +188,7 @@ export const DELEGATE_PROMPT =
   'Delegation: use mcp__cosyee__delegate proactively, without waiting for the user to ask, for research that takes more than a ' +
   'few lookups (including tracing a bug) and for implementation you can specify up front (including UI work); split such work into ' +
   'independent tasks first. Do yourself only one- or two-call lookups, edits of a few lines, and decisions that cannot be ' +
-  'specified in advance. You keep all final judgments.';
+  'specified in advance. Pure investigation goes to agent Explore. You keep all final judgments.';
 
 /** 构造 claude 命令行参数（不含可执行文件）。 */
 export function buildArgs(
@@ -347,6 +348,16 @@ export class Runner {
     return this.proc?.pid;
   }
 
+  /** 本进程是否注册了 cosyee MCP（未注册时即使全局切到委派模式，本进程仍实际使用原生 Agent） */
+  get hasMcp(): boolean {
+    return this.mcp !== null;
+  }
+
+  /** 本进程实际生效的子代理类型：未注册 cosyee MCP 时恒为 native */
+  runningSubagent(baseDeny?: readonly string[]): SubagentKind {
+    return this.mcp ? this.effectiveSubagent(baseDeny) : 'native';
+  }
+
   /** 订阅时补发用：当前回合已缓冲的事件 */
   snapshot(): { status: RunStatus; events: unknown[] } {
     return { status: this._status, events: this.buffer.slice() };
@@ -368,32 +379,33 @@ export class Runner {
   effectiveSubagent(baseDeny?: readonly string[]): SubagentKind {
     const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
     if (cfg.kind === 'native') return 'native';
-    if (baseDeny?.includes(DELEGATE_TOOL_NAME)) return 'native';
+    const deny = baseDeny ?? (this.initArgs.flagSettings?.()?.permissions as { deny?: readonly string[] } | undefined)?.deny;
+    if (deny?.includes(DELEGATE_TOOL_NAME)) return 'native';
     return this.backendFor(cfg.kind)?.available() ? cfg.kind : 'native';
   }
 
   /**
    * 按当前子代理类型补齐 permissions.deny（三种类型互斥）：
    * - 本进程没注册 cosyee MCP（无可用委派后端或启动时 delegate 已停用）：不动 base；
-   * - effective === 'native'：放行原生 Agent，把 delegate 系列工具（mcp__cosyee__*）全部加进 deny；
-   * - effective === 'claude' / 'agy'：放行 delegate 系列工具，把整个 Agent 加进 deny（CLI 会自动恢复 WebFetch）。
+   * - effective === 'native'：放行原生子代理工具，把 delegate 系列工具（mcp__cosyee__*）全部加进 deny；
+   * - effective === 'claude' / 'agy'：放行 delegate 系列工具，把原生子代理相关工具（NATIVE_SUBAGENT_TOOLS）全部加进 deny（CLI 会自动恢复 WebFetch）。
+   * 不修改 base，用户自己在工具面板停用的项在任意模式下都会保留、且去重不重复添加。
    */
   withSubagentDeny(base: readonly string[]): string[] {
     if (!this.mcp) return [...base];
     const eff = this.effectiveSubagent(base);
-    if (eff === 'native') {
-      const out = [...base];
-      for (const name of DELEGATE_TOOL_NAMES) {
-        if (!out.includes(name)) out.push(name);
-      }
-      return out;
+    const extra = eff === 'native' ? DELEGATE_TOOL_NAMES : NATIVE_SUBAGENT_TOOLS;
+    // 委派模式下辅助工具跟随 delegate 一起放行，忽略对它们的单独 deny
+    const out = eff === 'native' ? [...base] : base.filter((name) => !DELEGATE_TOOL_NAMES.includes(name));
+    for (const name of extra) {
+      if (!out.includes(name)) out.push(name);
     }
-    return base.includes(NATIVE_AGENT_TOOL) ? [...base] : [...base, NATIVE_AGENT_TOOL];
+    return out;
   }
 
   /** 按当前生效的委派后端同步热进程保活（切到 agy 时 hold，切走时释放） */
   syncDelegateHold(baseDeny?: readonly string[]): void {
-    const eff = this.mcp ? this.effectiveSubagent(baseDeny) : 'native';
+    const eff = this.runningSubagent(baseDeny);
     const want = eff === 'native' ? null : this.backendFor(eff);
     if (want === this.delegateBackendInUse) return;
     this.releaseDelegateHold?.();
@@ -423,12 +435,10 @@ export class Runner {
     if (anyBackend) {
       const configDir = this.accountDir ?? baseClaudeHome();
       const scope = () => ({ configDir, cwd: this.cwd, disabled: this.disabledAgents?.() ?? [] });
-      const agents = listAgents(scope());
       // 没有外部传入的任务表（测试）时自建一个，事件走本 runner
       const jobs = this.delegateJobs ?? (this.localJobs ??= new DelegateJobs({ onEvents: (evs) => evs.forEach((e) => this.pushExternal(e)) }));
       mcp = new CosyeeMcp({
         jobs,
-        agents,
         ctx: () => {
           const cfg = this.subagents?.() ?? DEFAULT_SUBAGENTS;
           const eff = this.effectiveSubagent();
@@ -440,8 +450,13 @@ export class Runner {
                   effort: cfg.claude.effort,
                   parentModel: this.applied.model,
                   parentEffort: this.applied.effort,
+                  ...(cfg.claude.agents ? { agents: cfg.claude.agents } : {}),
                 }
-              : cfg.agy;
+              : {
+                  model: cfg.agy.model,
+                  effort: cfg.agy.effort,
+                  ...(cfg.agy.agents ? { agents: cfg.agy.agents } : {}),
+                };
           return {
             cwd: this.cwd,
             backend,
@@ -834,8 +849,9 @@ export class Runner {
   }
 
   /**
-   * PreToolUse hook（Agent / Task）：调用没写 model / effort 时补上设置里的默认值。
-   * CLI 里调用参数优先于智能体定义，所以这里的值会盖过定义；点名的值不动。fork 类型必须沿用主会话模型，不补。
+   * PreToolUse hook（Agent / Task）：按优先级补全模型与思考强度：
+   * 调用时点名的值 > 类型单独配置（native.agents[type]）> 磁盘自定义智能体 frontmatter（写了就不注入，让 CLI 用定义值）> 原生默认值（native.model / effort）。
+   * subagent_type 缺省视为 general-purpose；fork 必须沿用主会话模型，不补。
    * 不返回 permissionDecision，权限规则（如停用的智能体）照常生效。
    */
   private onAgentHook(requestId: string, input: Json): void {
@@ -844,16 +860,26 @@ export class Runner {
       const ti: Json = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
       const d = this.agentDefaults?.()?.native;
       if (d && ti.subagent_type !== 'fork') {
-        const model = ti.model || d.model;
-        const effort = ti.effort || d.effort;
+        const type = typeof ti.subagent_type === 'string' && ti.subagent_type.trim() ? ti.subagent_type.trim() : 'general-purpose';
+        const ov = d.agents?.[type];
+        const def = findDiskAgent(this.accountDir ?? baseClaudeHome(), this.cwd, type);
+        const injectModel = ti.model ? undefined : (ov?.model || (def?.model ? undefined : d.model));
+        const injectEffort = ti.effort ? undefined : (ov?.effort || (def?.effort ? undefined : d.effort));
+        const actualModel = ti.model || ov?.model || (def?.model === 'inherit' ? this.applied.model : def?.model) || d.model;
+        const actualEffort = ti.effort || ov?.effort || def?.effort || d.effort;
+        const updated: Json = { ...ti };
+        if (injectModel) updated.model = injectModel;
+        if (injectEffort) updated.effort = injectEffort;
         response = {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            updatedInput: { ...ti, ...(model ? { model } : {}), ...(effort ? { effort } : {}) },
+            updatedInput: updated,
           },
         };
         // 流里的 tool_use 仍是补之前的参数，另发一条事件告诉前端实际值
-        if (typeof input.tool_use_id === 'string') this.pushEvent(agentParamsEvent(input.tool_use_id, model, effort));
+        if (typeof input.tool_use_id === 'string' && (actualModel || actualEffort)) {
+          this.pushEvent(agentParamsEvent(input.tool_use_id, actualModel, actualEffort));
+        }
       }
     } catch { /* 出错就不介入 */ }
     try {

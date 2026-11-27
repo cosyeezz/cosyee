@@ -1,8 +1,10 @@
 // 会话进程管理 + WebSocket 订阅分发。一个会话一个 Runner；订阅者按会话分组。
+import fs from 'node:fs';
 import path from 'node:path';
 import {
   DEFAULT_SUBAGENTS,
   type DelegateNotification,
+  type ModelAlias,
   type SubagentAvailability,
   type SubagentConfig,
   type SubagentKind,
@@ -13,9 +15,11 @@ import {
 import type { AppliedSettings, ClientMsg, ContextUsage, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
 import { readApiConfig } from '../accounts/api-config.js';
 import { toContextUsage } from '../context.js';
+import { TranscriptToolLoadCache } from '../toolLoad.js';
+import { listAllAgents, toSubagentTypeInfo } from '../delegate/agents.js';
 import type { DelegateBackend } from '../delegate/backend.js';
 import { DelegateJobs } from '../delegate/jobs.js';
-import { DELEGATE_TOOL_NAME } from '../delegate/mcp.js';
+import { DELEGATE_AUX_TOOL_NAMES, DELEGATE_TOOL_NAME } from '../delegate/mcp.js';
 import type { DelegateRecorder } from '../delegate/record.js';
 import { baseClaudeHome, claudeJsonPath, cosyeeHome, isSafeId, isSessionUuid, normalizeDir } from '../paths.js';
 import type { Pins } from '../pins.js';
@@ -78,6 +82,8 @@ export interface SessionConfigStore {
 export interface SessionAccounts {
   /** 会话应当用哪个账号启动进程（dir 为 null = 默认账号） */
   resolve(sessionId: string): { id: string; dir: string | null };
+  /** 当前活跃主代理账号的配置目录（null = 默认账号）；用于无会话上下文的接口（如 GET /api/subagents） */
+  activeDir?(): string | null;
   /** 该账号还没有 claude 进程、即将启动第一个时调用（回写子代理刷新后的凭据、补共享链接、同步 MCP 配置） */
   prepare(accountId: string): void;
   /** 每次启动该账号的主代理进程前，把子代理空间较新的凭据同步回主空间（失败静默不阻断） */
@@ -104,6 +110,9 @@ export interface ToolStore {
   /** 最近一次 init 报告的内置工具名（落盘；探测进程收不到 init 时用它） */
   known?(): string[];
   setKnown?(names: string[]): void;
+  /** 最近一次从会话记录观测到的懒加载工具名（落盘；新会话 / 已停用工具兜底用） */
+  knownDeferred?(): string[];
+  setKnownDeferred?(names: string[]): void;
   /** 已关闭的智能体名（全局）；以 Agent(名字) 并入 permissions.deny */
   agents?(): string[];
   setAgents?(names: string[]): void;
@@ -225,6 +234,8 @@ export class Manager {
   private initSlashByCwd = new Map<string, string[]>();
   /** 会话最近一次 system/init 的内置工具名 */
   private initTools = new Map<string, string[]>();
+  /** 会话记录增量解析缓存（按文件 size + mtime 缓存工具加载方式与实时权重） */
+  private toolLoadCache = new TranscriptToolLoadCache();
   /** MCP pending 重采：按会话的计时器与已重试次数 */
   private mcpRetry = new Map<string, { timer: NodeJS.Timeout | null; n: number }>();
   /** 会话的委派任务表（后台任务）：独立于 claude 进程，进程被空闲回收 / 重启后任务继续 */
@@ -236,6 +247,8 @@ export class Manager {
   private retryTimer: NodeJS.Timeout | null = null;
   private unsubStops: (() => void) | null = null;
   private shuttingDown = false;
+  /** permissions.deny 下发串行链：防止并发调用导致 apply_flag_settings 与 contextCache 乱序覆盖 */
+  private denyChain: Promise<void> = Promise.resolve();
   /** 没有标题的会话：首条消息被接收后立即让 CLI 生成一个（每轮结束时再兜底重试） */
   private readonly autoTitle: AutoTitle;
 
@@ -607,11 +620,23 @@ export class Manager {
     const cfg = this.subagents?.get();
     if (!cfg) return null;
     const map = readApiConfig(accountDir)?.models;
-    const skipModel = !!map && (!!map.subagent || (hasModelMapping(map) && !map.alias?.[cfg.native.model]));
+    const canUseModel = (m: ModelAlias): boolean => !(map && (map.subagent || (hasModelMapping(map) && !map.alias?.[m])));
+    const canUseEffort = !process.env.CLAUDE_CODE_EFFORT_LEVEL;
+    let agents: Record<string, { model?: string; effort?: string }> | undefined;
+    if (cfg.native.agents) {
+      const out: Record<string, { model?: string; effort?: string }> = {};
+      for (const [name, ov] of Object.entries(cfg.native.agents)) {
+        const m = ov.model && canUseModel(ov.model) ? ov.model : undefined;
+        const e = ov.effort && canUseEffort ? ov.effort : undefined;
+        if (m || e) out[name] = { ...(m ? { model: m } : {}), ...(e ? { effort: e } : {}) };
+      }
+      if (Object.keys(out).length > 0) agents = out;
+    }
     return {
       native: {
-        ...(skipModel ? {} : { model: cfg.native.model }),
-        ...(process.env.CLAUDE_CODE_EFFORT_LEVEL ? {} : { effort: cfg.native.effort }),
+        ...(canUseModel(cfg.native.model) ? { model: cfg.native.model } : {}),
+        ...(canUseEffort ? { effort: cfg.native.effort } : {}),
+        ...(agents ? { agents } : {}),
       },
     };
   }
@@ -889,12 +914,17 @@ export class Manager {
    * get_settings 的其余内容含个人信息，这里不保留。
    */
   private async fetchContext(r: Runner): Promise<ContextUsage> {
-    const [raw, settings, mcp, init] = await Promise.all([
+    const [raw, settings, mcp, init, sessionToolLoad] = await Promise.all([
       r.request('get_context_usage'),
       r.request('get_settings').catch(() => null),
       r.request('mcp_status').catch(() => null),
       initInfoOf(r),
+      this.toolLoadCache.readSession(r.cwd, r.sessionId).catch(() => null),
     ]);
+    if (sessionToolLoad?.seenDelta) {
+      const observed = [...sessionToolLoad.deferred].filter((n) => TOOL_NAME_RE.test(n)).sort();
+      if (observed.length) this.tools?.setKnownDeferred?.(observed);
+    }
     const eff = (settings as { effective?: { skillOverrides?: unknown } } | null)?.effective?.skillOverrides;
     const disk = this.scanDiskSkills(r.sessionId, r.cwd);
     const synced = new Set(this.scanSyncedSkills(r.sessionId).keys());
@@ -909,12 +939,14 @@ export class Manager {
       mcpStatus: mcp,
       disabledTools: this.tools?.get() ?? null,
       disabledAgents: this.tools?.agents?.() ?? null,
-      nativeAgents: this.subagents ? this.subagentState().effective === 'native' : null,
+      nativeAgents: this.subagents ? r.runningSubagent(this.denyList()) === 'native' : null,
       tools: this.initTools.get(r.sessionId) ?? this.tools?.known?.() ?? null,
       slashCommands: this.initSlash.get(r.sessionId) ?? this.initSlashByCwd.get(r.cwd) ?? (init?.commandNames.length ? init.commandNames : null),
       compactWindow: this.compactWindow?.get() ?? null,
       skillDescriptions: desc.skills,
       agentDescriptions: desc.agents,
+      sessionToolLoad,
+      cachedDeferredTools: this.tools?.knownDeferred?.() ?? null,
     });
     this.contextCache.set(r.sessionId, usage);
     this.emit(r.sessionId, { t: 'context', sessionId: r.sessionId, usage });
@@ -1156,15 +1188,24 @@ export class Manager {
    */
   async setToolEnabled(name: string, enabled: boolean): Promise<string[]> {
     if (!this.tools) throw new HttpError(500, '未启用工具设置');
+    if (DELEGATE_AUX_TOOL_NAMES.includes(name) && !enabled) {
+      throw new HttpError(400, '委派辅助工具跟随 delegate 一起启停，不能单独停用');
+    }
     const cur = this.tools.get();
     const has = cur.includes(name);
-    if (enabled === !has) return [...cur];
-    this.tools.set(enabled ? cur.filter((n) => n !== name) : [...cur, name]);
+    // 重新启用 delegate 时顺手清掉历史残留的委派辅助工具停用项
+    const staleAux = name === DELEGATE_TOOL_NAME && enabled && cur.some((n) => DELEGATE_AUX_TOOL_NAMES.includes(n));
+    if (enabled === !has && !staleAux) return [...cur];
+    const next = enabled
+      ? cur.filter((n) => n !== name && !(name === DELEGATE_TOOL_NAME && DELEGATE_AUX_TOOL_NAMES.includes(n)))
+      : [...cur, name];
+    this.tools.set(next);
     const list = [...this.tools.get()];
     await this.pushDeny({
       disabledTools: list,
       ...(this.subagents ? { nativeAgents: this.subagentState().effective === 'native' } : {}),
     });
+    if (name === DELEGATE_TOOL_NAME) this.notifySubagents();
     return list;
   }
 
@@ -1180,34 +1221,72 @@ export class Manager {
     this.tools.setAgents(enabled ? cur.filter((n) => n !== name) : [...cur, name]);
     const list = [...this.tools.agents()];
     await this.pushDeny({ disabledAgents: list });
+    this.notifySubagents();
     return list;
   }
 
-  /** 当前子代理状态：配置、各类型可用性、实际生效类型（不可用或手动停用 delegate 时退回 native） */
-  subagentState(): SubagentState {
+  /** 当前子代理状态：配置、各类型可用性、实际生效类型（不可用或手动停用 delegate 时退回 native）、退回原因、代理类型列表与已关闭名单 */
+  subagentState(cwd?: string | null): SubagentState {
     const config = this.subagents?.get() ?? DEFAULT_SUBAGENTS;
-    const claudeOk = this.delegateBackends?.claude?.available() ?? false;
-    const agyOk = this.delegateBackends?.agy?.available() ?? false;
+    const claudeBackend = this.delegateBackends?.claude;
+    const agyBackend = this.delegateBackends?.agy;
+    const claudeAvail: SubagentAvailability = claudeBackend?.availability
+      ? claudeBackend.availability()
+      : claudeBackend?.available()
+        ? { ok: true }
+        : { ok: false, reason: '未安装 Claude CLI' };
+    const agyAvail: SubagentAvailability = agyBackend?.availability
+      ? agyBackend.availability()
+      : agyBackend?.available()
+        ? { ok: true }
+        : { ok: false, reason: '未安装 Antigravity CLI' };
     const available: Record<SubagentKind, SubagentAvailability> = {
       native: { ok: true },
-      claude: claudeOk ? { ok: true } : { ok: false, reason: '未安装 Claude CLI' },
-      agy: agyOk ? { ok: true } : { ok: false, reason: '未安装 Antigravity CLI' },
+      claude: claudeAvail,
+      agy: agyAvail,
     };
     const delegateDisabled = this.tools?.get().includes(DELEGATE_TOOL_NAME) ?? false;
-    const effective: SubagentKind =
-      config.kind === 'native' || delegateDisabled || !available[config.kind].ok ? 'native' : config.kind;
-    return { config: structuredClone(config), available, effective };
+    let effective: SubagentKind = config.kind;
+    let fallbackReason: string | undefined;
+    if (config.kind !== 'native') {
+      if (delegateDisabled) {
+        effective = 'native';
+        fallbackReason = '委派工具已在工具面板停用';
+      } else if (!available[config.kind].ok) {
+        effective = 'native';
+        fallbackReason = available[config.kind].reason ?? '委派后端不可用';
+      }
+    }
+    let validCwd = '';
+    if (typeof cwd === 'string' && cwd.trim()) {
+      try {
+        const norm = normalizeDir(cwd);
+        if (fs.statSync(norm).isDirectory()) validCwd = norm;
+      } catch { /* 非法或不存在的 cwd：退回只列内置与用户级 */ }
+    }
+    const configDir = this.accounts?.activeDir?.() ?? baseClaudeHome();
+    const agents = listAllAgents({ configDir, cwd: validCwd }).map(toSubagentTypeInfo);
+    const disabledAgents = [...(this.tools?.agents?.() ?? [])];
+    return {
+      config: structuredClone(config),
+      available,
+      effective,
+      ...(fallbackReason ? { fallbackReason } : {}),
+      agents,
+      disabledAgents,
+    };
   }
 
   /**
    * 更新子代理配置：先落盘，再向所有运行中的会话推送最新的 permissions.deny（Agent vs mcp__cosyee__*），
    * 并同步热进程保活。系统提示词里的委派约定仅在新启动会话时按配置决定。
    */
-  async setSubagents(config: SubagentConfig): Promise<SubagentState> {
+  async setSubagents(config: SubagentConfig, cwd?: string | null): Promise<SubagentState> {
     if (!this.subagents) throw new HttpError(500, '未启用子代理设置');
     this.subagents.set(config);
-    const state = this.subagentState();
+    const state = this.subagentState(cwd);
     await this.pushDeny({ nativeAgents: state.effective === 'native' });
+    this.notifySubagents();
     return state;
   }
 
@@ -1219,25 +1298,36 @@ export class Manager {
   /**
    * 把完整的 deny 名单下发给所有运行中的进程，并刷新面板；没有进程、但面板开着的会话直接改缓存里的名单。
    * apply_flag_settings 对 permissions.deny 是整体替换，实测空数组即清除，所以每次都发全量。
+   * 内部通过 denyChain 串行化并在 await 之后重读最新状态，避免并发修改导致乱序覆盖。
    */
-  private async pushDeny(patch: Pick<ContextUsage, 'disabledTools' | 'disabledAgents' | 'nativeAgents'>): Promise<void> {
-    const deny = this.denyList();
-    const alive = [...this.runners.values()].filter((r) => r.alive);
-    await Promise.all(
-      alive.map(async (r) => {
-        r.syncDelegateHold(deny);
-        try {
-          await r.request('apply_flag_settings', { settings: { permissions: { deny: r.withSubagentDeny(deny) } } });
-        } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
-        if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
-      }),
-    );
-    for (const [id, usage] of this.contextCache) {
-      if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
-      const next = { ...usage, ...patch };
-      this.contextCache.set(id, next);
-      this.emit(id, { t: 'context', sessionId: id, usage: next });
-    }
+  private pushDeny(_patch?: Pick<ContextUsage, 'disabledTools' | 'disabledAgents' | 'nativeAgents'>): Promise<void> {
+    const run = async () => {
+      const deny = this.denyList();
+      const alive = [...this.runners.values()].filter((r) => r.alive);
+      await Promise.all(
+        alive.map(async (r) => {
+          r.syncDelegateHold(deny);
+          try {
+            await r.request('apply_flag_settings', { settings: { permissions: { deny: r.withSubagentDeny(deny) } } });
+          } catch { /* 进程忙 / 已退出：下次启动时经 --settings 生效 */ }
+          if (this.hasSubscribers(r.sessionId)) void this.fetchContext(r).catch(() => {});
+        }),
+      );
+      const latestPatch: Partial<Pick<ContextUsage, 'disabledTools' | 'disabledAgents' | 'nativeAgents'>> = {
+        ...(this.tools ? { disabledTools: [...this.tools.get()] } : {}),
+        ...(this.tools?.agents ? { disabledAgents: [...this.tools.agents()] } : {}),
+        ...(this.subagents ? { nativeAgents: this.subagentState().effective === 'native' } : {}),
+      };
+      for (const [id, usage] of this.contextCache) {
+        if (this.runners.get(id)?.alive || !this.hasSubscribers(id)) continue;
+        const next = { ...usage, ...latestPatch };
+        this.contextCache.set(id, next);
+        this.emit(id, { t: 'context', sessionId: id, usage: next });
+      }
+    };
+    const next = this.denyChain.then(run, run);
+    this.denyChain = next.catch(() => {});
+    return next;
   }
 
   /**
@@ -1633,6 +1723,11 @@ export class Manager {
   /** 通知所有前端：Antigravity 账号列表 / 当前账号 / 登录状态变了 */
   notifyAgy(): void {
     this.broadcast({ t: 'agy.changed' });
+  }
+
+  /** 通知所有前端：子代理配置 / 代理类型开关 / 后端可用性变了 */
+  notifySubagents(): void {
+    this.broadcast({ t: 'subagents.changed' });
   }
 
   /** 同步强杀（process 'exit' 事件里使用）。 */

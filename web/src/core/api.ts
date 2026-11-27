@@ -123,9 +123,10 @@ export const api = {
     const qs = q(p);
     return req<CliModelList | null>('GET', `/api/models${qs ? `?${qs}` : ''}`);
   },
-  /** 子代理配置与本机可用状态（全局） */
-  subagents: () => req<SubagentState>('GET', '/api/subagents'),
-  saveSubagents: (c: SubagentConfig) => req<{ ok: true; state: SubagentState }>('POST', '/api/subagents', c),
+  /** 子代理配置与本机可用状态（全局；传 cwd 时附带该项目级智能体） */
+  subagents: (cwd?: string | null) => req<SubagentState>('GET', `/api/subagents${cwd ? `?${q({ cwd })}` : ''}`),
+  saveSubagents: (c: SubagentConfig, cwd?: string | null) =>
+    req<{ ok: true; state: SubagentState }>('POST', `/api/subagents${cwd ? `?${q({ cwd })}` : ''}`, c),
   /** 委派后端的可用模型；后端未安装 / 未登录时抛错 */
   delegateModels: (refresh = false) => req<DelegateModelList>('GET', `/api/delegate/models${refresh ? '?refresh=1' : ''}`),
   /** 记住模型与思考强度（全局） */

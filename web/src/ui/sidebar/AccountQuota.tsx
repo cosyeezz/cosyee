@@ -1,12 +1,12 @@
 // 账号的额度显示。所有额度先换成统一的「窗口」（名称、百分比、颜色、重置时间），再按两种样式画：
-// - QuotaBrief：账号弹层里每个账号一行「5h ━━━ 94%」，只显示最先重置的那个窗口，全部额度在悬浮详情卡（AccountCard）里；
+// - QuotaBrief：账号弹层里每个账号一行「5h ━━━ 94% 2小时14分后」，只显示最先重置的那个窗口，全部额度在悬浮详情卡（AccountCard）里；
 // - QuotaLines：管理面板卡片里的全部窗口，一条一行「5h ━━━ 71% 2小时30分后重置」，Antigravity 按模型组分段。
 // 名称统一：Claude 的会话窗口和 Antigravity 的 5 小时窗口都叫「5h」，周额度叫「本周」，Kiro 的月度额度叫「本月」。
 // 颜色阈值沿用输入框里的额度面板（severity：normal / warning / critical → 主题色 / 警告色 / 危险色）。
 // 进度条第一次出现时从 0 长到目标值（transform: scaleX + @starting-style），数据刷新时从当前值平滑过渡，减少动态效果时不动。
 import type { CSSProperties, ReactNode } from 'react';
 import type { AgyQuota, KiroBalance, UsageInfo, UsageSeverity } from '@cosyee/shared';
-import { limitShortTitle, resetShort } from '../usage/format';
+import { limitShortTitle, resetBrief, resetShort } from '../usage/format';
 
 /** loading：还没有结果；ok：info 有数据；none：服务端没有额度信息；fail：读取失败 */
 export type QuotaState = { status: 'loading' } | { status: 'ok'; info: UsageInfo } | { status: 'none' } | { status: 'fail' };
@@ -106,11 +106,13 @@ function Bar({ percent, label, text }: { percent: number; label: string; text?: 
 export function QuotaBrief({ win, loading, now }: { win: QuotaWindow | null; loading?: boolean; now?: number }) {
   if (loading) return <span className="cz-acctq-brief cz-acctq-brief--loading" aria-hidden="true" data-testid="quota-skeleton" />;
   if (!win) return null;
+  const reset = resetBrief(win.resetsAt, now);
   return (
     <span className={`cz-acctq-brief cz-acctq__line is-${win.severity}`}>
       <span className="cz-acctq__name">{win.label}</span>
       <Bar percent={win.percent} label={`${win.group ? `${win.group} ` : ''}${win.label}已用`} text={windowTip(win, now)} />
       <span className="cz-acctq__pct">{win.percent}%</span>
+      {reset && <span className="cz-acctq-brief__reset" title={resetShort(win.resetsAt, now)}>{reset}</span>}
     </span>
   );
 }

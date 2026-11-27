@@ -28,17 +28,39 @@ export function LiquidCapsule({ activeKey, selector, axis = 'y' }: LiquidCapsule
     if (el) sync(el, activeKey, selector, axis, last.current, anim);
   });
 
-  // 容器尺寸变化（侧栏宽度、滚动条出现）时也要重新贴位
+  // 容器尺寸变化（侧栏宽度、滚动条出现）、窗口缩放、字体加载后都要重新贴位
   useLayoutEffect(() => {
     const el = ref.current;
     const host = el?.parentElement;
-    if (!el || !host || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => sync(el, last.current.key, selector, axis, last.current, anim, true));
-    ro.observe(host);
-    return () => ro.disconnect();
+    if (!el || !host) return;
+    let alive = true;
+    const resync = () => {
+      if (alive) sync(el, last.current.key, selector, axis, last.current, anim, true);
+    };
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resync) : null;
+    ro?.observe(host);
+    window.addEventListener('resize', resync);
+    document.fonts?.ready?.then(resync).catch(() => {});
+    return () => {
+      alive = false;
+      ro?.disconnect();
+      window.removeEventListener('resize', resync);
+    };
   }, [selector, axis]);
 
+  // 卸载时取消正在播放的动画
+  useLayoutEffect(() => () => {
+    anim.current?.cancel();
+    anim.current = null;
+  }, []);
+
   return <span ref={ref} className="cz-capsule" aria-hidden="true" />;
+}
+
+function hostScale(host: HTMLElement, hr: DOMRect): { sx: number; sy: number } {
+  const sx = host.offsetWidth > 0 && hr.width > 0 ? hr.width / host.offsetWidth : 1;
+  const sy = host.offsetHeight > 0 && hr.height > 0 ? hr.height / host.offsetHeight : 1;
+  return { sx, sy };
 }
 
 function measure(el: HTMLElement, selector: string): Box | null {
@@ -48,7 +70,13 @@ function measure(el: HTMLElement, selector: string): Box | null {
   const hr = host.getBoundingClientRect();
   const rr = row.getBoundingClientRect();
   if (rr.width === 0 || rr.height === 0) return null;
-  return { x: rr.left - hr.left + host.scrollLeft, y: rr.top - hr.top + host.scrollTop, w: rr.width, h: rr.height };
+  const { sx, sy } = hostScale(host, hr);
+  return {
+    x: (rr.left - hr.left) / sx + host.scrollLeft,
+    y: (rr.top - hr.top) / sy + host.scrollTop,
+    w: rr.width / sx,
+    h: rr.height / sy,
+  };
 }
 
 function place(el: HTMLElement, b: Box) {
@@ -64,7 +92,13 @@ function current(el: HTMLElement, fallback: Box): Box {
   const hr = host.getBoundingClientRect();
   const r = el.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return fallback;
-  return { x: r.left - hr.left + host.scrollLeft, y: r.top - hr.top + host.scrollTop, w: r.width, h: r.height };
+  const { sx, sy } = hostScale(host, hr);
+  return {
+    x: (r.left - hr.left) / sx + host.scrollLeft,
+    y: (r.top - hr.top) / sy + host.scrollTop,
+    w: r.width / sx,
+    h: r.height / sy,
+  };
 }
 
 const same = (a: Box | null, b: Box | null) =>

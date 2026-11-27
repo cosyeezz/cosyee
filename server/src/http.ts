@@ -230,6 +230,16 @@ export function fromLocal(req: IncomingMessage): boolean {
 
 export function createHandler(deps: HttpDeps) {
   const lock = new PickLock();
+  /** 串行化会推送 permissions.deny 的写接口（/api/subagents、/api/tools、/api/agents），避免并发切换导致下发或缓存乱序 */
+  let denyChain: Promise<void> = Promise.resolve();
+  const serializeDeny = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = denyChain.then(fn, fn);
+    denyChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
 
   async function accountRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string): Promise<void> {
     const accounts = deps.accounts;
@@ -737,7 +747,7 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       if (typeof body.name !== 'string' || !TOOL_NAME_RE.test(body.name)) throw new HttpError(400, '工具名不合法');
       if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
-      const disabledTools = await deps.manager.setToolEnabled(body.name, body.enabled);
+      const disabledTools = await serializeDeny(() => deps.manager.setToolEnabled(body.name, body.enabled));
       return sendJson(res, 200, { ok: true, disabledTools });
     }
 
@@ -746,7 +756,7 @@ export function createHandler(deps: HttpDeps) {
       const body = await readJson(req);
       if (typeof body.name !== 'string' || !AGENT_NAME_RE.test(body.name)) throw new HttpError(400, '智能体名不合法');
       if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled 不合法');
-      const disabledAgents = await deps.manager.setAgentEnabled(body.name, body.enabled);
+      const disabledAgents = await serializeDeny(() => deps.manager.setAgentEnabled(body.name, body.enabled));
       return sendJson(res, 200, { ok: true, disabledAgents });
     }
 
@@ -761,11 +771,12 @@ export function createHandler(deps: HttpDeps) {
 
     // 子代理配置与状态（全局：native / claude / agy 三选一及各后端默认模型与强度）；提交后对运行中的会话立即推送 deny
     if (p === '/api/subagents') {
-      if (method === 'GET') return sendJson(res, 200, deps.manager.subagentState());
+      const cwd = q.get('cwd');
+      if (method === 'GET') return sendJson(res, 200, deps.manager.subagentState(cwd));
       if (method === 'POST') {
         const config = parseSubagents(await readJson(req));
         if (!config) throw new HttpError(400, '子代理配置不合法');
-        const state = await deps.manager.setSubagents(config);
+        const state = await serializeDeny(() => deps.manager.setSubagents(config, cwd));
         return sendJson(res, 200, { ok: true, state });
       }
     }
