@@ -1,23 +1,38 @@
 // Antigravity CLI（agy）多账号管理：只管在 Cosyee 里登录的账号，不接管本机 agy 自己的登录。
 // 每个账号一个独立数据目录（~/.cosyee/agy-accounts/<id>），通过 --gemini-dir <root> --app-data-dir <id>
 // 与 AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 隔离，令牌存在该目录的 antigravity-oauth-token 文件里。
-// 不起 agy 进程探测登录态：令牌文件在就算已登录；邮箱只从令牌文件的 id_token_email 字段读，不落盘。
+// 登录态以令牌文件是否存在为准；邮箱优先读令牌文件的 id_token_email，探测结果可作补充，不落盘。
+// 套餐与额度仅放内存缓存：有存活委派进程时直接读它的 language server，没有时后台起一次性 agy acp 探测并清理空会话。
 // 列表与日志绝不下发 / 记录令牌、授权码；判重只存邮箱的 sha256 哈希。
 import { type ChildProcess, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import type { AccountDedupeResult, AccountLogin, AgyAccountEntry, AgyAccountList } from '@cosyee/shared';
+import type { AccountDedupeResult, AccountLogin, AgyAccountEntry, AgyAccountList, AgyQuota } from '@cosyee/shared';
 import { killTree, spawnSpec } from '../claude/bin.js';
 import { resolveAgy } from '../delegate/agy.js';
-import { agyAccountsRoot, pathKey } from '../paths.js';
+import { agyAccountsRoot, isSessionUuid, pathKey } from '../paths.js';
+import { type Json, LineSplitter } from '../transcript.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
-import { agyAccountArgs, agyLoginEnv } from './agy-env.js';
-import { hashEmail, lstat, mkdirPrivate, replaceAuthFiles as replaceAuthFilesIn, safeRemoveAccountDir } from './fs.js';
+import { agyAccountArgs, agyAccountEnv, agyLoginEnv } from './agy-env.js';
+import { type AgyStatus, fetchAgyStatus, findLsPort } from './agy-status.js';
+import { hashEmail, lstat, mkdirPrivate, replaceAuthFiles as replaceAuthFilesIn, retrySilently, safeRemoveAccountDir, safeRemoveTreeSync } from './fs.js';
 import { stripAnsi } from './index.js';
+import { removeLink } from './links.js';
 
 const LABEL_MAX = 40;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
+const PROBE_TIMEOUT_MS = 15_000;
+const PROBE_OK_TTL_MS = 30 * 60_000;
+const PROBE_FAIL_TTL_MS = 60_000;
+/** 账号菜单打开（list refresh）或有存活委派进程时，额度超过这么久没更新就刷新 */
+const QUOTA_REFRESH_MS = 90_000;
+/** 从 language server 读邮箱 / 额度最多等这么久，超时保留旧缓存 */
+const STATUS_TIMEOUT_MS = 5_000;
+const PROBE_CLEANUP_FALLBACK_MS = 1500;
+/** 委派进程刚就绪时 language server 端口可能稍后才写进日志，做短延迟重试 */
+const DEFAULT_LIVE_RETRY_DELAYS_MS = [500, 1500] as const;
 const ORPHAN_MAX_AGE_MS = 60 * 60_000;
 const CANCEL_KILL_GRACE_MS = 500;
 const OUTPUT_MAX = 16 * 1024;
@@ -40,21 +55,44 @@ export interface AgyAccountsDeps {
   store: StateStore;
   /** 某账号正在执行的委派任务数 */
   running?: (accountId: string) => number;
+  /** 某账号当前存活的 agy acp 委派进程 pid（有则优先直接读其 language server，不再另起探测进程） */
+  livePids?: (accountId: string) => number[];
   /** 移除账号前停止该账号的空闲进程；仍有执行中任务返回 false */
   stopAccount?: (accountId: string) => boolean;
   /** 重新登录后丢弃空闲进程、排空忙进程、清模型缓存 */
   resetAccount?: (accountId: string) => void;
-  /** 账号列表 / 当前账号变化时回调 */
+  /** 账号列表 / 当前账号 / 额度或套餐变化时回调 */
   onChanged?: () => void;
   /** 测试替换：解析 agy 路径 */
   resolveAgy?: () => string | null;
   /** 测试替换：启动登录进程 */
   spawnLogin?: (agyPath: string, args: string[], env: NodeJS.ProcessEnv) => ChildProcess;
+  /** 测试替换：启动后台探测用的 agy acp 进程 */
+  spawnProbe?: (agyPath: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) => ChildProcess;
+  /** 测试替换：从指定日志目录与 pid 读邮箱与额度 */
+  probeStatus?: (logDir: string, pid: number | undefined) => Promise<AgyStatus | null>;
   /** 测试替换：时间源 */
   now?: () => number;
   /** 测试替换：登录超时 */
   loginTimeoutMs?: number;
+  /** 测试替换：后台探测超时 */
+  probeTimeoutMs?: number;
+  /** 测试替换：委派进程就绪后重试读额度的延迟序列（ms） */
+  liveRetryDelaysMs?: readonly number[];
 }
+
+interface StatusCache {
+  plan: string | null;
+  email: string | null;
+  quota: AgyQuota | null;
+  at: number;
+  /** true = 成功拿到信息（TTL 30 分钟）；false = 读取失败（TTL 1 分钟） */
+  ok: boolean;
+}
+
+export type ProbeResult =
+  | { kind: 'ok'; plan: string | null; sessionId?: string; email?: string | null; quota?: AgyQuota | null }
+  | { kind: 'error' };
 
 interface LoginJob {
   state: AccountLogin;
@@ -170,6 +208,68 @@ function defaultSpawnLogin(agyPath: string, args: string[], env: NodeJS.ProcessE
   });
 }
 
+function defaultSpawnProbe(agyPath: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): ChildProcess {
+  const spec = spawnSpec(agyPath, args);
+  return spawn(spec.command, spec.args, {
+    cwd,
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    windowsVerbatimArguments: spec.verbatim,
+  });
+}
+
+/**
+ * 清理后台探测时 session/new 留下的空会话：
+ * 只删除 accountDir/conversations/<sid>.db*（直接子文件）与 accountDir/brain/<sid>。
+ * sid 必须匹配严格 UUID，路径必须落在该账号目录内、绝不跟进符号链接，失败静默。
+ */
+async function safeCleanupProbeSession(accountDir: string, sid: string): Promise<void> {
+  if (!isSessionUuid(sid)) return;
+  let accReal: string;
+  try {
+    accReal = fs.realpathSync(path.resolve(accountDir));
+  } catch {
+    return;
+  }
+
+  // 1) conversations/<sid>.db*（仅直接子文件）
+  const convDir = path.join(accountDir, 'conversations');
+  const convSt = lstat(convDir);
+  if (convSt && !convSt.isSymbolicLink() && convSt.isDirectory()) {
+    try {
+      const convReal = fs.realpathSync(convDir);
+      if (pathKey(convReal) === pathKey(path.join(accReal, 'conversations'))) {
+        const prefix = `${sid}.db`;
+        for (const name of fs.readdirSync(convDir)) {
+          if (!name.startsWith(prefix)) continue;
+          const full = path.join(convDir, name);
+          const fst = lstat(full);
+          if (!fst || fst.isSymbolicLink() || fst.isDirectory()) continue;
+          await retrySilently(() => fs.unlinkSync(full));
+        }
+      }
+    } catch { /* 静默 */ }
+  }
+
+  // 2) brain/<sid>
+  const brainDir = path.join(accountDir, 'brain');
+  const brainSt = lstat(brainDir);
+  if (brainSt && !brainSt.isSymbolicLink() && brainSt.isDirectory()) {
+    try {
+      const brainReal = fs.realpathSync(brainDir);
+      if (pathKey(brainReal) === pathKey(path.join(accReal, 'brain'))) {
+        const target = path.join(brainDir, sid);
+        const tst = lstat(target);
+        if (tst) {
+          if (tst.isSymbolicLink()) await retrySilently(() => removeLink(target));
+          else await retrySilently(() => safeRemoveTreeSync(target));
+        }
+      }
+    } catch { /* 静默 */ }
+  }
+}
+
 /** 只把新登录的令牌与认证状态文件原子替换进原目录（不碰 conversations/、brain/ 等），失败回滚 */
 async function replaceAuthFiles(tempDir: string, targetDir: string): Promise<void> {
   await replaceAuthFilesIn(tempDir, targetDir, [TOKEN_FILE, AUTH_STATE_FILE], TOKEN_FILE);
@@ -178,15 +278,29 @@ async function replaceAuthFiles(tempDir: string, targetDir: string): Promise<voi
 export class AgyAccounts {
   private login: LoginJob | null = null;
   private switching: Promise<void> = Promise.resolve();
+  private readonly cache = new Map<string, StatusCache>();
+  /** 每个账号的缓存代数：重新登录 / 移除时递增，早于它启动的刷新返回时丢弃 */
+  private readonly gen = new Map<string, number>();
+  private readonly probing = new Map<string, Promise<void>>();
+  private readonly activeProbes = new Set<ChildProcess>();
+  /** 正在运行或挂起的探测清理任务（用于 dispose 与删目录前避让，不阻塞结果返回） */
+  private readonly pendingCleanups = new Set<Promise<void>>();
+  private readonly dirCleanups = new Map<string, Set<Promise<void>>>();
+  private readonly pendingProbeCleanups = new Set<() => void>();
+  private readonly liveRetryCancels = new Set<() => void>();
   private disposed = false;
   private readonly now: () => number;
   private readonly resolveFn: () => string | null;
   private readonly loginTimeoutMs: number;
+  private readonly probeTimeoutMs: number;
+  private readonly liveRetryDelaysMs: readonly number[];
 
   constructor(private readonly deps: AgyAccountsDeps) {
     this.now = deps.now ?? Date.now;
     this.resolveFn = deps.resolveAgy ?? resolveAgy;
     this.loginTimeoutMs = deps.loginTimeoutMs ?? LOGIN_TIMEOUT_MS;
+    this.probeTimeoutMs = deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+    this.liveRetryDelaysMs = deps.liveRetryDelaysMs ?? DEFAULT_LIVE_RETRY_DELAYS_MS;
   }
 
   private get s() {
@@ -286,30 +400,40 @@ export class AgyAccounts {
     return run;
   }
 
-  /** 账号的身份哈希：已存哈希优先，其次用令牌文件里的邮箱算 */
+  /** 账号的身份哈希：已存哈希优先，其次令牌文件里的邮箱，最后探测缓存里的邮箱 */
   private identityHashOf(a: StoredAccount): string | null {
-    return a.identityHash ?? hashEmail(readTokenEmail(a.dir));
+    return a.identityHash ?? hashEmail(readTokenEmail(a.dir)) ?? hashEmail(this.cache.get(a.id)?.email);
   }
 
   /** 把账号按身份哈希分为「列表保留项」与「去重隐藏项」；优先级 当前账号 > 最早添加；未知身份不去重 */
-  private partition(): { kept: AgyAccountEntry[]; hiddenIds: string[] } {
+  private partition(opts: { probe?: boolean; refresh?: boolean } = {}): { kept: AgyAccountEntry[]; hiddenIds: string[] } {
     const active = this.activeId();
-    const rows = this.s.list.map((a, idx) => ({
-      idx,
-      createdAt: a.createdAt,
-      hash: this.identityHashOf(a),
-      entry: {
-        id: a.id,
-        label: a.label,
-        plan: null,
-        loggedIn: hasTokenFile(a.dir),
-        active: a.id === active,
-        isDefault: false,
-        running: this.deps.running?.(a.id) ?? 0,
-        email: readTokenEmail(a.dir),
-        quota: null,
-      } satisfies AgyAccountEntry,
-    }));
+    const rows = this.s.list.map((a, idx) => {
+      const loggedIn = hasTokenFile(a.dir);
+      const c = this.cache.get(a.id);
+      if (opts.probe && loggedIn) {
+        const hasLive = (this.deps.livePids?.(a.id)?.length ?? 0) > 0;
+        if (this.shouldProbe(c) || ((opts.refresh || hasLive) && this.quotaStale(c))) {
+          void this.triggerRefresh(a.id, a.dir);
+        }
+      }
+      return {
+        idx,
+        createdAt: a.createdAt,
+        hash: this.identityHashOf(a),
+        entry: {
+          id: a.id,
+          label: a.label,
+          plan: c?.plan ?? null,
+          loggedIn,
+          active: a.id === active,
+          isDefault: false,
+          running: this.deps.running?.(a.id) ?? 0,
+          email: readTokenEmail(a.dir) ?? c?.email ?? null,
+          quota: c?.quota ?? null,
+        } satisfies AgyAccountEntry,
+      };
+    });
     const ordered = [...rows].sort((a, b) => Number(b.entry.active) - Number(a.entry.active) || a.createdAt - b.createdAt || a.idx - b.idx);
     const seen = new Set<string>();
     const kept: typeof rows = [];
@@ -328,17 +452,348 @@ export class AgyAccounts {
     return { kept: kept.map((r) => r.entry), hiddenIds };
   }
 
-  list(): AgyAccountList {
+  list(opts: { refresh?: boolean } = {}): AgyAccountList {
     if (!this.installed()) {
       return { installed: false, list: [], login: null };
     }
-    const { kept, hiddenIds } = this.partition();
+    const { kept, hiddenIds } = this.partition({ probe: true, refresh: opts.refresh });
     return {
       installed: true,
       list: kept,
       login: this.login ? { ...this.login.state } : null,
       ...(hiddenIds.length > 0 ? { duplicates: hiddenIds.length } : {}),
     };
+  }
+
+  private quotaStale(c: StatusCache | undefined): boolean {
+    if (!c) return false;
+    return this.now() - c.at >= QUOTA_REFRESH_MS;
+  }
+
+  private shouldProbe(c: StatusCache | undefined): boolean {
+    if (!c) return true;
+    const ttl = c.ok ? PROBE_OK_TTL_MS : PROBE_FAIL_TTL_MS;
+    return this.now() - c.at >= ttl;
+  }
+
+  private bumpGen(id: string): void {
+    this.gen.set(id, (this.gen.get(id) ?? 0) + 1);
+  }
+
+  /** 将一次读取结果合并进内存缓存；读不到的字段保留旧缓存；变化时通知 onChanged */
+  private applyStatus(
+    id: string,
+    dir: string,
+    g: number,
+    res: { ok: boolean; plan?: string | null; email?: string | null; quota?: AgyQuota | null },
+  ): void {
+    if (this.disposed || (this.gen.get(id) ?? 0) !== g) return;
+    const acc = this.find(id);
+    if (!acc) return;
+    const prev = this.cache.get(id);
+    const prevPlan = prev?.plan ?? null;
+    const tokenEmail = readTokenEmail(dir);
+    const prevEmail = tokenEmail ?? prev?.email ?? null;
+    const prevQuotaGroups = prev?.quota?.groups ?? null;
+    const now = this.now();
+    const next: StatusCache = res.ok
+      ? {
+          plan: res.plan !== undefined ? (res.plan ?? prevPlan) : prevPlan,
+          email: res.email ?? prev?.email ?? null,
+          quota: res.quota ?? prev?.quota ?? null,
+          at: now,
+          ok: true,
+        }
+      : {
+          plan: prevPlan,
+          email: prev?.email ?? null,
+          quota: prev?.quota ?? null,
+          at: now,
+          ok: false,
+        };
+    this.cache.set(id, next);
+
+    let identityChanged = false;
+    if (res.ok && next.email && !acc.identityHash) {
+      const h = hashEmail(next.email);
+      if (h) {
+        acc.identityHash = h;
+        this.deps.store.save();
+        identityChanged = true;
+      }
+    }
+    const nextEmail = tokenEmail ?? next.email ?? null;
+    const changed = identityChanged
+      || prevPlan !== next.plan
+      || prevEmail !== nextEmail
+      || JSON.stringify(prevQuotaGroups) !== JSON.stringify(next.quota?.groups ?? null);
+    if (changed) this.deps.onChanged?.();
+  }
+
+  /** 依次尝试从该账号存活委派进程的 language server 读状态；读不到返回 null */
+  private async readLiveStatus(dir: string, pids: readonly number[]): Promise<AgyStatus | null> {
+    if (!pids.length) return null;
+    const logDir = path.join(dir, 'log');
+    for (const pid of pids) {
+      const st = await this.readStatus(logDir, pid);
+      if (st && (st.quota || st.email)) return st;
+    }
+    return null;
+  }
+
+  /** 触发后台刷新（同账号并发去重）：有存活委派进程时直接读其 language server，否则起一次性探测进程 */
+  triggerRefresh(id: string, dir: string): Promise<void> {
+    if (this.disposed || !this.installed()) return Promise.resolve();
+    const existing = this.probing.get(id);
+    if (existing) return existing;
+    const g = this.gen.get(id) ?? 0;
+    const p = (async () => {
+      const pids = this.deps.livePids?.(id) ?? [];
+      if (pids.length > 0) {
+        const st = await this.readLiveStatus(dir, pids);
+        if (st) this.applyStatus(id, dir, g, { ok: true, email: st.email, quota: st.quota });
+        else this.applyStatus(id, dir, g, { ok: false });
+        return;
+      }
+      const res = await this.probeDir(dir);
+      if (res.kind === 'ok') {
+        this.applyStatus(id, dir, g, { ok: true, plan: res.plan, email: res.email ?? null, quota: res.quota ?? null });
+      } else {
+        this.applyStatus(id, dir, g, { ok: false });
+      }
+    })().finally(() => {
+      if (this.probing.get(id) === p) this.probing.delete(id);
+    });
+    this.probing.set(id, p);
+    return p;
+  }
+
+  /**
+   * 仅从存活委派进程刷新额度（不另起探测进程，跳过 90s TTL）：
+   * 供 AcpPool 在进程就绪（retry=true，等待日志写出端口）或一轮委派结束时调用。
+   */
+  refreshFromLiveProc(id: string, pid?: number, opts: { retry?: boolean } = {}): Promise<void> {
+    if (this.disposed || !this.installed()) return Promise.resolve();
+    const acc = this.find(id);
+    if (!acc || !hasTokenFile(acc.dir)) return Promise.resolve();
+    const existing = this.probing.get(id);
+    if (existing) return existing;
+    const dir = acc.dir;
+    const g = this.gen.get(id) ?? 0;
+    const getPids = (): readonly number[] => (pid !== undefined ? [pid] : (this.deps.livePids?.(id) ?? []));
+    const p = (async () => {
+      let st = await this.readLiveStatus(dir, getPids());
+      if (!st && opts.retry) {
+        for (const ms of this.liveRetryDelaysMs) {
+          const alive = await this.waitRetry(ms);
+          if (!alive || this.disposed || (this.gen.get(id) ?? 0) !== g || !this.find(id)) return;
+          if (pid !== undefined && this.deps.livePids && !this.deps.livePids(id).includes(pid)) return;
+          st = await this.readLiveStatus(dir, getPids());
+          if (st) break;
+        }
+      }
+      if (st) this.applyStatus(id, dir, g, { ok: true, email: st.email, quota: st.quota });
+    })().finally(() => {
+      if (this.probing.get(id) === p) this.probing.delete(id);
+    });
+    this.probing.set(id, p);
+    return p;
+  }
+
+  private waitRetry(ms: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let done = false;
+      const cancel = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        this.liveRetryCancels.delete(cancel);
+        resolve(false);
+      };
+      const t = setTimeout(() => {
+        if (done) return;
+        done = true;
+        this.liveRetryCancels.delete(cancel);
+        resolve(true);
+      }, ms);
+      t.unref?.();
+      this.liveRetryCancels.add(cancel);
+    });
+  }
+
+  private trackCleanup(dir: string, fn: () => Promise<void>): Promise<void> {
+    const key = pathKey(dir);
+    const p = fn().catch(() => {});
+    this.pendingCleanups.add(p);
+    let set = this.dirCleanups.get(key);
+    if (!set) this.dirCleanups.set(key, (set = new Set()));
+    set.add(p);
+    void p.finally(() => {
+      this.pendingCleanups.delete(p);
+      set.delete(p);
+      if (set.size === 0) this.dirCleanups.delete(key);
+    });
+    return p;
+  }
+
+  /** 等待某账号目录上正在执行的探测会话清理完成，避免与目录删除冲突 */
+  private async waitDirCleanups(dir: string): Promise<void> {
+    const set = this.dirCleanups.get(pathKey(dir));
+    if (!set || set.size === 0) return;
+    await Promise.allSettled([...set]);
+  }
+
+  /** 等待所有已调度的探测后台清理完成（测试 / 验证用） */
+  async waitCleanups(): Promise<void> {
+    while (this.pendingCleanups.size > 0) {
+      await Promise.allSettled([...this.pendingCleanups]);
+    }
+  }
+
+  /**
+   * 一次性起 agy acp 做 initialize + session/new，读出套餐、邮箱与额度后立刻结束进程，
+   * 并清理本次探测留下的 conversations/<sid>.db* 与 brain/<sid>。
+   */
+  probeDir(dir: string): Promise<ProbeResult> {
+    const agyPath = this.resolveFn();
+    if (!agyPath) return Promise.resolve({ kind: 'error' });
+    const cwd = os.tmpdir();
+    const args = ['acp', ...agyAccountArgs(dir)];
+    const logDir = path.join(dir, 'log');
+    const env = agyAccountEnv(dir);
+    let proc: ChildProcess;
+    try {
+      proc = (this.deps.spawnProbe ?? defaultSpawnProbe)(agyPath, args, env, cwd);
+    } catch {
+      return Promise.resolve({ kind: 'error' });
+    }
+    this.activeProbes.add(proc);
+
+    return new Promise<ProbeResult>((resolve) => {
+      let settled = false;
+      let closed = false;
+      let cleanupStarted = false;
+      let probedSid: string | null = null;
+      let cleanupFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+      const splitter = new LineSplitter();
+
+      const runCleanup = () => {
+        if (cleanupStarted) return;
+        cleanupStarted = true;
+        if (cleanupFallbackTimer) {
+          clearTimeout(cleanupFallbackTimer);
+          cleanupFallbackTimer = null;
+        }
+        this.pendingProbeCleanups.delete(forceCleanup);
+        if (probedSid && isSessionUuid(probedSid)) {
+          const sid = probedSid;
+          void this.trackCleanup(dir, () => safeCleanupProbeSession(dir, sid));
+        }
+      };
+
+      const scheduleCleanupAfterExit = () => {
+        if (!(probedSid && isSessionUuid(probedSid))) {
+          this.pendingProbeCleanups.delete(forceCleanup);
+          return;
+        }
+        if (closed || proc.exitCode !== null || proc.signalCode !== null) {
+          runCleanup();
+          return;
+        }
+        proc.once('close', () => runCleanup());
+        cleanupFallbackTimer = setTimeout(() => runCleanup(), PROBE_CLEANUP_FALLBACK_MS);
+        cleanupFallbackTimer.unref?.();
+      };
+
+      const forceCleanup = () => {
+        this.activeProbes.delete(proc);
+        killProc(proc);
+        scheduleCleanupAfterExit();
+      };
+      this.pendingProbeCleanups.add(forceCleanup);
+
+      proc.once('close', () => {
+        closed = true;
+        this.activeProbes.delete(proc);
+      });
+
+      const writeMsg = (msg: Json) => {
+        try {
+          proc.stdin?.write(JSON.stringify(msg) + '\n');
+        } catch { /* 由 close 处理 */ }
+      };
+
+      const finish = (r: ProbeResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.activeProbes.delete(proc);
+        killProc(proc);
+        scheduleCleanupAfterExit();
+        resolve(r);
+      };
+
+      const timer = setTimeout(() => finish({ kind: 'error' }), this.probeTimeoutMs);
+      timer.unref?.();
+
+      proc.stdin?.on('error', () => {});
+      proc.stderr?.on('data', (d: Buffer | string) => {
+        if (/Authentication required/i.test(d.toString())) finish({ kind: 'error' });
+      });
+      proc.stdout?.on('data', (d: Buffer | string) => {
+        for (const line of splitter.push(d)) {
+          let m: Json;
+          try {
+            m = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (!m || typeof m !== 'object') continue;
+          if (m.id === 1) {
+            if (m.error) return finish({ kind: 'error' });
+            writeMsg({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd, mcpServers: [] } });
+          } else if (m.id === 2) {
+            if (m.error) return finish({ kind: 'error' });
+            const sid = typeof m.result?.sessionId === 'string' && m.result.sessionId ? m.result.sessionId : undefined;
+            if (sid) probedSid = sid;
+            const tier = m.result?._meta?.antigravity?.tier;
+            const plan = typeof tier?.name === 'string' && tier.name.trim() ? tier.name.trim() : null;
+            // 进程还活着：顺带从 language server 读邮箱与额度，再结束
+            void this.readStatus(logDir, proc.pid).then((st) => {
+              finish({
+                kind: 'ok',
+                plan,
+                ...(sid ? { sessionId: sid } : {}),
+                ...(st?.email ? { email: st.email } : {}),
+                ...(st?.quota ? { quota: st.quota } : {}),
+              });
+            });
+            return;
+          }
+        }
+      });
+      proc.on('error', () => finish({ kind: 'error' }));
+      proc.on('close', () => finish({ kind: 'error' }));
+
+      writeMsg({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          clientInfo: { name: 'cosyee', version: '1' },
+        },
+      });
+    });
+  }
+
+  /** 从进程的 language server 读邮箱与额度；任何失败返回 null */
+  private async readStatus(logDir: string, pid: number | undefined): Promise<AgyStatus | null> {
+    if (this.deps.probeStatus) return this.deps.probeStatus(logDir, pid).catch(() => null);
+    const port = findLsPort(logDir, pid);
+    if (port === null) return null;
+    return fetchAgyStatus(port, STATUS_TIMEOUT_MS, this.now()).catch(() => null);
   }
 
   /** 切换当前账号：只影响新的委派任务，不停任何进程 */
@@ -373,8 +828,11 @@ export class AgyAccounts {
     if (this.deps.stopAccount && !this.deps.stopAccount(id)) {
       throw new HttpError(409, '该账号还有委派任务正在执行，请等它们结束后再移除');
     }
+    await this.waitDirCleanups(a.dir);
     await safeRemoveAccountDir(a.dir, agyAccountsRoot());
     this.s.list = this.s.list.filter((x) => x.id !== id);
+    this.bumpGen(id);
+    this.cache.delete(id);
     this.syncActive();
   }
 
@@ -394,7 +852,7 @@ export class AgyAccounts {
   dedupe(): Promise<AccountDedupeResult> {
     return this.serial(async () => {
       if (!this.installed()) return { removed: 0, skipped: 0 };
-      const { hiddenIds } = this.partition();
+      const { hiddenIds } = this.partition({ probe: false });
       let removed = 0;
       let skipped = 0;
       for (const id of hiddenIds) {
@@ -616,6 +1074,8 @@ export class AgyAccounts {
       if (job.cancelled || this.disposed || isTerminal()) return;
       if (hash) a.identityHash = hash;
       this.deps.store.save();
+      this.bumpGen(a.id);
+      this.cache.delete(a.id);
       st.status = 'done';
       st.error = null;
       this.deps.onChanged?.();
@@ -648,14 +1108,17 @@ export class AgyAccounts {
   /** 丢弃未登记的新账号 / 临时目录（只删 agyAccountsRoot 下、未登记的直接子目录） */
   private async discardDir(dir: string): Promise<void> {
     if (this.s.list.some((a) => pathKey(a.dir) === pathKey(dir))) return;
+    await this.waitDirCleanups(dir);
     try {
       await safeRemoveAccountDir(dir, agyAccountsRoot());
     } catch { /* 留着也无害，下次启动超过 1 小时会被清理 */ }
   }
 
-  /** 服务关闭时：结束进行中的登录 */
+  /** 服务关闭时：结束进行中的登录与探测进程，并触发探测残留清理 */
   dispose(): void {
     this.disposed = true;
+    for (const cancel of [...this.liveRetryCancels]) cancel();
+    this.liveRetryCancels.clear();
     if (this.login && this.busy()) {
       this.login.cancelled = true;
       if (this.login.cancelTimer) {
@@ -665,5 +1128,9 @@ export class AgyAccounts {
       void this.finishLogin(this.login, null, '服务已关闭');
       if (this.login.proc) killProc(this.login.proc);
     }
+    for (const fn of [...this.pendingProbeCleanups]) fn();
+    this.pendingProbeCleanups.clear();
+    for (const p of [...this.activeProbes]) killProc(p);
+    this.activeProbes.clear();
   }
 }

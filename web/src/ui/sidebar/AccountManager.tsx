@@ -374,7 +374,7 @@ export function AccountManager(p: AccountManagerProps) {
         active={a.active}
         off={off}
         badge={badge}
-        quota={!off && a.quota && a.quota.groups.length > 0 ? <AgyQuotaView quota={a.quota} now={now} /> : null}
+        quota={!off && a.quota && a.quota.groups.length > 0 ? <AgyQuotaView quota={a.quota} now={now} showUpdated /> : null}
         editing={editing === key ? (
           <RenameField
             initial={a.label}

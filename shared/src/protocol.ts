@@ -627,7 +627,7 @@ export interface AgyAccountEntry {
   id: string;
   /** 用户起的备注名；没填为空，界面显示邮箱 */
   label: string;
-  /** 套餐名（如 'Google AI Pro'）；目前不探测，恒为 null（字段保留兼容） */
+  /** 套餐名（如 'Google AI Pro'）；还没读到为 null */
   plan: string | null;
   /** 账号目录里有没有令牌文件；服务端不再返回 null（旧版本 null = 正在检测） */
   loggedIn: boolean | null;
@@ -637,9 +637,9 @@ export interface AgyAccountEntry {
   isDefault: boolean;
   /** 正在用该账号执行的委派任务数 */
   running: number;
-  /** 登录的 Google 账号邮箱（读自账号自己的令牌文件，不落盘）；读不到为 null。没起备注名时用它当标题 */
+  /** 登录的 Google 账号邮箱（优先读自令牌文件，探测结果可作补充，不落盘）；读不到为 null。没起备注名时用它当标题 */
   email?: string | null;
-  /** 各组模型的额度；目前不探测，恒为 null（字段保留兼容） */
+  /** 各组模型的额度（有存活委派进程时直接读其 language server，无进程时后台探测）；还没读到 / 读取失败为 null */
   quota?: AgyQuota | null;
 }
 
@@ -1102,8 +1102,9 @@ export interface UsageInfo {
 // GET  /api/kiro/login/:loginId             → AccountLogin
 // POST /api/kiro/login/:loginId/cancel      → { ok: true }
 // GET  /api/kiro/balance?account=<id>       → KiroBalance   Kiro 账号额度（会按需启动服务）
-// GET  /api/agy-accounts                    → AgyAccountList   在 Cosyee 里登录的 Antigravity（agy）账号与进行中的登录；不启动 agy 探测，
-//                                             登录状态看令牌文件，邮箱读自令牌文件；账号变化时广播 agy.changed
+// GET  /api/agy-accounts                    → AgyAccountList   在 Cosyee 里登录的 Antigravity（agy）账号与进行中的登录；
+//                                             登录状态看令牌文件，邮箱优先读自令牌文件，套餐与额度优先读存活委派进程、无进程时后台探测，变化时广播 agy.changed；
+//                                             ?refresh=1 时对超过 90 秒没更新的已登录账号触发后台刷新
 // POST /api/agy-accounts/switch {id}        → { ok: true }   新的委派任务改用该账号；执行中的任务和已有的委派会话继续用原来的账号，不停止任何进程
 // POST /api/agy-accounts/login {label?, accountId?} → AccountLogin   添加账号（或重新登录）：后台运行 agy acp --login，不打开本机浏览器，
 //                                             只给出登录链接，登录后把页面上的授权码（或完整网址）交回来；同一时间只允许一个

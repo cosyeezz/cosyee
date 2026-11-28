@@ -169,7 +169,12 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     }
     return ids;
   };
-  const acpPool = new AcpPool({ activeAccountId: () => agyAccounts?.activeId() ?? '', heldAccountIds: () => heldAccountsFor('agy') });
+  const acpPool = new AcpPool({
+    activeAccountId: () => agyAccounts?.activeId() ?? '',
+    heldAccountIds: () => heldAccountsFor('agy'),
+    onProcReady: (id, pid) => void agyAccounts?.refreshFromLiveProc(id, pid, { retry: true }),
+    onRunFinished: (id) => void agyAccounts?.refreshFromLiveProc(id),
+  });
   const onExitPool = () => acpPool.dispose(true);
   process.once('exit', onExitPool);
   const agyCli = new AgyCli({ pool: acpPool });
@@ -476,6 +481,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   agyAccounts = new AgyAccounts({
     store,
     running: (id) => acpPool.runningCount(id),
+    livePids: (id) => acpPool.livePids(id),
     stopAccount: (id) => acpPool.stopAccount(id),
     resetAccount: (id) => acpPool.resetAccount(id),
     onChanged: () => {

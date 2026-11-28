@@ -187,7 +187,8 @@ export function AccountMenu({ account, version = 0, remote = false }: AccountMen
   }, []);
   const loadAgy = useCallback(() => {
     const seq = ++agySeq.current;
-    api.agyAccounts().then(
+    // refresh：额度超过 90 秒没更新的账号后台重新检测，结果通过 agy.changed → version 再读一次
+    api.agyAccounts(true).then(
       (res) => {
         if (!aliveRef.current || seq !== agySeq.current) return;
         if (res && typeof res.installed === 'boolean' && Array.isArray(res.list)) {

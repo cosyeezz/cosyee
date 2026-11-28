@@ -1366,6 +1366,15 @@
 .cz-acctq-lines .cz-acctq__reset { font-size: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cz-acctq-lines .cz-acctq__grp-name { margin-top: 2px; }
 .cz-acctq-lines .cz-acctq__grp-name:first-child { margin-top: 0; }
+.cz-acctq-lines .cz-acctq__updated {
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--text-3);
+  opacity: .78;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .cz-acctq-lines--loading { gap: 4px; }
 .cz-acctq-lines--loading .cz-acctq__skel { height: 10px; border-radius: 3px; }
 @media (hover: none), (pointer: coarse) {

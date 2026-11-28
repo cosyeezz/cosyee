@@ -62,6 +62,10 @@ export interface AcpPoolOptions {
   maxPromptsPerProc?: number;
   /** 单个工作区最多起几个进程，默认 3 */
   maxProcsPerCwd?: number;
+  /** 委派进程完成 initialize 就绪时回调（用于从内置 language server 刷新额度） */
+  onProcReady?: (accountId: string, pid: number) => void;
+  /** 一轮委派执行结束时回调（用于及时刷新额度） */
+  onRunFinished?: (accountId: string) => void;
 }
 
 interface Session {
@@ -104,6 +108,8 @@ interface Ctx {
   requestTimeoutMs: number;
   /** 进程不再可用时通知池移除 */
   onGone: (p: AcpProc) => void;
+  /** 进程 initialize 完成时回调 */
+  onReady?: (p: AcpProc) => void;
 }
 
 function errMsg(e: unknown): string {
@@ -204,6 +210,11 @@ class AcpProc {
     }).then(
       () => {
         this.initialized = true;
+        if (!this.dead) {
+          try {
+            this.ctx.onReady?.(this);
+          } catch { /* 回调出错不影响进程就绪 */ }
+        }
       },
       (e) => {
         this.shutdown(e instanceof Error ? e : new Error(String(e)));
@@ -211,6 +222,10 @@ class AcpProc {
       },
     );
     this.ready.catch(() => {});
+  }
+
+  get pid(): number | undefined {
+    return this.proc.pid;
   }
 
   get busy(): boolean {
@@ -350,6 +365,8 @@ export class AcpPool {
   private readonly modelsRetryMs: number;
   private readonly maxPromptsPerProc: number;
   private readonly maxProcsPerCwd: number;
+  private readonly onProcReady?: (accountId: string, pid: number) => void;
+  private readonly onRunFinished?: (accountId: string) => void;
   /** (agyPath + accountId) → 最近一次会话报告的可用模型（账号级，与工作区无关） */
   private readonly modelCache = new Map<string, { available: AvailableModel[]; current: string | null; at: number }>();
   /** 进程代际：CLI 升级后递增，旧代进程不再复用并在当前任务结束后自动回收 */
@@ -372,6 +389,8 @@ export class AcpPool {
     this.modelsRetryMs = opts.modelsRetryMs ?? 1_000;
     this.maxPromptsPerProc = opts.maxPromptsPerProc ?? 8;
     this.maxProcsPerCwd = opts.maxProcsPerCwd ?? 3;
+    this.onProcReady = opts.onProcReady;
+    this.onRunFinished = opts.onRunFinished;
   }
 
   private cwdKeyOf(agyPath: string, cwd: string): string {
@@ -424,6 +443,9 @@ export class AcpPool {
         if (idx >= 0) bucket.procs.splice(idx, 1);
         this.drainWaiters(key, agyPath, cwd, account);
         this.maybeCleanBucket(key);
+      },
+      onReady: (readyProc) => {
+        if (readyProc.pid) this.onProcReady?.(account.id, readyProc.pid);
       },
     });
     bucket.procs.push(p);
@@ -785,6 +807,11 @@ export class AcpPool {
       }
       lease.proc.lastActivity = this.now();
       lease.release();
+      if (sid) {
+        try {
+          this.onRunFinished?.(account.id);
+        } catch { /* 回调出错不影响委派结果 */ }
+      }
     }
   }
 
@@ -1011,6 +1038,18 @@ export class AcpPool {
     for (const k of [...this.modelCache.keys()]) {
       if (k.endsWith(suffix)) this.modelCache.delete(k);
     }
+  }
+
+  /** 某账号当前存活且已完成初始化的常驻进程 pid 列表（用于直接读取内置 language server 额度） */
+  livePids(accountId: string): number[] {
+    const pids: number[] = [];
+    for (const bucket of this.buckets.values()) {
+      if (bucket.accountId !== accountId) continue;
+      for (const p of bucket.procs) {
+        if (!p.dead && p.initialized && p.pid) pids.push(p.pid);
+      }
+    }
+    return pids;
   }
 
   /** 正在执行的委派任务数（含排队中）；传 accountId 时只统计该账号，不传统计全部 */

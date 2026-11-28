@@ -331,7 +331,10 @@ export function createHandler(deps: HttpDeps) {
     const agy = deps.agyAccounts;
     if (!agy) throw new HttpError(404, '未找到');
     let m: RegExpExecArray | null;
-    if (method === 'GET' && p === '/api/agy-accounts') return sendJson(res, 200, agy.list());
+    if (method === 'GET' && p === '/api/agy-accounts') {
+      const refresh = new URL(req.url ?? '/', 'http://x').searchParams.get('refresh') === '1';
+      return sendJson(res, 200, agy.list({ refresh }));
+    }
     if (method === 'POST' && p === '/api/agy-accounts/switch') {
       const body = await readJson(req);
       if (typeof body.id !== 'string') throw new HttpError(400, '缺少 id');

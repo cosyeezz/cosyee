@@ -630,7 +630,7 @@ describe('Antigravity 多账号', () => {
 
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([
         agyEntry({}),
         agyEntry({ id: 'w', label: '工作', active: false }),
         agyEntry({ id: 'x', label: '备用', plan: null, loggedIn: false, active: false }),
@@ -648,7 +648,7 @@ describe('Antigravity 多账号', () => {
   it('没有 Antigravity 账号：弹层不显示 Antigravity 分组；管理面板下面留空但保留登录入口', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([]) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([]) }),
     };
     await openMenu();
     expect(menu()!.querySelector('[aria-label="Antigravity"]')).toBeNull();
@@ -677,13 +677,13 @@ describe('Antigravity 多账号', () => {
     };
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([
         agyEntry({ email: 'me@example.com', quota }),
         agyEntry({ id: 'w', label: '工作', email: 'w@example.com', quota: null, plan: null, loggedIn: false, active: false }),
       ]) }),
     };
     await openMenu();
-    expect(calls.some((c) => c.url === '/api/agy-accounts')).toBe(true);
+    expect(calls.some((c) => c.url === '/api/agy-accounts?refresh=1')).toBe(true);
     const row = agyRowOf('me@example.com')!;
     const chip = row.querySelector('.cz-acct-chip');
     expect(chip?.textContent).toBe('Pro');
@@ -701,6 +701,7 @@ describe('Antigravity 多账号', () => {
     expect(bars.map((b) => b.getAttribute('aria-valuenow'))).toEqual(['12', '85', '100']);
     expect([...card.querySelectorAll('.cz-acctq__grp-name')].map((g) => g.textContent)).toEqual(['Gemini', 'Claude · GPT']);
     expect(card.querySelector('.cz-acctq__line.is-warning')?.textContent).toContain('85%');
+    expect(card.querySelector('.cz-acctq__updated')?.textContent).toContain('更新');
     // 有备注名时邮箱进副标题；没登录不显示额度，给「重新登录」
     const off = cardOf('Antigravity', '工作')!;
     expect(off.querySelector('.cz-acct-card__sub')?.textContent).toBe('w@example.com');
@@ -712,7 +713,7 @@ describe('Antigravity 多账号', () => {
   it('未安装 Antigravity CLI：弹层不显示 Antigravity 分组；管理面板里说明没安装，不给添加按钮', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([], false) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([], false) }),
     };
     await openManager();
     expect(section('Antigravity')!.textContent).toContain('没有安装 Antigravity CLI');
@@ -729,7 +730,7 @@ describe('Antigravity 多账号', () => {
     const agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', plan: 'Ultra', active: false, isDefault: false })];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList(agys) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys) }),
     };
     await openMenu();
     const row = agyRowOf('工作')!;
@@ -751,7 +752,7 @@ describe('Antigravity 多账号', () => {
     ];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList(agys) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys) }),
       'POST /api/agy-accounts/switch': (b) => {
         const id = (b as { id: string }).id;
         agys = agys.map((x) => ({ ...x, active: x.id === id }));
@@ -787,7 +788,7 @@ describe('Antigravity 多账号', () => {
     let agys = [agyEntry({}), agyEntry({ id: 'w', label: '工作', active: false, isDefault: false })];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList(agys) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys) }),
       'POST /api/agy-accounts/label': (b) => {
         const { id, label } = b as { id: string; label: string };
         agys = agys.map((x) => (x.id === id ? { ...x, label } : x));
@@ -821,7 +822,7 @@ describe('Antigravity 多账号', () => {
     let submitCount = 0;
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([agyEntry({})]) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([agyEntry({})]) }),
       'POST /api/agy-accounts/login': () => {
         seq += 1;
         pollState = { loginId: `L${seq}`, status: 'waiting', url: `https://accounts.google.com/mock?s=${seq}`, accountId: null, error: null };
@@ -901,7 +902,7 @@ describe('Antigravity 多账号', () => {
     let pollCount = 0;
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList([agyEntry({})]) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList([agyEntry({})]) }),
       'POST /api/agy-accounts/login': () => ({
         body: { loginId: 'L1', status: 'waiting', url: 'https://accounts.google.com/mock', accountId: null, error: null },
       }),
@@ -963,7 +964,7 @@ describe('Antigravity 多账号', () => {
     ];
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: agyList(agys, true, ongoing) }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: agyList(agys, true, ongoing) }),
       'GET /api/agy-accounts/login/L-re': () => ({ body: { ...ongoing, status: 'failed', error: '授权已过期' } }),
       'POST /api/agy-accounts/login': (b) => {
         const body = b as { accountId?: string };
@@ -1212,7 +1213,7 @@ describe('账号弹层分组与边界', () => {
   it('无分页，按「Claude 订阅 / API / Kiro → 分隔线 → Antigravity」顺序展示；点 Claude 账号切换主账号', async () => {
     routes = {
       'GET /api/accounts': () => ({ body: mixedList() }),
-      'GET /api/agy-accounts': () => ({ body: { installed: true, list: [agyItem({})], login: null } satisfies AgyAccountList }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: { installed: true, list: [agyItem({})], login: null } satisfies AgyAccountList }),
       'POST /api/accounts/switch': () => ({ body: { ok: true } }),
     };
     await openMenu();
@@ -1243,7 +1244,7 @@ describe('账号弹层分组与边界', () => {
     });
     routes = {
       'GET /api/accounts': () => ({ body: list([entry({})]) }),
-      'GET /api/agy-accounts': () => ({ body: { installed: true, list: [agyItem({ id: 'g1', label: '工作', email: 'w@example.com' })], login: null } satisfies AgyAccountList }),
+      'GET /api/agy-accounts?refresh=1': () => ({ body: { installed: true, list: [agyItem({ id: 'g1', label: '工作', email: 'w@example.com' })], login: null } satisfies AgyAccountList }),
     };
     try {
       await openMenu();

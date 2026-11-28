@@ -992,4 +992,23 @@ describe('多账号分桶、模型缓存、hold、移除与默认模型回退', 
     expect(pool.stats().processes).toBe(0);
     expect(pool.runningCount()).toBe(0);
   });
+
+  it('livePids / onProcReady / onRunFinished：进程就绪与委派结束正确回调并列出存活 pid', async () => {
+    const onProcReady = vi.fn();
+    const onRunFinished = vi.fn();
+    const { pool, children } = h({ onProcReady, onRunFinished });
+    const account = { id: 'agy-1', dir: '/tmp/agy-1' };
+    expect(pool.livePids('agy-1')).toEqual([]);
+
+    await pool.run(runOpts({ account }));
+    expect(onProcReady).toHaveBeenCalledTimes(1);
+    expect(onProcReady).toHaveBeenCalledWith('agy-1', children[0]!.pid);
+    expect(onRunFinished).toHaveBeenCalledTimes(1);
+    expect(onRunFinished).toHaveBeenCalledWith('agy-1');
+    expect(pool.livePids('agy-1')).toEqual([children[0]!.pid]);
+    expect(pool.livePids('other')).toEqual([]);
+
+    pool.stopAccount('agy-1');
+    expect(pool.livePids('agy-1')).toEqual([]);
+  });
 });

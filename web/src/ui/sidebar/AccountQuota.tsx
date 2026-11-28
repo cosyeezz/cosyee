@@ -7,6 +7,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { AgyQuota, CodexQuota, KiroBalance, UsageInfo, UsageSeverity } from '@cosyee/shared';
 import { limitShortTitle, resetBrief, resetShort } from '../usage/format';
+import { formatAbsoluteTime, formatRelativeTime } from './formatTime';
 
 /** loading：还没有结果；ok：info 有数据；none：服务端没有额度信息；fail：读取失败 */
 export type QuotaState = { status: 'loading' } | { status: 'ok'; info: UsageInfo } | { status: 'none' } | { status: 'fail' };
@@ -185,7 +186,7 @@ function Line({ w, now }: { w: QuotaWindow; now?: number }) {
 }
 
 /** 管理面板卡片里的全部窗口，一条一行；有模型组时按组加小标题 */
-export function QuotaLines({ windows, now }: { windows: QuotaWindow[]; now?: number }) {
+export function QuotaLines({ windows, now, footer }: { windows: QuotaWindow[]; now?: number; footer?: ReactNode }) {
   const out: ReactNode[] = [];
   let group: string | undefined;
   for (const w of windows) {
@@ -193,7 +194,12 @@ export function QuotaLines({ windows, now }: { windows: QuotaWindow[]; now?: num
     group = w.group;
     out.push(<Line key={w.key} w={w} now={now} />);
   }
-  return <span className="cz-acctq-lines">{out}</span>;
+  return (
+    <span className="cz-acctq-lines">
+      {out}
+      {footer}
+    </span>
+  );
 }
 
 function LinesSkeleton() {
@@ -214,9 +220,15 @@ export function AccountQuota({ state, now }: { state: QuotaState; now?: number }
   return <QuotaLines windows={claudeWindows(state.info)} now={now} />;
 }
 
-/** Antigravity 账号的全部额度（管理面板） */
-export function AgyQuotaView({ quota, now }: { quota: AgyQuota; now?: number }) {
-  return <QuotaLines windows={agyWindows(quota)} now={now} />;
+/** Antigravity 账号的全部额度（管理面板 / 悬浮卡）；showUpdated 为真时在底部显示「x 分钟前更新」 */
+export function AgyQuotaView({ quota, now, showUpdated }: { quota: AgyQuota; now?: number; showUpdated?: boolean }) {
+  const updated = showUpdated && quota.at > 0 ? formatRelativeTime(quota.at, now) : null;
+  const footer = updated ? (
+    <span className="cz-acctq__updated" title={`更新于 ${formatAbsoluteTime(quota.at)}`}>
+      {updated === '刚刚' ? '刚刚更新' : `${updated}更新`}
+    </span>
+  ) : null;
+  return <QuotaLines windows={agyWindows(quota)} now={now} footer={footer} />;
 }
 
 /** Codex 账号的全部额度（管理面板 / 悬浮卡） */

@@ -12,7 +12,8 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgyAccounts, extractIdentityHash, findAgyLoginUrl, hashEmail, readTokenEmail } from './accounts/agy.js';
 import { agyAccountArgs, agyAccountEnv, agyLoginEnv } from './accounts/agy-env.js';
-import { findLsPort, parseQuota, quotaGroupName } from './accounts/agy-status.js';
+import { type AgyStatus, findLsPort, parseQuota, quotaGroupName } from './accounts/agy-status.js';
+import type { AgyQuota } from '@cosyee/shared';
 import { createHandler } from './http.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
 
@@ -78,31 +79,47 @@ async function until(cond: () => boolean, ms = 2000) {
 function makeHarness(opts: {
   agyPath?: string | null;
   running?: Record<string, number>;
+  livePids?: (id: string) => number[];
   stopAccount?: (id: string) => boolean;
   loginTimeoutMs?: number;
+  probeTimeoutMs?: number;
+  liveRetryDelaysMs?: readonly number[];
   now?: () => number;
+  probeStatus?: (logDir: string, pid: number | undefined) => Promise<AgyStatus | null>;
+  spawnProbe?: (agyPath: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) => ChildProcess;
 } = {}) {
   const store = new StateStore(path.join(tmp, 'state.json'));
   const changed = vi.fn();
   const resetAccount = vi.fn();
   const stopAccount = vi.fn(opts.stopAccount ?? (() => true));
   const loginSpawns: { proc: FakeLoginProc; args: string[]; env: NodeJS.ProcessEnv }[] = [];
+  const probeSpawns: { proc: FakeLoginProc; args: string[]; env: NodeJS.ProcessEnv; cwd: string }[] = [];
   const accounts = new AgyAccounts({
     store,
     running: (id) => opts.running?.[id] ?? 0,
+    livePids: opts.livePids,
     stopAccount,
     resetAccount,
     onChanged: changed,
     resolveAgy: () => (opts.agyPath === undefined ? '/fake/agy' : opts.agyPath),
     loginTimeoutMs: opts.loginTimeoutMs,
+    probeTimeoutMs: opts.probeTimeoutMs,
+    liveRetryDelaysMs: opts.liveRetryDelaysMs,
     now: opts.now,
+    probeStatus: opts.probeStatus,
     spawnLogin: (_agyPath, args, env) => {
       const proc = new FakeLoginProc();
       loginSpawns.push({ proc, args, env });
       return proc as unknown as ChildProcess;
     },
+    spawnProbe: opts.spawnProbe ?? ((_agyPath, args, env, cwd) => {
+      const proc = new FakeLoginProc();
+      probeSpawns.push({ proc, args, env, cwd });
+      queueMicrotask(() => proc.exit(1));
+      return proc as unknown as ChildProcess;
+    }),
   });
-  return { store, accounts, changed, resetAccount, stopAccount, loginSpawns };
+  return { store, accounts, changed, resetAccount, stopAccount, loginSpawns, probeSpawns };
 }
 
 /** 从 --gemini-dir / --app-data-dir 参数解析账号目录 */
@@ -810,7 +827,7 @@ describe('历史重复条目', () => {
   });
 });
 
-describe('agy-status 解析（暂未接入列表）', () => {
+describe('agy-status 解析', () => {
   it('findLsPort：只认该 pid 的 acp-server 日志里的 HTTP 端口（不是 HTTPS）', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'log-'));
     fs.writeFileSync(path.join(dir, 'acp-server-20261124_170404-111.log'),
@@ -841,5 +858,271 @@ describe('agy-status 解析（暂未接入列表）', () => {
     expect(q.groups[1]!.buckets[0]).toMatchObject({ percent: 100, severity: 'critical', resetsAt: null });
     expect(parseQuota({}, 1)).toBeNull();
     expect(quotaGroupName('Gemini Models')).toBe('Gemini');
+  });
+});
+
+function sampleQuota(percent: number, at: number): AgyQuota {
+  return {
+    at,
+    groups: [{ name: 'Gemini', buckets: [{ window: '5h', percent, severity: percent >= 80 ? 'warning' : 'normal', resetsAt: at + 3_600_000 }] }],
+  };
+}
+
+/** 构造自动响应 initialize + session/new 的假探测进程 */
+function makeAutoProbeProc(opts: {
+  sessionId?: string;
+  tierName?: string | null;
+  hang?: boolean;
+  onSessionNew?: () => void;
+} = {}): FakeLoginProc {
+  const proc = new FakeLoginProc();
+  let buf = '';
+  proc.stdin.on('data', (d: Buffer) => {
+    buf += d.toString('utf8');
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line || opts.hang) continue;
+      const m = JSON.parse(line) as { id?: number; method?: string };
+      if (m.method === 'initialize') {
+        proc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} }) + '\n');
+      } else if (m.method === 'session/new') {
+        opts.onSessionNew?.();
+        proc.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: m.id,
+            result: {
+              sessionId: opts.sessionId ?? '11111111-2222-4333-8444-555555555555',
+              ...(opts.tierName !== undefined ? { _meta: { antigravity: { tier: { name: opts.tierName } } } } : {}),
+            },
+          }) + '\n',
+        );
+      }
+    }
+  });
+  return proc;
+}
+
+describe('AgyAccounts 额度与账号信息刷新', () => {
+  it('有存活委派进程时：list 优先直接读其 language server（不起探测进程），更新额度并触发 onChanged；90 秒内不重复刷新，超时后再刷', async () => {
+    let clock = 1_000_000;
+    let pct = 20;
+    const probeStatus = vi.fn(async (_logDir: string, pid: number | undefined): Promise<AgyStatus | null> => {
+      if (pid !== 7777) return null;
+      return { email: 'live@example.com', quota: sampleQuota(pct, clock) };
+    });
+    const spawnProbe = vi.fn(() => makeAutoProbeProc() as unknown as ChildProcess);
+    const h = makeHarness({
+      now: () => clock,
+      livePids: (id) => (id === 'acc00001' ? [7777] : []),
+      probeStatus,
+      spawnProbe,
+    });
+    const dir = addStored(h, 'acc00001', 1, { token: tokenJson('tok@example.com') });
+
+    // 首次 list 不阻塞，立即返回 quota=null，后台异步刷新
+    const l0 = h.accounts.list();
+    expect(l0.list[0]!.quota).toBeNull();
+    expect(l0.list[0]!.email).toBe('tok@example.com');
+    await until(() => h.accounts.list().list[0]!.quota !== null);
+
+    expect(spawnProbe).not.toHaveBeenCalled();
+    expect(probeStatus).toHaveBeenCalledTimes(1);
+    expect(probeStatus).toHaveBeenCalledWith(path.join(dir, 'log'), 7777);
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    const l1 = h.accounts.list();
+    // 邮箱仍以令牌文件为准
+    expect(l1.list[0]!.email).toBe('tok@example.com');
+    expect(l1.list[0]!.quota?.groups[0]!.buckets[0]!.percent).toBe(20);
+
+    // 90 秒内再调用 list / list({ refresh: true }) 都不重复刷新
+    clock += 89_000;
+    h.accounts.list();
+    h.accounts.list({ refresh: true });
+    await tick();
+    expect(probeStatus).toHaveBeenCalledTimes(1);
+
+    // 超过 90 秒后再次刷新，额度变化触发 onChanged
+    clock += 2_000;
+    pct = 45;
+    h.accounts.list();
+    await until(() => h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent === 45);
+    expect(probeStatus).toHaveBeenCalledTimes(2);
+    expect(h.changed).toHaveBeenCalledTimes(2);
+    expect(spawnProbe).not.toHaveBeenCalled();
+    h.accounts.dispose();
+  });
+
+  it('无存活委派进程时：后台起探测进程拿到 plan/email/quota 并清理探测空会话；同账号并发去重；未登录/未安装不探测', async () => {
+    let clock = 2_000_000;
+    const sid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    let accDir = '';
+    const spawnProbe = vi.fn(() => {
+      const p = makeAutoProbeProc({
+        sessionId: sid,
+        tierName: 'Google AI Pro',
+        onSessionNew: () => {
+          fs.mkdirSync(path.join(accDir, 'conversations'), { recursive: true });
+          fs.writeFileSync(path.join(accDir, 'conversations', `${sid}.db`), 'x');
+          fs.writeFileSync(path.join(accDir, 'conversations', `${sid}.db-wal`), 'x');
+          fs.mkdirSync(path.join(accDir, 'brain', sid), { recursive: true });
+          fs.writeFileSync(path.join(accDir, 'brain', sid, 'meta.json'), '{}');
+        },
+      });
+      return p as unknown as ChildProcess;
+    });
+    const probeStatus = vi.fn(async () => ({ email: 'probed@example.com', quota: sampleQuota(60, clock) }));
+    const h = makeHarness({
+      now: () => clock,
+      livePids: () => [],
+      spawnProbe,
+      probeStatus,
+    });
+    // 无令牌邮箱的已登录账号 + 未登录账号
+    accDir = addStored(h, 'acc00002', 1, { token: tokenJson(null) });
+    addStored(h, 'off00001', 2, { token: null });
+
+    // 连续多次并发 list 只启动 1 次探测，且不探测未登录账号
+    h.accounts.list();
+    h.accounts.list({ refresh: true });
+    await until(() => h.accounts.list().list.find((a) => a.id === 'acc00002')?.quota !== null);
+    await h.accounts.waitCleanups();
+
+    expect(spawnProbe).toHaveBeenCalledTimes(1);
+    const entry = h.accounts.list().list.find((a) => a.id === 'acc00002')!;
+    expect(entry.plan).toBe('Google AI Pro');
+    expect(entry.email).toBe('probed@example.com');
+    expect(entry.quota?.groups[0]!.buckets[0]!.percent).toBe(60);
+    expect(entry.loggedIn).toBe(true);
+    expect(h.accounts.list().list.find((a) => a.id === 'off00001')!.loggedIn).toBe(false);
+    // 探测空会话已清理
+    expect(fs.existsSync(path.join(accDir, 'conversations', `${sid}.db`))).toBe(false);
+    expect(fs.existsSync(path.join(accDir, 'conversations', `${sid}.db-wal`))).toBe(false);
+    expect(fs.existsSync(path.join(accDir, 'brain', sid))).toBe(false);
+
+    // 90 秒后：不带 refresh 不重新探测（走 30 分钟 TTL）；带 refresh=true 才重探
+    clock += 95_000;
+    h.accounts.list();
+    await tick();
+    expect(spawnProbe).toHaveBeenCalledTimes(1);
+
+    h.accounts.list({ refresh: true });
+    await until(() => spawnProbe.mock.calls.length === 2);
+    await h.accounts.waitCleanups();
+
+    // 未安装 agy 时不探测
+    const hNoAgy = makeHarness({ agyPath: null, spawnProbe, probeStatus });
+    addStored(hNoAgy, 'acc00003', 1);
+    expect(hNoAgy.accounts.list()).toEqual({ installed: false, list: [], login: null });
+    await tick();
+    expect(spawnProbe).toHaveBeenCalledTimes(2);
+
+    h.accounts.dispose();
+    hNoAgy.accounts.dispose();
+  });
+
+  it('读取失败保留旧缓存不报错；移除账号清缓存；dispose 终止进行中的探测进程', async () => {
+    let clock = 3_000_000;
+    let shouldFail = false;
+    const probeStatus = vi.fn(async () => {
+      if (shouldFail) return null;
+      return { email: null, quota: sampleQuota(35, clock) };
+    });
+    const h = makeHarness({
+      now: () => clock,
+      livePids: (id) => (id === 'acc00004' ? [8888] : []),
+      probeStatus,
+    });
+    addStored(h, 'acc00004', 1);
+
+    h.accounts.list();
+    await until(() => h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent === 35);
+
+    // 下次刷新失败：保留旧缓存，不报错，不触发 onChanged
+    h.changed.mockClear();
+    shouldFail = true;
+    clock += 100_000;
+    h.accounts.list({ refresh: true });
+    await until(() => probeStatus.mock.calls.length === 2);
+    await tick();
+    expect(h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent).toBe(35);
+    expect(h.changed).not.toHaveBeenCalled();
+
+    // 移除账号清空缓存（重新加回同 id 时不再有旧额度）
+    await h.accounts.remove('acc00004');
+    addStored(h, 'acc00004', 2);
+    expect(h.accounts.list().list[0]!.quota).toBeNull();
+    h.accounts.dispose();
+
+    // dispose 杀掉挂起的探测进程
+    let hangingProc: FakeLoginProc | null = null;
+    const h2 = makeHarness({
+      livePids: () => [],
+      spawnProbe: () => {
+        hangingProc = makeAutoProbeProc({ hang: true });
+        return hangingProc as unknown as ChildProcess;
+      },
+    });
+    addStored(h2, 'acc00005', 1);
+    h2.accounts.list();
+    await until(() => hangingProc !== null);
+    h2.accounts.dispose();
+    expect(hangingProc!.killed).toBe(true);
+  });
+
+  it('refreshFromLiveProc：进程刚就绪端口未写出时短延迟重试成功，委派结束时无视 90s TTL 立即刷新', async () => {
+    let clock = 4_000_000;
+    let attempt = 0;
+    const probeStatus = vi.fn(async () => {
+      attempt++;
+      if (attempt === 1) return null; // 模拟日志里还没写出 language server 端口
+      return { email: null, quota: sampleQuota(attempt === 2 ? 15 : 55, clock) };
+    });
+    const h = makeHarness({
+      now: () => clock,
+      livePids: () => [9999],
+      liveRetryDelaysMs: [10, 20],
+      probeStatus,
+    });
+    addStored(h, 'acc00006', 1);
+
+    await h.accounts.refreshFromLiveProc('acc00006', 9999, { retry: true });
+    expect(probeStatus).toHaveBeenCalledTimes(2);
+    expect(h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent).toBe(15);
+
+    // 紧接着一轮委派结束（未满 90s），立即刷新到最新额度
+    clock += 5_000;
+    await h.accounts.refreshFromLiveProc('acc00006');
+    expect(probeStatus).toHaveBeenCalledTimes(3);
+    expect(h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent).toBe(55);
+    h.accounts.dispose();
+  });
+
+  it('HTTP GET /api/agy-accounts?refresh=1 触发超时账号刷新', async () => {
+    let clock = 5_000_000;
+    let pct = 10;
+    const spawnProbe = vi.fn(() => makeAutoProbeProc({ tierName: 'Pro' }) as unknown as ChildProcess);
+    const probeStatus = vi.fn(async () => ({ email: null, quota: sampleQuota(pct, clock) }));
+    const h = makeHarness({ now: () => clock, livePids: () => [], spawnProbe, probeStatus });
+    addStored(h, 'acc00007', 1);
+    const s = startHttp(h, 'tok-refresh');
+    await s.ready;
+    try {
+      await s.req('GET', '/api/agy-accounts');
+      await until(() => h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent === 10);
+      await h.accounts.waitCleanups();
+
+      clock += 95_000;
+      pct = 77;
+      await s.req('GET', '/api/agy-accounts?refresh=1');
+      await until(() => h.accounts.list().list[0]!.quota?.groups[0]!.buckets[0]!.percent === 77);
+      await h.accounts.waitCleanups();
+      expect(spawnProbe).toHaveBeenCalledTimes(2);
+    } finally {
+      h.accounts.dispose();
+      await s.close();
+    }
   });
 });
