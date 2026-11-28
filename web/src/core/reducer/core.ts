@@ -3,7 +3,7 @@
 // 簿记只服务当前这一轮，开新轮时整体重置，所以克隆的开销不随会话长度增长。
 
 import { DELEGATE_BG_MARKER } from '@cosyee/shared';
-import type { SessionMeta, SkillLoad, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
+import type { BackgroundTaskInfo, SessionMeta, SkillLoad, Step, SubagentRun, ThinkingStep, ToolStep, Turn, TurnStatus } from '@cosyee/shared';
 import { arr, DELEGATE_TOOL, isLocalCommand, isSubagentTool, isObj, peekJsonString, statusLine, str, textOf, toolSummary, tryParse } from './util';
 import { normalizeForeignTool } from './foreignTool';
 import { parseUserText } from '../composer';
@@ -40,8 +40,8 @@ export interface Book {
   taskMap: Record<string, string>;
   /** 后台启动（async_launched）的子代理 tool_use id */
   asyncSubs: Record<string, true>;
-  /** 最近一次 background_tasks_changed 快照里的任务数 */
-  bgTasks: number;
+  /** 活跃的 CLI 后台任务表（task_id → 分类与描述） */
+  bgTasks: Record<string, BackgroundTaskInfo>;
   /** 主代理本轮 CLI 内部「一回合」是否进行中（result 置 false，有主代理内容置 true） */
   inRound: boolean;
   /** 已收到成功的 result，但还有后台子代理/任务没结束，等它们结束再收尾 */
@@ -77,7 +77,7 @@ export function newBook(now = 0): Book {
     thinkingKey: {},
     taskMap: {},
     asyncSubs: {},
-    bgTasks: 0,
+    bgTasks: {},
     inRound: true,
     pending: false,
     seq: 0,
@@ -98,6 +98,7 @@ function cloneBook(b: Book): Book {
     thinkingKey: { ...b.thinkingKey },
     taskMap: { ...b.taskMap },
     asyncSubs: { ...b.asyncSubs },
+    bgTasks: { ...b.bgTasks },
   };
 }
 
@@ -108,6 +109,8 @@ export function cloneTurn(t: Turn): Turn {
     steps: t.steps.map((s) => ({ ...s })) as Step[],
     subagents: t.subagents.map((r) => ({ ...r, turn: cloneTurn(r.turn) })),
     ...(t.skills ? { skills: t.skills.map((k) => ({ ...k })) } : {}),
+    ...(t.waitingTasks ? { waitingTasks: t.waitingTasks.map((x) => ({ ...x })) } : {}),
+    ...(t.persistentTasks ? { persistentTasks: t.persistentTasks.map((x) => ({ ...x })) } : {}),
   };
 }
 
@@ -179,7 +182,7 @@ export function makeTurn(index: number, text: string, at: number, extra?: { user
 export function finishTurn(t: Turn, status: Exclude<TurnStatus, 'understanding' | 'running'>, now: number, reason?: string): void {
   t.status = status;
   t.endedAt = now;
-  delete t.awaitingBackground;
+  delete t.waitingTasks;
   if (reason !== undefined) t.reason = reason;
   else delete t.reason;
   for (const s of t.steps) {
@@ -211,22 +214,64 @@ export function touch(d: Draft, scope: string): void {
   reopen(d);
   if (scope === '') {
     d.book.inRound = true;
-    // 自动续轮开始了：之前交付的答复又变回过程
-    delete d.turn.awaitingBackground;
+    // 自动续轮开始了：不再处于等待后台任务的静默期
+    delete d.turn.waitingTasks;
   }
 }
 
 /** 委派工具发起的子代理运行（含后台委派） */
 export const isDelegateRun = (r: SubagentRun | undefined): boolean => !!r && (r.delegate === true || r.background === true);
 
-/** 有 result 之后、后台任务全部结束且没有新回合时，收尾 */
+export const awaitedTasksOf = (b: Book): BackgroundTaskInfo[] =>
+  Object.values(b.bgTasks).filter((t) => t.kind === 'awaited');
+
+export const persistentTasksOf = (b: Book): BackgroundTaskInfo[] =>
+  Object.values(b.bgTasks).filter((t) => t.kind === 'persistent');
+
+/** 把簿记里的后台任务同步到当前轮（等待态写 waitingTasks，常驻任务写 persistentTasks） */
+export function syncTurnBgTasks(d: Draft): void {
+  const persistent = persistentTasksOf(d.book);
+  if (persistent.length > 0) d.turn.persistentTasks = persistent;
+  else delete d.turn.persistentTasks;
+
+  if (d.book.pending && !d.book.inRound && isActive(d.turn)) {
+    const awaited = awaitedTasksOf(d.book);
+    if (awaited.length > 0) {
+      d.turn.waitingTasks = awaited;
+    } else {
+      const subs = d.turn.subagents
+        .filter((r) => r.status === 'running' && !r.background)
+        .map((r): BackgroundTaskInfo => ({
+          id: r.taskId || r.toolUseId,
+          kind: 'awaited',
+          description: r.title || r.subagentType || '子代理',
+        }));
+      if (subs.length > 0) d.turn.waitingTasks = subs;
+      else delete d.turn.waitingTasks;
+    }
+  } else {
+    delete d.turn.waitingTasks;
+  }
+}
+
+/** 有 result 之后、等结果类（awaited）后台任务全部结束且没有新回合时，收尾；只剩常驻任务直接收尾 */
 export function maybeFinishPending(d: Draft): void {
   const b = d.book;
-  if (!b.pending || b.inRound || b.bgTasks > 0) return;
-  if (d.turn.subagents.some((r) => r.status === 'running' && !r.background)) return;
-  if (!isActive(d.turn)) return;
+  if (!b.pending || b.inRound || awaitedTasksOf(b).length > 0) {
+    syncTurnBgTasks(d);
+    return;
+  }
+  if (d.turn.subagents.some((r) => r.status === 'running' && !r.background)) {
+    syncTurnBgTasks(d);
+    return;
+  }
+  if (!isActive(d.turn)) {
+    syncTurnBgTasks(d);
+    return;
+  }
   finishTurn(d.turn, 'done', d.now);
   b.pending = false;
+  syncTurnBgTasks(d);
 }
 
 // ───────────── 定位 ─────────────

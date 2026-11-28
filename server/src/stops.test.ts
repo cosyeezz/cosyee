@@ -220,7 +220,7 @@ describe('Runner onStopped / onTurnOk', () => {
   it('有后台任务时不立即发 onStopped；续轮成功后丢弃暂存并发 onTurnOk', () => {
     const { r, stopped, getTurnOks } = makeRunner();
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1', task_type: 'local_agent' });
     r.handleMessage({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1_700_005_000 } });
     r.handleMessage({ type: 'result', is_error: true, result: "You've hit your 5-hour limit" });
     // 仍在 limbo，尚未发 onStopped
@@ -240,7 +240,7 @@ describe('Runner onStopped / onTurnOk', () => {
     vi.useFakeTimers();
     const { r, stopped } = makeRunner({ limboBusyMs: 2000 });
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1', task_type: 'local_agent' });
     r.handleMessage({ type: 'result', is_error: true, result: 'API Error: 529 overloaded' });
     expect(stopped).toHaveLength(0);
     vi.advanceTimersByTime(2100);
@@ -268,7 +268,7 @@ describe('Runner onStopped / onTurnOk', () => {
     const { r, anyR, stopped } = makeRunner({ limboBusyMs: 60_000 });
     r.handleMessage(init);
     r.handleMessage({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1_900_000_000 } });
-    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'bg1', tool_use_id: 'u1', task_type: 'local_agent' });
     r.handleMessage({ type: 'result', is_error: true, result: "You've hit your 5-hour limit · resets 9pm" });
     expect(stopped).toHaveLength(0);
     anyR.onClose(1, undefined);

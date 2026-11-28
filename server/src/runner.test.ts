@@ -202,10 +202,10 @@ describe('Runner 回合状态机', () => {
     expect(writes[0]!.response).toMatchObject({ subtype: 'error', request_id: 'q1' });
   });
 
-  it('后台任务未完成：result 后保持 running，任务结束后续轮再 result 才 idle', () => {
+  it('后台任务未完成（awaited）：result 后保持 running，任务结束后续轮再 result 才 idle', () => {
     const { r, log } = make();
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1' }] });
+    r.handleMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1', task_type: 'local_agent' }] });
     r.handleMessage(result);
     expect(r.status).toBe('running');
     expect(log.turnEnds).toBe(0);
@@ -221,7 +221,7 @@ describe('Runner 回合状态机', () => {
   it('后台任务 task_started / task_updated 也被跟踪', () => {
     const { r } = make();
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 't9', tool_use_id: 'x' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 't9', tool_use_id: 'x', task_type: 'local_agent' });
     r.handleMessage(result);
     expect(r.status).toBe('running');
     r.handleMessage({ type: 'system', subtype: 'task_updated', task_id: 't9', patch: { status: 'completed' } });
@@ -230,13 +230,13 @@ describe('Runner 回合状态机', () => {
     expect(r.status).toBe('idle');
   });
 
-  it('后台任务变化通过 onBackgroundTasks 通知；limbo 期间新开轮不丢失未结束的后台任务', () => {
+  it('后台任务变化通过 onBackgroundTasks 通知（仅计 awaited）；limbo 期间新开轮不丢失未结束的后台任务', () => {
     const counts: number[] = [];
     const { r, anyR } = make();
     anyR.hooks.onBackgroundTasks = (n: number) => counts.push(n);
     r.send('m1', cfg, U1);
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'x1' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'x1', task_type: 'local_agent' });
     expect(counts).toEqual([1]);
     // 后台任务仍在跑时排队发新消息，第 1 轮 result → limbo → 排队消息开第 2 轮
     r.send('m2', cfg, U2, 'later');
@@ -254,11 +254,105 @@ describe('Runner 回合状态机', () => {
     expect(r.status).toBe('idle');
   });
 
+  it('只剩常驻任务（如 npm run dev）：result 后立即 idle，不触发 onBackgroundTasks，且跨轮保留直到退出', () => {
+    const counts: number[] = [];
+    const { r, anyR, log } = make();
+    anyR.hooks.onBackgroundTasks = (n: number) => counts.push(n);
+    r.handleMessage(init);
+    r.handleMessage({
+      type: 'assistant',
+      message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu_dev', name: 'Bash', input: { command: 'npm run dev' } }] },
+    });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'dev1', tool_use_id: 'tu_dev', task_type: 'local_bash' });
+    r.handleMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'dev1', task_type: 'local_bash' }] });
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+    expect(log.turnEnds).toBe(1);
+    expect(counts).toEqual([]);
+    // 常驻任务跨轮保留：下一轮 result 依然直接 idle；如果常驻任务退出触发 CLI 自动续轮，idle → running 照常工作
+    r.handleMessage(init);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+    expect(log.turnEnds).toBe(2);
+    r.handleMessage({ type: 'system', subtype: 'task_notification', task_id: 'dev1', status: 'failed' });
+    r.handleMessage(init);
+    expect(r.status).toBe('running');
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+  });
+
+  it('Bash 有终点命令（如 gh run watch）与 Monitor 归为 awaited：result 后保持 running', () => {
+    const counts: number[] = [];
+    const { r, anyR } = make();
+    anyR.hooks.onBackgroundTasks = (n: number) => counts.push(n);
+    r.handleMessage(init);
+    r.handleMessage({
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        content: [
+          { type: 'tool_use', id: 'tu_gh', name: 'Bash', input: { command: 'gh run watch 46124140079 --exit-status' } },
+          { type: 'tool_use', id: 'tu_mon', name: 'Monitor', input: { command: 'tail -f app.log' } },
+        ],
+      },
+    });
+    // 即使 background_tasks_changed 先到、task_started 后到，也能按 tool_use 正确更新分类
+    r.handleMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'gh1', task_type: 'local_bash' }],
+    });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'gh1', tool_use_id: 'tu_gh', task_type: 'local_bash' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'mon1', tool_use_id: 'tu_mon', task_type: 'local_bash' });
+    expect(counts).toEqual([1, 2]);
+    r.handleMessage(result);
+    expect(r.status).toBe('running');
+    r.handleMessage({ type: 'system', subtype: 'task_notification', task_id: 'gh1', status: 'completed' });
+    r.handleMessage({ type: 'system', subtype: 'task_notification', task_id: 'mon1', status: 'completed' });
+    expect(counts).toEqual([1, 2, 1, 0]);
+    r.handleMessage(init);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+  });
+
+  it('混合任务（常驻 + awaited）：awaited 在跑时保持 running，awaited 完成后即使常驻仍在也回 idle', () => {
+    const counts: number[] = [];
+    const { r, anyR } = make();
+    anyR.hooks.onBackgroundTasks = (n: number) => counts.push(n);
+    r.handleMessage(init);
+    r.handleMessage({
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        content: [
+          { type: 'tool_use', id: 'tu_dev', name: 'Bash', input: { command: 'pnpm dev' } },
+          { type: 'tool_use', id: 'tu_test', name: 'Bash', input: { command: 'pnpm build && pnpm test' } },
+        ],
+      },
+    });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'dev1', tool_use_id: 'tu_dev', task_type: 'local_bash' });
+    r.handleMessage({ type: 'system', subtype: 'task_started', task_id: 'tst1', tool_use_id: 'tu_test', task_type: 'local_bash' });
+    expect(counts).toEqual([1]);
+    r.handleMessage(result);
+    expect(r.status).toBe('running');
+    // tst1 结束，只剩 dev1 常驻
+    r.handleMessage({ type: 'system', subtype: 'task_notification', task_id: 'tst1', status: 'completed' });
+    r.handleMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'dev1', task_type: 'local_bash' }],
+    });
+    expect(counts).toEqual([1, 0]);
+    r.handleMessage(init);
+    r.handleMessage(result);
+    expect(r.status).toBe('idle');
+  });
+
   it('limbo 兜底：后台任务一直没动静，超时后结束本轮', () => {
     vi.useFakeTimers();
     const { r, log } = make({ limboBusyMs: 3000 });
     r.handleMessage(init);
-    r.handleMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1' }] });
+    r.handleMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1', task_type: 'local_agent' }] });
     r.handleMessage(result);
     vi.advanceTimersByTime(2000);
     expect(r.status).toBe('running');

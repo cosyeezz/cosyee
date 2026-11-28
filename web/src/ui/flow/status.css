@@ -3,11 +3,12 @@
 
 /* 主短语 */
 .cz-st { font-weight: 500; }
-/* 进行中：流光扫过文字。三种配色取自参考动效：
+/* 进行中：流光扫过文字。四种配色取自参考动效：
  *   thinking   三色（正在理解问题）  3.2s
  *   tool       青色（模型有文字输出）2.4s
+ *   waiting    琥珀紫（等待后台任务）3.4s
  *   compacting 紫粉（子代理面板）    4s，更慢 */
-:is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting) {
+:is(.cz-st-thinking, .cz-st-tool, .cz-st-waiting, .cz-st-compacting) {
   --s1: var(--tk-a); --s2: var(--tk-b); --s3: var(--tk-c);
   background: linear-gradient(100deg, currentColor 0 36%, var(--s1) 45%, var(--s2) 50%, var(--s3) 55%, currentColor 64% 100%);
   background-size: 300% 100%;
@@ -17,6 +18,7 @@
   animation: cz-st-sweep 3.2s linear infinite;
 }
 .cz-st-tool { --s1: var(--tk-b); --s2: var(--tk-b); --s3: var(--tk-a); animation-duration: 2.4s; }
+.cz-st-waiting { --s1: var(--tk-d); --s2: var(--tk-a); --s3: var(--tk-b); animation-duration: 3.4s; }
 .cz-st-compacting { --s1: var(--tk-a); --s2: var(--tk-c); --s3: var(--tk-a); animation-duration: 4s; }
 @keyframes cz-st-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .cz-st-done { color: var(--tk-ok); animation: cz-st-in .5s ease-out both; }
@@ -163,6 +165,33 @@
 /* 没有进行中的调用：插头停在插好的位置，不出火花 */
 .cz-ss-mcp.is-still * { animation: none !important; }
 
+/* 雷达脉冲（等待后台任务） */
+.cz-ss-waiting .cz-ss-track { fill: none; stroke: var(--tk-ink); stroke-opacity: .22; stroke-width: 2.4; }
+.cz-ss-waiting .cz-ss-ripple {
+  fill: none;
+  stroke: var(--tk-d);
+  stroke-width: 2.2;
+  transform-origin: 32px 32px;
+  animation: cz-ss-ripple 2.4s ease-out infinite;
+}
+.cz-ss-waiting .cz-ss-arc {
+  fill: none;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-dasharray: 28 72;
+  transform-origin: 32px 32px;
+  animation: cz-ss-spin 2.2s linear infinite;
+}
+.cz-ss-waiting .cz-ss-dot {
+  fill: var(--tk-d);
+  transform-origin: 32px 32px;
+  animation: cz-ss-core 2.4s ease-in-out infinite;
+}
+@keyframes cz-ss-ripple {
+  0% { transform: scale(.65); opacity: .75; }
+  85%, 100% { transform: scale(1.65); opacity: 0; }
+}
+
 /* 完成 / 出错 / 中止：只在出现时播一次，之后静止 */
 .cz-ss-done :is(.cz-ss-r, .cz-ss-c, .cz-ss-w) { fill: none; stroke: var(--tk-ok); stroke-linecap: round; stroke-linejoin: round; }
 .cz-ss-done .cz-ss-r { stroke-width: 3; stroke-dasharray: 1; animation: cz-ss-draw .7s ease-out both; }
@@ -183,12 +212,13 @@
 /* 动效不跟随系统「减少动效」设置，始终播放（项目约定，见 SPEC）。
  * 仅应用内显式 data-motion="reduce" 时降级：文字停在原色，图标不位移；进行中的图标整体缓慢明暗表示仍在进行；
  * 完成 / 出错 / 中止直接显示终态（不画线、不抖动、不缩放） */
-:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting, .cz-st-done, .cz-st-error) { animation: none; }
-:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-compacting) { background: none; -webkit-text-fill-color: currentColor; }
+:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-waiting, .cz-st-compacting, .cz-st-done, .cz-st-error) { animation: none; }
+:root[data-motion="reduce"] :is(.cz-st-thinking, .cz-st-tool, .cz-st-waiting, .cz-st-compacting) { background: none; -webkit-text-fill-color: currentColor; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-n { animation: none; }
 :root[data-motion="reduce"] .cz-ss-tool .cz-ss-p { animation: none; opacity: 0; }
-:root[data-motion="reduce"] :is(.cz-ss-tool, .cz-ss-thinking) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
-:root[data-motion="reduce"] .cz-ss-thinking * { animation: none !important; }
+:root[data-motion="reduce"] :is(.cz-ss-tool, .cz-ss-thinking, .cz-ss-waiting) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
+:root[data-motion="reduce"] :is(.cz-ss-thinking, .cz-ss-waiting) * { animation: none !important; }
+:root[data-motion="reduce"] .cz-ss-waiting .cz-ss-ripple { opacity: 0; }
 :root[data-motion="reduce"] :is(.cz-ss-agent, .cz-ss-skill, .cz-ss-mcp):not(.is-still) { animation: cz-ss-fade 2.4s ease-in-out infinite; }
 :root[data-motion="reduce"] :is(.cz-ss-agent, .cz-ss-skill, .cz-ss-mcp) * { animation: none !important; }
 :root[data-motion="reduce"] .cz-ss-skill .cz-ss-flip { opacity: 0; }

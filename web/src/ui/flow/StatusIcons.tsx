@@ -183,6 +183,26 @@ export const McpIcon = memo(function McpIcon({ size = 16, className }: IconProps
   );
 });
 
+/** 雷达脉冲：外圈柔和扩散 + 旋转扫描弧 + 琥珀色核心。状态行「等待后台：…」 */
+export const WaitingIcon = memo(function WaitingIcon({ size = 20, className }: IconProps) {
+  const uid = useUid();
+  return (
+    <svg viewBox="0 0 64 64" width={size} height={size} className={cls('waiting', className)} aria-hidden focusable="false">
+      <defs>
+        <linearGradient id={`${uid}-w`} gradientUnits="userSpaceOnUse" x1="10" y1="10" x2="54" y2="54">
+          <stop offset="0" style={{ stopColor: 'var(--tk-d)' }} />
+          <stop offset="0.55" style={{ stopColor: 'var(--tk-a)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--tk-b)' }} />
+        </linearGradient>
+      </defs>
+      <circle className="cz-ss-track" cx="32" cy="32" r="21" />
+      <circle className="cz-ss-ripple" cx="32" cy="32" r="14" />
+      <circle className="cz-ss-arc" cx="32" cy="32" r="21" pathLength={100} stroke={`url(#${uid}-w)`} />
+      <circle className="cz-ss-dot" cx="32" cy="32" r="5" />
+    </svg>
+  );
+});
+
 /** 完成：绿色圆环画一圈，对勾跟着画出，外圈淡淡散开一次，之后静止 */
 export const DoneIcon = memo(function DoneIcon({ size = 20, className }: IconProps) {
   return (

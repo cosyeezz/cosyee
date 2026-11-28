@@ -1,6 +1,14 @@
 // 会话流视图模型。web/src/core/reducer.ts 把 CLI 事件（实时）或 jsonl 条目（历史）归约成这里的结构，
 // web/src/ui/flow 只负责渲染。规则见 SPEC.md §4。
 import type { CliModelCost } from './pricing.ts';
+import type { BackgroundTaskKind } from './backgroundTask.ts';
+
+export interface BackgroundTaskInfo {
+  id: string;
+  kind: BackgroundTaskKind;
+  /** 简短描述（来自 task_started / background_tasks_changed 的 description，或 Bash 命令） */
+  description: string;
+}
 
 export interface ToolStep {
   kind: 'tool';
@@ -145,10 +153,15 @@ export interface Turn {
   /** interrupted / error 时的一句原因 */
   reason?: string;
   /**
-   * 本回合的 result 已到（模型已经交付答复），只是还有后台任务 / 子代理在跑、CLI 之后可能自动续轮，所以轮仍未结束。
-   * UI 照常显示答复，状态行显示「等待后台任务完成」；续轮有新的主代理内容时清掉。只出现在实时事件里
+   * 本回合的 result 已到，但还有「等结果（awaited）」类后台任务（如子代理 / Monitor / gh run watch）在跑，
+   * 整轮保持进行中，状态行展示等待中的任务；CLI 续轮有新内容或本轮结束时清掉。只出现在实时事件里。
    */
-  awaitingBackground?: boolean;
+  waitingTasks?: BackgroundTaskInfo[];
+  /**
+   * 仍有「常驻（persistent）」类后台任务（如开发服务器）在运行，用于在本轮已完成时给出轻量提示。
+   * 任务结束或新开一轮时移除。只出现在实时事件里。
+   */
+  persistentTasks?: BackgroundTaskInfo[];
 }
 
 /** 一次 API 请求的缓存命中情况（主线程；一条 assistant 消息 = 一次请求） */

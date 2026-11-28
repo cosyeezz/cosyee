@@ -12,7 +12,7 @@ import type { InlineDivider } from './dividers';
 import { FlowDivider } from './FlowDivider';
 import { Markdown } from './Markdown';
 import { NeuralIcon } from './NeuralIcon';
-import { DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon } from './StatusIcons';
+import { DoneIcon, ErrorIcon, OrbitIcon, StoppedIcon, WaitingIcon } from './StatusIcons';
 import { StepView } from './Steps';
 import { getLiveText, getStatusLine, isTurnActive, type StatusLine } from './format';
 import './flow.css';
@@ -26,6 +26,7 @@ function statusIcon(status: StatusLine): ReactNode {
   const className = 'cz-flow__status-icon';
   switch (status.kind) {
     case 'active':
+      if (status.phase === 'waiting') return <WaitingIcon size={STATUS_SIZE} className={className} />;
       return status.phase === 'text' ? (
         <NeuralIcon size={STATUS_SIZE} className={className} />
       ) : (
@@ -40,10 +41,11 @@ function statusIcon(status: StatusLine): ReactNode {
   }
 }
 
-// 主短语文字特效（status.css）：理解中三色流光；有文本时青色流光；完成 / 出错上色；中断变淡
+// 主短语文字特效（status.css）：理解中三色流光；有文本时青色流光；等待后台琥珀紫流光；完成 / 出错上色；中断变淡
 function statusTextClass(status: StatusLine): string {
   switch (status.kind) {
     case 'active':
+      if (status.phase === 'waiting') return 'cz-st cz-st-waiting';
       return status.phase === 'text' ? 'cz-st cz-st-tool' : 'cz-st cz-st-thinking';
     case 'done':
       return 'cz-st cz-st-done';
@@ -150,7 +152,7 @@ export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS, o
     rowRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
   }, [open]);
 
-  // 交付文字：执行中为空，回合结束（或只剩后台任务）才出现（见 getLiveText）
+  // 交付文字：执行中为空，回合结束才出现（见 getLiveText）
   const delivered = getLiveText(turn, open);
 
   return (
@@ -172,7 +174,7 @@ export const TurnView = memo(function TurnView({ turn, dividers = NO_DIVIDERS, o
       )}
 
       {delivered && <Markdown text={delivered} className="cz-flow__answer" />}
-      {delivered && (!active || turn.awaitingBackground) && <AnswerActions turnId={turn.id} text={delivered} onFork={onForkAfter} />}
+      {delivered && !active && <AnswerActions turnId={turn.id} text={delivered} onFork={onForkAfter} />}
     </div>
   );
 });

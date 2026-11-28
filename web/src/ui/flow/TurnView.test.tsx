@@ -98,6 +98,32 @@ describe('TurnView 首行：进行中', () => {
     expect(v.answer()).toContain('细节');
   });
 
+  it('等待后台任务（awaited）：雷达脉冲图标 + 等待文字，不提前交付正文', () => {
+    const v = mount({
+      ...base,
+      steps: [{ kind: 'text', text: '已启动监听，完成后汇报' }],
+      waitingTasks: [{ id: 'gh1', kind: 'awaited', description: '盯发版 CI' }],
+    });
+    expect(v.host.querySelector('.cz-ss-waiting')).not.toBeNull();
+    expect(v.host.querySelector('.cz-st-waiting')?.textContent).toBe('等待后台：盯发版 CI');
+    expect(v.host.querySelector('.cz-flow__answer')).toBeNull();
+  });
+
+  it('已完成但有常驻后台任务：状态行 meta 末尾显示轻量提示', () => {
+    const start = Date.now();
+    const v = mount({
+      ...base,
+      status: 'done',
+      startedAt: start,
+      endedAt: start + 2000,
+      answer: '已启动',
+      persistentTasks: [{ id: 'd1', kind: 'persistent', description: 'npm run dev' }],
+    });
+    expect(v.status().textContent).toContain('已完成');
+    expect(v.status().textContent).toContain('后台：npm run dev 运行中');
+    expect(v.answer()).toContain('已启动');
+  });
+
   it('无步骤时状态行不可点击', () => {
     const v = mount(base);
     expect(v.status().tagName).toBe('DIV');

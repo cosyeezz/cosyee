@@ -33,11 +33,17 @@ export function applyEvent(s: ConvState, e: unknown, now: number = Date.now()): 
  */
 export function applyStatus(s: ConvState, status: RunStatus, error?: string, now: number = Date.now()): ConvState {
   const last = s.turns[s.turns.length - 1];
-  if (!last || !isActive(last) || (status !== 'exited' && status !== 'idle')) return s;
+  if (!last || (status !== 'exited' && status !== 'idle')) return s;
+  const clearPersistent = status === 'exited' && !!last.persistentTasks?.length;
+  if (!isActive(last) && !clearPersistent) return s;
   const t = cloneTurn(last);
-  if (status === 'exited') finishTurn(t, 'error', now, error || '会话进程已退出');
-  else finishTurn(t, 'done', now);
-  return { turns: [...s.turns.slice(0, -1), t], meta: s.meta, book: s.book };
+  if (isActive(t)) {
+    if (status === 'exited') finishTurn(t, 'error', now, error || '会话进程已退出');
+    else finishTurn(t, 'done', now);
+  }
+  if (status === 'exited') delete t.persistentTasks;
+  const book = status === 'exited' && s.book ? { ...s.book, bgTasks: {} } : s.book;
+  return { turns: [...s.turns.slice(0, -1), t], meta: s.meta, book };
 }
 
 /** 主会话 jsonl 条目 → 状态。opts.running：进程仍在跑，最后一轮保持未结束 */

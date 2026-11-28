@@ -167,9 +167,44 @@ describe('getStatusLine', () => {
       meta: '12 秒',
     });
   });
-  it('result 已到、只在等后台任务：显示已交付，不再显示执行中', () => {
-    const t = { ...baseTurn, status: 'running' as const, awaitingBackground: true, steps: [text('好了')] };
-    expect(getStatusLine(t, 65_000)).toEqual({ kind: 'done', text: '已交付', meta: '后台任务运行中 · 已运行 1 分 5 秒' });
+  it('result 已到、正在等结果类（awaited）后台任务：保持 active/waiting，显示最近任务与已运行时长', () => {
+    const one = {
+      ...baseTurn,
+      status: 'running' as const,
+      steps: [text('已启动，稍后汇报')],
+      waitingTasks: [{ id: 'gh1', kind: 'awaited' as const, description: '盯发版 CI' }],
+    };
+    expect(getStatusLine(one, 65_000)).toEqual({
+      kind: 'active',
+      phase: 'waiting',
+      text: '等待后台：盯发版 CI',
+      meta: '1 分 5 秒',
+      title: '等待后台：盯发版 CI',
+    });
+    const many = {
+      ...one,
+      waitingTasks: [
+        { id: 't1', kind: 'awaited' as const, description: '跑测试' },
+        { id: 't2', kind: 'awaited' as const, description: '盯发版 CI' },
+      ],
+    };
+    expect(getStatusLine(many, 10_000)).toEqual({
+      kind: 'active',
+      phase: 'waiting',
+      text: '等待后台：盯发版 CI 等 2 个',
+      meta: '10 秒',
+      title: '等待后台：盯发版 CI 等 2 个',
+    });
+    const noDesc = {
+      ...one,
+      waitingTasks: [{ id: 't1', kind: 'awaited' as const, description: '' }],
+    };
+    expect(getStatusLine(noDesc, 5_000)).toEqual({
+      kind: 'active',
+      phase: 'waiting',
+      text: '等待后台任务',
+      meta: '5 秒',
+    });
   });
   it('思考和工具调用不改变状态：没有文本时仍是理解中', () => {
     const t = { ...baseTurn, steps: [thinking, tool] };
@@ -242,6 +277,21 @@ describe('getStatusLine', () => {
     expect(getStatusLine(done, nextDay).meta).toBe('6月15日 14:30 · 共 2 步 · 用时 18 秒');
     expect(getStatusLine({ ...done, steps: [] }, end).meta).toBe('14:30 · 用时 18 秒');
     expect(getStatusLine({ ...baseTurn, status: 'done' }).meta).toBe('');
+    expect(
+      getStatusLine({ ...done, persistentTasks: [{ id: 'd1', kind: 'persistent', description: 'npm run dev' }] }, end + 1_000).meta,
+    ).toBe('14:30 · 共 2 步 · 用时 18 秒 · 后台：npm run dev 运行中');
+    expect(
+      getStatusLine(
+        {
+          ...done,
+          persistentTasks: [
+            { id: 'd1', kind: 'persistent', description: 'npm run dev' },
+            { id: 'd2', kind: 'persistent', description: 'tail -f app.log' },
+          ],
+        },
+        end + 1_000,
+      ).meta,
+    ).toBe('14:30 · 共 2 步 · 用时 18 秒 · 后台：npm run dev 等 2 个运行中');
   });
   it('中断 / 出错：主短语固定，具体时间与原因进 meta（与主短语重复时省略）', () => {
     const start = new Date(2026, 5, 15, 9, 0).getTime();
@@ -288,10 +338,6 @@ describe('getLiveText', () => {
   it('结束后展开：只给 answer，避免与展开区重复', () => {
     expect(getLiveText({ answer: '', steps, ...done }, true)).toBe('');
     expect(getLiveText({ answer: '最终答复', steps, ...done }, true)).toBe('最终答复');
-  });
-  it('result 已到、只在等后台任务：照常交付', () => {
-    expect(getLiveText({ answer: '', steps, status: 'running', awaitingBackground: true }, false)).toBe('第二段');
-    expect(getLiveText({ answer: '最终答复', steps, status: 'running', awaitingBackground: true }, true)).toBe('最终答复');
   });
   it('中断 / 出错：已写出的部分仍然显示', () => {
     expect(getLiveText({ answer: '写到一半', steps, status: 'interrupted' }, false)).toBe('写到一半');

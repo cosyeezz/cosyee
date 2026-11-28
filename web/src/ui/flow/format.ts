@@ -47,9 +47,10 @@ export interface StatusLine {
   kind: 'active' | 'done' | 'interrupted' | 'error';
   /**
    * 仅 active：understanding = 模型还没有任何文本（星轨 + 正在理解问题）；
-   * text = 已有文本（神经脉冲 + 最近一段文本）。思考 / 工具调用不改变它。
+   * text = 已有文本（神经脉冲 + 最近一段文本）；
+   * waiting = result 已到、正在等结果类后台任务完成（雷达脉冲 + 等待后台：…）。思考 / 工具调用不改变它。
    */
-  phase?: 'understanding' | 'text';
+  phase?: 'understanding' | 'text' | 'waiting';
   /** 主短语：active 时是「正在理解问题」或模型最近一段文本的首行（去 markdown）；结束态为固定措辞 */
   text: string;
   /** 暗色附加信息（时间、步数、用时、子代理进度、原因等），无则为空串 */
@@ -161,13 +162,24 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
   switch (turn.status) {
     case 'understanding':
     case 'running': {
-      // 答复已交付，只剩后台任务（run_in_background 的命令 / 子代理）在跑：不再显示成执行中
-      if (turn.awaitingBackground) {
-        return { kind: 'done', text: '已交付', meta: `后台任务运行中 · 已运行 ${formatDuration(now - turn.startedAt)}` };
-      }
       const parts = [formatDuration(now - turn.startedAt)];
       const sub = subagentProgress(turn.subagents);
       if (sub.total > 0 && !sub.allDone) parts.push(`子代理 ${sub.finished}/${sub.total}`);
+      // result 已到、正在等结果类（awaited）后台任务：整轮保持进行中，状态行展示等待中的任务
+      if (turn.waitingTasks && turn.waitingTasks.length > 0) {
+        const latest = turn.waitingTasks[turn.waitingTasks.length - 1]!;
+        const desc = plainFirstLine(latest.description, 80);
+        const n = turn.waitingTasks.length;
+        const text =
+          n > 1
+            ? desc
+              ? `等待后台：${desc} 等 ${n} 个`
+              : `等待 ${n} 个后台任务`
+            : desc
+              ? `等待后台：${desc}`
+              : '等待后台任务';
+        return { kind: 'active', phase: 'waiting', text, meta: parts.join(' · '), ...(desc ? { title: text } : {}) };
+      }
       // 委派子代理（Agent 工具调用）与文字同等对待：显示最新的那个，同样用文字图标
       const line = latestOutputLine(turn);
       return line
@@ -179,6 +191,17 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
       if (stamp) parts.push(stamp);
       if (turn.steps.length > 0) parts.push(`共 ${turn.steps.length} 步`);
       if (turn.endedAt != null) parts.push(`用时 ${formatDuration(turn.endedAt - turn.startedAt)}`);
+      if (turn.persistentTasks && turn.persistentTasks.length > 0) {
+        const names = turn.persistentTasks.map((t) => plainFirstLine(t.description, 32)).filter(Boolean);
+        const n = turn.persistentTasks.length;
+        if (names.length === 0) {
+          parts.push(n === 1 ? '后台任务运行中' : `${n} 个后台任务运行中`);
+        } else if (n === 1) {
+          parts.push(`后台：${names[0]} 运行中`);
+        } else {
+          parts.push(`后台：${names[0]} 等 ${n} 个运行中`);
+        }
+      }
       return { kind: 'done', text: '已完成', meta: parts.join(' · ') };
     }
     case 'interrupted': {
@@ -199,11 +222,10 @@ export function getStatusLine(turn: Turn, now: number = Date.now()): StatusLine 
  * 状态行下方的交付文字。这里只放「交付」，不放执行过程：
  * 执行中一律为空——一段文字是过程叙述还是最终交付，只有回合结束才能回头确认（最后一段才是交付），
  * 边写边显示的话，后面一旦跟了工具调用就得撤掉，那段话会一闪而逝。过程由状态行（单行）与展开区承载。
- * 回合结束（或 result 已到、只在等后台任务，见 Turn.awaitingBackground）后：折叠 = answer，没有则 steps 里最后一段文字；展开时展开区已列出所有步骤，只给 answer，避免重复。
+ * 回合结束后：折叠 = answer，没有则 steps 里最后一段文字；展开时展开区已列出所有步骤，只给 answer，避免重复。
  */
-export function getLiveText(turn: Pick<Turn, 'answer' | 'steps' | 'status' | 'awaitingBackground'>, expanded: boolean): string {
-  // result 已到、只在等后台任务：答复已经确定，照常交付
-  if (isTurnActive(turn) && !turn.awaitingBackground) return '';
+export function getLiveText(turn: Pick<Turn, 'answer' | 'steps' | 'status'>, expanded: boolean): string {
+  if (isTurnActive(turn)) return '';
   if (turn.answer) return turn.answer;
   if (expanded) return '';
   for (let i = turn.steps.length - 1; i >= 0; i--) {

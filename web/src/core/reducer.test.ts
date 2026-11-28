@@ -479,35 +479,86 @@ describe('实时：消息 id / steering / 中断', () => {
 
 describe('实时：result 已到、只剩后台任务', () => {
   const text = (t: string, id = 'm1') => ({ type: 'assistant', message: { id, role: 'assistant', content: [{ type: 'text', text: t }] } });
-  const bg = (n: number) => ({ type: 'system', subtype: 'background_tasks_changed', tasks: Array.from({ length: n }, (_, i) => ({ id: `b${i}` })) });
+  const bashTool = (id: string, command: string, description: string, msgId = 'mt1') => ({
+    type: 'assistant',
+    message: { id: msgId, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command, description } }] },
+  });
+  const bgTasks = (tasks: { task_id: string; task_type?: string; description?: string }[]) => ({
+    type: 'system',
+    subtype: 'background_tasks_changed',
+    tasks,
+  });
   const res = { type: 'result', subtype: 'success', is_error: false };
-  it('后台任务还在：轮不结束但标记 awaitingBackground；任务结束后收尾为 done', () => {
-    let s = applyEvent(initState(), user('开浏览器'), 1);
-    s = applyEvent(s, bg(1), 2);
-    s = applyEvent(s, text('已经打开，请登录'), 3);
-    s = applyEvent(s, res, 4);
+
+  it('等结果（awaited）后台任务还在：轮保持 running 并记 waitingTasks；续轮完成后只交付一次', () => {
+    let s = applyEvent(initState(), user('盯发版'), 1);
+    s = applyEvent(s, bashTool('tu1', 'gh run watch 46124140079 --exit-status', '盯发版 CI'), 2);
+    s = applyEvent(s, { type: 'system', subtype: 'task_started', task_id: 'gh1', tool_use_id: 'tu1', task_type: 'local_bash', description: '盯发版 CI' }, 3);
+    s = applyEvent(s, text('已启动监听，完成后汇报', 'm1'), 4);
+    s = applyEvent(s, res, 5);
     expect(s.turns[0].status).toBe('running');
-    expect(s.turns[0].awaitingBackground).toBe(true);
-    s = applyEvent(s, bg(0), 5);
+    expect(s.turns[0].waitingTasks).toEqual([{ id: 'gh1', kind: 'awaited', description: '盯发版 CI' }]);
+    expect(s.turns[0].persistentTasks).toBeUndefined();
+
+    // 任务结束、CLI 自动续轮并最终汇报
+    s = applyEvent(s, { type: 'system', subtype: 'task_notification', task_id: 'gh1', status: 'completed' }, 6);
+    s = applyEvent(s, { type: 'system', subtype: 'init' }, 7);
+    s = applyEvent(s, text('CI 全部通过', 'm2'), 8);
+    expect(s.turns[0].status).toBe('running');
+    expect(s.turns[0].waitingTasks).toBeUndefined();
+    s = applyEvent(s, res, 9);
     expect(s.turns[0].status).toBe('done');
-    expect(s.turns[0].awaitingBackground).toBeUndefined();
+    expect(s.turns[0].waitingTasks).toBeUndefined();
+    expect(s.turns[0].answer).toBe('CI 全部通过');
   });
-  it('CLI 自动续轮有新的主代理内容：清掉标记', () => {
-    let s = applyEvent(initState(), user('x'), 1);
-    s = applyEvent(s, bg(1), 2);
-    s = applyEvent(s, text('第一次交付'), 3);
+
+  it('等结果（awaited）任务在未续轮时直接结束：收尾为 done', () => {
+    let s = applyEvent(initState(), user('跑子代理'), 1);
+    s = applyEvent(s, bgTasks([{ task_id: 'ag1', task_type: 'local_agent', description: '检查代码' }]), 2);
+    s = applyEvent(s, text('稍候', 'm1'), 3);
     s = applyEvent(s, res, 4);
-    s = applyEvent(s, { type: 'system', subtype: 'init' }, 5);
-    s = applyEvent(s, text('续轮', 'm2'), 6);
     expect(s.turns[0].status).toBe('running');
-    expect(s.turns[0].awaitingBackground).toBeUndefined();
+    expect(s.turns[0].waitingTasks).toEqual([{ id: 'ag1', kind: 'awaited', description: '检查代码' }]);
+    s = applyEvent(s, bgTasks([]), 5);
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[0].waitingTasks).toBeUndefined();
   });
+
+  it('只剩常驻任务（如 npm run dev）：result 后直接 done，带 persistentTasks 提示；任务结束后提示消失', () => {
+    let s = applyEvent(initState(), user('起开发服务器'), 1);
+    s = applyEvent(s, bashTool('tu_dev', 'npm run dev', 'npm run dev'), 2);
+    s = applyEvent(s, { type: 'system', subtype: 'task_started', task_id: 'dev1', tool_use_id: 'tu_dev', task_type: 'local_bash', description: 'npm run dev' }, 3);
+    s = applyEvent(s, text('开发服务器已启动', 'm1'), 4);
+    s = applyEvent(s, res, 5);
+    expect(s.turns[0].status).toBe('done');
+    expect(s.turns[0].waitingTasks).toBeUndefined();
+    expect(s.turns[0].persistentTasks).toEqual([{ id: 'dev1', kind: 'persistent', description: 'npm run dev' }]);
+
+    // 新开一轮时旧轮清除提示，常驻任务继承到新一轮
+    s = applyEvent(s, user('看下端口'), 6);
+    expect(s.turns[0].persistentTasks).toBeUndefined();
+    s = applyEvent(s, text('在 5173 端口', 'm2'), 7);
+    s = applyEvent(s, res, 8);
+    expect(s.turns[1].status).toBe('done');
+    expect(s.turns[1].persistentTasks).toEqual([{ id: 'dev1', kind: 'persistent', description: 'npm run dev' }]);
+
+    // 常驻任务退出后提示消失；若 CLI 随之自动续轮，照常 reopen
+    s = applyEvent(s, { type: 'system', subtype: 'task_notification', task_id: 'dev1', status: 'failed' }, 9);
+    expect(s.turns[1].status).toBe('done');
+    expect(s.turns[1].persistentTasks).toBeUndefined();
+    s = applyEvent(s, text('开发服务器异常退出了', 'm3'), 10);
+    expect(s.turns[1].status).toBe('running');
+    s = applyEvent(s, res, 11);
+    expect(s.turns[1].status).toBe('done');
+  });
+
   it('没有后台任务：直接 done，不设标记', () => {
     let s = applyEvent(initState(), user('x'), 1);
     s = applyEvent(s, text('好了'), 2);
     s = applyEvent(s, res, 3);
     expect(s.turns[0].status).toBe('done');
-    expect(s.turns[0].awaitingBackground).toBeUndefined();
+    expect(s.turns[0].waitingTasks).toBeUndefined();
+    expect(s.turns[0].persistentTasks).toBeUndefined();
   });
 });
 

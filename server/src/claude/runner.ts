@@ -4,9 +4,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
+  classifyBackgroundTask,
   DEFAULT_SUBAGENTS,
   type AppliedSettings,
   type AskQuestion,
+  type BackgroundTaskKind,
   type CosyeeUserEvent,
   type DelegateBackendId,
   type PendingPrompt,
@@ -282,7 +284,10 @@ export class Runner {
   private limbo = false;
   /** result 之后是否还在等排队消息续轮 */
   private expectNext = false;
-  private tasks = new Set<string>();
+  /** 后台任务 task_id → 分类（awaited=等结果，persistent=常驻如 dev server） */
+  private tasks = new Map<string, BackgroundTaskKind>();
+  /** 最近见过的 tool_use id → { name, input }，供 task_started 分类后台任务用 */
+  private toolUses = new Map<string, { name: string; input: unknown }>();
   private lastTaskCount = 0;
   /** 本轮最近一次 rate_limit_event（新一轮清空） */
   private lastRateLimit: RateLimitHint | null = null;
@@ -705,7 +710,7 @@ export class Runner {
 
   private dropInjected(id: string): void {
     if (!this.takeInjected(id)) return;
-    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.tasks.size === 0) this.finishTurn();
+    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.awaitedTaskCount() === 0) this.finishTurn();
   }
 
   private beginTurn(): void {
@@ -763,7 +768,7 @@ export class Runner {
   /** 排队的消息没有开始就结束了（撤回 / 作废 / 拒绝）。若正等它续轮、已无别的可等，收尾本轮 */
   private dropQueued(id: string): void {
     if (!this.takeQueued(id)) return;
-    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.tasks.size === 0) this.finishTurn();
+    if (this.limbo && this.queue.length === 0 && this.injected.size === 0 && this.awaitedTaskCount() === 0) this.finishTurn();
   }
 
   /** command_lifecycle 帧：按 command_uuid 维护排队列表。帧本身不转发给前端 */
@@ -1210,6 +1215,7 @@ export class Runner {
       this.clearLimbo();
     }
 
+    if (msg.type === 'assistant') this.recordToolUses(msg);
     if (msg.type === 'system') this.trackTasks(msg);
     if (msg.type === 'rate_limit_event' && msg.rate_limit_info && typeof msg.rate_limit_info === 'object') {
       const info = msg.rate_limit_info as Json;
@@ -1225,22 +1231,60 @@ export class Runner {
     else if (this.limbo) this.armLimbo();
   }
 
+  private recordToolUses(msg: Json): void {
+    const content = msg.message?.content;
+    if (!Array.isArray(content)) return;
+    for (const b of content) {
+      if (!b || typeof b !== 'object' || b.type !== 'tool_use' || typeof b.id !== 'string' || !b.id) continue;
+      this.toolUses.set(b.id, { name: typeof b.name === 'string' ? b.name : '', input: b.input });
+      if (this.toolUses.size > 500) {
+        const first = this.toolUses.keys().next().value;
+        if (first !== undefined) this.toolUses.delete(first);
+      }
+    }
+  }
+
+  private awaitedTaskCount(): number {
+    let n = 0;
+    for (const kind of this.tasks.values()) if (kind === 'awaited') n++;
+    return n;
+  }
+
   private trackTasks(msg: Json): void {
     switch (msg.subtype) {
       case 'background_tasks_changed': {
-        this.tasks.clear();
-        if (Array.isArray(msg.tasks)) for (const t of msg.tasks) if (t && typeof t.task_id === 'string') this.tasks.add(t.task_id);
+        const next = new Map<string, BackgroundTaskKind>();
+        if (Array.isArray(msg.tasks)) {
+          for (const t of msg.tasks) {
+            if (!t || typeof t.task_id !== 'string') continue;
+            // 保留此前通过 task_started + tool_use 判出的分类；没对上时按 task_type 兜底
+            const prev = this.tasks.get(t.task_id);
+            next.set(t.task_id, prev ?? classifyBackgroundTask({ taskType: typeof t.task_type === 'string' ? t.task_type : undefined }));
+          }
+        }
+        this.tasks = next;
         break;
       }
       case 'task_started':
-        if (typeof msg.task_id === 'string') this.tasks.add(msg.task_id);
+        if (typeof msg.task_id === 'string') {
+          const tool = typeof msg.tool_use_id === 'string' ? this.toolUses.get(msg.tool_use_id) : undefined;
+          const kind = classifyBackgroundTask({
+            taskType: typeof msg.task_type === 'string' ? msg.task_type : undefined,
+            toolName: tool?.name,
+            toolInput: tool?.input,
+          });
+          this.tasks.set(msg.task_id, kind);
+        }
         break;
       case 'task_notification':
         if (typeof msg.task_id === 'string') this.tasks.delete(msg.task_id);
         break;
       case 'task_updated': {
         const st = msg.patch?.status;
-        if (typeof msg.task_id === 'string' && (st === 'completed' || st === 'failed' || st === 'killed' || st === 'cancelled')) {
+        if (
+          typeof msg.task_id === 'string' &&
+          (st === 'completed' || st === 'failed' || st === 'killed' || st === 'cancelled' || st === 'stopped')
+        ) {
           this.tasks.delete(msg.task_id);
         }
         break;
@@ -1250,7 +1294,7 @@ export class Runner {
   }
 
   private notifyTasks(): void {
-    const n = this.tasks.size;
+    const n = this.awaitedTaskCount();
     if (n === this.lastTaskCount) return;
     this.lastTaskCount = n;
     this.hooks.onBackgroundTasks?.(n);
@@ -1303,20 +1347,21 @@ export class Runner {
     // steering 并入当前轮的消息在 result 之前就 started 了，不在列表里，不会误判。
     const more = this.queue.length > 0 || this.injected.size > 0;
     this.expectNext = more;
-    // 还有排队的消息 / 后台任务：保持 running，等 CLI 自动续轮
-    if (more || this.tasks.size > 0) {
+    // 还有排队的消息 / 等结果类（awaited）后台任务：保持 running，等 CLI 自动续轮；
+    // 只剩常驻任务（如开发服务器）时直接收尾回到 idle
+    if (more || this.awaitedTaskCount() > 0) {
       this.limbo = true;
       this.armLimbo();
       return;
     }
-    // 没有任何后台任务：CLI 不会再续轮，本轮结束
+    // 没有任何等结果类后台任务：CLI 不会再续轮，本轮结束
     this.finishTurn();
   }
 
-  /** limbo：result 已到，但还在等续轮。没有任务时短等，有任务时长等，期间任何输出都会重新计时。 */
+  /** limbo：result 已到，但还在等续轮。没有任务时短等，有等结果任务时长等，期间任何输出都会重新计时。 */
   private armLimbo(): void {
     this.clearLimbo();
-    const ms = this.tasks.size > 0 || this.expectNext ? this.timings.limboBusyMs : this.timings.limboQuietMs;
+    const ms = this.awaitedTaskCount() > 0 || this.expectNext ? this.timings.limboBusyMs : this.timings.limboQuietMs;
     this.limboTimer = setTimeout(() => {
       this.limboTimer = null;
       if (this.limbo) this.finishTurn();
@@ -1339,7 +1384,10 @@ export class Runner {
     this.expectNext = false;
     this.interrupting = false;
     this.injected.clear(); // 收尾后没来得及开始的注入消息，CLI 之后会按空闲开轮处理
-    this.tasks.clear();
+    // 只清掉 awaited 任务（例如 limbo 超时 / 中断放弃等待）；常驻任务跨轮保留，仅由结束事件或快照移除
+    for (const [id, kind] of this.tasks) {
+      if (kind === 'awaited') this.tasks.delete(id);
+    }
     this.notifyTasks();
     this.clearLimbo();
     if (this.killTimer) clearTimeout(this.killTimer);
@@ -1410,6 +1458,7 @@ export class Runner {
     this.setQueue([]); // 进程没了，排队的消息也没了
     this.injected.clear();
     this.tasks.clear();
+    this.toolUses.clear();
     this.notifyTasks();
     this.clearPrompts(); // 待回应的请求也随进程失效（没法再写回）
     this.clearTimers();

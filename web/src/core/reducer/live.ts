@@ -1,7 +1,7 @@
 // 实时事件：CLI stdout 的一行 JSON（原样转发）+ 后端合成的 cosyee_user。
 // 所有函数都是纯函数：不认识的事件原样返回 s，不抛错。
 
-import { COSYEE_USAGE_SUBTYPE, isCosyeeUsageEvent, parseDelegateNotification, type CachePoint, type CliModelCost, type SessionMeta, type SubagentRun, type Turn } from '@cosyee/shared';
+import { classifyBackgroundTask, COSYEE_USAGE_SUBTYPE, isCosyeeUsageEvent, parseDelegateNotification, type BackgroundTaskInfo, type CachePoint, type CliModelCost, type SessionMeta, type SubagentRun, type Turn } from '@cosyee/shared';
 import {
   addUserSkill,
   appendToolJson,
@@ -19,12 +19,15 @@ import {
   ensureTool,
   findRun,
   finishTurn,
+  getTurn,
   isActive,
   isDelegateRun,
   makeTurn,
   maybeFinishPending,
   newBook,
   openDraft,
+  persistentTasksOf,
+  syncTurnBgTasks,
   thinkingStep,
   touch,
   writeText,
@@ -50,16 +53,22 @@ export function startTurn(s: ConvState, text: string, at: number, opts: { id?: s
   if (opts.id && s.turns.some((t) => t.userId === opts.id)) return s;
   let turns = s.turns;
   const last = turns[turns.length - 1];
-  if (last && isActive(last)) {
+  if (last && (isActive(last) || last.persistentTasks?.length)) {
     const c = cloneTurn(last);
-    finishTurn(c, 'done', at);
+    if (isActive(c)) finishTurn(c, 'done', at);
+    delete c.persistentTasks;
     turns = [...turns.slice(0, -1), c];
   }
   const turn = makeTurn(turns.length, text, at, { userId: opts.id, steer: opts.steer });
   // 用户输入「/技能名 参数」：CLI 实时不回传正文，只记一条没有 body 的手动加载
   const cmd = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (cmd && s.meta.skills?.includes(cmd[1]!)) addUserSkill(turn, cmd[1]!, (cmd[2] ?? '').trim());
-  return { turns: [...turns, turn], meta: s.meta, book: newBook(at) };
+  const book = newBook(at);
+  // 常驻任务跨轮保留到新一轮簿记里，等新一轮完成后继续提示
+  if (s.book) {
+    for (const p of persistentTasksOf(s.book)) book.bgTasks[p.id] = { ...p };
+  }
+  return { turns: [...turns, turn], meta: s.meta, book };
 }
 
 const CMD_NAME_RE = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/;
@@ -165,7 +174,17 @@ function applySystem(s: ConvState, e: Record<string, unknown>, now: number): Con
     case 'background_tasks_changed': {
       const d = openDraft(s, now);
       if (!d) return s;
-      d.book.bgTasks = arr(e.tasks).length;
+      const next: Record<string, BackgroundTaskInfo> = {};
+      for (const raw of arr(e.tasks)) {
+        if (!isObj(raw)) continue;
+        const id = str(raw.task_id) || str(raw.id);
+        if (!id) continue;
+        const prev = d.book.bgTasks[id];
+        const description = str(raw.description) || prev?.description || '';
+        const kind = prev?.kind ?? classifyBackgroundTask({ taskType: str(raw.task_type) || undefined });
+        next[id] = { id, kind, description };
+      }
+      d.book.bgTasks = next;
       maybeFinishPending(d);
       return commit(s, d);
     }
@@ -173,17 +192,46 @@ function applySystem(s: ConvState, e: Record<string, unknown>, now: number): Con
       const d = openDraft(s, now);
       const taskId = str(e.task_id);
       const toolUseId = str(e.tool_use_id);
-      if (!d || !taskId || !toolUseId) return s;
-      const launched = findRun(d, toolUseId);
-      if (launched) {
-        // 首次启动：tool_use_id 就是 Agent 调用
-        if (!launched.taskId) launched.taskId = taskId;
-        d.book.taskMap[taskId] = toolUseId;
-      } else {
-        // SendMessage 恢复子代理：tool_use_id 是 SendMessage 的，按 task_id（兜底按标题）找回原来的子代理
-        const run = e.task_type === 'local_agent' ? resolveRun(s, d, { taskId, title: str(e.description) }) : undefined;
-        d.book.taskMap[taskId] = run ? run.toolUseId : toolUseId;
+      if (!d || !taskId) return s;
+      let toolName: string | undefined;
+      let toolInput: unknown;
+      let runTitle = '';
+      if (toolUseId) {
+        const launched = findRun(d, toolUseId);
+        if (launched) {
+          // 首次启动：tool_use_id 就是 Agent 调用
+          if (!launched.taskId) launched.taskId = taskId;
+          d.book.taskMap[taskId] = toolUseId;
+          toolName = 'Agent';
+          runTitle = launched.title;
+        } else {
+          // SendMessage 恢复子代理：tool_use_id 是 SendMessage 的，按 task_id（兜底按标题）找回原来的子代理
+          const run = e.task_type === 'local_agent' ? resolveRun(s, d, { taskId, title: str(e.description) }) : undefined;
+          d.book.taskMap[taskId] = run ? run.toolUseId : toolUseId;
+          if (run) {
+            toolName = 'Agent';
+            runTitle = run.title;
+          } else {
+            const ref = d.book.tools[toolUseId];
+            if (ref && !ref.agent) {
+              const st = getTurn(d, ref.scope)?.steps[ref.idx];
+              if (st && st.kind === 'tool') {
+                toolName = st.name;
+                toolInput = st.input;
+              }
+            }
+          }
+        }
       }
+      const kind = classifyBackgroundTask({
+        taskType: str(e.task_type) || undefined,
+        toolName,
+        toolInput,
+      });
+      const inputDesc = isObj(toolInput) ? str(toolInput.description) || str(toolInput.command) : '';
+      const description = str(e.description) || inputDesc || runTitle;
+      d.book.bgTasks[taskId] = { id: taskId, kind, description };
+      syncTurnBgTasks(d);
       return commit(s, d);
     }
     case 'task_updated':
@@ -199,6 +247,7 @@ function applySystem(s: ConvState, e: Record<string, unknown>, now: number): Con
       if (taskId && !d.book.taskMap[taskId] && str(e.tool_use_id)) d.book.taskMap[taskId] = str(e.tool_use_id);
       const status = e.subtype === 'task_updated' ? (isObj(e.patch) ? e.patch.status : undefined) : e.status;
       const end = taskEnd(status);
+      if (end && taskId) delete d.book.bgTasks[taskId];
       if (end && run) endSub(d, run.toolUseId, end);
       maybeFinishPending(d);
       return commit(s, d);
@@ -333,11 +382,10 @@ function applyResult(s0: ConvState, e: Record<string, unknown>, now: number): Co
     } else if (failed) {
       finishTurn(d.turn, 'error', now, str(e.result) || str(arr(e.errors)[0]) || '出错了');
     } else {
-      // 成功：还有后台子代理/任务在跑时先不结束，等它们完成（CLI 会自动续轮）
+      // 成功：还有等结果类（awaited）后台子代理/任务在跑时先不结束，整轮保持进行中；
+      // 只剩常驻任务（如开发服务器）时直接收尾为 done
       d.book.pending = true;
       maybeFinishPending(d);
-      // 没能收尾：答复已经交付，只是在等后台任务，UI 要能看到答复
-      if (isActive(d.turn)) d.turn.awaitingBackground = true;
     }
   }
   return commit(s, d);
