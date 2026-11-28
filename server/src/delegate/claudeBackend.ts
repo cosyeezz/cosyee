@@ -1,11 +1,12 @@
 // Claude CLI 无头委派后端：每次调用起一个 `claude -p --output-format stream-json --verbose` 子进程，
-// 使用子代理账号的独立配置空间（CLAUDE_CONFIG_DIR 指向子代理空间，API / Kiro 环境变量仍从主代理账号目录读取），
+// 使用子代理账号的独立配置空间（CLAUDE_CONFIG_DIR 指向子代理空间，API / Kiro 环境变量仍从主代理账号目录读取，
+// 登录凭据经 CLAUDE_SECURESTORAGE_CONFIG_DIR 与主代理账号共用），
 // 禁用 Agent 工具防止递归委派，并把 stream-json 事件翻译成 ACP session/update 形状。
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EFFORTS, PRIMARY_MODELS, type DelegateModelList, type Effort, type SubagentAvailability } from '@cosyee/shared';
 import { DEFAULT_ID } from '../accounts/index.js';
-import { apiFlagEnv, claudeEnv, findClaude, killTree, removePrivateSettings, spawnSpec, writePrivateSettings } from '../claude/bin.js';
+import { apiFlagEnv, claudeEnv, credStorageDirFor, findClaude, killTree, removePrivateSettings, spawnSpec, writePrivateSettings } from '../claude/bin.js';
 import { type Json, LineSplitter, parseLine } from '../transcript.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
 import { NATIVE_SUBAGENT_TOOLS } from './mcp.js';
@@ -450,7 +451,9 @@ export class ClaudeBackend implements DelegateBackend {
     if (!claudePath) throw new Error('未安装 Claude CLI');
 
     const account = this.pickAccount(o);
-    const env = claudeEnv(account.dir, account.mainDir);
+    // 子代理空间与主代理共用凭据存储（同一份令牌、同一把刷新锁），不再各持一份 refresh token 互相踢掉
+    const sharedCred = account.dir !== account.mainDir ? credStorageDirFor(account.mainDir) : undefined;
+    const env = claudeEnv(account.dir, account.mainDir, sharedCred);
     const apiEnv = apiFlagEnv(account.mainDir);
     let settingsFile: string | null = null;
     let chosenEffort: Effort | null;

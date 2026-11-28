@@ -2,7 +2,8 @@
 // 每个被用作 Claude 委派子代理的账号在 ~/.claude-subagents/<accountId> 拥有独立配置空间：
 // - 共享（链接到基础配置目录，复用 links.ts）：skills、agents、commands、plugins、output-styles、hooks、settings.json、CLAUDE.md、keybindings.json；
 // - 隔离（子代理空间自己的）：projects、file-history、todos、plans、tasks、session-env、paste-cache、history.jsonl，以及 .claude.json 其余状态；
-// - 登录态：订阅账号复制 .credentials.json（macOS 同步钥匙串条目）并在主/子之间双向「较新者胜」同步令牌刷新；
+// - 登录态：子代理进程用 CLAUDE_SECURESTORAGE_CONFIG_DIR 直接读写主代理空间的凭据（同一份令牌、同一把刷新锁，见 claudeBackend）；
+//   另外仍把 .credentials.json（macOS 钥匙串条目）复制到子空间并双向「较新者胜」同步，只给不认这个变量的旧版 CLI 兜底；
 //   .claude.json 只复制 oauthAccount、顶层 mcpServers、projects 下各项目的 MCP 字段，以及跳过首次引导所需的最少字段（hasCompletedOnboarding / lastOnboardingVersion / bypassPermissionsModeAccepted）；
 // - API / Kiro 账号不复制凭据，环境变量在启动子进程时仍从主代理账号目录读取。
 import { spawnSync } from 'node:child_process';

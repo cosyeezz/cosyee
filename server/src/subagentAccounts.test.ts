@@ -22,7 +22,7 @@ import {
   syncSubagentToMain,
   type KeychainAdapter,
 } from './accounts/subagent-space.js';
-import { setBeforeClaudeEnv } from './claude/bin.js';
+import { claudeEnv, credStorageDirFor, setBeforeClaudeEnv } from './claude/bin.js';
 import { BackendError } from './delegate/backend.js';
 import { ClaudeBackend } from './delegate/claudeBackend.js';
 import { createHandler } from './http.js';
@@ -456,6 +456,27 @@ describe('账号移除清理与主代理模式隔离', () => {
   });
 });
 
+describe('凭据存储目录（CLAUDE_SECURESTORAGE_CONFIG_DIR）', () => {
+  it('credStorageDirFor：添加的账号用账号目录；默认账号沿用外部变量，都没有时 macOS 为空串、其它平台为 ~/.claude', () => {
+    expect(credStorageDirFor('/acc/x', {}, 'linux')).toBe('/acc/x');
+    expect(credStorageDirFor(null, { CLAUDE_SECURESTORAGE_CONFIG_DIR: '/sec' }, 'linux')).toBe('/sec');
+    expect(credStorageDirFor(null, { CLAUDE_CONFIG_DIR: '/cfg' }, 'darwin')).toBe('/cfg');
+    expect(credStorageDirFor(null, {}, 'darwin')).toBe('');
+    expect(credStorageDirFor(null, {}, 'win32')).toBe(path.join(os.homedir(), '.claude'));
+  });
+
+  it('claudeEnv：添加的账号去掉外部继承的凭据存储变量；显式传入时以传入的为准；默认账号沿用外部环境', () => {
+    process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = '/outer';
+    try {
+      expect(claudeEnv('/acc/x').CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
+      expect(claudeEnv('/sub/x', '/acc/x', '/acc/x').CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe('/acc/x');
+      expect(claudeEnv(null).CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe('/outer');
+    } finally {
+      delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+    }
+  });
+});
+
 describe('ClaudeBackend：新会话 / 续接目录与 API/Kiro 环境来源', () => {
   function mockSpawnSuccess(onCall: (args: string[], env: NodeJS.ProcessEnv) => void) {
     return ((_cmd: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
@@ -495,6 +516,8 @@ describe('ClaudeBackend：新会话 / 续接目录与 API/Kiro 环境来源', ()
     });
     expect(r1.accountId).toBe(work.id);
     expect(calls[0]!.env.CLAUDE_CONFIG_DIR).toBe(subagentAccountDir(work.id));
+    // 凭据存储指向主代理账号目录：与主会话共用同一份令牌和刷新锁
+    expect(calls[0]!.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(work.dir);
     expect(finishSpy).toHaveBeenCalledWith(work.id);
 
     // 把 subagent.claude 切回 default，再续接上面用 work.id 创建的会话 → 仍用 work.id 的子代理空间
@@ -509,7 +532,14 @@ describe('ClaudeBackend：新会话 / 续接目录与 API/Kiro 环境来源', ()
     });
     expect(r2.accountId).toBe(work.id);
     expect(calls[1]!.env.CLAUDE_CONFIG_DIR).toBe(subagentAccountDir(work.id));
+    expect(calls[1]!.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(work.dir);
     expect(calls[1]!.args).toContain('--resume');
+
+    // 默认账号的子代理：凭据存储沿用外部 CLAUDE_CONFIG_DIR（主会话默认账号的凭据目录）
+    const r3 = await backend.run({ cwd: tmp, prompt: 'def', account: { id: DEFAULT_ID, dir: null }, signal: new AbortController().signal });
+    expect(r3.accountId).toBe(DEFAULT_ID);
+    expect(calls[2]!.env.CLAUDE_CONFIG_DIR).toBe(subagentAccountDir(DEFAULT_ID));
+    expect(calls[2]!.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(base);
 
     // 移除 work.id 后再续接 → 抛 BackendError 报清楚错误
     await a.accounts.remove(work.id);

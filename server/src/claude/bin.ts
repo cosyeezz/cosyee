@@ -27,17 +27,60 @@ export function setBeforeClaudeEnv(hook: BeforeClaudeEnvHook | null): void {
   beforeClaudeEnvHook = hook;
 }
 
+/** Claude CLI 的凭据存储目录变量：登录凭据（.credentials.json / macOS 钥匙串条目）、刷新锁 .oauth_refresh.lock 都按它定位，缺省跟随 CLAUDE_CONFIG_DIR */
+export const CRED_STORAGE_ENV = 'CLAUDE_SECURESTORAGE_CONFIG_DIR';
+
+function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  for (const [k, v] of Object.entries(env)) if (k.toUpperCase() === name) return v;
+  return undefined;
+}
+
+function envDel(env: NodeJS.ProcessEnv, name: string): void {
+  for (const k of Object.keys(env)) if (k.toUpperCase() === name) delete env[k];
+}
+
+/**
+ * 某个账号的主代理进程实际使用的凭据存储目录，作为子代理进程 CLAUDE_SECURESTORAGE_CONFIG_DIR 的值，
+ * 让两边读写同一份凭据、共用同一把刷新锁（各持一份 refresh token 会互相把对方的令牌轮换作废）。
+ * - 添加的账号：账号目录；
+ * - 默认账号：沿用外部环境里的 CLAUDE_SECURESTORAGE_CONFIG_DIR / CLAUDE_CONFIG_DIR；都没有时为 ~/.claude，
+ *   macOS 用空串（CLI 据此派生不带后缀的钥匙串服务名「Claude Code-credentials」，与默认登录一致）。
+ */
+export function credStorageDirFor(
+  mainDir: string | null,
+  base: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (mainDir) return mainDir;
+  const sec = envGet(base, CRED_STORAGE_ENV);
+  if (sec !== undefined) return sec;
+  const cfg = envGet(base, 'CLAUDE_CONFIG_DIR');
+  if (cfg) return cfg;
+  return platform === 'darwin' ? '' : path.join(os.homedir(), '.claude');
+}
+
 /**
  * 启动 claude 用的环境：cleanEnv + 当前账号的 CLAUDE_CONFIG_DIR（默认账号不改，沿用外部环境）。
  * API 账号再注入它的 API Key / Base URL（覆盖外部环境里的同名变量）；
  * Kiro 账号在读取配置前先触发钩子确保本地代理已启动并完成端口同步。
  * apiDir：API / Kiro 配置的读取目录，默认同 dir；子代理空间传入主代理账号目录（CLAUDE_CONFIG_DIR 仍指向子代理空间）。
+ * credDir：凭据存储目录（CLAUDE_SECURESTORAGE_CONFIG_DIR）；子代理空间传入 credStorageDirFor(主代理账号目录)，
+ * 不传则添加的账号用自己的目录（去掉外部继承的值，免得各账号串用同一份凭据），默认账号沿用外部环境。
  */
-export function claudeEnv(dir: string | null = activeConfigDir(), apiDir: string | null = dir): NodeJS.ProcessEnv {
+export function claudeEnv(
+  dir: string | null = activeConfigDir(),
+  apiDir: string | null = dir,
+  credDir?: string,
+): NodeJS.ProcessEnv {
   const env = cleanEnv();
   if (dir) {
-    for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k];
+    envDel(env, 'CLAUDE_CONFIG_DIR');
     env.CLAUDE_CONFIG_DIR = dir;
+    envDel(env, CRED_STORAGE_ENV);
+  }
+  if (credDir !== undefined) {
+    envDel(env, CRED_STORAGE_ENV);
+    env[CRED_STORAGE_ENV] = credDir;
   }
   if (apiDir) {
     const api0 = readApiConfig(apiDir);
