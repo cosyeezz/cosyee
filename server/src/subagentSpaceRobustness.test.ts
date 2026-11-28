@@ -19,10 +19,12 @@ import {
   createMacKeychainAdapter,
   isNewerCred,
   KEYCHAIN_ACCOUNT,
+  macKeychainServiceName,
   prepareSubagentSpace,
   removeSubagentSpace,
   syncClaudeJsonToSubagent,
   syncSubagentToMain,
+  wipedCredAccount,
   writeFileAtomic,
 } from './accounts/subagent-space.js';
 import { setActiveConfigDir, subagentAccountDir } from './paths.js';
@@ -243,6 +245,62 @@ describe('1. 双向令牌同步健壮性', () => {
 
     // 主→子应报错（不能静默沿用子空间残留凭据）
     expect(() => prepareSubagentSpace(DEFAULT_ID, null, { platform: 'linux' })).toThrow(/未登录|缺少凭据/);
+  });
+
+  it('主空间凭据被 CLI 刷新失败清空（空令牌、保留账号字段）时：子→主回写恢复登录，主→子也能照常准备', () => {
+    writeCreds(base, { accessToken: 'tok-1', refreshToken: 'ref-1', expiresAt: 1000 });
+    writeClaudeJson(base, { accountUuid: 'u-1', displayName: 'One', emailAddress: 'one@x.test' });
+    const subDir = prepareSubagentSpace(DEFAULT_ID, null, { platform: 'linux' });
+
+    // 子空间进程先刷新，轮换出新令牌；主空间拿旧 refresh token 刷新被拒，CLI 把主空间令牌清空
+    writeJson(path.join(subDir, '.credentials.json'), {
+      claudeAiOauth: { accessToken: 'tok-2', refreshToken: 'ref-2', expiresAt: 2000, accountUuid: 'u-1', subscriptionType: 'pro' },
+    });
+    const wiped = { claudeAiOauth: { accessToken: '', refreshToken: '', expiresAt: 0, refreshTokenExpiresAt: 9e12, accountUuid: 'u-1', subscriptionType: 'pro' } };
+    writeJson(path.join(base, '.credentials.json'), wiped);
+    expect(wipedCredAccount(JSON.stringify(wiped))).toBe('u-1');
+
+    expect(syncSubagentToMain(DEFAULT_ID, null, { platform: 'linux' })).toBe(true);
+    expect(readJson(path.join(base, '.credentials.json')).claudeAiOauth.accessToken).toBe('tok-2');
+
+    // 主→子准备不再报「未登录」
+    writeJson(path.join(base, '.credentials.json'), wiped);
+    expect(syncSubagentToMain(DEFAULT_ID, null, { platform: 'linux' })).toBe(true);
+    expect(() => prepareSubagentSpace(DEFAULT_ID, null, { platform: 'linux' })).not.toThrow();
+  });
+
+  it('清空凭据里记录的 accountUuid 与子空间凭据不一致时不回写；空壳（无任何账号痕迹）仍按登出处理', () => {
+    writeCreds(base, { accessToken: 'tok-1', refreshToken: 'ref-1', expiresAt: 1000 });
+    writeClaudeJson(base, { accountUuid: 'u-1', displayName: 'One', emailAddress: 'one@x.test' });
+    const subDir = prepareSubagentSpace(DEFAULT_ID, null, { platform: 'linux' });
+    writeJson(path.join(subDir, '.credentials.json'), {
+      claudeAiOauth: { accessToken: 'tok-2', refreshToken: 'ref-2', expiresAt: 2000, accountUuid: 'u-1' },
+    });
+
+    writeJson(path.join(base, '.credentials.json'), {
+      claudeAiOauth: { accessToken: '', refreshToken: '', expiresAt: 0, accountUuid: 'u-other' },
+    });
+    expect(syncSubagentToMain(DEFAULT_ID, null, { platform: 'linux' })).toBe(false);
+    expect(readJson(path.join(base, '.credentials.json')).claudeAiOauth.accountUuid).toBe('u-other');
+
+    writeJson(path.join(base, '.credentials.json'), { claudeAiOauth: { accessToken: '', refreshToken: '' } });
+    expect(wipedCredAccount(fs.readFileSync(path.join(base, '.credentials.json'), 'utf8'))).toBeUndefined();
+    expect(syncSubagentToMain(DEFAULT_ID, null, { platform: 'linux' })).toBe(false);
+  });
+
+  it('macOS：钥匙串里主空间凭据被清空时同样回写恢复', () => {
+    const store = new Map<string, string>();
+    const kc = { read: (s: string) => store.get(s) ?? null, write: (s: string, d: string) => void store.set(s, d) };
+    const mainSvc = macKeychainServiceName(null);
+    store.set(mainSvc, JSON.stringify({ claudeAiOauth: { accessToken: 'a1', refreshToken: 'r1', expiresAt: 1000, accountUuid: 'u-1' } }));
+    writeClaudeJson(base, { accountUuid: 'u-1', displayName: 'One', emailAddress: 'one@x.test' });
+    const subDir = prepareSubagentSpace(DEFAULT_ID, null, { platform: 'darwin', keychain: kc, envConfigDir: '' });
+    const subSvc = macKeychainServiceName(subDir);
+    const fresh = JSON.stringify({ claudeAiOauth: { accessToken: 'a2', refreshToken: 'r2', expiresAt: 2000, accountUuid: 'u-1' } });
+    store.set(subSvc, fresh);
+    store.set(mainSvc, JSON.stringify({ claudeAiOauth: { accessToken: '', refreshToken: '', expiresAt: 0, accountUuid: 'u-1' } }));
+    expect(syncSubagentToMain(DEFAULT_ID, null, { platform: 'darwin', keychain: kc, envConfigDir: '' })).toBe(true);
+    expect(store.get(mainSvc)).toBe(fresh);
   });
 
   it('isNewerCred 边界：相同内容不写；expiresAt 相等时按 mtime；单边缺 expiresAt 时有值者胜', () => {

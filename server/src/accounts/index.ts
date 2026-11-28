@@ -508,6 +508,8 @@ export class Accounts {
       if (mainDir !== null && !fs.existsSync(mainDir)) {
         throw new Error('账号的配置目录不存在了，请移除后重新添加');
       }
+      // 主空间凭据可能刚被 CLI 刷新失败清空，而有效令牌在子空间：先回写恢复，再主→子同步
+      this.syncSubagentBack(accountId, { silent: true });
       const dir = prepareSubagentSpace(accountId, mainDir, this.deps.subagentSpace);
       if (accountId === this.subagentClaudeId() && this.subagentClaudeError !== null) {
         this.subagentClaudeError = null;

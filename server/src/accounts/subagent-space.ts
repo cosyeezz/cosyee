@@ -80,6 +80,40 @@ export function parseCredSnapshot(raw: string, mtimeMs = 0): CredSnapshot | null
   }
 }
 
+/**
+ * 识别「Claude CLI 刷新令牌失败后清空的凭据」：刷新被拒（refresh token 已被另一个进程轮换作废等）时，
+ * CLI 会把 accessToken / refreshToken 写成空串、expiresAt 置 0，但保留 accountUuid / refreshTokenExpiresAt / scopes 等字段；
+ * 用户主动登出则是删除凭据（文件或 claudeAiOauth 不存在），两者据此区分。
+ * 是清空状态时返回其中记录的 accountUuid（没有记录为 null），否则返回 undefined。
+ */
+export function wipedCredAccount(raw: string | null): string | null | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const j = JSON.parse(raw) as unknown;
+    if (!isPlainObj(j) || !isPlainObj(j.claudeAiOauth)) return undefined;
+    const ai = j.claudeAiOauth;
+    const blank = (v: unknown) => typeof v === 'string' && v.trim().length === 0;
+    if (!blank(ai.accessToken) || !blank(ai.refreshToken)) return undefined;
+    const uuid = typeof ai.accountUuid === 'string' && ai.accountUuid.trim() ? ai.accountUuid.trim().toLowerCase() : null;
+    const rtExp = typeof ai.refreshTokenExpiresAt === 'number' && ai.refreshTokenExpiresAt > 0;
+    // 至少留有一项账号痕迹才认定是 CLI 清空的，空壳对象仍按「未登录」处理
+    return uuid || rtExp ? uuid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 凭据原文里记录的 claudeAiOauth.accountUuid（小写）；没有为 null */
+function credAccountUuid(raw: string): string | null {
+  try {
+    const j = JSON.parse(raw) as unknown;
+    const ai = isPlainObj(j) && isPlainObj(j.claudeAiOauth) ? j.claudeAiOauth : null;
+    return typeof ai?.accountUuid === 'string' && ai.accountUuid.trim() ? ai.accountUuid.trim().toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 从凭据 JSON 原文解析 claudeAiOauth.expiresAt（毫秒时间戳）；无效返回 null */
 export function parseCredExpiresAt(raw: string): number | null {
   try {
@@ -166,16 +200,30 @@ function readJsonObj(file: string): Record<string, unknown> | null {
 }
 
 function readCredFile(file: string): CredSnapshot | null {
-  let raw: string;
-  let mtimeMs = 0;
+  const r = readCredRaw(file);
+  return r ? parseCredSnapshot(r.raw, r.mtimeMs) : null;
+}
+
+/** 读凭据文件原文；不存在返回 null */
+function readCredRaw(file: string): { raw: string; mtimeMs: number } | null {
   try {
-    raw = fs.readFileSync(file, 'utf8');
-    mtimeMs = fs.statSync(file).mtimeMs;
+    const raw = fs.readFileSync(file, 'utf8');
+    return { raw, mtimeMs: fs.statSync(file).mtimeMs };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw e;
   }
-  return parseCredSnapshot(raw, mtimeMs);
+}
+
+/**
+ * requireDst 时目标没有有效凭据，判断能否照常回写：目标是被 CLI 刷新失败清空的同一账号凭据才放行
+ * （用户主动登出 = 凭据被删除，不复活；凭据里记录的 accountUuid 与源不一致也不放行）。
+ */
+function canRecoverWipedDst(srcRaw: string, dstRaw: string | null): boolean {
+  const wiped = wipedCredAccount(dstRaw);
+  if (wiped === undefined) return false;
+  const srcUuid = credAccountUuid(srcRaw);
+  return !(wiped && srcUuid && wiped !== srcUuid);
 }
 
 /** macOS security -w 在值包含非 ASCII UTF-8（如中文用户名）时会输出纯十六进制，此处自动解码 */
@@ -441,7 +489,7 @@ function syncCredDirection(
       if (opts.requireSrc) throw new Error('子代理账号在 macOS 钥匙串中缺少登录凭据，请重新登录');
       return false;
     }
-    if (opts.requireDst && !dst) return false;
+    if (opts.requireDst && !dst && !canRecoverWipedDst(src.raw, dstRaw)) return false;
     if (!isNewerCred(src, dst, opts.force)) return false;
     kc.write(dstSvc, src.raw);
     return true;
@@ -450,12 +498,13 @@ function syncCredDirection(
   const srcFile = path.join(srcDir ?? baseClaudeHome(), '.credentials.json');
   const dstFile = path.join(dstDir ?? baseClaudeHome(), '.credentials.json');
   const src = readCredFile(srcFile);
-  const dst = readCredFile(dstFile);
+  const dstRaw = readCredRaw(dstFile);
+  const dst = dstRaw ? parseCredSnapshot(dstRaw.raw, dstRaw.mtimeMs) : null;
   if (!src) {
     if (opts.requireSrc) throw new Error('子代理账号未登录或缺少凭据，请重新登录');
     return false;
   }
-  if (opts.requireDst && !dst) return false;
+  if (opts.requireDst && !dst && !canRecoverWipedDst(src.raw, dstRaw?.raw ?? null)) return false;
   if (!isNewerCred(src, dst, opts.force)) return false;
   writeFileAtomic(dstFile, src.raw, 0o600);
   return true;
@@ -488,7 +537,9 @@ export function prepareSubagentSpace(
 /**
  * 把子代理空间刷新后的凭据回写到主代理空间（子 → 主，较新者胜）。
  * 时机：子代理进程退出后、或 runner 启动该账号的主代理进程前。
- * 子代理空间不存在、主/子账号身份不一致、主空间已登出或为 API / Kiro 账号时直接跳过。返回是否写入了主空间。
+ * 子代理空间不存在、主/子账号身份不一致、主空间已登出或为 API / Kiro 账号时直接跳过。
+ * 主空间凭据被 CLI 刷新失败清空（主/子两个进程持有同一个 refresh token，子空间先刷新后旧令牌作废）不算登出，照常回写恢复登录。
+ * 返回是否写入了主空间。
  */
 export function syncSubagentToMain(
   accountId: string,
