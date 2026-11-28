@@ -195,6 +195,19 @@ function splitBlock(text: string, blockKind: BlockKind): SpeechSegment[] {
   return out;
 }
 
+/**
+ * 朗读模型（MeloTTS）念不出的符号：词表里没有的字符会被直接丢掉。
+ * 「87.5%」会变成「八十七点五」，所以改写成「百分之87.5」（数字交给模型的数字规则念）；
+ * 全角冒号、分号不在词表里，停顿跟着丢了，换成逗号。
+ */
+export function speakable(s: string): string {
+  return s
+    .replace(/(\d+(?:\.\d+)?)\s*[%％]/g, '百分之$1')
+    .replace(/[%％]/g, '百分号')
+    .replace(/[：；]+$/, '') // 段尾的分号：段后本来就有停顿
+    .replace(/[：；]/g, '，');
+}
+
 /** Markdown → 带段后停顿类型的分段列表。短句合并绝不跨越标题 / 列表项 / 段落边界；标题前一段停顿至少达到段落级别。 */
 export function speechSegments(md: string): SpeechSegment[] {
   const blocks = parseBlocks(md);
@@ -208,7 +221,7 @@ export function speechSegments(md: string): SpeechSegment[] {
     }
     out.push(...segs);
   }
-  return out;
+  return out.map((seg) => ({ ...seg, text: speakable(seg.text) }));
 }
 
 /** 朗读文本 → 小段。按中英文句末标点和换行切，过短的并到后面，过长的再切。 */

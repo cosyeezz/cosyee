@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_STT_SECONDS } from './speech/index.js';
-import { PAUSE_MS, speechSegments, speechText, splitSentences } from './speech/text.js';
+import { PAUSE_MS, speakable, speechSegments, speechText, splitSentences } from './speech/text.js';
 import { appendSilence, encodeWav, joinTranscripts, normalizeLoudness, pcm16ToFloat32, splitAudioChunks, trimSilence } from './speech/wav.js';
 
 describe('speechText', () => {
@@ -196,5 +196,13 @@ describe('wav', () => {
 
   it('MAX_STT_SECONDS 已提高到 180 秒', () => {
     expect(MAX_STT_SECONDS).toBe(180);
+  });
+});
+
+describe('speakable', () => {
+  it('百分号改成「百分之」、全角冒号分号换成逗号', () => {
+    expect(speakable('覆盖率 87.5%，失败率 3％')).toBe('覆盖率 百分之87.5，失败率 百分之3');
+    expect(speakable('总结：第一；第二')).toBe('总结，第一，第二');
+    expect(speakable('第一项；')).toBe('第一项');
   });
 });
