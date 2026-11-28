@@ -679,7 +679,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         terminalWss.handleUpgrade(req, socket, head, (ws) => {
           alive.set(ws, true);
           ws.on('pong', () => alive.set(ws, true));
-          void terminals.attach(ws, url.searchParams.get('root'));
+          const create = url.searchParams.get('create') === '1';
+          void terminals.attach(ws, url.searchParams.get('root'), url.searchParams.get('id'), create);
         });
         return;
       }

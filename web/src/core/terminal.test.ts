@@ -1,10 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { TERM_OUTPUT_LIMIT, type TermBlock, type TermSnapshot } from '@cosyee/shared';
-import { applyTerminalServerMsg, pushHistoryOptimistic } from './terminal';
-import { clampTerminalHeight, readTerminalPrefs, saveTerminalPrefs, TERMINAL_PREFS_KEY } from './terminalPrefs';
+import { TERM_OUTPUT_LIMIT, type TermBlock, type TermSnapshot, type TermTabInfo } from '@cosyee/shared';
+import {
+  applyTerminalServerMsg,
+  pushHistoryOptimistic,
+  reorderTabs,
+  terminalWsUrl,
+} from './terminal';
+import {
+  clampTerminalHeight,
+  readTerminalActiveTab,
+  readTerminalPrefs,
+  saveTerminalActiveTab,
+  saveTerminalPrefs,
+  TERMINAL_ACTIVE_TABS_KEY,
+  TERMINAL_PREFS_KEY,
+} from './terminalPrefs';
+
+const TAB_1: TermTabInfo = {
+  id: 't1',
+  cwd: 'F:\\Cosyee',
+  shell: 'pwsh',
+  status: 'idle',
+  createdAt: 1000,
+};
 
 const BASE_SNAP: TermSnapshot = {
+  id: 't1',
   root: 'F:\\Cosyee',
+  tabs: [TAB_1],
   cwd: 'F:\\Cosyee',
   shell: 'pwsh',
   shells: [{ id: 'pwsh', label: 'PowerShell 7' }],
@@ -61,17 +84,60 @@ describe('terminal state reducer', () => {
     expect(next.blocks.map((b) => b.id)).toEqual(['run-1']);
   });
 
+  it('tabs 消息合并更新快照中的标签列表', () => {
+    const nextTabs: TermTabInfo[] = [
+      { ...TAB_1, status: 'running', runningCmd: 'npm run dev' },
+      { id: 't2', name: '后端', cwd: 'F:\\Cosyee\\server', shell: 'gitbash', status: 'failed', createdAt: 2000 },
+    ];
+    const next = applyTerminalServerMsg(BASE_SNAP, { t: 'tabs', tabs: nextTabs })!;
+    expect(next.tabs).toEqual(nextTabs);
+    expect(next.blocks).toEqual(BASE_SNAP.blocks);
+  });
+
+  it('reorderTabs 按移除后数组计算下标并夹到两端', () => {
+    const tabs: TermTabInfo[] = [
+      { ...TAB_1, id: 'a' },
+      { ...TAB_1, id: 'b' },
+      { ...TAB_1, id: 'c' },
+    ];
+    expect(reorderTabs(tabs, 'a', 2).map((t) => t.id)).toEqual(['b', 'c', 'a']);
+    expect(reorderTabs(tabs, 'c', 0).map((t) => t.id)).toEqual(['c', 'a', 'b']);
+    expect(reorderTabs(tabs, 'b', 99).map((t) => t.id)).toEqual(['a', 'c', 'b']);
+    expect(reorderTabs(tabs, 'b', -5).map((t) => t.id)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('terminalWsUrl 正确拼接 id 与 create 参数', () => {
+    const base = terminalWsUrl('F:\\Cosyee');
+    expect(base).toContain('/api/terminal/ws?root=F%3A%5CCosyee');
+    expect(base).not.toContain('&id=');
+    expect(base).not.toContain('&create=1');
+
+    const withId = terminalWsUrl('F:\\Cosyee', 'abc-123');
+    expect(withId).toContain('&id=abc-123');
+    expect(withId).not.toContain('&create=1');
+
+    const withCreate = terminalWsUrl('F:\\Cosyee', 'abc-123', true);
+    expect(withCreate).toContain('&id=abc-123&create=1');
+  });
+
   it('乐观更新历史去重并移到末尾', () => {
     expect(pushHistoryOptimistic(['a', 'b', 'c'], 'b')).toEqual(['a', 'c', 'b']);
     expect(pushHistoryOptimistic(['a'], '   ')).toEqual(['a']);
   });
 
-  it('terminalPrefs 持久化与高度范围钳制', () => {
+  it('terminalPrefs 与按工作空间记住当前标签 id 的持久化', () => {
     localStorage.removeItem(TERMINAL_PREFS_KEY);
+    localStorage.removeItem(TERMINAL_ACTIVE_TABS_KEY);
     expect(readTerminalPrefs()).toEqual({ open: false, height: 300 });
     saveTerminalPrefs({ open: true, height: 420 });
     expect(readTerminalPrefs()).toEqual({ open: true, height: 420 });
     expect(clampTerminalHeight(50, 600)).toBe(180);
     expect(clampTerminalHeight(999, 500)).toBe(500);
+
+    expect(readTerminalActiveTab('F:\\Cosyee')).toBeNull();
+    saveTerminalActiveTab('F:\\Cosyee\\', 'tab-a');
+    expect(readTerminalActiveTab('f:\\cosyee')).toBe('tab-a');
+    saveTerminalActiveTab('F:\\Cosyee', null);
+    expect(readTerminalActiveTab('F:\\Cosyee')).toBeNull();
   });
 });

@@ -1,23 +1,27 @@
 // 内置终端面板：宽屏停靠在中间对话区底部（可拖拽调高、双击或按钮最大化），窄屏铺满中间区。
+// 支持多终端标签页：单标签时保持简洁工作空间路径标题 + 新建按钮；≥2 个标签时在标题栏左侧展示标签栏。
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import type { TermBlock } from '@cosyee/shared';
-import { useTerminal, type TerminalController } from '../../core/terminal';
+import { TERM_TAB_LIMIT, type TermTabInfo } from '@cosyee/shared';
+import {
+  useTerminalTabs,
+  type TerminalController,
+  type TerminalTabsController,
+} from '../../core/terminal';
 import { clampTerminalHeight } from '../../core/terminalPrefs';
 import { Icon } from '../icons/Icon';
 import { NARROW_QUERY, TOUCH_QUERY, useMediaQuery } from '../layout/useMediaQuery';
 import { useDismiss } from '../sidebar/useDismiss';
-import { TerminalBlock } from './TerminalBlock';
-import { TerminalHistory } from './TerminalHistory';
-import { middleEllipsisPath, shortCwd, workspaceName } from './terminalUtil';
+import { TerminalPane, type TabUiState } from './TerminalPane';
+import { TerminalTabs } from './TerminalTabs';
+import { middleEllipsisPath, shortCwd, tabDisplayName, workspaceName } from './terminalUtil';
 import './TerminalPanel.css';
 
 export interface TerminalPanelProps {
@@ -31,22 +35,56 @@ export interface TerminalPanelProps {
   /** 可选覆盖（主要用于 dev 预览页与测试） */
   narrow?: boolean;
   touch?: boolean;
+  /** 兼容旧单终端 controller 注入（自动适配为单标签） */
   controller?: TerminalController;
+  /** 多终端标签控制器注入（dev 预览页与多标签测试用） */
+  tabsController?: TerminalTabsController;
   initialHistoryOpen?: boolean;
   initialStdinMode?: boolean;
+  initialRenamingId?: string | null;
+  initialConfirmCloseId?: string | null;
   fixedNowMs?: number;
+}
+
+interface ConfirmCloseState {
+  tabId: string;
+  cmd: string;
 }
 
 const LEAVE_MS = 180;
 
-function isAtFirstLine(el: HTMLTextAreaElement): boolean {
-  const pos = el.selectionStart ?? 0;
-  return el.value.lastIndexOf('\n', pos - 1) === -1;
-}
-
-function isAtLastLine(el: HTMLTextAreaElement): boolean {
-  const pos = el.selectionEnd ?? el.value.length;
-  return el.value.indexOf('\n', pos) === -1;
+function singleTabAdapter(ctrl: TerminalController, root: string | null): TerminalTabsController {
+  const snap = ctrl.state.snapshot;
+  const fallbackId = snap?.id || 'default';
+  const tabs: TermTabInfo[] =
+    snap?.tabs && snap.tabs.length > 0
+      ? snap.tabs
+      : snap
+        ? [
+            {
+              id: fallbackId,
+              cwd: snap.cwd,
+              shell: snap.shell,
+              status: snap.blocks.some((b) => b.state === 'running') ? 'running' : 'idle',
+              runningCmd: [...snap.blocks].reverse().find((b) => b.state === 'running')?.cmd,
+              createdAt: 0,
+            },
+          ]
+        : root
+          ? [{ id: fallbackId, cwd: root, shell: 'pwsh', status: 'idle', createdAt: 0 }]
+          : [];
+  return {
+    tabs,
+    activeId: fallbackId,
+    notice: null,
+    clearNotice: () => {},
+    current: ctrl,
+    selectTab: () => {},
+    newTab: () => null,
+    closeTab: () => ({ closedLast: true }),
+    renameTab: () => {},
+    moveTab: () => {},
+  };
 }
 
 export function TerminalPanel({
@@ -59,8 +97,11 @@ export function TerminalPanel({
   narrow: narrowProp,
   touch: touchProp,
   controller: controllerProp,
+  tabsController: tabsControllerProp,
   initialHistoryOpen = false,
   initialStdinMode = false,
+  initialRenamingId = null,
+  initialConfirmCloseId = null,
   fixedNowMs,
 }: TerminalPanelProps) {
   const mediaNarrow = useMediaQuery(NARROW_QUERY);
@@ -83,115 +124,111 @@ export function TerminalPanel({
     return () => window.clearTimeout(t);
   }, [leaving]);
 
-  // 无外部 controller 时走真实 WS hook
-  const internalCtrl = useTerminal(controllerProp ? null : root, open && !controllerProp);
-  const { state, actions } = controllerProp ?? internalCtrl;
+  // 无外部控制器时走真实多标签 WS hook
+  const useInternal = !tabsControllerProp && !controllerProp;
+  const internalTabsCtrl = useTerminalTabs(useInternal ? root : null, open && useInternal);
+
+  const adaptedSingle = useMemo(
+    () => (controllerProp && !tabsControllerProp ? singleTabAdapter(controllerProp, root) : null),
+    [controllerProp, tabsControllerProp, root],
+  );
+
+  const tabsCtrl = tabsControllerProp ?? adaptedSingle ?? internalTabsCtrl;
+  const { tabs, activeId, notice, clearNotice, current } = tabsCtrl;
+  const { state, actions } = current;
   const snap = state.snapshot;
 
   const panelRef = useRef<HTMLElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const shellMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
-  const histWrapRef = useRef<HTMLDivElement>(null);
+  const uiCacheRef = useRef<Map<string, TabUiState>>(new Map());
+  const historyOpenRef = useRef<boolean>(initialHistoryOpen);
 
   const [maximized, setMaximized] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [shellMenuOpen, setShellMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(initialHistoryOpen);
-  const [stdinMode, setStdinMode] = useState(initialStdinMode);
-  const [value, setValue] = useState('');
-  const [showScrollBottom, setShowScrollBottom] = useState(false);
-
-  // 历史上下翻页游标与草稿
-  const histCursorRef = useRef<number | null>(null);
-  const draftRef = useRef<string>('');
-  const atBottomRef = useRef<boolean>(true);
+  const [confirmClose, setConfirmClose] = useState<ConfirmCloseState | null>(() => {
+    if (!initialConfirmCloseId) return null;
+    const t = tabs.find((x) => x.id === initialConfirmCloseId);
+    if (!t) return null;
+    return { tabId: t.id, cmd: t.runningCmd || tabDisplayName(t, root ?? '') };
+  });
 
   const closeShellMenu = useCallback(() => setShellMenuOpen(false), []);
   const closeMoreMenu = useCallback(() => setMoreMenuOpen(false), []);
-  const closeHistory = useCallback(() => {
-    setHistoryOpen(false);
-    if (!touch) requestAnimationFrame(() => inputRef.current?.focus());
-  }, [touch]);
 
   useDismiss(shellMenuOpen, shellMenuRef, closeShellMenu);
   useDismiss(moreMenuOpen, moreMenuRef, closeMoreMenu);
-  useDismiss(historyOpen, histWrapRef, closeHistory);
+
+  // 如果待确认关闭的标签已经不在列表里，自动收起确认条
+  useEffect(() => {
+    if (!confirmClose) return;
+    if (!tabs.some((t) => t.id === confirmClose.tabId)) {
+      setConfirmClose(null);
+    }
+  }, [confirmClose, tabs]);
 
   const blocks = snap?.blocks ?? [];
-  const history = snap?.history ?? [];
   const currentCwd = snap?.cwd ?? root ?? '';
   const currentRoot = snap?.root ?? root ?? '';
-  const platform = snap?.platform ?? 'linux';
   const shells = snap?.shells ?? [];
   const currentShellInfo = shells.find((s) => s.id === snap?.shell);
 
-  /** 最近一条正在运行的块（用于 stdin 与 Ctrl+C） */
-  const runningBlock: TermBlock | null = useMemo(() => {
+  const activeRunningCmd = useMemo(() => {
     for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i]!.state === 'running') return blocks[i]!;
+      if (blocks[i]!.state === 'running') return blocks[i]!.cmd;
     }
     return null;
   }, [blocks]);
 
-  // 没有运行中的命令时自动退出 stdin 模式
-  useEffect(() => {
-    if (!runningBlock && stdinMode) setStdinMode(false);
-  }, [runningBlock, stdinMode]);
+  const doCloseTab = useCallback(
+    (tabId: string) => {
+      setConfirmClose(null);
+      if (root) {
+        uiCacheRef.current.delete(`${root}::${tabId}`);
+      }
+      const { closedLast } = tabsCtrl.closeTab(tabId);
+      if (closedLast) {
+        onClose();
+      }
+    },
+    [tabsCtrl, root, onClose],
+  );
 
-  // 面板打开时自动聚焦输入框（触屏上不自动弹软键盘）
-  useEffect(() => {
-    if (!open || touch) return;
-    const raf = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(raf);
-  }, [open, root, touch]);
+  const requestCloseTab = useCallback(
+    (tab: TermTabInfo) => {
+      const runningCmd =
+        tab.status === 'running'
+          ? tab.runningCmd || tabDisplayName(tab, currentRoot)
+          : tab.id === activeId && activeRunningCmd
+            ? activeRunningCmd
+            : null;
+      if (runningCmd) {
+        setConfirmClose({ tabId: tab.id, cmd: runningCmd });
+        return;
+      }
+      doCloseTab(tab.id);
+    },
+    [activeId, activeRunningCmd, currentRoot, doCloseTab],
+  );
 
-  // 切换工作空间时复位历史浏览状态
-  useEffect(() => {
-    histCursorRef.current = null;
-    draftRef.current = '';
-  }, [root]);
+  const handleNewTab = useCallback(() => {
+    setConfirmClose(null);
+    tabsCtrl.newTab();
+  }, [tabsCtrl]);
 
-  // 输入框自适应高度（1 ~ 5 行）
-  useLayoutEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(120, Math.max(24, el.scrollHeight))}px`;
-  }, [value, mounted]);
-
-  // 输出区自动滚到底部
-  const lastBlock = blocks[blocks.length - 1];
-  const scrollSignal = `${blocks.length}:${lastBlock?.id ?? ''}:${lastBlock?.output.length ?? 0}:${lastBlock?.state ?? ''}`;
-  useEffect(() => {
-    if (!mounted) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    if (atBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-      setShowScrollBottom(false);
-    }
-  }, [scrollSignal, mounted, root]);
-
-  const onBodyScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = dist <= 28;
-    atBottomRef.current = atBottom;
-    setShowScrollBottom(!atBottom && blocks.length > 0);
-  }, [blocks.length]);
-
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    atBottomRef.current = true;
-    setShowScrollBottom(false);
-    el.scrollTo?.({ top: el.scrollHeight, behavior: 'smooth' });
-    if (!el.scrollTo) el.scrollTop = el.scrollHeight;
-  }, []);
+  const cycleTab = useCallback(
+    (delta: 1 | -1) => {
+      if (tabs.length < 2) return;
+      const idx = tabs.findIndex((t) => t.id === activeId);
+      const nextIdx = idx < 0 ? 0 : (idx + delta + tabs.length) % tabs.length;
+      const next = tabs[nextIdx];
+      if (next) tabsCtrl.selectTab(next.id);
+    },
+    [tabs, activeId, tabsCtrl],
+  );
 
   // 顶边拖拽调整高度
   const onResizeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -220,155 +257,89 @@ export function TerminalPanel({
     window.addEventListener('pointerup', up);
   };
 
-  // 历史上下浏览
-  const stepHistory = useCallback((dir: -1 | 1) => {
-    if (history.length === 0) return;
-    if (dir === -1) {
-      if (histCursorRef.current === null) {
-        draftRef.current = value;
-        histCursorRef.current = history.length - 1;
-      } else if (histCursorRef.current > 0) {
-        histCursorRef.current -= 1;
-      }
-      setValue(history[histCursorRef.current]!);
-    } else {
-      if (histCursorRef.current === null) return;
-      if (histCursorRef.current < history.length - 1) {
-        histCursorRef.current += 1;
-        setValue(history[histCursorRef.current]!);
-      } else {
-        histCursorRef.current = null;
-        setValue(draftRef.current);
-      }
-    }
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (el) el.setSelectionRange(el.value.length, el.value.length);
-    });
-  }, [history, value]);
-
-  const submitInput = useCallback(() => {
-    if (stdinMode && runningBlock) {
-      actions.sendStdin(runningBlock.id, `${value}\n`);
-      setValue('');
-      atBottomRef.current = true;
-      return;
-    }
-    const cmd = value.trim();
-    if (!cmd) return;
-    actions.run(value);
-    setValue('');
-    histCursorRef.current = null;
-    draftRef.current = '';
-    atBottomRef.current = true;
-  }, [stdinMode, runningBlock, value, actions]);
-
-  const onInputKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  // 面板内快捷键：新建 / 关闭当前标签 / 切换标签 / Esc
+  const onPanelKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.nativeEvent.isComposing) return;
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Ctrl+Shift+T：新建标签
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 't') {
       e.preventDefault();
-      submitInput();
+      handleNewTab();
       return;
     }
 
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'r') {
+    // Ctrl+Shift+W：关闭当前标签
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'w') {
       e.preventDefault();
-      setHistoryOpen((o) => !o);
-      return;
-    }
-
-    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'l') {
-      e.preventDefault();
-      actions.clear();
-      return;
-    }
-
-    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'c') {
-      const selText = window.getSelection?.()?.toString() ?? '';
-      if (selText) return; // 有选中文本时让浏览器正常复制
-      if (!value && runningBlock) {
-        e.preventDefault();
-        actions.stop(runningBlock.id);
+      const curTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
+      if (curTab) {
+        requestCloseTab(curTab);
+      } else {
+        onClose();
       }
       return;
     }
 
-    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 's' && runningBlock) {
-      e.preventDefault();
-      setStdinMode((m) => !m);
-      return;
-    }
-
-    if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-      if (isAtFirstLine(e.currentTarget)) {
+    // Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageDown / Ctrl+PageUp：切换标签
+    if (e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (e.key === 'Tab') {
         e.preventDefault();
-        stepHistory(-1);
+        cycleTab(e.shiftKey ? -1 : 1);
+        return;
       }
-      return;
-    }
-
-    if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
-      if (histCursorRef.current !== null && isAtLastLine(e.currentTarget)) {
+      if (e.key === 'PageDown' && !e.shiftKey) {
         e.preventDefault();
-        stepHistory(1);
+        cycleTab(1);
+        return;
       }
-      return;
-    }
-
-    if (e.key === 'Escape') {
-      // 焦点在输入框内按 Esc：只关历史浮层，不关闭终端面板（防误触）
-      if (historyOpen) {
+      if (e.key === 'PageUp' && !e.shiftKey) {
         e.preventDefault();
-        e.stopPropagation();
-        setHistoryOpen(false);
+        cycleTab(-1);
+        return;
       }
     }
-  };
 
-  // 面板内 Esc：焦点不在输入框、且没有子浮层打开时关闭面板
-  const onPanelKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
-    if (historyOpen || shellMenuOpen || moreMenuOpen) return;
+    if (confirmClose) {
+      e.preventDefault();
+      setConfirmClose(null);
+      return;
+    }
+    if (historyOpenRef.current || shellMenuOpen || moreMenuOpen) return;
     if (document.activeElement === inputRef.current) return;
     e.preventDefault();
     onClose();
   };
 
-  const onRerun = useCallback((cmd: string) => {
-    actions.run(cmd);
-    atBottomRef.current = true;
-    if (!touch) inputRef.current?.focus();
-  }, [actions, touch]);
-
-  const onSelectHistory = useCallback((cmd: string) => {
-    setValue(cmd);
-    histCursorRef.current = null;
-    setHistoryOpen(false);
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(cmd.length, cmd.length);
-      }
-    });
+  const onHistoryOpenChange = useCallback((isOpen: boolean) => {
+    historyOpenRef.current = isOpen;
   }, []);
 
   if (!mounted || !root) return null;
 
-  const isRootCwd = currentCwd.replace(/[\\/]+$/, '').toLowerCase() === currentRoot.replace(/[\\/]+$/, '').toLowerCase();
+  const isRootCwd =
+    currentCwd.replace(/[\\/]+$/, '').toLowerCase() === currentRoot.replace(/[\\/]+$/, '').toLowerCase();
   const wsTitle = workspaceName(currentRoot);
   const cwdDisplay = narrow
-    ? (isRootCwd ? '' : shortCwd(currentCwd, currentRoot).replace(new RegExp(`^${wsTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`), ''))
+    ? isRootCwd
+      ? ''
+      : shortCwd(currentCwd, currentRoot).replace(
+          new RegExp(`^${wsTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`),
+          '',
+        )
     : middleEllipsisPath(currentCwd, 48);
-  const promptDir = shortCwd(currentCwd, currentRoot);
-  const promptGlyph = platform === 'win32' && (!snap || snap.shell === 'cmd' || snap.shell === 'powershell' || snap.shell === 'pwsh') ? '>' : '❯';
+
+  const showTabBar = tabs.length >= 2;
+  const atLimit = tabs.length >= TERM_TAB_LIMIT;
+  const effectiveTabId = activeId ?? snap?.id ?? tabs[0]?.id ?? 'default';
+  const paneKey = `${root}::${effectiveTabId}`;
 
   const panelCls = [
     'cz-term',
     narrow ? 'is-narrow' : maximized ? 'is-max' : 'is-docked',
     leaving ? 'is-leaving' : '',
     resizing ? 'is-resizing' : '',
+    showTabBar ? 'has-tabs' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -393,18 +364,45 @@ export function TerminalPanel({
 
       {/* 标题栏 */}
       <header className="cz-term__bar">
-        <div className="cz-term__brand" title={currentCwd}>
-          <span className="cz-term__icon" aria-hidden="true">
-            <Icon name="terminal" size={15} />
-          </span>
-          <span className="cz-term__ws">{wsTitle}</span>
-          {cwdDisplay && (
-            <>
-              <span className="cz-term__sep" aria-hidden="true">/</span>
-              <span className="cz-term__cwd">{cwdDisplay}</span>
-            </>
-          )}
-        </div>
+        {showTabBar ? (
+          <TerminalTabs
+            tabs={tabs}
+            activeId={effectiveTabId}
+            root={currentRoot}
+            touch={touch}
+            onSelect={tabsCtrl.selectTab}
+            onNew={handleNewTab}
+            onRequestClose={requestCloseTab}
+            onRename={tabsCtrl.renameTab}
+            onMove={tabsCtrl.moveTab}
+            initialRenamingId={initialRenamingId}
+          />
+        ) : (
+          <div className="cz-term__brand-wrap">
+            <div className="cz-term__brand" title={currentCwd}>
+              <span className="cz-term__icon" aria-hidden="true">
+                <Icon name="terminal" size={15} />
+              </span>
+              <span className="cz-term__ws">{wsTitle}</span>
+              {cwdDisplay && (
+                <>
+                  <span className="cz-term__sep" aria-hidden="true">/</span>
+                  <span className="cz-term__cwd">{cwdDisplay}</span>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              className="cz-term-tabs__add"
+              disabled={atLimit}
+              title="新建终端 (Ctrl+Shift+T)"
+              aria-label="新建终端"
+              onClick={handleNewTab}
+            >
+              <Icon name="plus" size={14} />
+            </button>
+          </div>
+        )}
 
         {/* 连接状态提示（温和可见） */}
         {state.connState === 'connecting' && (
@@ -471,7 +469,7 @@ export function TerminalPanel({
 
           <button
             type="button"
-            className="cz-term__btn"
+            className="cz-term__btn cz-term__btn-clear"
             title="清空记录 (Ctrl+L)"
             aria-label="清空记录"
             disabled={blocks.length === 0}
@@ -558,7 +556,7 @@ export function TerminalPanel({
           <button
             type="button"
             className="cz-term__btn"
-            title="关闭终端"
+            title="收起终端面板"
             aria-label="关闭终端"
             onClick={onClose}
           >
@@ -567,222 +565,69 @@ export function TerminalPanel({
         </div>
       </header>
 
-      {/* 服务端错误提示条 */}
-      {state.error && (
-        <div className="cz-term__errbar" role="alert">
-          <Icon name="error" size={13} />
-          <span>{state.error}</span>
+      {/* 关闭运行中标签的面板内轻量确认条 */}
+      {confirmClose && (
+        <div className="cz-term__confirm-wrap">
+          <div className="cz-term__confirm" role="alertdialog" aria-label="确认关闭运行中的终端">
+            <span className="cz-term__confirm-msg" title={confirmClose.cmd}>
+              <span className="cz-term-tab__dot is-running" aria-hidden="true" />
+              <span className="cz-term__confirm-text">
+                关闭此终端将停止正在运行的「<code className="cz-term__confirm-cmd">{confirmClose.cmd}</code>」
+              </span>
+            </span>
+            <div className="cz-term__confirm-acts">
+              <button
+                type="button"
+                className="cz-term__confirm-btn"
+                onClick={() => setConfirmClose(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="cz-term__confirm-btn is-danger"
+                onClick={() => doCloseTab(confirmClose.tabId)}
+              >
+                停止并关闭
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* 输出区 */}
-      <div className="cz-term__body">
-        <div className="cz-term__scroll" ref={scrollRef} onScroll={onBodyScroll}>
-          {blocks.length === 0 ? (
-            <div className="cz-term__empty">
-              <div className="cz-term__empty-icon" aria-hidden="true">
-                <Icon name="terminal" size={22} />
-              </div>
-              <div className="cz-term__empty-title">在 {wsTitle} 中执行命令</div>
-              <div className="cz-term__empty-hint">
-                <span><kbd>Enter</kbd> 执行</span>
-                <span><kbd>Shift+Enter</kbd> 换行</span>
-                <span><kbd>Ctrl+R</kbd> 历史</span>
-                <span><kbd>Ctrl+L</kbd> 清屏</span>
-              </div>
-            </div>
-          ) : (
-            <div className="cz-term__blocks">
-              {blocks.map((block) => (
-                <TerminalBlock
-                  key={block.id}
-                  block={block}
-                  root={currentRoot}
-                  platform={platform}
-                  fixedNowMs={fixedNowMs}
-                  onRerun={onRerun}
-                  onStop={actions.stop}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        {showScrollBottom && (
+      {/* 工作空间级提示条（如达到 8 个终端上限） */}
+      {notice && (
+        <div className="cz-term__notice" role="status">
+          <Icon name="info" size={13} />
+          <span className="cz-term__notice-text">{notice}</span>
           <button
             type="button"
-            className="cz-term__to-bottom"
-            onClick={scrollToBottom}
-            aria-label="回到底部"
+            className="cz-term__notice-close"
+            aria-label="关闭提示"
+            onClick={clearNotice}
           >
-            <Icon name="arrow-down" size={13} />
-            <span>回到底部</span>
+            <Icon name="close" size={11} />
           </button>
-        )}
-      </div>
-
-      {/* 底部输入区域 */}
-      <div className="cz-term__foot" ref={histWrapRef}>
-        <TerminalHistory
-          open={historyOpen}
-          history={history}
-          onSelect={onSelectHistory}
-          onRemove={actions.removeHistory}
-          onClear={actions.clearHistory}
-          onClose={closeHistory}
-        />
-
-        {/* 运行中进程 stdin 模式切换条 */}
-        {runningBlock && (
-          <div className={`cz-term__stdinbar${stdinMode ? ' is-active' : ''}`}>
-            <span className="cz-term__stdin-info" title={runningBlock.cmd}>
-              <span className="cz-term-block__dot" aria-hidden="true" />
-              <span className="cz-term__stdin-cmd">{runningBlock.cmd}</span>
-            </span>
-            <div className="cz-term__stdin-acts">
-              <button
-                type="button"
-                className={`cz-term__stdin-toggle${stdinMode ? ' is-on' : ''}`}
-                aria-pressed={stdinMode}
-                title="切换将输入发送给正在运行的进程 (Alt+S)"
-                onClick={() => {
-                  setStdinMode((m) => !m);
-                  if (!touch) inputRef.current?.focus();
-                }}
-              >
-                <span className="cz-term__stdin-sw" aria-hidden="true" />
-                <span>发送到运行中进程</span>
-              </button>
-              <button
-                type="button"
-                className="cz-term__stdin-stop"
-                title="停止正在运行的命令 (Ctrl+C)"
-                aria-label="停止正在运行的命令"
-                onClick={() => actions.stop(runningBlock.id)}
-              >
-                <Icon name="stop" size={11} />
-                <span>停止</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 触屏快捷键条（热区 ≥44px） */}
-        {touch && (
-          <div className="cz-term__touchbar" role="toolbar" aria-label="终端快捷操作">
-            <button
-              type="button"
-              className="cz-term__tkey"
-              aria-label="上一条历史"
-              disabled={history.length === 0}
-              onClick={() => stepHistory(-1)}
-            >
-              <Icon name="arrow-up" size={15} />
-            </button>
-            <button
-              type="button"
-              className="cz-term__tkey"
-              aria-label="下一条历史"
-              disabled={histCursorRef.current === null}
-              onClick={() => stepHistory(1)}
-            >
-              <Icon name="arrow-down" size={15} />
-            </button>
-            <button
-              type="button"
-              className="cz-term__tkey is-danger"
-              aria-label="停止当前命令 (Ctrl+C)"
-              disabled={!runningBlock}
-              onClick={() => runningBlock && actions.stop(runningBlock.id)}
-            >
-              Ctrl+C
-            </button>
-            <button
-              type="button"
-              className="cz-term__tkey"
-              aria-label="清屏"
-              disabled={blocks.length === 0}
-              onClick={actions.clear}
-            >
-              清屏
-            </button>
-            <button
-              type="button"
-              className={`cz-term__tkey${historyOpen ? ' is-on' : ''}`}
-              aria-label="命令历史"
-              aria-pressed={historyOpen}
-              onClick={() => setHistoryOpen((o) => !o)}
-            >
-              <Icon name="history" size={14} />
-              <span>历史</span>
-            </button>
-          </div>
-        )}
-
-        {/* 命令输入框 */}
-        <div className={`cz-term__inputbox${stdinMode && runningBlock ? ' is-stdin' : ''}`}>
-          <span
-            className="cz-term__prompt"
-            title={stdinMode && runningBlock ? '当前输入将发送给正在运行的进程' : currentCwd}
-          >
-            {stdinMode && runningBlock ? (
-              <span className="cz-term__prompt-stdin">stdin ▸</span>
-            ) : narrow ? (
-              <span className="cz-term__prompt-glyph is-accent" aria-hidden="true">{promptGlyph}</span>
-            ) : (
-              <>
-                <span className="cz-term__prompt-dir">{promptDir}</span>
-                <span className="cz-term__prompt-glyph" aria-hidden="true">{promptGlyph}</span>
-              </>
-            )}
-          </span>
-
-          <textarea
-            ref={inputRef}
-            className="cz-term__input"
-            rows={1}
-            value={value}
-            spellCheck={false}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            placeholder={
-              stdinMode && runningBlock
-                ? (narrow ? '发送到运行中进程…' : '输入内容并按 Enter 发送给正在运行的进程…')
-                : (narrow ? '输入命令…' : '输入命令，Enter 执行，Shift+Enter 换行…')
-            }
-            aria-label={stdinMode && runningBlock ? '发送到运行中进程' : '终端命令输入'}
-            onChange={(e) => {
-              setValue(e.target.value);
-              if (histCursorRef.current !== null) histCursorRef.current = null;
-            }}
-            onKeyDown={onInputKeyDown}
-          />
-
-          <div className="cz-term__input-acts">
-            <button
-              type="button"
-              className={`cz-term__ibtn${historyOpen ? ' is-on' : ''}`}
-              title="历史命令 (Ctrl+R)"
-              aria-label="历史命令"
-              aria-pressed={historyOpen}
-              onClick={() => setHistoryOpen((o) => !o)}
-            >
-              <Icon name="history" size={14} />
-            </button>
-            <button
-              type="button"
-              className="cz-term__ibtn is-run"
-              title={stdinMode && runningBlock ? '发送给进程 (Enter)' : '执行命令 (Enter)'}
-              aria-label={stdinMode && runningBlock ? '发送给进程' : '执行命令'}
-              disabled={!stdinMode && !value.trim()}
-              onClick={submitInput}
-            >
-              <Icon name="send" size={14} />
-            </button>
-          </div>
         </div>
-      </div>
+      )}
+
+      {/* 当前激活标签的内容区（按 paneKey 挂载，切走自动保存并切回恢复草稿与滚动位置） */}
+      <TerminalPane
+        key={paneKey}
+        paneKey={paneKey}
+        root={root}
+        controller={current}
+        open={open}
+        mounted={mounted}
+        narrow={narrow}
+        touch={touch}
+        uiCacheRef={uiCacheRef}
+        inputRef={inputRef}
+        initialHistoryOpen={initialHistoryOpen}
+        initialStdinMode={initialStdinMode}
+        fixedNowMs={fixedNowMs}
+        onHistoryOpenChange={onHistoryOpenChange}
+      />
     </section>
   );
 }

@@ -47,3 +47,48 @@ export function saveTerminalPrefs(p: TerminalPrefs): void {
     /* localStorage 不可用时忽略 */
   }
 }
+
+/** 按工作空间记住当前选中的终端标签 id（各设备各自保存） */
+export const TERMINAL_ACTIVE_TABS_KEY = 'cz-terminal-active-tabs';
+
+function normRootKey(root: string): string {
+  return root.replace(/[\\/]+$/, '').toLowerCase();
+}
+
+function readActiveTabMap(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(TERMINAL_ACTIVE_TABS_KEY);
+    if (!raw) return {};
+    const v = JSON.parse(raw) as unknown;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof val === 'string' && val) out[k] = val;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function readTerminalActiveTab(root: string): string | null {
+  if (!root) return null;
+  const map = readActiveTabMap();
+  return map[normRootKey(root)] ?? null;
+}
+
+export function saveTerminalActiveTab(root: string, tabId: string | null): void {
+  if (!root) return;
+  try {
+    const map = readActiveTabMap();
+    const key = normRootKey(root);
+    if (tabId) {
+      map[key] = tabId;
+    } else {
+      delete map[key];
+    }
+    localStorage.setItem(TERMINAL_ACTIVE_TABS_KEY, JSON.stringify(map));
+  } catch {
+    /* localStorage 不可用时忽略 */
+  }
+}

@@ -1,10 +1,26 @@
-// 终端 UI 工具函数：路径简写与中间省略、耗时格式化、历史命令模糊匹配。
+// 终端 UI 工具函数：路径简写与中间省略、标签名生成、耗时格式化、历史命令模糊匹配。
+import type { TermTabInfo } from '@cosyee/shared';
 
 /** 取路径最后一段作为工作空间名称 */
 export function workspaceName(root: string): string {
   const cleaned = root.replace(/[\\/]+$/, '');
   const parts = cleaned.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? (root || '终端');
+}
+
+/** 计算标签自动展示名：运行中命令 → cwd 目录名 → 工作空间名 */
+export function tabAutoName(tab: TermTabInfo, root: string): string {
+  if (tab.status === 'running' && tab.runningCmd?.trim()) {
+    return tab.runningCmd.trim();
+  }
+  return workspaceName(tab.cwd || root);
+}
+
+/** 计算标签最终展示名：自定义名 → 运行中命令 → cwd 目录名 */
+export function tabDisplayName(tab: TermTabInfo, root: string): string {
+  const custom = tab.name?.trim();
+  if (custom) return custom;
+  return tabAutoName(tab, root);
 }
 
 /** 路径中间省略，保留开头和末尾最有辨识度的部分 */
