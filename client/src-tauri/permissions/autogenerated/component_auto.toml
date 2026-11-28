@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-component-auto"
+description = "Enables the component_auto command without any pre-configured scope."
+commands.allow = ["component_auto"]
+
+[[permission]]
+identifier = "deny-component-auto"
+description = "Denies the component_auto command without any pre-configured scope."
+commands.deny = ["component_auto"]

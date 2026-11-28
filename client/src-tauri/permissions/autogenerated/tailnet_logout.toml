@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-logout"
+description = "Enables the tailnet_logout command without any pre-configured scope."
+commands.allow = ["tailnet_logout"]
+
+[[permission]]
+identifier = "deny-tailnet-logout"
+description = "Denies the tailnet_logout command without any pre-configured scope."
+commands.deny = ["tailnet_logout"]

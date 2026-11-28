@@ -1421,6 +1421,8 @@ export type ServerMsg =
   | { t: 'codex.changed' }
   /** 子代理配置或可用性变了（任一窗口改了设置、开关了代理类型、后端装上 / 卸载 / 登录状态变化）：前端重新 GET /api/subagents */
   | { t: 'subagents.changed' }
+  /** 2FA 条目 / 分组 / 标签 / 同步状态变化：前端重新 GET /api/2fa/data */
+  | { t: '2fa.changed' }
   | { t: 'context'; sessionId: string; usage: ContextUsage }
   /** 会话实际生效的设置（来自 control_request get_settings 的 applied）。ultracodeAvailable 为 true 时前端才显示 Ultracode 开关 */
   | { t: 'settings'; sessionId: string; applied: AppliedSettings }

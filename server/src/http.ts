@@ -26,8 +26,10 @@ import type { Previews } from './preview.js';
 import { type Spawner, defaultSpawner, openPath, openTerminal, revealFolder, revealPath } from './reveal.js';
 import { cookieName, hostAllowedFor, isLoopbackAddr, originAllowed, requestAuthorized, tokenOk } from './security.js';
 import type { Sessions } from './sessions.js';
-import { MAX_STT_SECONDS, type Speech, SpeechNotReady } from './speech/index.js';
+import type { Speech } from './speech/index.js';
+import { MAX_STT_SECONDS, SpeechNotReady } from './speech/index.js';
 import type { Trash } from './trash.js';
+import { TWOFA_IMPORT_BODY_LIMIT, TwoFaConflictError, type TwoFaService } from './twofa/index.js';
 import type { StateStore, Workspaces } from './workspaces.js';
 import { type ComponentUpdater, componentRoutes } from './components/updater.js';
 import type { BrowserManager } from './browser/manager.js';
@@ -74,6 +76,8 @@ export interface HttpDeps {
   spawner?: Spawner;
   /** 桌面版访问令牌（见 security.ts）；不设置则不校验 */
   authToken?: string;
+  /** 2FA Agent 专用访问令牌（仅允许访问 /api/2fa/agent/*，通过 x-cosyee-agent-token 请求头传递） */
+  agentToken?: string;
   /** 监听地址（决定 Host / Origin 白名单），默认 127.0.0.1 */
   host?: string;
   /** 跨会话的工具累计调用次数；不传则 GET /api/tools/stats 返回 404 */
@@ -84,6 +88,8 @@ export interface HttpDeps {
   onShutdown?: () => void;
   /** 朗读 / 语音输入（见 speech/）；不传则语音接口 404 */
   speech?: Speech;
+  /** 2FA 保管库与 GitHub 同步（见 twofa/）；不传则 /api/2fa 接口 404 */
+  twoFa?: TwoFaService;
   /** Tailscale HTTPS 入口（https://<机器名>.<tailnet>.ts.net），没有时 null */
   httpsUrl?: () => string | null;
 }
@@ -130,13 +136,13 @@ export function hostAllowed(host: string | undefined, port: number, bindHost: st
   return hostAllowedFor(host, port, bindHost);
 }
 
-async function readJson(req: IncomingMessage): Promise<Json> {
+async function readJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promise<Json> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     const b = c as Buffer;
     size += b.length;
-    if (size > BODY_LIMIT) throw new HttpError(413, '请求体超过 1MB');
+    if (size > limit) throw new HttpError(413, `请求体超过 ${Math.round(limit / (1024 * 1024))}MB`);
     chunks.push(b);
   }
   if (size === 0) return {};
@@ -579,6 +585,90 @@ export function createHandler(deps: HttpDeps) {
     throw new HttpError(404, '未找到');
   }
 
+  // 2FA 本地 SQLite CRUD、导入、GitHub 双向同步与 Agent 接口
+  async function twoFaRoutes(req: IncomingMessage, res: ServerResponse, method: string, p: string, q: URLSearchParams): Promise<void> {
+    const twoFa = deps.twoFa;
+    if (!twoFa) throw new HttpError(404, '未找到');
+    try {
+      let m: RegExpExecArray | null;
+      if (method === 'GET' && p === '/api/2fa/data') return sendJson(res, 200, twoFa.getData());
+      if (method === 'GET' && p === '/api/2fa/status') return sendJson(res, 200, { sync: twoFa.getSyncStatus() });
+      if (method === 'POST' && p === '/api/2fa/sync') return sendJson(res, 200, { sync: await twoFa.syncNow() });
+      if (method === 'POST' && p === '/api/2fa/import/preview') {
+        const body = await readJson(req, TWOFA_IMPORT_BODY_LIMIT);
+        return sendJson(res, 200, twoFa.previewImport(body));
+      }
+      if (method === 'POST' && p === '/api/2fa/import') {
+        const body = await readJson(req, TWOFA_IMPORT_BODY_LIMIT);
+        return sendJson(res, 200, twoFa.importText(body));
+      }
+
+      if (method === 'POST' && p === '/api/2fa/entries') {
+        return sendJson(res, 200, { entry: twoFa.createEntry(await readJson(req)) });
+      }
+      if ((m = /^\/api\/2fa\/entries\/([^/]+)$/.exec(p))) {
+        const id = decodeURIComponent(m[1]!);
+        if (method === 'PATCH') return sendJson(res, 200, { entry: twoFa.updateEntry(id, await readJson(req)) });
+        if (method === 'DELETE') {
+          twoFa.deleteEntry(id, q.get('version'));
+          return sendJson(res, 200, { ok: true });
+        }
+      }
+
+      if (method === 'POST' && p === '/api/2fa/groups') {
+        return sendJson(res, 200, { group: twoFa.createGroup(await readJson(req)) });
+      }
+      if ((m = /^\/api\/2fa\/groups\/([^/]+)$/.exec(p))) {
+        const id = decodeURIComponent(m[1]!);
+        if (method === 'PATCH') return sendJson(res, 200, { group: twoFa.updateGroup(id, await readJson(req)) });
+        if (method === 'DELETE') {
+          twoFa.deleteGroup(id, q.get('mode'), q.get('version'));
+          return sendJson(res, 200, { ok: true });
+        }
+      }
+
+      if (method === 'POST' && p === '/api/2fa/tags') {
+        return sendJson(res, 200, { tag: twoFa.createTag(await readJson(req)) });
+      }
+      if ((m = /^\/api\/2fa\/tags\/([^/]+)$/.exec(p))) {
+        const id = decodeURIComponent(m[1]!);
+        if (method === 'PATCH') return sendJson(res, 200, { tag: twoFa.updateTag(id, await readJson(req)) });
+        if (method === 'DELETE') {
+          twoFa.deleteTag(id, q.get('version'));
+          return sendJson(res, 200, { ok: true });
+        }
+      }
+
+      if (method === 'POST' && (m = /^\/api\/2fa\/usage\/([^/]+)$/.exec(p))) {
+        const id = decodeURIComponent(m[1]!);
+        return sendJson(res, 200, { usage: twoFa.bumpUsage(id) });
+      }
+
+      // Agent 专用路由（由 cosyee-2fa CLI 调用）
+      if (method === 'GET' && p === '/api/2fa/agent/code') {
+        return sendJson(res, 200, twoFa.agentCode({ q: q.get('q'), id: q.get('id') }));
+      }
+      if (method === 'GET' && p === '/api/2fa/agent/list') {
+        return sendJson(res, 200, twoFa.agentList());
+      }
+      if (method === 'GET' && p === '/api/2fa/agent/status') {
+        return sendJson(res, 200, { sync: twoFa.getSyncStatus() });
+      }
+      if (method === 'POST' && p === '/api/2fa/agent/sync') {
+        return sendJson(res, 200, { sync: await twoFa.syncNow() });
+      }
+      if (method === 'POST' && p === '/api/2fa/agent/setup') {
+        return sendJson(res, 200, await twoFa.agentSetup());
+      }
+    } catch (e) {
+      if (e instanceof TwoFaConflictError) {
+        return sendJson(res, 409, { error: 'conflict', current: e.current });
+      }
+      throw e;
+    }
+    throw new HttpError(404, '未找到');
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const method = req.method ?? 'GET';
     const p = url.pathname;
@@ -778,6 +868,7 @@ export function createHandler(deps: HttpDeps) {
     }
     if (p === '/api/kiro' || p.startsWith('/api/kiro/')) return kiroRoutes(req, res, method, p, q);
     if (deps.browser && (p === '/api/browser' || p.startsWith('/api/browser/'))) return browserRoutes(req, res, method, p, deps.browser);
+    if (p === '/api/2fa' || p.startsWith('/api/2fa/')) return twoFaRoutes(req, res, method, p, q);
 
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
     if (method === 'GET' && p === '/api/models') {
@@ -1299,8 +1390,20 @@ export function createHandler(deps: HttpDeps) {
         res.end();
         return;
       }
-      // 令牌放最前面：没带令牌的请求不暴露任何其它信息（请求头或 cookie 任一匹配即可）
-      if (deps.authToken && !requestAuthorized(req.headers, port, deps.authToken)) throw new HttpError(403, '缺少或错误的访问令牌');
+      // 令牌放最前面：没带令牌的请求不暴露任何其它信息（请求头或 cookie 任一匹配即可）。
+      // 2FA Agent 令牌（x-cosyee-agent-token）只允许访问 /api/2fa/agent/*，不能用于其它路由。
+      const isAgentTwoFa = url.pathname.startsWith('/api/2fa/agent/');
+      const agentHeader = req.headers['x-cosyee-agent-token'];
+      if (isAgentTwoFa) {
+        const agentOk = Boolean(deps.agentToken && tokenOk(agentHeader, deps.agentToken));
+        if (agentHeader !== undefined) {
+          if (!agentOk) throw new HttpError(403, '缺少或错误的代理访问令牌');
+        } else if (deps.authToken && !requestAuthorized(req.headers, port, deps.authToken)) {
+          throw new HttpError(403, '缺少或错误的访问令牌');
+        }
+      } else {
+        if (deps.authToken && !requestAuthorized(req.headers, port, deps.authToken)) throw new HttpError(403, '缺少或错误的访问令牌');
+      }
       if (!hostAllowed(req.headers.host, port, bindHost)) throw new HttpError(403, 'Host 不允许');
       const origin = req.headers.origin;
       if (!originAllowed(typeof origin === 'string' ? origin : undefined, port, bindHost)) throw new HttpError(403, 'Origin 不允许');

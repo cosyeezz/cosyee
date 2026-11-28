@@ -1,0 +1,261 @@
+/* 页内框选二维码浮层。动效始终开启（不跟随 prefers-reduced-motion）。 */
+
+.cz-2fa-rp {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0b;
+  cursor: crosshair;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+  animation: cz-2fa-rp-in 200ms var(--ease-out);
+  transition: opacity 150ms cubic-bezier(.4, 0, 1, 1);
+}
+.cz-2fa-rp.is-closing {
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes cz-2fa-rp-in {
+  from { opacity: 0; }
+}
+
+.cz-2fa-rp__stage {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  touch-action: none;
+}
+.cz-2fa-rp__frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  animation: cz-2fa-rp-freeze 260ms var(--ease-out);
+}
+@keyframes cz-2fa-rp-freeze {
+  from { transform: scale(1.012); filter: brightness(1.25); }
+}
+
+/* 压暗层：没有选区时整片铺 45%，有选区时淡出，由选区的外扩阴影接管 */
+.cz-2fa-rp__dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .45);
+  pointer-events: none;
+  transition: opacity 160ms ease;
+  animation: cz-2fa-rp-dim 260ms var(--ease-out);
+}
+.cz-2fa-rp__dim.is-hole {
+  opacity: 0;
+}
+@keyframes cz-2fa-rp-dim {
+  from { opacity: 0; }
+}
+
+/* 选区：亮色挖洞 + 强调色描边 */
+.cz-2fa-rp__sel {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 6px;
+  border: 1.5px solid var(--accent);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, .55),
+    0 0 0 9999px rgba(0, 0, 0, .45),
+    0 0 22px 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: cz-2fa-rp-fade 140ms ease;
+  transition: border-color 160ms, box-shadow 220ms;
+}
+.cz-2fa-rp__sel.is-live {
+  border-radius: 2px;
+  border-style: dashed;
+  animation: none;
+}
+@keyframes cz-2fa-rp-fade {
+  from { opacity: 0; }
+}
+.cz-2fa-rp__sel.is-ok {
+  border-color: var(--dot-running, #3ddc97);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, .6),
+    0 0 0 9999px rgba(0, 0, 0, .45),
+    0 0 28px 4px color-mix(in srgb, var(--dot-running, #3ddc97) 55%, transparent);
+  animation: cz-2fa-rp-ok 380ms var(--ease-out);
+}
+@keyframes cz-2fa-rp-ok {
+  0% { transform: scale(1.06); opacity: .5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.cz-2fa-rp__sel.is-bad {
+  border-color: var(--danger);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, .4),
+    0 0 0 9999px rgba(0, 0, 0, .45),
+    0 0 24px 2px color-mix(in srgb, var(--danger) 50%, transparent);
+  animation: cz-2fa-rp-shake 420ms cubic-bezier(.36, .07, .19, .97);
+}
+@keyframes cz-2fa-rp-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(3px); }
+  30%, 50%, 70% { transform: translateX(-6px); }
+  40%, 60% { transform: translateX(6px); }
+}
+.cz-2fa-rp__ok {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--dot-running, #3ddc97);
+  color: #06150e;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  animation: cz-2fa-rp-badge 340ms cubic-bezier(.34, 1.56, .64, 1) 60ms both;
+}
+@keyframes cz-2fa-rp-badge {
+  from { opacity: 0; transform: scale(.3); }
+}
+.cz-2fa-rp__size {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(20, 20, 22, .82);
+  color: #fff;
+  font: 500 11px/1.5 var(--font-mono, monospace);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cz-2fa-rp__size.is-in {
+  top: auto;
+  bottom: 6px;
+  left: 6px;
+}
+
+/* 自动检测到多个二维码时的可点高亮 */
+.cz-2fa-rp__hit {
+  position: absolute;
+  padding: 0;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, .55),
+    0 0 0 9999px rgba(0, 0, 0, .0),
+    0 0 18px 2px color-mix(in srgb, var(--accent) 50%, transparent);
+  animation: cz-2fa-rp-hit-in 280ms var(--ease-out) both, cz-2fa-rp-breath 1.8s ease-in-out 300ms infinite;
+  transition: background-color 120ms, transform 120ms var(--ease-out);
+}
+.cz-2fa-rp__hit:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  transform: scale(1.015);
+}
+@keyframes cz-2fa-rp-hit-in {
+  from { opacity: 0; transform: scale(.94); }
+}
+@keyframes cz-2fa-rp-breath {
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, .55),
+      0 0 0 9999px rgba(0, 0, 0, .0),
+      0 0 28px 6px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+}
+.cz-2fa-rp__hit-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
+}
+
+/* 顶部提示胶囊 */
+.cz-2fa-rp__pill {
+  position: absolute;
+  top: calc(var(--cosyee-titlebar-h, 0px) + var(--cosyee-inset-top, 0px) + 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 24px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 999px;
+  background: rgba(24, 23, 22, .78);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .4);
+  color: #f3f1ee;
+  font-size: 12.5px;
+  cursor: default;
+  animation: cz-2fa-rp-pill 260ms var(--ease-out);
+  transition: background-color 180ms, border-color 180ms;
+}
+@keyframes cz-2fa-rp-pill {
+  from { opacity: 0; translate: 0 -8px; }
+}
+.cz-2fa-rp__pill.is-ok {
+  background: color-mix(in srgb, #16874a 72%, rgba(24, 23, 22, .8));
+  border-color: rgba(120, 255, 180, .35);
+}
+.cz-2fa-rp__pill.is-bad {
+  background: color-mix(in srgb, #d93848 70%, rgba(24, 23, 22, .8));
+  border-color: rgba(255, 150, 150, .4);
+}
+.cz-2fa-rp__pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cz-2fa-rp__x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .12);
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 120ms, transform 100ms var(--ease-out);
+}
+.cz-2fa-rp__x:hover {
+  background: rgba(255, 255, 255, .24);
+}
+.cz-2fa-rp__x:active {
+  transform: scale(.9);
+}
+.cz-2fa-rp__spin {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1.6px solid rgba(255, 255, 255, .3);
+  border-top-color: #fff;
+  animation: cz-2fa-rp-spin 700ms linear infinite;
+}
+@keyframes cz-2fa-rp-spin {
+  to { transform: rotate(360deg); }
+}

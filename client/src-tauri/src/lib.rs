@@ -10,6 +10,8 @@ mod http_client;
 mod local;
 #[cfg(desktop)]
 mod peers;
+#[cfg(desktop)]
+mod qrscan;
 mod tailnet;
 mod updater;
 
@@ -21,7 +23,7 @@ const HOME: &str = "tauri://localhost/";
 
 /// 注入到每个页面（包括服务端页面）的外壳脚本：桌面端画一行自绘标题栏（菜单 / 当前服务器 / 窗口按钮），
 /// 手机端按系统栏让位、返回手势回到服务器列表；两端都支持 Ctrl/⌘+Shift+L 回到服务器列表。
-/// 服务端页面只开放了窗口相关的权限（见 capabilities/remote.json），调不到本机服务等自定义命令。
+/// 服务端页面只开放了窗口相关的权限和「扫描屏幕二维码」（见 capabilities/remote.json），调不到本机服务等其它自定义命令。
 fn shell_script() -> String {
     let os = if cfg!(target_os = "macos") {
         "macos"
@@ -139,7 +141,11 @@ pub fn run() {
         .manage(Servers::default())
         .manage(PeerCache::default());
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(qrscan::QrState::default())
+        // 屏幕扫码覆盖层取冻结截图用的自定义协议
+        .register_uri_scheme_protocol("qrshot", |ctx, req| qrscan::shot_protocol(ctx.app_handle(), req.uri().path()));
     // 桌面端多一组「本机服务」命令（安装 / 启动 / 停止本机的服务端）；手机上没有，页面据此隐藏那一栏。
     // 内置 Tailscale 命令在桌面与手机两端都注册，且仅对客户端本地页面开放（远程页面调不到自定义命令）。
     #[cfg(desktop)]
@@ -174,7 +180,13 @@ pub fn run() {
         local::component_update,
         local::component_auto,
         local::component_service,
-        local::component_log
+        local::component_log,
+        qrscan::qr_scan_screen,
+        qrscan::qr_overlay_init,
+        qrscan::qr_overlay_ready,
+        qrscan::qr_overlay_crop,
+        qrscan::qr_overlay_complete,
+        qrscan::qr_overlay_cancel
     ]);
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![

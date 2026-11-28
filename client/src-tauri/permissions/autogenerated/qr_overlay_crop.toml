@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-qr-overlay-crop"
+description = "Enables the qr_overlay_crop command without any pre-configured scope."
+commands.allow = ["qr_overlay_crop"]
+
+[[permission]]
+identifier = "deny-qr-overlay-crop"
+description = "Denies the qr_overlay_crop command without any pre-configured scope."
+commands.deny = ["qr_overlay_crop"]

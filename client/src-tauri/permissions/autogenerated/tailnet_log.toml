@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-log"
+description = "Enables the tailnet_log command without any pre-configured scope."
+commands.allow = ["tailnet_log"]
+
+[[permission]]
+identifier = "deny-tailnet-log"
+description = "Denies the tailnet_log command without any pre-configured scope."
+commands.deny = ["tailnet_log"]

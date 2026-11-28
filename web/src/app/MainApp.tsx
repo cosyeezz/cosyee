@@ -1,5 +1,5 @@
 // 主界面接线：把 api / socket / reducer 与 C3–C5 的组件连起来。组件本身不直接访问后端。
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BUILTIN_PRICES, hasModelMapping,
   type Account, type AccountList, type Attachment, type Bootstrap, type BrowserPickResult, type CachePoint, type CliModelList, type DelegateBackendId, type DelegateJobInfo, type DeletedSession, type PendingPrompt, type PriceTable, type PromptReply, type QueueMode,
@@ -42,6 +42,13 @@ import { isBrowserToggle } from '../ui/browser/input';
 import { BROWSER_OPEN_EVENT, type BrowserLink, type BrowserOpenDetail } from '../ui/browser/links';
 import { Icon } from '../ui/icons/Icon';
 import { PickerDialog, type PickerMode } from '../ui/files/PickerDialog';
+import {
+  hasCosyeeTitlebar,
+  installTitlebarTwoFaCompat,
+  syncInjectedTitlebarState,
+} from '../core/twofa/titlebarCompat';
+
+const TwoFactorPanel = lazy(() => import('../ui/twofa/TwoFactorPanel'));
 import { Composer, type ComposerHandle } from '../ui/composer/Composer';
 import { PromptPanel } from '../ui/prompt/PromptPanel';
 import { useSessionStream } from './useSessionStream';
@@ -201,6 +208,30 @@ export function MainApp() {
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('cosyee:browser-state', { detail: { open: browserOpen } }));
   }, [browserOpen]);
+
+  /** 两步验证（2FA）面板：桌面端由标题栏按钮触发（cosyee:2fa），普通网页 / 手机端在顶栏右侧显示入口 */
+  const [twoFaOpen, setTwoFaOpen] = useState(false);
+  const [twoFaLoaded, setTwoFaLoaded] = useState(false);
+  const twoFaOpenRef = useRef(false);
+  twoFaOpenRef.current = twoFaOpen;
+  const toggleTwoFa = useCallback(() => {
+    setTwoFaLoaded(true);
+    setTwoFaOpen((o) => !o);
+  }, []);
+  const closeTwoFa = useCallback(() => setTwoFaOpen(false), []);
+  const [hasTitlebar, setHasTitlebar] = useState(() => hasCosyeeTitlebar());
+  useEffect(() => {
+    window.addEventListener('cosyee:2fa', toggleTwoFa);
+    const stopCompat = installTitlebarTwoFaCompat(setHasTitlebar, () => twoFaOpenRef.current);
+    return () => {
+      window.removeEventListener('cosyee:2fa', toggleTwoFa);
+      stopCompat();
+    };
+  }, [toggleTwoFa]);
+  useEffect(() => {
+    syncInjectedTitlebarState(twoFaOpen);
+    window.dispatchEvent(new CustomEvent('cosyee:2fa-state', { detail: { open: twoFaOpen } }));
+  }, [twoFaOpen]);
 
   const configs = useRef(new Map<string, SessionConfig>());
   /** 本页已发过消息的会话（决定 isNew） */
@@ -1436,6 +1467,19 @@ export function MainApp() {
         onNewSession={newSession}
         contextCollapsed={narrow ? drawer !== 'right' : ctxCollapsed}
         onToggleContext={() => (narrow ? setDrawer((d) => (d === 'right' ? null : 'right')) : setCtxCollapsed((v) => !v))}
+        topActions={!hasTitlebar ? (
+          <button
+            type="button"
+            className="cz-shell__expand"
+            data-twofa-trigger=""
+            onClick={toggleTwoFa}
+            title="两步验证"
+            aria-label="两步验证"
+            aria-pressed={twoFaOpen}
+          >
+            <Icon name="twofa" size={18} />
+          </button>
+        ) : undefined}
         sidebar={
           <Sidebar
             workspaces={wsState.list}
@@ -1542,6 +1586,11 @@ export function MainApp() {
         <FilePreview session={selId} cwd={selDir} path={preview.path} line={preview.line} nonce={preview.nonce} onClose={closePreview} />
       )}
       {browserOpen && <BrowserPanel onClose={closeBrowser} onPick={onBrowserPick} link={browserLink} />}
+      {twoFaLoaded && (
+        <Suspense fallback={null}>
+          <TwoFactorPanel open={twoFaOpen} onClose={closeTwoFa} />
+        </Suspense>
+      )}
     </DelegateContext.Provider>
     </FlowMetaContext.Provider>
     </FilesContext.Provider>

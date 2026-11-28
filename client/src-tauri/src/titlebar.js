@@ -18,6 +18,36 @@
   var mobile = OS === 'android' || OS === 'ios';
   var mac = OS === 'macos';
 
+  // ── 屏幕扫码桥接（仅桌面 Windows / macOS）──
+  // 2FA 面板据此判断能不能“扫描屏幕上的二维码”。原生流程见 src-tauri/src/qrscan.rs：
+  // 隐藏主窗口 → 截全部屏幕 → 覆盖层选码 → 识别 → 还原主窗口。
+  // 远程页面只开放了 qr_scan_screen 这一个命令（capabilities/remote.json）。
+  // 返回 {status:'ok',texts} | {status:'cancelled'} | {status:'error',message}，永不 reject；并发调用复用同一个进行中的 Promise。
+  if (OS === 'windows' || mac) {
+    var qrInflight = null;
+    window.__cosyeeScreenQr = {
+      available: true,
+      scan: function () {
+        if (qrInflight) return qrInflight;
+        var T = window.__TAURI__;
+        if (!T || !T.core || !T.core.invoke) {
+          return Promise.resolve({ status: 'error', message: '当前环境不支持扫描屏幕二维码' });
+        }
+        var p = Promise.resolve().then(function () { return T.core.invoke('qr_scan_screen'); }).then(function (r) {
+          if (r && (r.status === 'ok' || r.status === 'cancelled' || r.status === 'error')) return r;
+          return { status: 'error', message: '扫描屏幕二维码失败：返回结果异常' };
+        }, function (e) {
+          var m = typeof e === 'string' ? e : (e && e.message) || '';
+          return { status: 'error', message: '扫描屏幕二维码失败' + (m ? '：' + m : '') };
+        });
+        qrInflight = p;
+        var clear = function () { if (qrInflight === p) qrInflight = null; };
+        p.then(clear, clear);
+        return p;
+      }
+    };
+  }
+
   /** 页面当前是深色还是浅色：优先 data-theme，其次背景亮度 */
   function pageTheme() {
     var root = document.documentElement;
@@ -166,7 +196,8 @@
     swap: '<path d="M8 9.5 12 5.5l4 4M8 14.5l4 4 4-4"/>',
     check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
     copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
-    globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.9 5.2 3.9 8.5s-1.3 6.1-3.9 8.5c-2.6-2.4-3.9-5.2-3.9-8.5S9.4 5.9 12 3.5z"/>'
+    globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.9 5.2 3.9 8.5s-1.3 6.1-3.9 8.5c-2.6-2.4-3.9-5.2-3.9-8.5S9.4 5.9 12 3.5z"/>',
+    twofa: '<path d="M12 3.2 5.2 6v5.2c0 4.5 2.9 7.8 6.8 9.3 3.9-1.5 6.8-4.8 6.8-9.3V6z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v4.2M12 14.5h1.8"/>'
   };
   function icon(name) {
     return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + I[name] + '</svg>';
@@ -203,8 +234,9 @@
     '.bar{display:flex;align-items:center;height:100%;padding-left:' + (mac ? 84 : 6) + 'px;background:var(--_bg);',
     '  border-bottom:1px solid var(--_line);transition:background-color .2s,border-color .2s}',
     '.ib{display:grid;place-items:center;width:30px;height:28px;border-radius:8px;color:var(--_fg3);',
-    '  transition:background-color .12s,color .12s}',
+    '  transition:background-color .14s,color .14s,transform .12s cubic-bezier(.16,1,.3,1),box-shadow .14s}',
     '.ib:hover,.ib[aria-expanded=true]{background:var(--_hover);color:var(--_fg)}',
+    '.ib:active{transform:scale(.92)}',
     '.brand{display:flex;align-items:center;gap:7px;margin-left:6px;font-weight:600;letter-spacing:.01em;color:var(--_fg)}',
     '.sep{margin:0 2px 0 8px;color:var(--_fg3);opacity:.6;font-weight:300}',
     '.crumb{display:flex;align-items:center;gap:6px;height:26px;max-width:min(320px,40vw);padding:0 6px 0 8px;border-radius:7px;',
@@ -216,7 +248,9 @@
     '.grow{flex:1;align-self:stretch}',
     '.tools{display:flex;align-items:center;gap:2px;margin-right:' + (mac ? 8 : 4) + 'px}',
     '.tools[hidden]{display:none}',
-    '.ib[aria-pressed=true]{background:var(--_hover);color:var(--_accent)}',
+    '.ib[aria-pressed=true]{background:color-mix(in srgb,var(--_accent) 16%,transparent);color:var(--_accent);',
+    '  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--_accent) 32%,transparent)}',
+    '.ib[aria-pressed=true]:hover{background:color-mix(in srgb,var(--_accent) 22%,transparent);color:var(--_accent)}',
     '.win{display:flex;align-self:stretch}',
     '.wb{display:grid;place-items:center;width:46px;height:100%;color:var(--_fg2);transition:background-color .1s,color .1s}',
     '.wb:hover{background:var(--_hover);color:var(--_fg)}',
@@ -292,9 +326,10 @@
         + icon('server') + '<span></span>' + icon('swap').replace('<svg ', '<svg class="sw" ') + '</button>';
     }
     html += '<div class="grow"></div>';
-    // 右侧工具：内置浏览器。页面（cosyee 网页）支持时才显示：页面加载后发 cosyee:browser-ready
+    // 右侧工具：两步验证、内置浏览器。页面（cosyee 网页）支持时才显示：页面加载后发 cosyee:browser-ready
     if (!isHome) {
       html += '<div class="tools" hidden>'
+        + '<button class="ib" id="t" aria-label="两步验证" aria-pressed="false" title="两步验证">' + icon('twofa') + '</button>'
         + '<button class="ib" id="b" aria-label="内置浏览器" aria-pressed="false" title="内置浏览器 ' + BROWSER_KEY + '">' + icon('globe') + '</button>'
         + '</div>';
     }
@@ -326,6 +361,13 @@
       smenu.addEventListener('keydown', onServersKey);
     }
     root.getElementById('m').onclick = function () { toggle(); };
+    var twoFaBtn = root.getElementById('t');
+    if (twoFaBtn) {
+      twoFaBtn.onclick = function () { window.dispatchEvent(new CustomEvent('cosyee:2fa')); };
+      window.addEventListener('cosyee:2fa-state', function (e) {
+        twoFaBtn.setAttribute('aria-pressed', String(!!(e.detail && e.detail.open)));
+      });
+    }
     var browserBtn = root.getElementById('b');
     if (browserBtn) {
       browserBtn.onclick = function () { window.dispatchEvent(new CustomEvent('cosyee:browser')); };
@@ -614,6 +656,7 @@
   function mount() {
     var rootEl = document.documentElement;
     if (!rootEl) return;
+    rootEl.dataset.cosyeeTitlebar = '1';
     padStyle();
     if (!host) build();
     if (!host.isConnected) rootEl.appendChild(host);

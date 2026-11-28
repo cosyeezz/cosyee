@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-kiro-admin"
+description = "Enables the kiro_admin command without any pre-configured scope."
+commands.allow = ["kiro_admin"]
+
+[[permission]]
+identifier = "deny-kiro-admin"
+description = "Denies the kiro_admin command without any pre-configured scope."
+commands.deny = ["kiro_admin"]

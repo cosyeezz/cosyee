@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cosyee 屏幕扫码</title>
+<link rel="stylesheet" href="qrscan.css">
+</head>
+<body>
+<!-- 冻结的屏幕截图（由 Rust 经 qrshot 协议提供）；上面盖一层压暗，已识别的码 / 选区用同一张图“挖洞”提亮 -->
+<img id="shot" alt="" draggable="false">
+<div id="dim"></div>
+<div id="boxes"></div>
+<div id="sel" class="sel" hidden>
+  <i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i>
+  <span id="size" class="size"></span>
+</div>
+<div id="hint" class="pill hint">
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8.5 8.5h2.5v2.5H8.5zM13 8.5h2.5V11H13zM8.5 13H11v2.5H8.5zM13 13h2.5v2.5H13z"/></svg>
+  <span id="hint-text">拖动框选二维码，或点击已识别的二维码</span>
+  <span class="sep">·</span><span><kbd>Esc</kbd> 取消</span>
+</div>
+<div id="toast" class="pill toast" role="status"></div>
+<script src="qrscan.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-qr-overlay-init"
+description = "Enables the qr_overlay_init command without any pre-configured scope."
+commands.allow = ["qr_overlay_init"]
+
+[[permission]]
+identifier = "deny-qr-overlay-init"
+description = "Denies the qr_overlay_init command without any pre-configured scope."
+commands.deny = ["qr_overlay_init"]

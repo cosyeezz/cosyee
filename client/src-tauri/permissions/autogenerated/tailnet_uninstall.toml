@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-uninstall"
+description = "Enables the tailnet_uninstall command without any pre-configured scope."
+commands.allow = ["tailnet_uninstall"]
+
+[[permission]]
+identifier = "deny-tailnet-uninstall"
+description = "Denies the tailnet_uninstall command without any pre-configured scope."
+commands.deny = ["tailnet_uninstall"]

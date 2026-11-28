@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-peers"
+description = "Enables the tailnet_peers command without any pre-configured scope."
+commands.allow = ["tailnet_peers"]
+
+[[permission]]
+identifier = "deny-tailnet-peers"
+description = "Denies the tailnet_peers command without any pre-configured scope."
+commands.deny = ["tailnet_peers"]

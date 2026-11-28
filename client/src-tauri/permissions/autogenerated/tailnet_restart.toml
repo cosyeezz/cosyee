@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-restart"
+description = "Enables the tailnet_restart command without any pre-configured scope."
+commands.allow = ["tailnet_restart"]
+
+[[permission]]
+identifier = "deny-tailnet-restart"
+description = "Denies the tailnet_restart command without any pre-configured scope."
+commands.deny = ["tailnet_restart"]

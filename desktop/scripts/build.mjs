@@ -34,8 +34,9 @@ if (!mainOnly) {
     define: { __COSYEE_VERSION__: JSON.stringify(serverPkg.version ?? '0.0.0') },
     logLevel: 'info',
   });
-  // picker/win.ts 会在 bundle 同目录找 win.ps1
+  // picker/win.ts 会在 bundle 同目录找 win.ps1；twofa 会在同目录找 cosyee-2fa-decrypt.mjs
   fs.copyFileSync(path.join(repo, 'server/src/picker/win.ps1'), path.join(dist, 'server/win.ps1'));
+  fs.copyFileSync(path.join(repo, 'scripts/cosyee-2fa-decrypt.mjs'), path.join(dist, 'server/cosyee-2fa-decrypt.mjs'));
 }
 
 for (const [entry, out] of [['src/main.ts', 'main.cjs'], ['src/preload.ts', 'preload.cjs'], ['src/settings-preload.ts', 'settings-preload.cjs']]) {

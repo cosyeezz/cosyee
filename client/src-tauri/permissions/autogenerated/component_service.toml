@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-component-service"
+description = "Enables the component_service command without any pre-configured scope."
+commands.allow = ["component_service"]
+
+[[permission]]
+identifier = "deny-component-service"
+description = "Denies the component_service command without any pre-configured scope."
+commands.deny = ["component_service"]

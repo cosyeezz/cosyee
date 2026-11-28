@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-component-check"
+description = "Enables the component_check command without any pre-configured scope."
+commands.allow = ["component_check"]
+
+[[permission]]
+identifier = "deny-component-check"
+description = "Denies the component_check command without any pre-configured scope."
+commands.deny = ["component_check"]

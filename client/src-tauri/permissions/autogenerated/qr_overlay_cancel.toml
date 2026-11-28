@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-qr-overlay-cancel"
+description = "Enables the qr_overlay_cancel command without any pre-configured scope."
+commands.allow = ["qr_overlay_cancel"]
+
+[[permission]]
+identifier = "deny-qr-overlay-cancel"
+description = "Denies the qr_overlay_cancel command without any pre-configured scope."
+commands.deny = ["qr_overlay_cancel"]

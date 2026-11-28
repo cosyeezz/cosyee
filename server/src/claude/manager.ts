@@ -140,6 +140,8 @@ export interface SkillStore {
 /** MCP 服务器还在连接（pending）时，隔多久再采一次上下文、最多几次 */
 /** 官方的 agent-browser skill：默认关掉，由 Cosyee 的 cosyee:browser 作为内置浏览器的唯一入口（用户在面板里设过就按用户的） */
 const OFFICIAL_BROWSER_SKILL = 'agent-browser';
+/** 内置 2FA skill：默认设为仅手动触发（用户可在技能面板里改） */
+const BUILTIN_TWOFA_SKILL = 'cosyee:2fa';
 const MCP_PENDING_RETRY_MS = 3000;
 const MCP_PENDING_RETRIES = 5;
 
@@ -915,17 +917,22 @@ export class Manager {
   }
 
   /**
-   * 下发给某个会话的完整 skill 状态：Cosyee 保存的 + 默认关掉的官方 agent-browser skill
-   * （只补磁盘上真有的、用户没设过的；不存进设置，用户在面板里打开就以用户的为准）。
+   * 下发给某个会话的完整 skill 状态：Cosyee 保存的 + 默认关掉的官方 agent-browser skill + 默认手动的 cosyee:2fa
+   * （只补用户没设过的；不存进设置，用户在面板里改过就以用户的为准）。
    */
   private skillModes(sessionId: string, cwd: string | null): Record<string, SkillMode> {
     const stored = this.skills?.get() ?? {};
     const out: Record<string, SkillMode> = { ...stored };
     // 内置 skill 始终开启：盖过以前存下的「手动 / 关」和用户 settings.json 里的设置
     for (const n of BUILTIN_SKILLS) out[n] = 'on';
-    if (!this.skills || OFFICIAL_BROWSER_SKILL in stored) return out;
-    for (const d of this.scanDiskSkills(sessionId, cwd) ?? []) {
-      if (skillBase(d.name) === OFFICIAL_BROWSER_SKILL && !(d.name in stored)) out[d.name] = 'off';
+    if (!this.skills) return out;
+    if (!(OFFICIAL_BROWSER_SKILL in stored)) {
+      for (const d of this.scanDiskSkills(sessionId, cwd) ?? []) {
+        if (skillBase(d.name) === OFFICIAL_BROWSER_SKILL && !(d.name in stored)) out[d.name] = 'off';
+      }
+    }
+    if (this.pluginDir && !(BUILTIN_TWOFA_SKILL in stored)) {
+      out[BUILTIN_TWOFA_SKILL] = 'user-invocable-only';
     }
     return out;
   }
@@ -1760,6 +1767,11 @@ export class Manager {
   /** 通知所有前端：子代理配置 / 代理类型开关 / 后端可用性变了 */
   notifySubagents(): void {
     this.broadcast({ t: 'subagents.changed' });
+  }
+
+  /** 通知所有前端：2FA 条目 / 分组 / 标签 / 同步状态变了 */
+  notifyTwoFa(): void {
+    this.broadcast({ t: '2fa.changed' });
   }
 
   /** 同步强杀（process 'exit' 事件里使用）。 */

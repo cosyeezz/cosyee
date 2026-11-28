@@ -41,6 +41,7 @@ await build({
   logLevel: 'info',
 });
 fs.copyFileSync(path.join(serverRoot, 'src/picker/win.ps1'), path.join(out, 'win.ps1'));
+fs.copyFileSync(path.join(repo, 'scripts/cosyee-2fa-decrypt.mjs'), path.join(out, 'cosyee-2fa-decrypt.mjs'));
 fs.cpSync(webDist, path.join(out, 'web'), { recursive: true });
 
 // .cmd 用 CRLF；chcp 65001 让中文提示不乱码

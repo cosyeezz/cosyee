@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "qrscan-overlay",
+  "description": "屏幕扫码覆盖层窗口（本地页面 qrscan.html）：只放行覆盖层自己的命令",
+  "windows": [
+    "qrscan-*"
+  ],
+  "platforms": [
+    "windows",
+    "linux",
+    "macOS"
+  ],
+  "permissions": [
+    "allow-qr-overlay-init",
+    "allow-qr-overlay-ready",
+    "allow-qr-overlay-crop",
+    "allow-qr-overlay-complete",
+    "allow-qr-overlay-cancel"
+  ]
+}

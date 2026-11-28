@@ -1,8 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "客户端自己的页面（服务器列表）：自绘标题栏用到的窗口操作",
-  "windows": ["main"],
+  "description": "客户端自己的页面（服务器列表）：自绘标题栏用到的窗口操作 + 全部自定义命令",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -12,6 +14,38 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-is-maximized",
-    "core:window:allow-set-background-color"
+    "core:window:allow-set-background-color",
+    "allow-probe",
+    "allow-set-servers",
+    "allow-app-version",
+    "allow-app-update-check",
+    "allow-app-update-install",
+    "allow-app-update-progress",
+    "allow-app-open-url",
+    "allow-tailnet-status",
+    "allow-tailnet-peers",
+    "allow-tailnet-check",
+    "allow-tailnet-install",
+    "allow-tailnet-uninstall",
+    "allow-tailnet-set-enabled",
+    "allow-tailnet-login",
+    "allow-tailnet-logout",
+    "allow-tailnet-restart",
+    "allow-tailnet-log",
+    "allow-app-relaunch",
+    "allow-local-status",
+    "allow-local-log",
+    "allow-local-install",
+    "allow-local-start",
+    "allow-local-stop",
+    "allow-server-latest",
+    "allow-kiro-admin",
+    "allow-components-status",
+    "allow-component-check",
+    "allow-component-update",
+    "allow-component-auto",
+    "allow-component-service",
+    "allow-component-log",
+    "allow-qr-scan-screen"
   ]
 }

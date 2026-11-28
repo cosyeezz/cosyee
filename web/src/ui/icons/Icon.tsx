@@ -37,10 +37,12 @@ export type IconName =
   | 'globe' | 'arrow-left' | 'arrow-right' | 'pick'
   // 账号弹层：管理账号
   | 'users'
-  // 通用：更多（横向三点）
-  | 'more' | 'upload'
+  // 两步验证（2FA）
+  | 'twofa' | 'lock' | 'key' | 'upload' | 'cloud' | 'more' | 'tag' | 'folder-plus'
   // 内置终端：历史、重新执行
-  | 'history' | 'play';
+  | 'history' | 'play'
+  // 2FA 添加方式：扫码、链接
+  | 'qr' | 'link';
 
 export interface IconProps {
   name: IconName;
@@ -319,6 +321,14 @@ const SIMPLE: Record<string, JSX.Element> = {
       <path d="M12.6 1.8v3M11.1 3.3h3" />
     </>
   ),
+  // 两步验证：盾牌 + 钥匙（与 titlebar.js 里的 twofa 同形）
+  twofa: (
+    <>
+      <path d="M8 2.1L3.4 4v3.5c0 3 1.9 5.2 4.6 6.2 2.7-1 4.6-3.2 4.6-6.2V4z" />
+      <circle cx="8" cy="6.7" r="1.4" />
+      <path d="M8 8.1v2.9M8 9.8h1.3" />
+    </>
+  ),
   more: (
     <>
       <circle cx="3.8" cy="8" r="1" fill="currentColor" stroke="none" />
@@ -326,11 +336,32 @@ const SIMPLE: Record<string, JSX.Element> = {
       <circle cx="12.2" cy="8" r="1" fill="currentColor" stroke="none" />
     </>
   ),
+  tag: (
+    <>
+      <path d="M2.5 7.7V3.6A1.1 1.1 0 013.6 2.5h4.1a1.2 1.2 0 01.85.35l4.6 4.6a1.2 1.2 0 010 1.7l-4 4a1.2 1.2 0 01-1.7 0l-4.6-4.6a1.2 1.2 0 01-.35-.85z" />
+      <circle cx="5.6" cy="5.6" r=".8" fill="currentColor" stroke="none" />
+    </>
+  ),
+  'folder-plus': (
+    <>
+      <path d="M2 4.5A1.5 1.5 0 013.5 3H6l1.5 1.8h5A1.5 1.5 0 0114 6.3v5.7a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12z" />
+      <path d="M8 7.2v3.6M6.2 9h3.6" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="5.6" cy="8.4" r="2.6" />
+      <path d="M7.9 7.4L13.5 3.8M11.5 5.1l1.2 1.8M9.8 6.2l1.1 1.6" />
+    </>
+  ),
   upload: (
     <>
       <path d="M8 10.5V2.7M4.8 5.9L8 2.7l3.2 3.2" />
       <path d="M2.8 11.2v1.3a1.2 1.2 0 001.2 1.2h8a1.2 1.2 0 001.2-1.2v-1.3" />
     </>
+  ),
+  cloud: (
+    <path d="M4.8 12.5h6.7a2.6 2.6 0 00.5-5.1A3.7 3.7 0 004.9 6.3a2.4 2.4 0 00-.1 6.2z" />
   ),
   history: (
     <>
@@ -340,6 +371,10 @@ const SIMPLE: Record<string, JSX.Element> = {
     </>
   ),
   play: <path d="M5 3.6l7.5 4.4L5 12.4z" fill="currentColor" stroke="none" />,
+  // 扫码：四个取景角 + 中间扫描线
+  qr: <path d="M2.5 5.5v-2a1 1 0 011-1h2M10.5 2.5h2a1 1 0 011 1v2M13.5 10.5v2a1 1 0 01-1 1h-2M5.5 13.5h-2a1 1 0 01-1-1v-2M4.8 8h6.4" />,
+  // 链接：两个互扣的链环
+  link: <path d="M6.8 9.2a2.6 2.6 0 003.7 0l2-2a2.6 2.6 0 00-3.7-3.7l-.6.6M9.2 6.8a2.6 2.6 0 00-3.7 0l-2 2a2.6 2.6 0 003.7 3.7l.6-.6" />,
 };
 
 /** 设计图标：icons.js 每次调用都会生成新的 id（let uid），所以按 (name, size, running) 只生成一次 */

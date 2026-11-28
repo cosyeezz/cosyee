@@ -1,4 +1,5 @@
 // 组装并启动服务：HTTP + WebSocket。index.ts 与 smoke 脚本都通过 startServer 使用它。
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -50,6 +51,8 @@ import { UsageProvider, fetchUsage } from './usage.js';
 import { CliModelsDisk, CliModelsProvider, fetchCliModels, type FetchedModels } from './cliModels.js';
 import { HttpError, StateStore, Workspaces } from './workspaces.js';
 import { Speech } from './speech/index.js';
+import { TwoFaService } from './twofa/index.js';
+import { ensureTwoFaPlugin } from './twofa/skill.js';
 import { TerminalManager } from './terminal/index.js';
 
 /** state.json 里最多保留多少个会话的配置记录（超出丢最久没用的） */
@@ -91,10 +94,18 @@ export interface StartOptions {
   prefetchSpeech?: boolean;
   /** Tailscale HTTPS 入口（见 tailscaleHttps.ts），经 /api/bootstrap 告诉网页 */
   httpsUrl?: () => string | null;
+  /** 2FA GitHub 同步用的 fetch（测试可替换） */
+  twoFaFetch?: typeof globalThis.fetch;
+  /** 2FA 获取 GitHub Token 的函数（测试可替换） */
+  twoFaGetToken?: () => Promise<string>;
+  /** 2FA Agent 令牌（测试可覆盖，默认每次启动随机生成） */
+  agentToken?: string;
 }
 
 export interface RunningServer {
   port: number;
+  /** 本次启动生成的 2FA Agent 令牌（仅限 /api/2fa/agent/*） */
+  agentToken: string;
   manager: Manager;
   sessions: Sessions;
   workspaces: Workspaces;
@@ -223,17 +234,26 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       return acc ? accounts.displayName(acc) : null;
     },
   });
-  // 内置浏览器（agent-browser）：程序装在 <数据目录>/agent-browser，浏览器数据在 <数据目录>/browser；
-  // 给 Claude 的 cosyee:browser skill 是生成在 <数据目录>/claude-plugin 的本地插件
+  // 内置浏览器（agent-browser）与 2FA 共用 <数据目录>/claude-plugin 本地插件目录
   const dataHome = () => (opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome());
   const browserInstall = new BrowserInstall({ rootDir: () => path.join(dataHome(), 'agent-browser') });
   const browserPlugin = () => {
     void browserInstall.ensureSkills();
-    return ensureBrowserPlugin({ pluginDir: path.join(dataHome(), 'claude-plugin'), dataDir: path.join(dataHome(), 'browser'), install: browserInstall });
+    const pluginDir = path.join(dataHome(), 'claude-plugin');
+    ensureBrowserPlugin({ pluginDir, dataDir: path.join(dataHome(), 'browser'), install: browserInstall });
+    ensureTwoFaPlugin({ pluginDir });
+    return pluginDir;
   };
   let actualPort = wantPort;
+  const agentToken = opts.agentToken ?? crypto.randomBytes(32).toString('hex');
+  // 监听 0.0.0.0 或 tailscale 时 127.0.0.1 可达且通过 hostAllowed；监听指定非回环 IPv4 时用该 IP
+  const agentApiHost = bindHost === '0.0.0.0' || bindHost === TAILSCALE_MODE ? '127.0.0.1' : bindHost;
   const manager = new Manager({
     pluginDir: browserPlugin,
+    extraEnv: () => ({
+      COSYEE_API_URL: `http://${agentApiHost}:${actualPort}`,
+      COSYEE_AGENT_TOKEN: agentToken,
+    }),
     dots,
     sessions,
     pins,
@@ -509,6 +529,12 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   components.start();
 
   const speech = new Speech();
+  const twoFa = new TwoFaService({
+    dir: () => path.join(dataHome(), '2fa'),
+    fetch: opts.twoFaFetch,
+    getToken: opts.twoFaGetToken,
+    onChange: () => manager.notifyTwoFa(),
+  });
   const terminals = new TerminalManager({ workspaces, dataDir: dataHome });
   const handler = createHandler({
     delegateModels: (cwd, refresh, backend, account) =>
@@ -537,9 +563,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     compactStats,
     spawner: opts.spawner,
     authToken: opts.authToken,
+    agentToken,
     host: bindHost,
     onShutdown: opts.onShutdown,
     speech,
+    twoFa,
     httpsUrl: opts.httpsUrl,
   });
 
@@ -639,11 +667,13 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     });
   });
   actualPort = (server.address() as AddressInfo).port;
+  twoFa.start();
 
   let stopping: Promise<void> | null = null;
   const stop = (): Promise<void> => {
     stopping ??= (async () => {
       clearInterval(heartbeat);
+      twoFa.dispose();
       pins.dispose();
       accounts?.dispose();
       agyAccounts?.dispose();
@@ -675,5 +705,5 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     return stopping;
   };
 
-  return { port: actualPort, manager, sessions, workspaces, store, pins, trash, stops, stop };
+  return { port: actualPort, agentToken, manager, sessions, workspaces, store, pins, trash, stops, stop };
 }

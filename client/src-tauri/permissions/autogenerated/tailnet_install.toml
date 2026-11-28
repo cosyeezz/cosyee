@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tailnet-install"
+description = "Enables the tailnet_install command without any pre-configured scope."
+commands.allow = ["tailnet_install"]
+
+[[permission]]
+identifier = "deny-tailnet-install"
+description = "Denies the tailnet_install command without any pre-configured scope."
+commands.deny = ["tailnet_install"]

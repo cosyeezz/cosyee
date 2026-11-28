@@ -1,0 +1,205 @@
+/* 2FA 分组选择器。按用户要求：动效不跟随 prefers-reduced-motion。 */
+
+.cz-2fa-gp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 33px;
+  padding: 0 8px 0 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background-color var(--dur-fast);
+}
+.cz-2fa-gp:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong));
+}
+.cz-2fa-gp:focus-visible,
+.cz-2fa-gp.is-open {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.cz-2fa-gp:disabled {
+  opacity: .55;
+  cursor: default;
+}
+.cz-2fa-gp__ic {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+  transition: color var(--dur-fast);
+}
+.cz-2fa-gp:hover:not(:disabled) .cz-2fa-gp__ic,
+.cz-2fa-gp.is-open .cz-2fa-gp__ic {
+  color: var(--accent);
+}
+.cz-2fa-gp__val {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.cz-2fa-gp__val.is-placeholder {
+  color: var(--text-3);
+}
+.cz-2fa-gp__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cz-2fa-gp__path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cz-2fa-gp__chev {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+  transition: transform 220ms var(--ease-out);
+}
+.cz-2fa-gp.is-open .cz-2fa-gp__chev {
+  transform: rotate(180deg);
+}
+
+/* ───── 下拉层（实底，避免磨砂面板里 backdrop-filter 嵌套穿底） ───── */
+.cz-2fa-gp-pop {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .16), 0 16px 36px -10px rgba(0, 0, 0, .42);
+  color: var(--text);
+  transform-origin: top center;
+  transition: opacity 150ms var(--ease-out), transform 170ms var(--ease-out);
+}
+:root[data-theme="light"] .cz-2fa-gp-pop {
+  box-shadow: 0 2px 8px rgba(20, 18, 15, .08), 0 18px 40px -12px rgba(20, 18, 15, .22);
+}
+.cz-2fa-gp-pop.is-flip {
+  transform-origin: bottom center;
+}
+@starting-style {
+  .cz-2fa-gp-pop {
+    opacity: 0;
+    transform: translateY(-5px) scale(.97);
+  }
+  .cz-2fa-gp-pop.is-flip {
+    transform: translateY(5px) scale(.97);
+  }
+}
+.cz-2fa-gp-pop.is-leaving {
+  opacity: 0;
+  transform: scale(.98);
+  transition-duration: 110ms;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+  pointer-events: none;
+}
+
+.cz-2fa-gp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cz-2fa-gp-opt {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 8px 0 9px;
+  border-radius: 7px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 90ms, color 90ms;
+}
+.cz-2fa-gp-opt.is-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-gp-opt.is-selected {
+  color: var(--text);
+  font-weight: 500;
+}
+.cz-2fa-gp-opt.is-root {
+  margin-bottom: 3px;
+}
+.cz-2fa-gp-opt.is-root::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: -3px;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.cz-2fa-gp-opt__ic {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+}
+.cz-2fa-gp-opt.is-selected .cz-2fa-gp-opt__ic {
+  color: var(--accent);
+}
+.cz-2fa-gp-opt__name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cz-2fa-gp-opt__ck {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--accent);
+}
+.cz-2fa-gp-opt__ck > * {
+  animation: cz-2fa-gp-pop-in 220ms var(--ease-out);
+}
+/* 层级引导线：每一级一段竖线 */
+.cz-2fa-gp-guide {
+  flex: none;
+  align-self: stretch;
+  width: 12px;
+  margin-right: 0;
+  position: relative;
+}
+.cz-2fa-gp-guide::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
+}
+@keyframes cz-2fa-gp-pop-in {
+  from { opacity: 0; transform: scale(.4); }
+}

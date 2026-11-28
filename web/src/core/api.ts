@@ -3,6 +3,25 @@ import type {
   AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, CodexAccountList, CodexLoginMethod, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
+import type {
+  TwoFaCreateEntryInput,
+  TwoFaCreateGroupInput,
+  TwoFaCreateTagInput,
+  TwoFaData,
+  TwoFaDeleteGroupMode,
+  TwoFaEntry,
+  TwoFaGroup,
+  TwoFaImportInput,
+  TwoFaImportResult,
+  TwoFaImportPreviewInput,
+  TwoFaImportPreviewResult,
+  TwoFaPatchEntryInput,
+  TwoFaPatchGroupInput,
+  TwoFaPatchTagInput,
+  TwoFaSync,
+  TwoFaTag,
+  TwoFaUsage,
+} from './twofa/types';
 
 /** 文件预览请求的目标：session + cwd 用于服务端确定授权范围，path 是会话里出现的路径（相对 / 绝对均可） */
 export interface FileTarget {
@@ -19,7 +38,7 @@ function fileQuery(t: FileTarget): string {
   return q.toString();
 }
 
-async function req<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
+async function req<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: { 'content-type': 'application/json' },
@@ -37,7 +56,7 @@ export class ApiError extends Error {
   }
 }
 
-async function reqDetailed<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
+async function reqDetailed<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: { 'content-type': 'application/json' },
@@ -326,6 +345,34 @@ export const api = {
   /** 开关 MCP 服务器（按项目写进 ~/.claude.json）；返回切换后的上下文 */
   toggleMcp: (id: string, server: string, enabled: boolean, cwd?: string, draft = false) =>
     req<ContextUsage | null>('POST', `/api/context/${id}/mcp`, { server, enabled, ...(cwd ? { cwd } : {}), ...(draft ? { draft: true } : {}) }),
+  /** 两步验证（2FA）：全量数据、条目/分组/标签 CRUD、使用次数、导入、同步 */
+  twoFaData: () => req<TwoFaData>('GET', '/api/2fa/data'),
+  twoFaCreateEntry: (input: TwoFaCreateEntryInput) =>
+    reqDetailed<{ entry: TwoFaEntry }>('POST', '/api/2fa/entries', input),
+  twoFaUpdateEntry: (id: string, input: TwoFaPatchEntryInput) =>
+    reqDetailed<{ entry: TwoFaEntry }>('PATCH', `/api/2fa/entries/${encodeURIComponent(id)}`, input),
+  twoFaDeleteEntry: (id: string, version: number) =>
+    reqDetailed<{ ok: true }>('DELETE', `/api/2fa/entries/${encodeURIComponent(id)}?version=${version}`),
+  twoFaCreateGroup: (input: TwoFaCreateGroupInput) =>
+    reqDetailed<{ group: TwoFaGroup }>('POST', '/api/2fa/groups', input),
+  twoFaUpdateGroup: (id: string, input: TwoFaPatchGroupInput) =>
+    reqDetailed<{ group: TwoFaGroup }>('PATCH', `/api/2fa/groups/${encodeURIComponent(id)}`, input),
+  twoFaDeleteGroup: (id: string, mode: TwoFaDeleteGroupMode, version: number) =>
+    reqDetailed<{ ok: true }>('DELETE', `/api/2fa/groups/${encodeURIComponent(id)}?mode=${mode}&version=${version}`),
+  twoFaCreateTag: (input: TwoFaCreateTagInput) =>
+    reqDetailed<{ tag: TwoFaTag }>('POST', '/api/2fa/tags', input),
+  twoFaUpdateTag: (id: string, input: TwoFaPatchTagInput) =>
+    reqDetailed<{ tag: TwoFaTag }>('PATCH', `/api/2fa/tags/${encodeURIComponent(id)}`, input),
+  twoFaDeleteTag: (id: string, version: number) =>
+    reqDetailed<{ ok: true }>('DELETE', `/api/2fa/tags/${encodeURIComponent(id)}?version=${version}`),
+  twoFaRecordUsage: (id: string) =>
+    req<{ usage: TwoFaUsage }>('POST', `/api/2fa/usage/${encodeURIComponent(id)}`, {}),
+  twoFaImport: (input: TwoFaImportInput) =>
+    reqDetailed<TwoFaImportResult>('POST', '/api/2fa/import', input),
+  twoFaImportPreview: (input: TwoFaImportPreviewInput) =>
+    reqDetailed<TwoFaImportPreviewResult>('POST', '/api/2fa/import/preview', input),
+  twoFaSync: () => reqDetailed<{ sync: TwoFaSync }>('POST', '/api/2fa/sync', {}),
+  twoFaStatus: () => req<{ sync: TwoFaSync }>('GET', '/api/2fa/status'),
 };
 
 // ───────────── WebSocket ─────────────

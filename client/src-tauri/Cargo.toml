@@ -26,6 +26,13 @@ semver = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+# 二维码识别（纯 Rust）：rqrr 解码，image 做灰度 / 缩放 / PNG 编码
+rqrr = "0.11"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# 屏幕二维码扫描：仅桌面（Windows / macOS）。xcap 在 Linux 上依赖 pipewire 等系统库，手机端更用不到
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+xcap = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
@@ -41,3 +48,6 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+qrcode = { version = "0.15.0", default-features = false }

@@ -1,0 +1,1843 @@
+/* 两步验证（2FA / TOTP）浮层面板样式。
+ * 严格遵循设计变量（tokens.css / motion.css），深浅主题自适应。
+ * 按用户明确要求：不跟随 prefers-reduced-motion，动效始终开启。 */
+
+/* ───── 10 色标签与头像调色板（深浅主题各一套，确保对比度 ≥ 4.5:1） ───── */
+.cz-2fa-pop,
+.cz-2fa-menu,
+.cz-2fa-scrim {
+  --tf-slate: #94a3b8;
+  --tf-red: #f87171;
+  --tf-orange: #fb923c;
+  --tf-amber: #fbbf24;
+  --tf-green: #4ade80;
+  --tf-teal: #2dd4bf;
+  --tf-blue: #60a5fa;
+  --tf-indigo: #818cf8;
+  --tf-violet: #a78bfa;
+  --tf-pink: #f472b6;
+}
+:root[data-theme="light"] .cz-2fa-pop,
+:root[data-theme="light"] .cz-2fa-menu,
+:root[data-theme="light"] .cz-2fa-scrim {
+  --tf-slate: #526071;
+  --tf-red: #d93848;
+  --tf-orange: #d45d14;
+  --tf-amber: #b46d09;
+  --tf-green: #16874a;
+  --tf-teal: #0f8276;
+  --tf-blue: #2563c9;
+  --tf-indigo: #4b4ee0;
+  --tf-violet: #7347d6;
+  --tf-pink: #c9327c;
+}
+
+.is-c-slate { --tf-c: var(--tf-slate); }
+.is-c-red { --tf-c: var(--tf-red); }
+.is-c-orange { --tf-c: var(--tf-orange); }
+.is-c-amber { --tf-c: var(--tf-amber); }
+.is-c-green { --tf-c: var(--tf-green); }
+.is-c-teal { --tf-c: var(--tf-teal); }
+.is-c-blue { --tf-c: var(--tf-blue); }
+.is-c-indigo { --tf-c: var(--tf-indigo); }
+.is-c-violet { --tf-c: var(--tf-violet); }
+.is-c-pink { --tf-c: var(--tf-pink); }
+
+/* ───── 主浮层（右上角锚定，最大高度 70vh，内部滚动） ───── */
+.cz-2fa-pop {
+  position: fixed;
+  top: calc(var(--cosyee-titlebar-h, 0px) + var(--cosyee-inset-top, 0px) + 8px);
+  right: 12px;
+  z-index: 60;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: min(
+    70vh,
+    calc(100vh - var(--cosyee-titlebar-h, 0px) - var(--cosyee-inset-top, 0px) - var(--cosyee-inset-bottom, 0px) - 24px)
+  );
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--bg-menu) 86%, transparent);
+  -webkit-backdrop-filter: var(--mat-blur);
+  backdrop-filter: var(--mat-blur);
+  box-shadow:
+    var(--mat-hi),
+    0 2px 6px rgba(0, 0, 0, .14),
+    0 20px 48px -12px rgba(0, 0, 0, .42);
+  color: var(--text);
+  overflow: hidden;
+  transform-origin: top right;
+  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+}
+:root[data-theme="light"] .cz-2fa-pop {
+  background: color-mix(in srgb, var(--bg-menu) 92%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    0 2px 8px rgba(20, 18, 15, .07),
+    0 22px 48px -14px rgba(20, 18, 15, .18);
+}
+@starting-style {
+  .cz-2fa-pop {
+    opacity: 0;
+    transform: translateY(-6px) scale(.95);
+  }
+}
+.cz-2fa-pop.is-leaving {
+  opacity: 0;
+  transform: translateY(-4px) scale(.97);
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+  pointer-events: none;
+}
+
+/* ───── 吸顶顶栏：搜索 + 总倒计时 + ⚙ + ＋ ───── */
+.cz-2fa-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.cz-2fa-search {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-input) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.cz-2fa-search:focus-within {
+  background: var(--bg-input);
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.cz-2fa-search__ic {
+  position: absolute;
+  left: 10px;
+  color: var(--text-3);
+  pointer-events: none;
+  transition: color var(--dur-fast);
+}
+.cz-2fa-search:focus-within .cz-2fa-search__ic {
+  color: var(--accent);
+}
+.cz-2fa-search__input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 0 30px 0 30px;
+  outline: none;
+  text-overflow: ellipsis;
+}
+.cz-2fa-search__input::placeholder {
+  color: var(--text-3);
+}
+.cz-2fa-search__clear,
+.cz-2fa-search__tag {
+  position: absolute;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast), transform 110ms var(--ease-out);
+}
+.cz-2fa-search__clear:hover,
+.cz-2fa-search__tag:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-search__clear:active,
+.cz-2fa-search__tag:active {
+  transform: scale(.92);
+}
+
+.cz-2fa-ib {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform 110ms var(--ease-out);
+}
+.cz-2fa-ib:hover,
+.cz-2fa-ib.is-open {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-ib:active {
+  transform: scale(.92);
+}
+.cz-2fa-ib.is-accent {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+.cz-2fa-ib.is-accent:hover,
+.cz-2fa-ib.is-accent.is-open {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+/* ＋ 打开菜单时旋转成 ×，和菜单的出现同步 */
+.cz-2fa-ib__plus {
+  transition: transform 220ms var(--ease-out);
+}
+.cz-2fa-ib.is-accent.is-open .cz-2fa-ib__plus {
+  transform: rotate(45deg);
+}
+.cz-2fa-ib.is-danger:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.cz-2fa-ib__dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 1.5px var(--bg-menu);
+}
+.cz-2fa-close-narrow {
+  display: none;
+}
+
+/* 顶栏总倒计时：所有 30 秒周期的验证码共用一个，窄而安静，最后 5 秒转为警示色 */
+.cz-2fa-gcd {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.cz-2fa-ring.is-inline {
+  width: auto;
+  height: 28px;
+  gap: 5px;
+  padding: 0 9px 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  transition: color 180ms ease, background-color 180ms ease;
+}
+.cz-2fa-ring.is-inline .cz-2fa-ring__num {
+  position: static;
+  min-width: 2.4ch;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  color: var(--text-2);
+  text-align: left;
+}
+.cz-2fa-ring.is-inline.is-warn {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.cz-2fa-ring.is-inline.is-warn .cz-2fa-ring__num {
+  color: var(--danger);
+}
+
+/* ───── 标签行：横向滚动 + 左右渐隐 ───── */
+.cz-2fa-tags-wrap {
+  flex: none;
+  position: relative;
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.cz-2fa-tags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  padding: 1px 0;
+}
+.cz-2fa-tags-wrap.has-left .cz-2fa-tags {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18px, #000);
+  mask-image: linear-gradient(to right, transparent, #000 18px, #000);
+}
+.cz-2fa-tags-wrap.has-right .cz-2fa-tags {
+  -webkit-mask-image: linear-gradient(to right, #000, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, #000, #000 calc(100% - 18px), transparent);
+}
+.cz-2fa-tags-wrap.has-left.has-right .cz-2fa-tags {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+}
+
+.cz-2fa-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 100ms var(--ease-out);
+}
+.cz-2fa-chip:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-chip:active {
+  transform: scale(.96);
+}
+.cz-2fa-chip.is-on {
+  border-color: color-mix(in srgb, var(--tf-c, var(--accent)) 55%, transparent);
+  background: color-mix(in srgb, var(--tf-c, var(--accent)) 16%, transparent);
+  color: var(--tf-c, var(--accent));
+  font-weight: 500;
+}
+.cz-2fa-chip.is-static {
+  cursor: default;
+}
+.cz-2fa-chip.is-add {
+  border-style: dashed;
+  color: var(--text-3);
+  padding: 0 7px;
+}
+.cz-2fa-chip.is-add:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.cz-2fa-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tf-c, var(--accent));
+  flex: none;
+}
+
+/* ───── 未配置同步提示条 ───── */
+.cz-2fa-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 10px 2px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
+}
+.cz-2fa-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cz-2fa-banner__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+.cz-2fa-banner__desc {
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.4;
+  text-wrap: balance;
+}
+.cz-2fa-banner__btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-fast), transform 100ms var(--ease-out);
+}
+.cz-2fa-banner__btn:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.cz-2fa-banner__btn.is-copied {
+  border-color: color-mix(in srgb, var(--dot-running) 50%, transparent);
+  background: color-mix(in srgb, var(--dot-running) 16%, transparent);
+  color: var(--dot-running);
+}
+
+/* ───── 分组路径面包屑 ───── */
+.cz-2fa-crumbbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px 4px;
+}
+.cz-2fa-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 0;
+  font-size: 12px;
+  overflow: hidden;
+}
+.cz-2fa-crumb {
+  border: 0;
+  background: transparent;
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.cz-2fa-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-crumb.is-root,
+.cz-2fa-crumb.is-ellipsis {
+  flex: none;
+  padding: 2px 4px;
+}
+.cz-2fa-crumb.is-cur {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+  max-width: 130px;
+}
+.cz-2fa-crumb.is-cur:hover {
+  background: transparent;
+}
+.cz-2fa-crumb-sep {
+  flex: none;
+  color: var(--text-3);
+  opacity: .55;
+  font-size: 11px;
+}
+.cz-2fa-subbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.cz-2fa-subbtn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* ───── 列表主区 ───── */
+.cz-2fa-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 6px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-3) 35%, transparent) transparent;
+}
+.cz-2fa-stage {
+  display: flex;
+  flex-direction: column;
+}
+.cz-2fa-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 分区（置顶 / 分组 / 其它）：relative 让拖动命中检测用 offsetTop 与内容坐标对齐 */
+.cz-2fa-sec {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cz-2fa-sec + .cz-2fa-sec::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -4px;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  pointer-events: none;
+}
+
+/* ───── 记录行 & 分组行 ───── */
+.cz-2fa-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 5px 6px 5px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: pan-y;
+  transition: background-color 130ms var(--ease-out), box-shadow 160ms var(--ease-out);
+}
+.cz-2fa-row:hover,
+.cz-2fa-row.is-active {
+  background: color-mix(in srgb, var(--bg-hover) 78%, transparent);
+}
+.cz-2fa-row.is-copied {
+  background: color-mix(in srgb, var(--dot-running) 10%, transparent);
+}
+
+/* 首字母头像：柔和着色底，无描边，靠明度差分层而不是线条 */
+.cz-2fa-av {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--tf-c);
+  background: color-mix(in srgb, var(--tf-c) 15%, transparent);
+  transition: transform 180ms var(--ease-out), background-color 180ms var(--ease-out);
+}
+:root[data-theme="light"] .cz-2fa-av {
+  background: color-mix(in srgb, var(--tf-c) 11%, #fff);
+}
+.cz-2fa-row:hover .cz-2fa-av {
+  background: color-mix(in srgb, var(--tf-c) 21%, transparent);
+}
+:root[data-theme="light"] .cz-2fa-row:hover .cz-2fa-av {
+  background: color-mix(in srgb, var(--tf-c) 17%, #fff);
+}
+
+.cz-2fa-row__info {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cz-2fa-row__top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.cz-2fa-pin-mark {
+  flex: none;
+  color: color-mix(in srgb, var(--accent) 75%, var(--text-3));
+  transform: rotate(18deg);
+}
+.cz-2fa-row__issuer {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-row__dots {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.cz-2fa-tdot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--tf-c);
+}
+.cz-2fa-row__sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--text-3);
+}
+.cz-2fa-row__account {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-row__path {
+  /* 路径不参与压缩（最多占 45%），账号优先省略，避免路径被挤成「· 工…」 */
+  flex: 0 0 auto;
+  max-width: 45%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  opacity: .8;
+}
+
+/* 验证码（永不截断）：等宽数字 + 三三分组 */
+.cz-2fa-code-slot {
+  position: relative;
+  flex: none;
+  display: grid;
+  align-items: center;
+  justify-items: end;
+  min-width: 78px;
+}
+.cz-2fa-code,
+.cz-2fa-copied {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+  transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out);
+}
+.cz-2fa-code {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  word-spacing: -.12em;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 0;
+  color: var(--text);
+  line-height: 1;
+}
+.cz-2fa-copied {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dot-running);
+  opacity: 0;
+  transform: translateY(4px) scale(.94);
+  pointer-events: none;
+}
+.cz-2fa-code-slot.is-copied .cz-2fa-code {
+  opacity: 0;
+  transform: translateY(-4px) scale(.95);
+}
+.cz-2fa-code-slot.is-copied .cz-2fa-copied {
+  opacity: 1;
+  transform: none;
+}
+
+/* 行尾槽位：常态显示小环 / 箭头，悬停或聚焦时交叉淡入「⋯」。两层叠在同一格里，宽度恒定，不引起重排 */
+.cz-2fa-tail {
+  flex: none;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+}
+.cz-2fa-tail__idle,
+.cz-2fa-more {
+  grid-area: 1 / 1;
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+}
+.cz-2fa-tail__idle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cz-2fa-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(.82);
+  pointer-events: none;
+}
+.cz-2fa-more:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+.cz-2fa-more:active {
+  transform: scale(.92);
+}
+.cz-2fa-row:hover .cz-2fa-more,
+.cz-2fa-row:focus-within .cz-2fa-more,
+.cz-2fa-row.is-active .cz-2fa-more {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.cz-2fa-row:hover .cz-2fa-tail__idle,
+.cz-2fa-row:focus-within .cz-2fa-tail__idle,
+.cz-2fa-row.is-active .cz-2fa-tail__idle {
+  opacity: 0;
+  transform: scale(.82);
+}
+.cz-2fa-row:hover .cz-2fa-more:active {
+  transform: scale(.92);
+}
+
+/* 倒计时环（行内只给周期不是 30 秒的验证码） */
+.cz-2fa-ring {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  transition: color 180ms ease;
+}
+.cz-2fa-ring svg {
+  flex: none;
+  transform: rotate(-90deg);
+}
+.cz-2fa-ring__track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--border-strong) 70%, transparent);
+  stroke-width: 2.1;
+}
+.cz-2fa-ring__arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+}
+.cz-2fa-ring__num {
+  position: absolute;
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  line-height: 1;
+  transition: color 180ms ease;
+}
+.cz-2fa-ring.is-warn {
+  color: var(--danger);
+  animation: cz-2fa-warn-pulse 900ms ease-in-out infinite;
+}
+.cz-2fa-ring.is-warn .cz-2fa-ring__num {
+  color: var(--danger);
+}
+@keyframes cz-2fa-warn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .6; }
+}
+
+/* 分组行 */
+.cz-2fa-row--group {
+  min-height: 42px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.cz-2fa-folder-ic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent);
+  transition: transform 200ms var(--ease-out), background-color 160ms var(--ease-out);
+}
+.cz-2fa-group__name {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-group__count {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cz-2fa-group__chev {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 180ms var(--ease-out);
+}
+.cz-2fa-row--group:hover .cz-2fa-group__chev {
+  transform: translateX(2px);
+}
+
+/* ───── 拖动排序 ───── */
+.cz-2fa-pop.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cz-2fa-pop.is-dragging .cz-2fa-row {
+  cursor: grabbing;
+}
+.cz-2fa-pop.is-dragging .cz-2fa-row:not(.is-ghost):not(.is-drop-target):hover {
+  background: transparent;
+}
+.cz-2fa-pop.is-dragging .cz-2fa-more {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.cz-2fa-pop.is-dragging .cz-2fa-tail__idle {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+/* 被拖起的行：脱离文档流，跟随指针，轻微放大 + 悬浮阴影 */
+.cz-2fa-row.cz-2fa-dragclone {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 30;
+  margin: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  cursor: grabbing;
+  will-change: transform;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  transition: opacity 180ms var(--ease-out);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border-strong)),
+    0 4px 10px rgba(0, 0, 0, .16),
+    0 18px 32px -8px rgba(0, 0, 0, .42);
+}
+/* 悬在分组 / 面包屑上时，被拖的行变淡（缩小由脚本写进 transform），让下面目标的高亮露出来 */
+.cz-2fa-pop.is-into .cz-2fa-dragclone {
+  opacity: .97;
+}
+:root[data-theme="light"] .cz-2fa-dragclone {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 30%, var(--border-strong)),
+    0 4px 10px rgba(20, 18, 15, .08),
+    0 18px 30px -8px rgba(20, 18, 15, .26);
+}
+.cz-2fa-dragclone .cz-2fa-more {
+  display: none;
+}
+
+/* 占位：原位置变成一个浅色凹槽，左缘一道细的插入指示条 */
+.cz-2fa-row.is-ghost {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.cz-2fa-row.is-ghost > * {
+  opacity: 0;
+}
+.cz-2fa-row.is-ghost::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* 拖到分组行上：整行发光，文件夹合上变打开 */
+.cz-2fa-row.is-drop-target {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 62%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.cz-2fa-row.is-drop-target .cz-2fa-folder-ic {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  transform: scale(1.08);
+}
+.cz-2fa-row.is-drop-target .cz-2fa-group__chev {
+  opacity: 0;
+}
+
+/* ───── 空状态 & 骨架 ───── */
+.cz-2fa-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 2px;
+}
+.cz-2fa-skel {
+  height: 44px;
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg-elev) 80%, transparent) 25%,
+    var(--bg-hover) 50%,
+    color-mix(in srgb, var(--bg-elev) 80%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: cz-2fa-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes cz-2fa-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.cz-2fa-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 30px 20px 26px;
+  gap: 7px;
+}
+.cz-2fa-empty__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.cz-2fa-empty__badge.is-folder {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-2);
+}
+.cz-2fa-empty__ic {
+  color: var(--text-3);
+}
+.cz-2fa-empty__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cz-2fa-empty__desc {
+  font-size: 12px;
+  color: var(--text-3);
+  max-width: 260px;
+  line-height: 1.55;
+  text-wrap: balance;
+}
+.cz-2fa-empty__acts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ───── 底部同步状态栏 ───── */
+.cz-2fa-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cz-2fa-foot__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 3px 6px;
+  margin-left: -6px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.cz-2fa-foot__sync:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+.cz-2fa-foot__sync:disabled {
+  cursor: default;
+}
+.cz-2fa-foot__txt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-foot__count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.cz-2fa-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-3);
+}
+.cz-2fa-dot.is-ok {
+  background: var(--dot-running);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-running) 18%, transparent);
+}
+.cz-2fa-dot.is-err {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.cz-2fa-dot.is-busy {
+  animation: cz-2fa-warn-pulse 900ms ease-in-out infinite;
+}
+
+/* ───── 浮层内轻提示 ───── */
+.cz-2fa-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: calc(100% - 28px);
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .28);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: cz-2fa-toast-in 180ms var(--ease-out);
+}
+@keyframes cz-2fa-toast-in {
+  from { opacity: 0; transform: translate(-50%, 6px) scale(.96); }
+}
+
+/* ───── 页面切换（列表 ⇄ 添加 / 编辑 / 导入）：新页从右侧滑入 ───── */
+.cz-2fa-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: inherit;
+  display: flex;
+  flex-direction: column;
+  animation: cz-2fa-page-in 260ms var(--ease-out) both;
+}
+@keyframes cz-2fa-page-in {
+  from { opacity: 0; transform: translate3d(16px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+/* ───── 添加 / 编辑表单 ───── */
+.cz-2fa-form {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  min-height: 0;
+}
+.cz-2fa-form__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.cz-2fa-form__title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.cz-2fa-form__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-3) 35%, transparent) transparent;
+}
+.cz-2fa-form__foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+/* 表单分区：把相关字段收进一块浅底卡片，减少页面上的线条 */
+.cz-2fa-fgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 11px 12px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elev) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.cz-2fa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.cz-2fa-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.cz-2fa-label em {
+  margin-left: 4px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.cz-2fa-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.cz-2fa-input {
+  width: 100%;
+  height: 33px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 85%, transparent);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.cz-2fa-input::placeholder {
+  color: var(--text-3);
+}
+.cz-2fa-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.cz-2fa-input.is-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: .04em;
+}
+
+.cz-2fa-tag-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.cz-2fa-newtag-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.cz-2fa-inline-tag {
+  display: flex;
+  gap: 6px;
+}
+.cz-2fa-inline-tag .cz-2fa-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* 高级参数：折叠头 + 摘要，展开用 grid 行高 0fr → 1fr（唯一例外的非 transform 动画，内容量很小） */
+.cz-2fa-adv {
+  display: flex;
+  flex-direction: column;
+}
+.cz-2fa-adv__toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 4px 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--dur-fast);
+}
+.cz-2fa-adv__toggle:hover {
+  color: var(--text);
+}
+.cz-2fa-adv__chev {
+  flex: none;
+  transition: transform 220ms var(--ease-out);
+}
+.cz-2fa-adv__toggle[aria-expanded="true"] .cz-2fa-adv__chev {
+  transform: rotate(90deg);
+}
+.cz-2fa-adv__sum {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  opacity: .85;
+}
+.cz-2fa-adv__wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms var(--ease-out);
+}
+.cz-2fa-adv__wrap.is-open {
+  grid-template-rows: 1fr;
+}
+.cz-2fa-adv__clip {
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 180ms var(--ease-out);
+}
+.cz-2fa-adv__wrap.is-open .cz-2fa-adv__clip {
+  opacity: 1;
+}
+.cz-2fa-adv__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 2px 2px;
+}
+
+.cz-2fa-err {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.45;
+}
+
+/* ───── 通用按钮 ───── */
+.cz-2fa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 31px;
+  padding: 0 13px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 85%, transparent);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-fast), border-color var(--dur-fast), opacity var(--dur-fast), transform 110ms var(--ease-out);
+}
+.cz-2fa-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.cz-2fa-btn:active:not(:disabled) {
+  transform: scale(.97);
+}
+.cz-2fa-btn:disabled {
+  opacity: .55;
+  cursor: default;
+}
+.cz-2fa-btn.is-sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.cz-2fa-btn.is-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.cz-2fa-btn.is-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.07);
+}
+.cz-2fa-btn.is-danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: #fff;
+}
+.cz-2fa-btn.is-danger:hover:not(:disabled) {
+  background: var(--danger);
+  filter: brightness(1.06);
+}
+
+/* ───── 附属菜单（portal 到 body，实底防穿底） ───── */
+.cz-2fa-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 164px;
+  padding: 5px;
+  border-radius: 11px;
+  background: var(--bg-menu);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .16), 0 16px 36px -10px rgba(0, 0, 0, .42);
+  color: var(--text);
+  transform-origin: top right;
+  transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
+}
+.cz-2fa-menu--manage {
+  width: 228px;
+}
+.cz-2fa-menu--ctx {
+  transform-origin: top left;
+}
+@starting-style {
+  .cz-2fa-menu {
+    opacity: 0;
+    transform: translateY(-4px) scale(.96);
+  }
+}
+.cz-2fa-menu.is-leaving {
+  opacity: 0;
+  transform: scale(.97);
+  transition-duration: 100ms;
+  pointer-events: none;
+}
+
+.cz-2fa-mi {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+.cz-2fa-mi:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-mi:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.cz-2fa-mi.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+.cz-2fa-menu__hr {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.cz-2fa-sync-card {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cz-2fa-sync-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cz-2fa-sync-card__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cz-2fa-sync-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cz-2fa-sync-card__line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-sync-card__err {
+  color: var(--danger);
+  word-break: break-word;
+}
+.cz-2fa-sync-card__btn {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cz-2fa-sync-card__btn:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.cz-2fa-spin {
+  animation: cz-2fa-spin 900ms linear infinite;
+}
+@keyframes cz-2fa-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ───── 模态对话框 ───── */
+.cz-2fa-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--scrim);
+  transition: opacity 150ms ease;
+}
+@starting-style {
+  .cz-2fa-scrim { opacity: 0; }
+}
+.cz-2fa-scrim.is-leaving {
+  opacity: 0;
+  transition-duration: 120ms;
+  pointer-events: none;
+}
+
+.cz-2fa-modal {
+  width: min(340px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-menu);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .42);
+  color: var(--text);
+  overflow: hidden;
+  transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out);
+}
+@starting-style {
+  .cz-2fa-modal {
+    opacity: 0;
+    transform: translateY(8px) scale(.96);
+  }
+}
+.cz-2fa-modal.is-leaving {
+  opacity: 0;
+  transform: scale(.97);
+  transition-duration: 110ms;
+}
+.cz-2fa-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.cz-2fa-modal__title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-modal__body {
+  padding: 12px 14px 14px;
+  overflow-y: auto;
+}
+.cz-2fa-modal__desc {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.cz-2fa-modal__desc.is-danger {
+  color: var(--danger);
+}
+.cz-2fa-modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cz-2fa-mform {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 颜色选择器 */
+.cz-2fa-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cz-2fa-palette.is-compact {
+  gap: 6px;
+}
+.cz-2fa-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: var(--tf-c);
+  cursor: pointer;
+  transition: transform 110ms var(--ease-out), box-shadow 110ms var(--ease-out);
+}
+.cz-2fa-swatch:hover {
+  transform: scale(1.12);
+}
+.cz-2fa-swatch.is-selected {
+  box-shadow: 0 0 0 2px var(--bg-menu), 0 0 0 3.5px var(--tf-c);
+}
+
+/* 树形分组选择器 */
+.cz-2fa-tree-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.cz-2fa-tree-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.cz-2fa-tree-opt:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.cz-2fa-tree-opt.is-current {
+  color: var(--accent);
+  font-weight: 500;
+}
+.cz-2fa-tree-opt:disabled {
+  opacity: .38;
+  cursor: default;
+}
+.cz-2fa-tree-opt__name {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cz-2fa-tree-opt__ck {
+  flex: none;
+  color: var(--accent);
+}
+
+/* 删除分组二选一 */
+.cz-2fa-delgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cz-2fa-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast), border-color var(--dur-fast);
+}
+.cz-2fa-choice strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cz-2fa-choice span {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+.cz-2fa-choice:hover {
+  background: var(--bg-hover);
+}
+.cz-2fa-choice.is-danger:hover {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev));
+}
+.cz-2fa-choice.is-danger strong {
+  color: var(--danger);
+}
+
+/* 标签管理列表 */
+.cz-2fa-tagmgr {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.cz-2fa-tagmgr__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.cz-2fa-tagmgr__acts {
+  display: inline-flex;
+  gap: 2px;
+}
+.cz-2fa-tagmgr__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.cz-2fa-tagmgr__edit-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cz-2fa-tagmgr__add {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* ───── ＋ 添加方式菜单：逐项错峰淡入 ───── */
+.cz-2fa-menu--add {
+  width: 208px;
+  transform-origin: top right;
+}
+.cz-2fa-menu__grp {
+  animation: cz-2fa-grp-in 200ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+@keyframes cz-2fa-grp-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.cz-2fa-menu--add .cz-2fa-mi {
+  height: 34px;
+  gap: 10px;
+}
+.cz-2fa-mi__ic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-2);
+  transition: background-color var(--dur-fast), color var(--dur-fast), transform 160ms var(--ease-out);
+}
+.cz-2fa-mi:hover:not(:disabled) .cz-2fa-mi__ic {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  transform: scale(1.06);
+}
+
+/* ───── 面包屑：拖动时作为投放目标 ───── */
+.cz-2fa-crumb.is-drop {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.cz-2fa-pop.is-dragging .cz-2fa-crumb[data-crumb]:not(.is-cur):not(.is-drop):not(.is-ellipsis) {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}
+
+/* ───── 触屏：没有悬停，小环和「⋯」并排常驻 ───── */
+@media (hover: none) {
+  .cz-2fa-tail {
+    width: auto;
+    grid-auto-flow: column;
+    gap: 2px;
+  }
+  .cz-2fa-tail__idle,
+  .cz-2fa-more {
+    grid-area: auto;
+  }
+  .cz-2fa-more {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    width: 32px;
+    height: 32px;
+  }
+  .cz-2fa-row:hover .cz-2fa-tail__idle,
+  .cz-2fa-row.is-active .cz-2fa-tail__idle {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ───── 窄屏全屏弹层（≤600px 或 .is-narrow） ───── */
+@media (max-width: 600px) {
+  :root[data-theme="light"] .cz-2fa-pop,
+  .cz-2fa-pop {
+    inset: var(--cosyee-inset-top, 0px) 0 var(--cosyee-inset-bottom, 0px) 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+    background: var(--bg);
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    transform-origin: bottom center;
+  }
+  @starting-style {
+    .cz-2fa-pop {
+      opacity: 0;
+      transform: translateY(14px) scale(.985);
+    }
+  }
+  .cz-2fa-pop.is-leaving {
+    opacity: 0;
+    transform: translateY(10px) scale(.99);
+  }
+  .cz-2fa-close-narrow {
+    display: inline-flex;
+  }
+  .cz-2fa-ib {
+    width: 34px;
+    height: 34px;
+  }
+  .cz-2fa-row {
+    min-height: 54px;
+    padding: 7px 8px 7px 10px;
+  }
+  .cz-2fa-row--group {
+    min-height: 50px;
+  }
+  .cz-2fa-code {
+    font-size: 17px;
+  }
+  .cz-2fa-adv__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+:root[data-theme="light"] .cz-2fa-pop.is-narrow,
+.cz-2fa-pop.is-narrow {
+  inset: var(--cosyee-inset-top, 0px) 0 var(--cosyee-inset-bottom, 0px) 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  border-radius: 0;
+  border: 0;
+  background: var(--bg);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform-origin: bottom center;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-close-narrow {
+  display: inline-flex;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-ib {
+  width: 34px;
+  height: 34px;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-row {
+  min-height: 54px;
+  padding: 7px 8px 7px 10px;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-row--group {
+  min-height: 50px;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-code {
+  font-size: 17px;
+}
+.cz-2fa-pop.is-narrow .cz-2fa-adv__grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
