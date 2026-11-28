@@ -8,6 +8,7 @@ import type { AccountDedupeResult, AccountEntry, AccountList, AgyAccountEntry, A
 import { api } from '../../core/api';
 import { BrandIcon } from '../icons/BrandIcon';
 import { Icon } from '../icons/Icon';
+import { LedgerPanel, type LedgerTarget } from '../ledger/LedgerPanel';
 import { useMorph } from '../motion/morph';
 import { loginExpiry, subscriptionEstimate } from '../usage/format';
 import { ConfirmActionButton } from './ActionButtons';
@@ -267,9 +268,12 @@ export function AccountManager(p: AccountManagerProps) {
   const scrimRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const { requestClose } = useMorph(panelRef, { scrimRef, restoreFocus: true });
-  useFocusTrap(panelRef, !covered);
+  /** 正在查看用量统计的账号 */
+  const [ledgerTarget, setLedgerTarget] = useState<LedgerTarget | null>(null);
+  const modalCovered = covered || ledgerTarget !== null;
+  useFocusTrap(panelRef, !modalCovered);
   const close = () => requestClose(p.onClose);
-  useDismiss(!covered, panelRef, close);
+  useDismiss(!modalCovered, panelRef, close);
   /** 正在改备注名的卡片：c:<id> 或 g:<id> */
   const [editing, setEditing] = useState<string | null>(null);
 
@@ -339,6 +343,22 @@ export function AccountManager(p: AccountManagerProps) {
         {a.api && <button type="button" className="cz-acct-mgr__btn" onClick={() => p.onEditApi(a)}>编辑</button>}
         {kind === 'kiro' && usable && <button type="button" className="cz-acct-mgr__btn" onClick={() => p.onRelogin(a)}>重新登录</button>}
         {!a.isDefault && !a.api && <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>}
+        <button
+          type="button"
+          className="cz-acct-mgr__btn cz-acct-mgr__btn--ico"
+          aria-label={`查看「${title}」用量统计`}
+          title="查看用量统计"
+          onClick={() => setLedgerTarget({
+            backend: 'claude',
+            account: a.id,
+            accountName: title,
+            brand: kind,
+            plan: kind === 'kiro' && planChip(a.plan)?.toLowerCase() === 'kiro' ? null : a.plan,
+          })}
+        >
+          <Icon name="chart" size={11} />
+          用量
+        </button>
         <ConfirmActionButton
           icon="trash"
           text="移除"
@@ -395,6 +415,22 @@ export function AccountManager(p: AccountManagerProps) {
           </button>
         )}
         <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>
+        <button
+          type="button"
+          className="cz-acct-mgr__btn cz-acct-mgr__btn--ico"
+          aria-label={`查看「${title}」用量统计`}
+          title="查看用量统计"
+          onClick={() => setLedgerTarget({
+            backend: 'agy',
+            account: a.id,
+            accountName: title,
+            brand: 'agy',
+            plan: a.plan,
+          })}
+        >
+          <Icon name="chart" size={11} />
+          用量
+        </button>
         <ConfirmActionButton
           icon="trash"
           text="移除"
@@ -458,6 +494,22 @@ export function AccountManager(p: AccountManagerProps) {
           </button>
         )}
         {!a.isDefault && <button type="button" className="cz-acct-mgr__btn" onClick={() => setEditing(key)}>改名</button>}
+        <button
+          type="button"
+          className="cz-acct-mgr__btn cz-acct-mgr__btn--ico"
+          aria-label={`查看「${title}」用量统计`}
+          title="查看用量统计"
+          onClick={() => setLedgerTarget({
+            backend: 'codex',
+            account: a.id,
+            accountName: title,
+            brand: 'codex',
+            plan,
+          })}
+        >
+          <Icon name="chart" size={11} />
+          用量
+        </button>
         <ConfirmActionButton
           icon="trash"
           text="移除"
@@ -474,9 +526,11 @@ export function AccountManager(p: AccountManagerProps) {
     );
   };
 
-  return createPortal(
-    <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim">
-      <div ref={panelRef} className="cz-acct-mgr cz-modal" role="dialog" aria-modal="true" aria-label="管理账号">
+  return (
+    <>
+      {createPortal(
+        <div ref={scrimRef} className="cz-acct-dlg__scrim cz-modal-scrim">
+          <div ref={panelRef} className="cz-acct-mgr cz-modal" role="dialog" aria-modal="true" aria-label="管理账号">
         <div className="cz-acct-mgr__head">
           <h2 className="cz-acct-mgr__title">管理账号</h2>
           <button type="button" className="cz-acct-mgr__x" aria-label="关闭" title="关闭" onClick={close}>
@@ -547,8 +601,13 @@ export function AccountManager(p: AccountManagerProps) {
             </section>
           );
         })}
-      </div>
-    </div>,
-    document.body,
+          </div>
+        </div>,
+        document.body,
+      )}
+      {ledgerTarget && (
+        <LedgerPanel target={ledgerTarget} onClose={() => setLedgerTarget(null)} />
+      )}
+    </>
   );
 }

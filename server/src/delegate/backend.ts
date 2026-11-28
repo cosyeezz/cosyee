@@ -45,7 +45,7 @@ export interface BackendRunOptions {
   /** 本次 prompt 期间、本会话的进度（ACP session/update 的 update 对象形状；不含 load 回放） */
   onUpdate?: (update: Json) => void;
   /** 本次 prompt 期间产生的逐次 API 请求用量（同 id 可重发更新）；window 为模型上下文窗口（未知为 null） */
-  onUsage?: (point: CachePoint, window: number | null) => void;
+  onUsage?: (point: CachePoint, window: number | null, extra?: { reasoning?: number }) => void;
   /** 后端会话建立（或恢复）完成、开始 prompt 之前报告会话 id 与所属账号 id */
   onSession?: (sessionId: string, accountId?: string) => void;
 }

@@ -42,7 +42,9 @@ export type IconName =
   // 内置终端：历史、重新执行
   | 'history' | 'play'
   // 2FA 添加方式：扫码、链接
-  | 'qr' | 'link';
+  | 'qr' | 'link'
+  // 订阅用量统计：趋势柱状图、警告
+  | 'chart' | 'alert';
 
 export interface IconProps {
   name: IconName;
@@ -375,6 +377,18 @@ const SIMPLE: Record<string, JSX.Element> = {
   qr: <path d="M2.5 5.5v-2a1 1 0 011-1h2M10.5 2.5h2a1 1 0 011 1v2M13.5 10.5v2a1 1 0 01-1 1h-2M5.5 13.5h-2a1 1 0 01-1-1v-2M4.8 8h6.4" />,
   // 链接：两个互扣的链环
   link: <path d="M6.8 9.2a2.6 2.6 0 003.7 0l2-2a2.6 2.6 0 00-3.7-3.7l-.6.6M9.2 6.8a2.6 2.6 0 00-3.7 0l-2 2a2.6 2.6 0 003.7 3.7l.6-.6" />,
+  chart: (
+    <>
+      <path d="M2.5 13.2h11" />
+      <path d="M4.5 13.2V9.2M8 13.2V5.8M11.5 13.2V3.6" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M8 2.6L13.8 13H2.2z" />
+      <path d="M8 6.4v3.2M8 11.4v.01" />
+    </>
+  ),
 };
 
 /** 设计图标：icons.js 每次调用都会生成新的 id（let uid），所以按 (name, size, running) 只生成一次 */

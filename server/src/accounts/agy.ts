@@ -20,6 +20,7 @@ import { type AgyStatus, fetchAgyStatus, findLsPort } from './agy-status.js';
 import { hashEmail, lstat, mkdirPrivate, replaceAuthFiles as replaceAuthFilesIn, retrySilently, safeRemoveAccountDir, safeRemoveTreeSync } from './fs.js';
 import { stripAnsi } from './index.js';
 import { removeLink } from './links.js';
+import { recordAgyQuotaSnapshot } from '../ledger/collect/agy.js';
 
 const LABEL_MAX = 40;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
@@ -512,6 +513,8 @@ export class AgyAccounts {
           ok: false,
         };
     this.cache.set(id, next);
+    // 账本：拿到新额度就记一个快照（旁路，不影响缓存与通知）
+    if (res.ok && res.quota) recordAgyQuotaSnapshot(id, res.quota, 'probe');
 
     let identityChanged = false;
     if (res.ok && next.email && !acc.identityHash) {

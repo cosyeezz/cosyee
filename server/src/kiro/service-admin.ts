@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { KiroBalance, KiroLoginMethod } from '@cosyee/shared';
 import { type KiroAccountMeta, cleanKiroEmail, isLegacyKiro, readApiConfig, writeApiConfig } from '../accounts/api-config.js';
 import { HttpError } from '../workspaces.js';
+import { recordKiroBalanceSnapshot } from '../ledger/collect/kiro.js';
 import { fetchKiroModels, buildKiroModelMap } from './models.js';
 import { type AdminResponse, type KiroProxyManager, adminErrorMessage } from './proxy.js';
 import { type KiroCredentialEntry, sanitizeKiroError } from './sanitize.js';
@@ -321,12 +322,14 @@ export class KiroAccountAdmin {
       ? Math.round(j.nextResetAt * 1000)
       : null;
     await this.syncEmail(dir, api.kiro.credentialId, accountId);
-    return {
+    const result: KiroBalance = {
       subscription: str(j.subscriptionTitle),
       used: typeof j.currentUsage === 'number' && Number.isFinite(j.currentUsage) ? j.currentUsage : 0,
       limit: typeof j.usageLimit === 'number' && Number.isFinite(j.usageLimit) ? j.usageLimit : 0,
       resetsAt: next,
     };
+    if (accountId) recordKiroBalanceSnapshot(accountId, result, Date.now(), 'probe');
+    return result;
   }
 
   /**

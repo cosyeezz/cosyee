@@ -13,3 +13,12 @@ export interface UsageAdapter {
 export { ClaudeUsageAdapter } from './claudeUsage.js';
 export { CodexUsageAdapter, type CodexUsageAdapterOptions, type CodexUsageInput } from './codexUsage.js';
 export { AgyUsageAdapter, type AgyUsageAdapterOptions, type AgyUsageInput } from './agyUsage.js';
+
+/** 用量解析只为展示 / 记账：适配器出错一律吞掉，返回空，不影响委派执行 */
+export function safePush(a: { push(raw: unknown): CachePoint[] }, raw: unknown): CachePoint[] {
+  try {
+    return a.push(raw);
+  } catch {
+    return [];
+  }
+}

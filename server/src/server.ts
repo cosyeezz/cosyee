@@ -32,6 +32,9 @@ import { createServerAdapter } from './components/server.js';
 import { ComponentUpdater } from './components/updater.js';
 import { createHandler, hostAllowed } from './http.js';
 import { KiroService } from './kiro/index.js';
+import { createLedger, type LedgerService } from './ledger/service.js';
+import { setLedgerSink } from './ledger/sink.js';
+import { KiroBalanceCollector, startLedgerProbes, wrapClaudeUsageFetch } from './ledger/collect/index.js';
 import { Pins } from './pins.js';
 import { PricingService } from './pricing.js';
 import { startUploadSweeper } from './uploads.js';
@@ -175,6 +178,17 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     onProcReady: (id, pid) => void agyAccounts?.refreshFromLiveProc(id, pid, { retry: true }),
     onRunFinished: (id) => void agyAccounts?.refreshFromLiveProc(id),
   });
+  // 账本：Kiro 账号每轮结束后节流查余额（只在 kiro.rs 已运行时查，不额外启动）
+  const kiroBalanceCollector = new KiroBalanceCollector({
+    fetchBalance: async (accountId) => {
+      if (!kiro?.proxy.isRunning()) return null;
+      try {
+        return await kiro.balance(accountId);
+      } catch {
+        return null;
+      }
+    },
+  });
   const onExitPool = () => acpPool.dispose(true);
   process.once('exit', onExitPool);
   const agyCli = new AgyCli({ pool: acpPool });
@@ -254,6 +268,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // 监听 0.0.0.0 或 tailscale 时 127.0.0.1 可达且通过 hostAllowed；监听指定非回环 IPv4 时用该 IP
   const agentApiHost = bindHost === '0.0.0.0' || bindHost === TAILSCALE_MODE ? '127.0.0.1' : bindHost;
   const manager = new Manager({
+    onKiroTurnEnd: (id) => kiroBalanceCollector.poll(id),
+    codexAccountKind: (id) => codexAccounts?.accountKind(id) ?? 'subscription',
     pluginDir: browserPlugin,
     extraEnv: () => ({
       COSYEE_API_URL: `http://${agentApiHost}:${actualPort}`,
@@ -362,6 +378,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       prepare: (id) => accounts?.prepare(id),
       syncFromSubagent: (id) => accounts?.syncSubagentBack(id, { silent: true }),
       bind: (sid, id) => accounts?.bind(sid, id),
+      isApi: (id) => accounts?.isApi(id) ?? false,
+      isKiro: (id) => accounts?.isKiro(id) ?? false,
     },
     forks: {
       set: (sessionId, cwd, src) => {
@@ -404,11 +422,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
         if (dir === undefined) throw new HttpError(404, '账号不存在');
         // API 账号按量计费，没有订阅额度
         if (accounts?.isApi(accountId)) return Promise.resolve(null);
-        return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), accountId, dir).get(refresh);
+        return wrapClaudeUsageFetch(accountId, 'subscription', providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), accountId, dir).get(refresh));
       }
       const a = session && isSafeId(session) && accounts ? accounts.resolve(session) : activeAccount();
       if (accounts?.isApi(a.id)) return Promise.resolve(null);
-      return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), a.id, a.dir).get(refresh);
+      return wrapClaudeUsageFetch(a.id, 'subscription', providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), a.id, a.dir).get(refresh));
     },
   };
   // 模型菜单：账号实际可用的模型。与额度不同，API 账号也要（别名重映射会体现在里面）
@@ -503,6 +521,52 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const previews = new Previews();
   const pricing = opts.pricing ?? new PricingService({ file: path.join(opts.stateFile ? path.dirname(opts.stateFile) : cosyeeHome(), 'pricing.json') });
   pricing.start?.();
+  let ledger: LedgerService | null = null;
+  try {
+    const created = createLedger({
+      path: path.join(dataHome(), 'usage-ledger.sqlite'),
+      prices: () => pricing.table(),
+      accountInfo: (backend, accountId) => {
+        if (backend === 'claude') {
+          const name = accounts?.displayName(accountId) ?? null;
+          return name ? { name } : null;
+        }
+        if (backend === 'agy') {
+          const a = agyAccounts?.list().list.find((x) => x.id === accountId);
+          const name = a ? (a.label || a.email || null) : null;
+          return name ? { name } : null;
+        }
+        if (backend === 'codex') {
+          const ref = codexAccounts?.accountFor(accountId);
+          if (ref?.label) return { name: ref.label };
+          const a = codexAccounts?.list().list.find((x) => x.id === accountId);
+          const name = a ? (a.label || a.email || (a.isDefault ? '默认账号' : null)) : null;
+          return name ? { name } : null;
+        }
+        return null;
+      },
+    });
+    if (created.enabled()) {
+      ledger = created;
+      setLedgerSink(ledger.sink);
+    }
+  } catch (e) {
+    console.warn('[ledger] 初始化失败，已停用账本（不影响服务启动）:', e);
+    ledger = null;
+  }
+  // 账本：Claude 订阅账号近 5 小时有活动但当前空闲时，每 5 分钟补一个额度快照（复用 UsageProvider 缓存）
+  const ledgerProbes = ledger
+    ? startLedgerProbes({
+        getUsage: (id) => {
+          const dir = accounts?.dirFor(id) ?? (id === DEFAULT_ID ? null : undefined);
+          if (dir === undefined) return Promise.resolve(null);
+          return providerFor(usages, (d) => new UsageProvider(() => fetchUsage(d)), id, dir).get(false).catch(() => null);
+        },
+        isRunning: (id) => claudeRunning(id) > 0,
+        accountKind: (id) => (accounts?.isKiro(id) ? 'kiro' : accounts?.isApi(id) ? 'api' : 'subscription'),
+        listClaudeAccounts: () => [DEFAULT_ID, ...(store.state.accounts?.list ?? []).map((a) => a.id).filter((id) => id !== DEFAULT_ID)],
+      })
+    : null;
   const stopUploadSweeper = startUploadSweeper();
 
   const browser = new BrowserManager({ install: browserInstall, dataDir: () => path.join(dataHome(), 'browser') });
@@ -565,6 +629,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     pins,
     trash,
     pricing,
+    ...(ledger ? { ledger } : {}),
     toolStats,
     compactStats,
     spawner: opts.spawner,
@@ -700,6 +765,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
       process.off('exit', onExitCodexPool);
       codexPool.dispose();
       pricing.stop?.();
+      ledgerProbes?.stop();
+      setLedgerSink(null);
+      try {
+        ledger?.close();
+      } catch { /* 忽略关闭失败 */ }
       stopUploadSweeper();
       for (const ws of wss.clients) ws.terminate();
       wss.close();

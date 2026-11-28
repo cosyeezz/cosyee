@@ -4,11 +4,14 @@
 // 禁用 Agent 工具防止递归委派，并把 stream-json 事件翻译成 ACP session/update 形状。
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { EFFORTS, PRIMARY_MODELS, type DelegateModelList, type Effort, type SubagentAvailability } from '@cosyee/shared';
+import { EFFORTS, PRIMARY_MODELS, type DelegateModelList, type Effort, type LedgerAccountKind, type SubagentAvailability } from '@cosyee/shared';
+import { readApiConfig } from '../accounts/api-config.js';
 import { DEFAULT_ID } from '../accounts/index.js';
 import { apiFlagEnv, claudeEnv, credStorageDirFor, findClaude, killTree, removePrivateSettings, spawnSpec, writePrivateSettings } from '../claude/bin.js';
+import { recordClaudeRateLimitEvent } from '../ledger/collect/claudeSnapshots.js';
 import { type Json, LineSplitter, parseLine } from '../transcript.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
+import { safePush } from './usage/index.js';
 import { NATIVE_SUBAGENT_TOOLS } from './mcp.js';
 import { ClaudeUsageAdapter } from './usage/claudeUsage.js';
 
@@ -451,6 +454,8 @@ export class ClaudeBackend implements DelegateBackend {
     if (!claudePath) throw new Error('未安装 Claude CLI');
 
     const account = this.pickAccount(o);
+    const apiCfg = readApiConfig(account.mainDir);
+    const accountKind: LedgerAccountKind = apiCfg?.kiro ? 'kiro' : apiCfg ? 'api' : 'subscription';
     // 子代理空间与主代理共用凭据存储（同一份令牌、同一把刷新锁），不再各持一份 refresh token 互相踢掉
     const sharedCred = account.dir !== account.mainDir ? credStorageDirFor(account.mainDir) : undefined;
     const env = claudeEnv(account.dir, account.mainDir, sharedCred);
@@ -614,6 +619,9 @@ export class ClaudeBackend implements DelegateBackend {
         if (settled) return;
         const msg = parseLine(line);
         if (!msg) return;
+        if (msg.type === 'rate_limit_event') {
+          recordClaudeRateLimitEvent(msg, account.id, accountKind, Date.now());
+        }
         const step = translator.push(msg);
         if (step.sessionId && step.sessionId !== reportedSession) {
           reportedSession = step.sessionId;
@@ -633,7 +641,7 @@ export class ClaudeBackend implements DelegateBackend {
           } catch { /* 展示出错不影响执行 */ }
         }
         if (usage) {
-          for (const pt of usage.push(msg)) {
+          for (const pt of safePush(usage, msg)) {
             try {
               o.onUsage?.(pt, usage.window());
             } catch { /* 展示出错不影响执行 */ }

@@ -7,13 +7,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AccountDedupeResult, AccountLogin, CodexAccountEntry, CodexAccountList, CodexLoginMethod, CodexQuota } from '@cosyee/shared';
+import type { AccountDedupeResult, AccountLogin, CodexAccountEntry, CodexAccountList, CodexLoginMethod, CodexQuota, LedgerAccountKind } from '@cosyee/shared';
 import { killTree, spawnSpec } from '../claude/bin.js';
 import { sanitizeLogLine } from '../delegate/agyCli.js';
 import { type CodexInfo, resolveCodexInfo } from '../delegate/codex.js';
 import type { CodexAccountRef, CodexAccountSource } from '../delegate/codexAppServer.js';
 import { type CodexAccountInfo, N } from '../delegate/codexProtocol.js';
 import { JsonRpcConnection } from '../delegate/jsonRpc.js';
+import { recordCodexRateLimits } from '../ledger/collect/codex.js';
 import { baseCodexHome, codexAccountsRoot, pathKey } from '../paths.js';
 import { ACCOUNT_ID_RE, HttpError, type StateStore, type StoredAccount } from '../workspaces.js';
 import { codexAccountArgs, codexAccountEnv, ensureCodexHome } from './codex-env.js';
@@ -335,6 +336,12 @@ export class CodexAccounts implements CodexAccountSource {
     } catch { /* ignore */ }
   }
 
+  /** 账号计费类型（账本用）：apiKey 账号返回 'api'，其余返回 'subscription' */
+  accountKind(accountId: string): LedgerAccountKind {
+    const authMode = this.cache.get(accountId)?.authMode ?? this.readLocalMeta(accountId)?.authMode ?? null;
+    return authMode === 'apiKey' ? 'api' : 'subscription';
+  }
+
   /** 收到 app-server 的 account/rateLimits/updated 推送时更新缓存 */
   noteRateLimits(accountId: string, raw: unknown): void {
     if (this.disposed) return;
@@ -360,6 +367,10 @@ export class CodexAccounts implements CodexAccountSource {
         identityHash: meta ? computeCodexIdentityHash(meta) : null,
       });
     }
+    try {
+      const parsed = parseCodexRateLimits(raw, at);
+      if (parsed) recordCodexRateLimits(accountId, this.accountKind(accountId), parsed, 'event');
+    } catch { /* 采集异常不影响缓存更新 */ }
     this.notify();
   }
 
@@ -444,6 +455,9 @@ export class CodexAccounts implements CodexAccountSource {
         if (parsed) {
           quota = parsed;
           if (parsed.planType) planType = parsed.planType;
+          try {
+            recordCodexRateLimits(acc.id, 'subscription', parsed, 'probe');
+          } catch { /* ignore */ }
         }
       } catch {
         quotaAt = this.now();

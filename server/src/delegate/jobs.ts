@@ -11,7 +11,10 @@ import {
   type DelegateJobState,
   type DelegateNotification,
   type DelegateSendMode,
+  type LedgerAccountKind,
+  type LedgerBackend,
 } from '@cosyee/shared';
+import { isLedgerBackend, recordDelegateUsage } from '../ledger/collect/delegate.js';
 import { pathKey } from '../paths.js';
 import type { Json } from '../transcript.js';
 import {
@@ -74,6 +77,12 @@ export interface DelegateJobsOptions {
   steerWaitMs?: number;
   /** 非状态变更的落盘防抖间隔，默认 200ms */
   persistDebounceMs?: number;
+  /** 父会话 id（供账本记录委派归属会话） */
+  sessionId?: string;
+  /** 查询指定后端账号的计费类型（账本用；不传默认 'subscription'） */
+  accountKind?: (backend: LedgerBackend, accountId: string) => LedgerAccountKind;
+  /** Kiro 账号完成一轮委派后触发余额节流查询（账本用） */
+  onKiroTurnEnd?: (accountId: string) => void;
 }
 
 export interface PendingNotification {
@@ -961,6 +970,16 @@ export class DelegateJobs {
             if (job.agent.effort) fallbackEffort = job.agent.effort;
           }
         }
+        let currentAccountId = rec?.accountId ?? routed?.accountId ?? ctx.account?.id ?? 'default';
+        let currentBackendSessionId = rec?.sessionId ?? '';
+        let currentEffort: string | null = resolvedDefaults?.effort ?? fallbackEffort ?? null;
+        const resolveAccountKind = (backend: LedgerBackend, accId: string): LedgerAccountKind => {
+          try {
+            return this.o.accountKind?.(backend, accId) ?? 'subscription';
+          } catch {
+            return 'subscription';
+          }
+        };
         const opts: BackendRunOptions = {
           cwd: ctx.cwd,
           prompt: backendPrompt,
@@ -976,6 +995,8 @@ export class DelegateJobs {
           ...(fallbackEffort ? { effort: fallbackEffort } : {}),
           signal: ctl.signal,
           onSession: (backendSessionId, accountId) => {
+            currentBackendSessionId = backendSessionId;
+            if (accountId) currentAccountId = accountId;
             if (job.gen !== gen) return;
             this.recordBackendSession(job, backendSessionId, accountId, activeBackendId);
           },
@@ -1012,24 +1033,43 @@ export class DelegateJobs {
               this.tailChanged(job);
             }
           },
-          ...(progress
-            ? {
-                onModel: (m: { model: string; effort?: string | null }) => {
-                  if (!this.live(job, gen)) return;
-                  progress.model = m.model;
-                  emit([agentParamsEvent(toolUseId, m.model, m.effort)]);
-                },
-                onUsage: (point: CachePoint, win: number | null) => {
-                  if (!this.live(job, gen)) return;
-                  const mapped: CachePoint = point.tools?.length
-                    ? { ...point, tools: point.tools.map((id) => delegateToolId(toolUseId, id)) }
-                    : point;
-                  emit([cosyeeUsageEvent(toolUseId, mapped, win ?? undefined)]);
-                },
-              }
-            : {}),
+          onModel: (m: { model: string; effort?: string | null }) => {
+            if (m.effort !== undefined) currentEffort = m.effort ?? null;
+            if (!progress || !this.live(job, gen)) return;
+            progress.model = m.model;
+            emit([agentParamsEvent(toolUseId, m.model, m.effort)]);
+          },
+          onUsage: (point: CachePoint, win: number | null, extra?: { reasoning?: number }) => {
+            // 账本采集始终生效（即使无 progress / onEvents）；异常绝不外传
+            if (isLedgerBackend(activeBackendId)) {
+              recordDelegateUsage(point, {
+                backend: activeBackendId,
+                account: currentAccountId,
+                accountKind: resolveAccountKind(activeBackendId, currentAccountId),
+                session: this.o.sessionId ?? null,
+                agent: job.agent.name,
+                toolUseId: toolUseId || null,
+                backendSessionId: currentBackendSessionId || null,
+                effort: currentEffort,
+                reasoning: extra?.reasoning,
+                at: this.now(),
+              });
+            }
+            // 前端事件逻辑严格保持原有条件（有 progress 且当前代存活）
+            if (!progress || !this.live(job, gen)) return;
+            const mapped: CachePoint = point.tools?.length
+              ? { ...point, tools: point.tools.map((id) => delegateToolId(toolUseId, id)) }
+              : point;
+            emit([cosyeeUsageEvent(toolUseId, mapped, win ?? undefined)]);
+          },
         };
         const r: BackendResult = await (this.o.run ? this.o.run(opts) : runner.run(opts));
+        if (r.accountId) currentAccountId = r.accountId;
+        if (activeBackendId === 'claude' && resolveAccountKind('claude', currentAccountId) === 'kiro') {
+          try {
+            this.o.onKiroTurnEnd?.(currentAccountId);
+          } catch { /* ignore */ }
+        }
         if (!this.live(job, gen)) return;
         this.recordBackendSession(job, r.sessionId, r.accountId, activeBackendId);
         job.toolCalls += r.toolCalls;

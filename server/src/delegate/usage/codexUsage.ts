@@ -37,6 +37,7 @@ export class CodexUsageAdapter implements UsageAdapter {
   private seq = 0;
   private readonly seenTools = new Set<string>();
   private pendingTools: string[] = [];
+  private readonly reasoningById = new Map<string, number>();
 
   constructor(opts: CodexUsageAdapterOptions) {
     this.threadId = opts.threadId;
@@ -56,6 +57,11 @@ export class CodexUsageAdapter implements UsageAdapter {
 
   window(): number | null {
     return this.ctxWindow ?? contextWindowOf(this.model ?? undefined);
+  }
+
+  /** 指定用量点对应的推理 token 数（已含在 output 中，账本展示用） */
+  reasoningOf(id: string): number {
+    return this.reasoningById.get(id) ?? 0;
   }
 
   push(raw: unknown): CachePoint[] {
@@ -102,10 +108,12 @@ export class CodexUsageAdapter implements UsageAdapter {
     if (total <= 0) return [];
 
     const output = Math.max(0, last.outputTokens);
+    const reasoning = Math.max(0, last.reasoningOutputTokens);
     const tools = this.pendingTools.length ? this.pendingTools.slice() : undefined;
     this.pendingTools = [];
 
     const id = `codex:${this.threadId}:${this.turnId ?? this.runKey}:${++this.seq}`;
+    this.reasoningById.set(id, reasoning);
     const point: CachePoint = {
       id,
       turn: 0,

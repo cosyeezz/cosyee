@@ -10,6 +10,7 @@ import { killTree, killTreeSync, spawnSpec } from '../claude/bin.js';
 import type { Json } from '../transcript.js';
 import { CRASH_RETRY_PREFIX } from './acp.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
+import { safePush } from './usage/index.js';
 import { CODEX_NOT_LOGGED_IN, type CodexInfo, probeCodexVersion, resolveCodexInfo } from './codex.js';
 import { CodexTurnTranslator, ZERO_USAGE, parseCodexModels } from './codexEvents.js';
 import {
@@ -1020,15 +1021,15 @@ export class CodexPool {
       if (usage && tr.turnId) usage.setTurnId(tr.turnId);
       for (const u of updates) {
         if (!gotFirst && PROGRESS_UPDATES.has(u.sessionUpdate)) gotFirst = true;
-        if (usage && u.sessionUpdate === 'tool_call') usage.push(u);
+        if (usage && u.sessionUpdate === 'tool_call') safePush(usage, u);
         try {
           o.onUpdate?.(u);
         } catch { /* 展示出错不影响执行 */ }
       }
       if (usage && method === N.threadTokenUsage) {
-        for (const pt of usage.push({ method, params })) {
+        for (const pt of safePush(usage, { method, params })) {
           try {
-            o.onUsage?.(pt, usage.window());
+            o.onUsage?.(pt, usage.window(), { reasoning: usage.reasoningOf(pt.id) });
           } catch { /* 展示出错不影响执行 */ }
         }
       }

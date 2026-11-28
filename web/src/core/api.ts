@@ -1,6 +1,6 @@
 // 前端访问后端的唯一入口。UI 组件只调用这里的函数；开发阶段可以用 web/src/mock 下的数据代替。
 import type {
-  AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, CodexAccountList, CodexLoginMethod, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
+  AgyAccountList, BrowserHistoryItem, BrowserHover, BrowserPickResult, BrowserProfileStatus, BrowserStatus, CodexAccountList, CodexLoginMethod, DelegateModelList, Account, AccountDedupeResult, AccountList, AccountLogin, AccountMode, ApiAuthType, ApiModelListing, ApiModelMap, Bootstrap, CliModelList, BrowseDir, ComponentId, ComponentList, ComponentStatus, ClientMsg, ContextUsage, DeletedSession, ExecResult, ExecStreamMsg, FilePreview, KiroBalance, KiroLoginMethod, KiroStatus, LedgerBackend, LedgerWindowDetail, LedgerWindowKind, LedgerWindowList, PickedItem, PreviewInfo, PriceTable, ServerMsg, SessionConfig, SessionDetail, SessionSummary, SkillContent, SkillMode, SpeechKind, SpeechStatus, SubagentConfig, SubagentState, TtsPrepared, SubagentCost, ToolStats, UsageInfo, Workspace,
 } from '@cosyee/shared';
 import { localPathHref } from '@cosyee/shared';
 import type {
@@ -133,6 +133,17 @@ export const api = {
     const qs = q(p);
     return req<UsageInfo | null>('GET', `/api/usage${qs ? `?${qs}` : ''}`);
   },
+  /** 订阅用量账本：按账号 / 窗口类型查窗口摘要列表（按 end 倒序） */
+  ledgerWindows: (o: { backend?: LedgerBackend; account?: string; kind?: LedgerWindowKind } = {}) => {
+    const p: Record<string, string> = {};
+    if (o.backend) p.backend = o.backend;
+    if (o.account) p.account = o.account;
+    if (o.kind) p.kind = o.kind;
+    const qs = q(p);
+    return req<LedgerWindowList>('GET', `/api/ledger/windows${qs ? `?${qs}` : ''}`);
+  },
+  /** 订阅用量账本：单个窗口的明细（按 模型 × 层级 × agent 汇总 + 额度快照序列） */
+  ledgerWindowDetail: (id: string) => req<LedgerWindowDetail>('GET', `/api/ledger/windows/${encodeURIComponent(id)}`),
   /** 账号实际可用的模型（CLI initialize 报告的）；拉不到为 null。不传 account / session = 当前账号 */
   cliModels: (o: { session?: string | null; account?: string | null; refresh?: boolean } = {}) => {
     const p: Record<string, string> = {};

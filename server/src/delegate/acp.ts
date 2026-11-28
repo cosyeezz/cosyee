@@ -10,6 +10,7 @@ import { killTree, killTreeSync, spawnSpec } from '../claude/bin.js';
 import { type Json, LineSplitter } from '../transcript.js';
 import { AGY_NOT_LOGGED_IN, resolveAgy } from './agy.js';
 import { BackendError, type BackendResult, type BackendRunOptions, type DelegateBackend } from './backend.js';
+import { safePush } from './usage/index.js';
 import { type AvailableModel, parseAvailable, resolveModelId, splitModelId, toModelList } from './models.js';
 import { AgyUsageAdapter } from './usage/agyUsage.js';
 
@@ -927,7 +928,7 @@ export class AcpPool {
         o.onUpdate?.(u);
       } catch { /* 展示出错不影响执行 */ }
       if (usageAdapter && (t === 'usage_update' || t === 'tool_call')) {
-        for (const pt of usageAdapter.push(u)) {
+        for (const pt of safePush(usageAdapter, u)) {
           try {
             o.onUsage?.(pt, usageAdapter.window());
           } catch { /* 展示出错不影响执行 */ }
@@ -948,9 +949,9 @@ export class AcpPool {
         }
         const usage = first.v.usage;
         if (usageAdapter && usage && typeof usage === 'object') {
-          for (const pt of usageAdapter.push({ type: 'prompt_response', usage })) {
+          for (const pt of safePush(usageAdapter, { type: 'prompt_response', usage })) {
             try {
-              o.onUsage?.(pt, usageAdapter.window());
+              o.onUsage?.(pt, usageAdapter.window(), { reasoning: usageAdapter.reasoningOf(pt.id) });
             } catch { /* 展示出错不影响执行 */ }
           }
         }

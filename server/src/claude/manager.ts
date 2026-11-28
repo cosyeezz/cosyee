@@ -15,8 +15,10 @@ import {
   BUILTIN_SKILLS,
   isBuiltinSkill,
 } from '@cosyee/shared';
-import type { AppliedSettings, ClientMsg, ContextUsage, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
+import type { AppliedSettings, ClientMsg, ContextUsage, LedgerAccountKind, LedgerBackend, QueueMode, ServerMsg, SessionConfig, SkillMode, StopInfo, StopKind } from '@cosyee/shared';
 import { readApiConfig } from '../accounts/api-config.js';
+import { DEFAULT_ID } from '../accounts/index.js';
+import { ClaudeSessionCollector } from '../ledger/collect/claudeSession.js';
 import { skillBase, toContextUsage } from '../context.js';
 import { TranscriptToolLoadCache } from '../toolLoad.js';
 import { listAllAgents, toSubagentTypeInfo } from '../delegate/agents.js';
@@ -78,6 +80,10 @@ export interface ManagerOptions {
   pluginDir?: () => string | null;
   /** 注入给 claude 子进程的额外环境变量（如 2FA agent 接口地址与令牌） */
   extraEnv?: () => Record<string, string>;
+  /** Kiro 账号每轮结束回调（账本用，内部节流查余额，不阻塞） */
+  onKiroTurnEnd?: (accountId: string) => void;
+  /** 查询 Codex 账号计费类型（账本用；不传默认 'subscription'） */
+  codexAccountKind?: (accountId: string) => LedgerAccountKind;
 }
 
 export interface ForkStore {
@@ -100,6 +106,10 @@ export interface SessionAccounts {
   syncFromSubagent?(accountId: string): void;
   /** 会话发出了消息：记下它用的账号 */
   bind(sessionId: string, accountId: string): void;
+  /** 是否 API 账号（含 Kiro；账本用，可选） */
+  isApi?(accountId: string): boolean;
+  /** 是否 Kiro 账号（账本用，可选） */
+  isKiro?(accountId: string): boolean;
 }
 
 export interface CompactWindowStore {
@@ -271,6 +281,8 @@ export class Manager {
   private readonly delegateAccounts?: () => SubagentAccountOption[];
   private readonly pluginDir: (() => string | null) | undefined;
   private readonly extraEnv: (() => Record<string, string>) | undefined;
+  private readonly onKiroTurnEnd: ((accountId: string) => void) | undefined;
+  private readonly codexAccountKind: ((accountId: string) => LedgerAccountKind) | undefined;
 
   constructor(opts: ManagerOptions) {
     this.dots = opts.dots;
@@ -280,6 +292,8 @@ export class Manager {
     this.retryPollMs = opts.retryPollMs ?? DEFAULT_RETRY_POLL_MS;
     this.now = opts.now ?? Date.now;
     this.timings = opts.timings;
+    this.onKiroTurnEnd = opts.onKiroTurnEnd;
+    this.codexAccountKind = opts.codexAccountKind;
     this.claudePath = opts.claudePath;
     this.skills = opts.skills;
     this.tools = opts.tools;
@@ -669,11 +683,35 @@ export class Manager {
     return undefined;
   }
 
+  /** 计算指定后端账号的计费类型（账本用） */
+  private resolveLedgerAccountKind(backend: LedgerBackend, accountId: string, claudeDir?: string | null): LedgerAccountKind {
+    if (backend === 'agy') return 'subscription';
+    if (backend === 'codex') {
+      try {
+        return this.codexAccountKind?.(accountId) ?? 'subscription';
+      } catch {
+        return 'subscription';
+      }
+    }
+    try {
+      if (this.accounts?.isKiro) {
+        if (this.accounts.isKiro(accountId)) return 'kiro';
+        if (this.accounts.isApi?.(accountId)) return 'api';
+        return 'subscription';
+      }
+    } catch { /* 退回本地配置检查 */ }
+    const api = readApiConfig(claudeDir ?? null);
+    return api?.kiro ? 'kiro' : api ? 'api' : 'subscription';
+  }
+
   /** 会话的委派任务表（懒创建）：事件进 runner 的回合缓冲（没有 runner 就直接广播），完成时通知模型 */
   private jobsFor(id: string): DelegateJobs {
     let jobs = this.delegateJobs.get(id);
     if (!jobs) {
       jobs = new DelegateJobs({
+        sessionId: id,
+        accountKind: (backend, accId) => this.resolveLedgerAccountKind(backend, accId),
+        ...(this.onKiroTurnEnd ? { onKiroTurnEnd: this.onKiroTurnEnd } : {}),
         onEvents: (evs) => {
           this.delegateRecord?.write(id, evs);
           const r = this.runners.get(id);
@@ -799,6 +837,18 @@ export class Manager {
         } catch { /* 不影响启动 */ }
       }
     }
+    const accountId = account?.id ?? DEFAULT_ID;
+    const accountKind = this.resolveLedgerAccountKind('claude', accountId, account?.dir ?? null);
+    const ledgerCollector = new ClaudeSessionCollector({
+      sessionId: id,
+      cwd,
+      account: accountId,
+      accountKind,
+      getEffort: () => this.settingsCache.get(id)?.effort ?? config.effort ?? null,
+      locateSession: (sid, c) => this.sessions.locate(sid, c),
+      ...(this.onKiroTurnEnd ? { onKiroTurnEnd: this.onKiroTurnEnd } : {}),
+      now: this.now,
+    });
     const runner: Runner = new Runner({
       sessionId: id,
       cwd,
@@ -821,6 +871,7 @@ export class Manager {
       hooks: {
         onEvent: (e) => {
           this.emit(id, { t: 'event', sessionId: id, e });
+          ledgerCollector.onEvent(e);
           const ev = e as { type?: unknown; subtype?: unknown; skills?: unknown; slash_commands?: unknown; tools?: unknown } | null;
           if (ev?.type === 'system' && ev.subtype === 'init' && Array.isArray(ev.skills)) {
             const list = ev.skills.filter((x): x is string => typeof x === 'string');
@@ -885,6 +936,7 @@ export class Manager {
           this.stops?.clear(id);
         },
         onExit: () => {
+          ledgerCollector.dispose();
           // 已被同一会话的新进程替换（并行模式换账号）：新进程的状态不能被旧进程退出清掉
           const other = this.runners.get(id);
           if (other && other !== runner) {

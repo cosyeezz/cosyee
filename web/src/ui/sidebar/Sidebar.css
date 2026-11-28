@@ -1268,6 +1268,11 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.cz-acct-mgr__btn--ico {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 .cz-acct-mgr__btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .cz-acct-mgr__btn.is-primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .cz-acct-mgr__btn.is-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--on-accent); }

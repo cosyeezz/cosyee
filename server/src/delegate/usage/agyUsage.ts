@@ -71,6 +71,7 @@ export class AgyUsageAdapter implements UsageAdapter {
   private readonly entries: TurnEntry[] = [];
   private readonly seenTools = new Set<string>();
   private pendingTools: string[] = [];
+  private readonly reasoningById = new Map<string, number>();
 
   constructor(opts: AgyUsageAdapterOptions) {
     this.sessionId = opts.sessionId;
@@ -84,6 +85,11 @@ export class AgyUsageAdapter implements UsageAdapter {
 
   window(): number | null {
     return this.ctxWindow ?? contextWindowOf(this.model ?? undefined);
+  }
+
+  /** 指定用量点对应的推理 token 数（已含在 output 中，账本展示用） */
+  reasoningOf(id: string): number {
+    return this.reasoningById.get(id) ?? 0;
   }
 
   push(raw: unknown): CachePoint[] {
@@ -142,6 +148,7 @@ export class AgyUsageAdapter implements UsageAdapter {
     const totalCreate = posNum(usage.cachedWriteTokens);
     const totalRead = posNum(usage.cachedReadTokens);
     const totalOutput = posNum(usage.outputTokens);
+    const totalThought = posNum(usage.thoughtTokens);
     const totalContext = totalInput + totalCreate + totalRead;
 
     if (this.entries.length === 0) {
@@ -149,6 +156,7 @@ export class AgyUsageAdapter implements UsageAdapter {
       const tools = this.pendingTools.length ? this.pendingTools.slice() : undefined;
       this.pendingTools = [];
       const id = `agy:${this.sessionId}:${this.turnId}:${++this.seq}`;
+      if (totalThought > 0) this.reasoningById.set(id, totalThought);
       const pt: CachePoint = {
         id,
         turn: 0,
@@ -169,6 +177,7 @@ export class AgyUsageAdapter implements UsageAdapter {
       if (totalContext <= 0) return [];
       const entry = this.entries[0]!;
       const prev = entry.point;
+      if (totalThought > 0) this.reasoningById.set(prev.id, totalThought);
       const next: CachePoint = {
         id: prev.id,
         turn: 0,
@@ -190,6 +199,7 @@ export class AgyUsageAdapter implements UsageAdapter {
     const creates = allocate(totalCreate, weights);
     const reads = allocate(totalRead, weights);
     const outputs = allocate(totalOutput, weights);
+    const thoughts = allocate(totalThought, weights);
 
     const out: CachePoint[] = [];
     for (let i = 0; i < this.entries.length; i++) {
@@ -199,6 +209,8 @@ export class AgyUsageAdapter implements UsageAdapter {
       const cre = creates[i]!;
       const rd = reads[i]!;
       const outTok = outputs[i]!;
+      const th = thoughts[i]!;
+      if (th > 0) this.reasoningById.set(prev.id, th);
       const denom = inp + cre + rd;
       const next: CachePoint = {
         id: prev.id,

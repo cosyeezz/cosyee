@@ -5,11 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
-import { EXEC_CODE_LIMIT, SKILL_MODES, snippetShell, type Account, type ExecStreamMsg, type Bootstrap, type BrowserPickResult, type DelegateBackendId, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
+import { EXEC_CODE_LIMIT, SKILL_MODES, snippetShell, type Account, type ExecStreamMsg, type Bootstrap, type BrowserPickResult, type DelegateBackendId, type LedgerBackend, type LedgerWindowKind, type SessionSummary, type SkillMode, type ToolStats, type CompactStats, type PreviewInfo, type PriceTable, type UsageInfo, type CliModelList, type DelegateModelList } from '@cosyee/shared';
 import type { AgyAccounts } from './accounts/agy.js';
 import type { CodexAccounts } from './accounts/codex.js';
 import { type Accounts, RunningError } from './accounts/index.js';
 import type { KiroService } from './kiro/index.js';
+import type { LedgerService } from './ledger/service.js';
 import { browseDir, statFolder, statPicked } from './browse.js';
 import { validateConfig } from './claude/runner.js';
 import type { Manager } from './claude/manager.js';
@@ -72,6 +73,8 @@ export interface HttpDeps {
   trash: Trash;
   /** 价格表（GET /api/pricing、子代理花费用） */
   pricing: { table(): PriceTable };
+  /** 订阅用量账本；不传则 /api/ledger/windows 返回空列表且 enabled: false */
+  ledger?: Pick<LedgerService, 'list' | 'detail'>;
   /** 在文件管理器里打开文件夹用的 spawn（测试可替换，默认 explorer.exe / open / xdg-open） */
   spawner?: Spawner;
   /** 桌面版访问令牌（见 security.ts）；不设置则不校验 */
@@ -876,6 +879,40 @@ export function createHandler(deps: HttpDeps) {
     if (method === 'GET' && p === '/api/usage') return sendJson(res, 200, await deps.usage.get(q.get('refresh') === '1', q.get('session'), q.get('account')));
     if (method === 'GET' && p === '/api/models') {
       return sendJson(res, 200, (await deps.cliModels?.get(q.get('refresh') === '1', q.get('session'), q.get('account'))) ?? null);
+    }
+
+    if (method === 'GET' && p === '/api/ledger/windows') {
+      if (!deps.ledger) return sendJson(res, 200, { windows: [], enabled: false });
+      const rawBackend = q.get('backend');
+      let backend: LedgerBackend | undefined;
+      if (rawBackend) {
+        if (rawBackend !== 'claude' && rawBackend !== 'codex' && rawBackend !== 'agy') {
+          throw new HttpError(400, 'backend 不合法');
+        }
+        backend = rawBackend;
+      }
+      const rawKind = q.get('kind');
+      let kind: LedgerWindowKind | undefined;
+      if (rawKind) {
+        if (rawKind !== 'session' && rawKind !== 'weekly' && rawKind !== 'scoped' && rawKind !== 'monthly') {
+          throw new HttpError(400, 'kind 不合法');
+        }
+        kind = rawKind;
+      }
+      const account = q.get('account') || undefined;
+      return sendJson(res, 200, deps.ledger.list({ backend, account, kind }));
+    }
+    if (method === 'GET' && (m = /^\/api\/ledger\/windows\/(.+)$/.exec(p))) {
+      if (!deps.ledger) throw new HttpError(404, '未找到');
+      let id: string;
+      try {
+        id = decodeURIComponent(m[1]!);
+      } catch {
+        throw new HttpError(400, '窗口 id 不合法');
+      }
+      const detail = deps.ledger.detail(id);
+      if (!detail) throw new HttpError(404, '未找到');
+      return sendJson(res, 200, detail);
     }
 
     if (method === 'POST' && p === '/api/defaults') {
