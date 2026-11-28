@@ -56,8 +56,8 @@ export interface CodexCliOptions {
   runCommand?: CodexCommandRunner;
   /** HTTP 请求（查 npm registry） */
   fetch?: typeof globalThis.fetch;
-  /** 检测本机是否有 npm（未安装 codex 时优先用 npm 安装，更可预期）；默认查 PATH */
-  hasNpm?: (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => boolean;
+  /** 定位本机 npm 的绝对路径（未安装 codex 时有 npm 就优先用 npm 安装，更可预期）；默认查 PATH */
+  findNpm?: (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string | null;
   /** 系统平台（测试可注入） */
   platform?: NodeJS.Platform;
   /** 时钟（测试可注入） */
@@ -86,19 +86,25 @@ function defaultStatFile(filePath: string): { mtimeMs: number; size: number } | 
   }
 }
 
-/** 检查 PATH 里是否存在 npm 可执行文件 */
-export function defaultHasNpm(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+/**
+ * 在 PATH 里找 npm，返回绝对路径；找不到时再看当前 node 所在目录（官方安装包 npm 与 node 放在一起）。
+ * 必须用绝对路径启动：Windows 上以带引号的裸名 `"npm.cmd"` 经 cmd.exe 启动时，
+ * 批处理里的 %~dp0 会被解析成当前工作目录，npm.cmd 就会去 cwd\node_modules\npm 找 npm-cli.js 而崩溃。
+ */
+export function defaultFindNpm(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
   const dirs = (env.PATH ?? env.Path ?? '')
     .split(path.delimiter)
     .map((d) => (platform === 'win32' ? d.trim().replace(/^"|"$/g, '') : d.trim()))
-    .filter(Boolean);
-  const names = platform === 'win32' ? ['npm.cmd', 'npm.exe', 'npm'] : ['npm'];
+    .filter((d) => d && path.isAbsolute(d));
+  dirs.push(path.dirname(process.execPath));
+  const names = platform === 'win32' ? ['npm.cmd', 'npm.exe'] : ['npm'];
   for (const d of dirs) {
     for (const n of names) {
-      if (isFile(path.join(d, n))) return true;
+      const p = path.join(d, n);
+      if (isFile(p)) return p;
     }
   }
-  return false;
+  return null;
 }
 
 function errMsg(e: unknown): string {
@@ -119,7 +125,7 @@ export class CodexCli {
   private readonly statFileFn: (filePath: string) => { mtimeMs: number; size: number } | null;
   private readonly runCmd: CodexCommandRunner;
   private readonly fetchFn: typeof globalThis.fetch;
-  private readonly hasNpmFn: (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => boolean;
+  private readonly findNpmFn: (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string | null;
   private readonly platform: NodeJS.Platform;
   private readonly nowFn: () => number;
   private readonly versionTimeoutMs: number;
@@ -154,7 +160,7 @@ export class CodexCli {
     this.statFileFn = opts.statFile ?? defaultStatFile;
     this.runCmd = opts.runCommand ?? defaultRunCommand;
     this.fetchFn = opts.fetch ?? globalThis.fetch;
-    this.hasNpmFn = opts.hasNpm ?? defaultHasNpm;
+    this.findNpmFn = opts.findNpm ?? defaultFindNpm;
     this.platform = opts.platform ?? process.platform;
     this.nowFn = opts.now ?? Date.now;
     this.versionTimeoutMs = opts.versionTimeoutMs ?? VERSION_TIMEOUT_MS;
@@ -374,9 +380,16 @@ export class CodexCli {
       let args: string[];
       // 升级：按当前 installKind 决定渠道；
       // 未安装：若本机已有 npm，优先走 npm install -g @openai/codex@latest（相比远程 curl/irm 脚本，npm 渠道路径固定、退出码与日志更可预期且跨平台一致）；无 npm 时回退官方安装脚本。
-      const useNpm = info ? info.installKind === 'npm' : this.hasNpmFn(env, this.platform);
+      const npmPath = this.findNpmFn(env, this.platform);
+      const useNpm = info ? info.installKind === 'npm' : npmPath !== null;
       if (useNpm) {
-        cmd = this.platform === 'win32' ? 'npm.cmd' : 'npm';
+        if (!npmPath) {
+          const error = '升级失败：Codex CLI 是通过 npm 安装的，但找不到 npm（请确认 Node.js 已安装且在 PATH 中）';
+          this.appendLog(error);
+          this.job = { kind, state: 'failed', error };
+          return;
+        }
+        cmd = npmPath;
         args = ['install', '-g', '@openai/codex@latest'];
       } else if (this.platform === 'win32') {
         cmd = 'powershell.exe';

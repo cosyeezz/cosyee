@@ -56,7 +56,7 @@ function makeCli(opts: CodexCliOptions = {}) {
     resolveCodex: () => ({ execPath: 'C:\\npm\\codex.exe', rawPath: 'C:\\npm\\codex.cmd', installKind: 'npm' }),
     env: () => ({}),
     statFile: () => ({ mtimeMs: 1000, size: 500 }),
-    hasNpm: () => true,
+    findNpm: () => 'C:\\Program Files\\nodejs\\npm.cmd',
     platform: 'win32',
     now: () => 1_700_000_000_000,
     ...opts,
@@ -115,17 +115,26 @@ describe('CodexCli 安装与升级渠道', () => {
     const { cli, fp, runCommand } = makeCli({ onUpdated });
     await cli.update();
     await cli.waitForJob();
-    expect(runCommand).toHaveBeenCalledWith('npm.cmd', ['install', '-g', '@openai/codex@latest'], expect.any(Object));
+    // 必须用 npm 的绝对路径：裸名 "npm.cmd" 经 cmd.exe 启动时 %~dp0 会变成 cwd，npm 会找不到 npm-cli.js
+    expect(runCommand).toHaveBeenCalledWith('C:\\Program Files\\nodejs\\npm.cmd', ['install', '-g', '@openai/codex@latest'], expect.any(Object));
     expect(fp.retireAll).toHaveBeenCalledTimes(1);
     expect(onUpdated).toHaveBeenCalledTimes(1);
     expect((await cli.status()).job).toBeNull();
+  });
+
+  it('npm 渠道但找不到 npm 时直接失败，不去跑裸名 npm', async () => {
+    const { cli, runCommand } = makeCli({ findNpm: () => null });
+    await cli.update();
+    await cli.waitForJob();
+    expect(runCommand).not.toHaveBeenCalledWith(expect.anything(), ['install', '-g', '@openai/codex@latest'], expect.anything());
+    expect((await cli.status()).job).toMatchObject({ state: 'failed', error: expect.stringContaining('找不到 npm') });
   });
 
   it('standalone / 无 npm 时走官方安装脚本（Windows & Unix）', async () => {
     let installed = false;
     const { cli: winCli, runCommand: winRun } = makeCli({
       resolveCodex: () => (installed ? { execPath: 'C:\\codex.exe', rawPath: 'C:\\codex.exe', installKind: 'standalone' } : null),
-      hasNpm: () => false,
+      findNpm: () => null,
       platform: 'win32',
       runCommand: vi.fn<CodexCommandRunner>(async (cmd, args) => {
         if (args[0] === '--version') return { code: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
